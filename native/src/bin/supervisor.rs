@@ -25,8 +25,12 @@ use axum::{
 use factory_native::{
     execution::{
         ApplyFilesRequest, BoundedOutput, BrokerVolumes, ExecuteWorkspace, ExecutionError,
-        MAX_EXECUTION_RUNTIME, RootlessPodmanVolumes, ToolRunRequest, VolumeBackend,
-        WorkspaceAllocation, WorkspaceManager, WriteFilesRequest,
+        MAX_EXECUTION_RUNTIME, ReconcileReport, RootlessPodmanVolumes, ToolRunRequest,
+        VolumeBackend, WorkspaceAllocation, WorkspaceManager, WriteFilesRequest,
+    },
+    runtime_broker::{
+        BrokerError, EnvironmentCheckExecutionRequest, EnvironmentCheckRequest,
+        MAX_ENVIRONMENT_REQUEST_BYTES, ManagedResources, ResourceOwner, RuntimeBrokerClient,
     },
     workspace::WorkspaceError,
     workspace_archive::ArchiveError,
@@ -56,6 +60,14 @@ enum SupervisorBackend {
 }
 
 impl VolumeBackend for SupervisorBackend {
+    fn owner(&self) -> ResourceOwner {
+        match self {
+            Self::Podman(backend) => backend.owner(),
+            Self::Broker(backend) => backend.owner(),
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.owner(),
+        }
+    }
     async fn create_volume(&self, name: &str, workspace_id: &str) -> Result<(), ExecutionError> {
         match self {
             Self::Podman(backend) => backend.create_volume(name, workspace_id).await,
@@ -103,6 +115,31 @@ impl VolumeBackend for SupervisorBackend {
             Self::Local(backend) => backend.run(volume, container, image, argv, timeout).await,
         }
     }
+    async fn acquire_dependencies(
+        &self,
+        volume: &str,
+        container: &str,
+        request: &factory_native::dependency_service::DependencyAcquireRequest,
+    ) -> Result<factory_native::dependency_service::DependencyAcquireReceipt, ExecutionError> {
+        match self {
+            Self::Podman(backend) => {
+                backend
+                    .acquire_dependencies(volume, container, request)
+                    .await
+            }
+            Self::Broker(backend) => {
+                backend
+                    .acquire_dependencies(volume, container, request)
+                    .await
+            }
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => {
+                backend
+                    .acquire_dependencies(volume, container, request)
+                    .await
+            }
+        }
+    }
     async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
         match self {
             Self::Podman(backend) => backend.remove_container(name).await,
@@ -111,12 +148,36 @@ impl VolumeBackend for SupervisorBackend {
             Self::Local(backend) => backend.remove_container(name).await,
         }
     }
+
+    async fn cancel_environment_check(
+        &self,
+        volume: &str,
+        check_token: &str,
+    ) -> Result<bool, ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.cancel_environment_check(volume, check_token).await,
+            Self::Broker(backend) => backend.cancel_environment_check(volume, check_token).await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.cancel_environment_check(volume, check_token).await,
+        }
+    }
+    async fn list_managed(&self) -> Result<Option<ManagedResources>, ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.list_managed().await,
+            Self::Broker(backend) => backend.list_managed().await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.list_managed().await,
+        }
+    }
 }
 
 #[cfg(debug_assertions)]
 struct LocalVolumeBackend {
     root: PathBuf,
     volumes: std::sync::Mutex<std::collections::HashMap<String, PathBuf>>,
+    meta: std::sync::Mutex<
+        std::collections::HashMap<String, factory_native::runtime_broker::ManagedResource>,
+    >,
 }
 
 #[cfg(debug_assertions)]
@@ -131,6 +192,7 @@ impl LocalVolumeBackend {
         Ok(Self {
             root,
             volumes: std::sync::Mutex::new(std::collections::HashMap::new()),
+            meta: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -146,16 +208,43 @@ impl LocalVolumeBackend {
 
 #[cfg(debug_assertions)]
 impl VolumeBackend for LocalVolumeBackend {
-    async fn create_volume(&self, name: &str, _workspace_id: &str) -> Result<(), ExecutionError> {
+    fn owner(&self) -> ResourceOwner {
+        ResourceOwner::Supervisor
+    }
+    async fn create_volume(&self, name: &str, workspace_id: &str) -> Result<(), ExecutionError> {
+        if let Some(existing) = self.meta.lock().unwrap().get(name).cloned() {
+            let same_owner = existing.owner.as_deref() == Some(ResourceOwner::Supervisor.as_str());
+            let same_workspace = existing.workspace.as_deref() == Some(workspace_id);
+            let legacy = !workspace_id.is_empty()
+                && same_workspace
+                && existing.owner.as_deref().is_none_or(str::is_empty);
+            if !(legacy || (same_owner && same_workspace)) {
+                return Err(ExecutionError::Conflict);
+            }
+        }
         let path = self.root.join(name);
         if path.exists() {
             std::fs::remove_dir_all(&path)?;
         }
         std::fs::create_dir(&path)?;
         self.volumes.lock().unwrap().insert(name.into(), path);
+        self.meta.lock().unwrap().insert(
+            name.into(),
+            factory_native::runtime_broker::ManagedResource {
+                name: name.into(),
+                workspace: Some(workspace_id.to_owned()),
+                owner: Some(ResourceOwner::Supervisor.as_str().to_owned()),
+            },
+        );
         Ok(())
     }
     async fn remove_volume(&self, name: &str) -> Result<(), ExecutionError> {
+        if let Some(existing) = self.meta.lock().unwrap().get(name)
+            && existing.owner.as_deref() != Some(ResourceOwner::Supervisor.as_str())
+        {
+            return Err(ExecutionError::Conflict);
+        }
+        self.meta.lock().unwrap().remove(name);
         if let Some(path) = self.volumes.lock().unwrap().remove(name) {
             let _ = std::fs::remove_dir_all(path);
         }
@@ -206,7 +295,75 @@ impl VolumeBackend for LocalVolumeBackend {
             stderr_truncated: false,
         })
     }
+    async fn acquire_dependencies(
+        &self,
+        _volume: &str,
+        _container: &str,
+        _request: &factory_native::dependency_service::DependencyAcquireRequest,
+    ) -> Result<factory_native::dependency_service::DependencyAcquireReceipt, ExecutionError> {
+        Err(ExecutionError::Dependency(
+            "local Supervisor backend does not support dependency acquisition".into(),
+        ))
+    }
     async fn remove_container(&self, _name: &str) -> Result<(), ExecutionError> {
+        Ok(())
+    }
+    async fn list_managed(&self) -> Result<Option<ManagedResources>, ExecutionError> {
+        let mut volumes: Vec<_> = self.meta.lock().unwrap().values().cloned().collect();
+        volumes.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(Some(ManagedResources {
+            volumes,
+            containers: Vec::new(),
+        }))
+    }
+}
+
+#[derive(Clone)]
+struct EnvironmentBuilderAllowlist {
+    image: String,
+    digest_file: PathBuf,
+}
+
+impl EnvironmentBuilderAllowlist {
+    fn from_environment() -> Option<Self> {
+        let image = env::var("FACTORY_SUPERVISOR_ENVIRONMENT_BUILDER_IMAGE")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())?;
+        let digest_file = env::var("FACTORY_SUPERVISOR_ENVIRONMENT_BUILDER_DIGEST_FILE")
+            .ok()
+            .map(PathBuf::from)?;
+        if !digest_file.is_absolute() {
+            return None;
+        }
+        Some(Self { image, digest_file })
+    }
+
+    fn validate(&self, image: &str, digest: &str) -> Result<(), (StatusCode, String, String)> {
+        if image != self.image {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "ENVIRONMENT_HASH_MISMATCH".into(),
+                "the requested image is not the configured environment builder".into(),
+            ));
+        }
+        let configured = std::fs::read_to_string(&self.digest_file)
+            .map_err(|_| {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "ENVIRONMENT_BUILDER_UNAVAILABLE".into(),
+                    "the environment builder digest is unavailable".into(),
+                )
+            })?
+            .trim()
+            .to_owned();
+        if !configured.eq_ignore_ascii_case(digest) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "ENVIRONMENT_HASH_MISMATCH".into(),
+                "the requested digest is not the configured environment builder".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -222,6 +379,8 @@ struct App<B: factory_native::execution::VolumeBackend> {
     capability_key: Vec<u8>,
     operation_nonces: Mutex<HashMap<String, i64>>,
     core_url: reqwest::Url,
+    environment_broker: Option<RuntimeBrokerClient>,
+    environment_builder: Option<EnvironmentBuilderAllowlist>,
 }
 
 #[tokio::main]
@@ -248,7 +407,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &env::var("FACTORY_CORE_URL").map_err(|_| "FACTORY_CORE_URL required")?,
         "FACTORY_CORE_URL",
         container_mode,
-        &["core"],
+        &["core-control"],
     )?;
     let workspace_root = required_path("FACTORY_SUPERVISOR_WORKSPACE_ROOT")?;
     let state_root = required_path("FACTORY_SUPERVISOR_STATE_ROOT")?;
@@ -284,7 +443,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(not(debug_assertions))]
         unreachable!("release builds reject the local backend above")
     } else if let (Some(url), Some(token)) = (broker_url.as_deref(), broker_token.as_deref()) {
-        let backend = BrokerVolumes::new(url, token.to_owned())?;
+        let backend = BrokerVolumes::new(url, token.to_owned(), ResourceOwner::Supervisor)?;
         backend.preflight().await?;
         SupervisorBackend::Broker(backend)
     } else if broker_url.is_some() || broker_token.is_some() {
@@ -298,16 +457,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into(),
         );
     } else {
-        let backend = RootlessPodmanVolumes::new(images.iter().cloned())?;
+        let backend =
+            RootlessPodmanVolumes::new(images.iter().cloned(), ResourceOwner::Supervisor)?;
         backend.preflight().await?;
         SupervisorBackend::Podman(backend)
     };
     let manager =
         WorkspaceManager::new(&workspace_root, &state_root, project_roots.clone(), backend)?;
-    let removed = manager.reconcile().await?;
-    if removed > 0 {
-        tracing::warn!(removed, "reconciled stale workspace executions");
-    }
+    let report = manager.reconcile().await?;
+    log_reconcile(&report);
+    let environment_broker = match (broker_url.as_deref(), broker_token.as_deref()) {
+        (Some(url), Some(token)) => Some(RuntimeBrokerClient::new(
+            url,
+            token.to_owned(),
+            ResourceOwner::Supervisor,
+        )?),
+        _ => None,
+    };
+    let environment_builder = EnvironmentBuilderAllowlist::from_environment();
     let bind = env::var("FACTORY_SUPERVISOR_BIND").unwrap_or_else(|_| DEFAULT_BIND.into());
     let addr = factory_native::service_network::validate_bind(&bind, container_mode)?;
     let app = Arc::new(App {
@@ -321,6 +488,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         capability_key: capability_key.into_bytes(),
         operation_nonces: Mutex::new(HashMap::new()),
         core_url,
+        environment_broker,
+        environment_builder,
     });
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "Factory sandbox supervisor listening");
@@ -337,6 +506,14 @@ fn build_router<B: factory_native::execution::VolumeBackend + 'static>(app: Arc<
         .route("/v1/workspaces/{workspace_id}/apply", post(apply_files))
         .route("/v1/workspaces/{workspace_id}/write", post(write_files))
         .route("/v1/workspaces/{workspace_id}/run", post(run_tool))
+        .route(
+            "/v1/workspaces/{workspace_id}/environment-check",
+            post(environment_check).layer(DefaultBodyLimit::max(MAX_ENVIRONMENT_REQUEST_BYTES)),
+        )
+        .route(
+            "/v1/workspaces/{workspace_id}/dependencies",
+            post(acquire_dependencies),
+        )
         .route("/v1/workspaces/{workspace_id}/finalize", post(finalize))
         .route("/v1/integrate", post(integrate))
         .route("/v1/reconcile", post(reconcile))
@@ -351,6 +528,22 @@ async fn health() -> Json<serde_json::Value> {
         "mount": "named-volume",
         "host_workspace_mounted": false
     }))
+}
+
+fn log_reconcile(report: &ReconcileReport) {
+    tracing::info!(
+        recovered_running = report.recovered_running,
+        removed_records = report.removed_records,
+        removed_orphan_volumes = report.removed_orphan_volumes,
+        removed_orphan_containers = report.removed_orphan_containers,
+        preserved_managed = report.preserved_managed,
+        cleanup_failures = report.cleanup_failures,
+        sweep_supported = report.sweep_supported,
+        "workspace reconciliation finished"
+    );
+    if let Some(error) = &report.sweep_error {
+        tracing::warn!(%error, "managed resource sweep did not complete");
+    }
 }
 
 async fn allocate<B: factory_native::execution::VolumeBackend>(
@@ -568,6 +761,192 @@ async fn run_tool<B: factory_native::execution::VolumeBackend + 'static>(
     }
 }
 
+async fn environment_check<B: factory_native::execution::VolumeBackend + 'static>(
+    State(app): State<Arc<App<B>>>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+    Json(input): Json<EnvironmentCheckExecutionRequest>,
+) -> Response {
+    let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if let Err(error) = input.check.validate_shape() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+    }
+    let Ok(digest) = factory_native::attempt_grant::request_digest(&json!({
+        "argv": &input.check.argv,
+        "timeout_secs": input.check.timeout_secs
+    })) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(grant) = operation_grant(&headers, &app, &handle, "run", &digest) else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    if !grant.checks.iter().any(|check| check == &input.check.argv) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(grant_token) = headers
+        .get("x-factory-operation-grant")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+    else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    let workspace_volume = match app.manager.workspace_volume(&workspace_id) {
+        Ok(volume) => volume,
+        Err(error) => return execution_error(error),
+    };
+    let check_token = uuid::Uuid::new_v4().to_string();
+    if let Err(error) =
+        app.manager
+            .begin_environment_check(&workspace_id, &workspace_volume, &check_token)
+    {
+        return execution_error(error);
+    }
+    // The fence revokes a builder check that outlives its operation grant.
+    // `cancel_active` addresses the broker-owned check container by workspace
+    // volume; the Supervisor never guesses a container name.
+    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), grant_token);
+    let response = async {
+        if Duration::from_secs(u64::from(input.check.timeout_secs)) > app.max_runtime {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"environment check timeout exceeds the supervisor bound"})),
+            )
+                .into_response();
+        }
+        let Some(builder) = &app.environment_builder else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                    "error": "the supervisor has no configured environment builder"
+                })),
+            )
+                .into_response();
+        };
+        if let Err((status, code, message)) = builder.validate(&input.image, &input.digest) {
+            return (status, Json(json!({"code": code, "error": message}))).into_response();
+        }
+        let Some(broker) = &app.environment_broker else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                    "error": "the supervisor has no runtime broker for environment checks"
+                })),
+            )
+                .into_response();
+        };
+        // Snapshot and replace the exact current worktree. `podman volume
+        // import` merges into an existing volume, so the manager removes and
+        // recreates it before importing; stale files cannot survive a check.
+        if let Err(error) = app.manager.stage_workspace_for_check(&workspace_id).await {
+            return execution_error(error);
+        }
+        if app.manager.environment_check_cancelled(&workspace_id) {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "code": "ENVIRONMENT_CHECK_CANCELLED",
+                    "error": "the environment check was cancelled before the broker call"
+                })),
+            )
+                .into_response();
+        }
+        let timeout_secs = u64::from(input.check.timeout_secs);
+        let request = EnvironmentCheckRequest {
+            schema_version: 1,
+            image: input.image,
+            digest: input.digest,
+            plan: input.plan,
+            spec: input.spec,
+            receipt: input.receipt,
+            check: input.check,
+            workspace_volume,
+            check_token: check_token.clone(),
+        };
+        match broker
+            .environment_check(&request, Duration::from_secs(timeout_secs + 180))
+            .await
+        {
+            Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+            Err(error) => broker_error_response(error),
+        }
+    }
+    .await;
+    fence.abort();
+    let _ = fence.await;
+    let cancelled = app.manager.end_environment_check(&workspace_id);
+    if cancelled {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "code": "ENVIRONMENT_CHECK_CANCELLED",
+                "error": "the environment check was cancelled or its operation grant was revoked"
+            })),
+        )
+            .into_response();
+    }
+    response
+}
+
+fn broker_error_response(error: BrokerError) -> Response {
+    match error {
+        BrokerError::RefusedCode {
+            status,
+            code,
+            message,
+        } => {
+            let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+            (status, Json(json!({"code": code, "error": message}))).into_response()
+        }
+        error => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn acquire_dependencies<B: factory_native::execution::VolumeBackend + 'static>(
+    State(app): State<Arc<App<B>>>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+    Json(input): Json<factory_native::dependency_service::DependencyAcquireRequest>,
+) -> Response {
+    let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if let Err(message) = factory_native::dependency_service::validate_request_shape(&input) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response();
+    }
+    let Ok(digest) = input.digest() else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if operation_grant(&headers, &app, &handle, "dependencies", &digest).is_none() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let fence = spawn_operation_fence(
+        app.clone(),
+        workspace_id.clone(),
+        headers
+            .get("x-factory-operation-grant")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned(),
+    );
+    let result = app
+        .manager
+        .acquire_dependencies(&workspace_id, &input)
+        .await;
+    fence.abort();
+    match result {
+        Ok(receipt) => (StatusCode::OK, Json(receipt)).into_response(),
+        Err(error) => execution_error(error),
+    }
+}
+
 async fn finalize<B: factory_native::execution::VolumeBackend>(
     State(app): State<Arc<App<B>>>,
     headers: HeaderMap,
@@ -699,7 +1078,10 @@ async fn reconcile<B: factory_native::execution::VolumeBackend>(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.manager.reconcile().await {
-        Ok(removed) => (StatusCode::OK, Json(json!({"removed": removed}))).into_response(),
+        Ok(report) => {
+            log_reconcile(&report);
+            (StatusCode::OK, Json(report)).into_response()
+        }
         Err(error) => execution_error(error),
     }
 }
@@ -829,6 +1211,19 @@ fn spawn_operation_fence<B: factory_native::execution::VolumeBackend + 'static>(
             } else {
                 failures = failures.saturating_add(1);
                 if failures >= 2 {
+                    // Revocation can land between staging and the broker
+                    // registering the check container. Retry briefly so a
+                    // container that appears during that window is still
+                    // cancelled, then stop. The cancellation marker also makes
+                    // the handler refuse to start a later check.
+                    for _ in 0..20 {
+                        match app.manager.cancel_active(&workspace_id).await {
+                            Ok(true) => return,
+                            Ok(false) | Err(_) => {
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                            }
+                        }
+                    }
                     let _ = app.manager.cancel_active(&workspace_id).await;
                     return;
                 }
@@ -899,6 +1294,7 @@ fn execution_error(error: ExecutionError) -> Response {
         ExecutionError::Archive(ArchiveError::TooLarge(_)) => StatusCode::PAYLOAD_TOO_LARGE,
         ExecutionError::Workspace(WorkspaceError::Invalid(_)) => StatusCode::BAD_REQUEST,
         ExecutionError::Volume(_) | ExecutionError::Sandbox(_) => StatusCode::SERVICE_UNAVAILABLE,
+        ExecutionError::Dependency(_) => StatusCode::BAD_GATEWAY,
         ExecutionError::Io(_) | ExecutionError::Archive(_) | ExecutionError::Workspace(_) => {
             StatusCode::INTERNAL_SERVER_ERROR
         }
@@ -990,13 +1386,30 @@ mod tests {
     use tower::ServiceExt;
     use uuid::Uuid;
 
+    type CapturedRequests = std::sync::Arc<Mutex<Vec<serde_json::Value>>>;
+    type TestVolumes = std::sync::Arc<Mutex<HashMap<String, PathBuf>>>;
+    type StartedSignal = std::sync::Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>;
+    type CancelSignal = std::sync::Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>;
+
     const TEST_TOKEN: &str = "supervisor-token-0123456789abcdef0123456789abcdef";
     const TEST_GRANT_KEY: &[u8] = b"attempt-grant-key-0123456789abcdef";
     const TEST_CAPABILITY_KEY: &[u8] = b"capability-key-0123456789abcdef0";
 
-    #[derive(Default)]
+    #[derive(Clone)]
     struct TestBackend {
-        volumes: Mutex<HashMap<String, PathBuf>>,
+        volumes: TestVolumes,
+        cancel_calls: std::sync::Arc<Mutex<Vec<String>>>,
+        cancel_tx: StartedSignal,
+    }
+
+    impl Default for TestBackend {
+        fn default() -> Self {
+            Self {
+                volumes: TestVolumes::default(),
+                cancel_calls: std::sync::Arc::new(Mutex::new(Vec::new())),
+                cancel_tx: std::sync::Arc::new(Mutex::new(None)),
+            }
+        }
     }
 
     impl TestBackend {
@@ -1006,6 +1419,9 @@ mod tests {
     }
 
     impl VolumeBackend for TestBackend {
+        fn owner(&self) -> ResourceOwner {
+            ResourceOwner::Supervisor
+        }
         async fn create_volume(
             &self,
             name: &str,
@@ -1056,8 +1472,83 @@ mod tests {
                 stderr_truncated: false,
             })
         }
+        async fn acquire_dependencies(
+            &self,
+            volume: &str,
+            _container: &str,
+            request: &factory_native::dependency_service::DependencyAcquireRequest,
+        ) -> Result<factory_native::dependency_service::DependencyAcquireReceipt, ExecutionError>
+        {
+            use sha2::{Digest, Sha256};
+            let path = self.path(volume);
+            let evidence = path
+                .join(&request.vendor_path)
+                .join(factory_native::dependency_broker::EVIDENCE_DIR);
+            fs::create_dir_all(&evidence)?;
+            for (name, body) in [
+                (
+                    factory_native::dependency_broker::SBOM_FILE,
+                    b"sbom".as_slice(),
+                ),
+                (
+                    factory_native::dependency_broker::LICENSE_FILE,
+                    b"licenses".as_slice(),
+                ),
+                (
+                    factory_native::dependency_broker::ADVISORY_FILE,
+                    b"advisories".as_slice(),
+                ),
+            ] {
+                fs::write(evidence.join(name), body)?;
+            }
+            let hex = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+            Ok(
+                factory_native::dependency_service::DependencyAcquireReceipt {
+                    image: "localhost/software-factory-dependency:dev".into(),
+                    lockfile_sha256: request.lockfile_sha256.clone(),
+                    vendor_sha256: hex(b"vendor"),
+                    vendor_entries: 1,
+                    sbom_path: format!(
+                        "{}/{}/{}",
+                        request.vendor_path,
+                        factory_native::dependency_broker::EVIDENCE_DIR,
+                        factory_native::dependency_broker::SBOM_FILE
+                    ),
+                    sbom_sha256: hex(b"sbom"),
+                    license_path: format!(
+                        "{}/{}/{}",
+                        request.vendor_path,
+                        factory_native::dependency_broker::EVIDENCE_DIR,
+                        factory_native::dependency_broker::LICENSE_FILE
+                    ),
+                    license_sha256: hex(b"licenses"),
+                    advisory_path: format!(
+                        "{}/{}/{}",
+                        request.vendor_path,
+                        factory_native::dependency_broker::EVIDENCE_DIR,
+                        factory_native::dependency_broker::ADVISORY_FILE
+                    ),
+                    advisory_sha256: hex(b"advisories"),
+                    staging_cleaned: true,
+                },
+            )
+        }
         async fn remove_container(&self, _name: &str) -> Result<(), ExecutionError> {
             Ok(())
+        }
+        async fn cancel_environment_check(
+            &self,
+            volume: &str,
+            check_token: &str,
+        ) -> Result<bool, ExecutionError> {
+            self.cancel_calls
+                .lock()
+                .unwrap()
+                .push(format!("{volume}:{check_token}"));
+            if let Some(tx) = self.cancel_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            Ok(true)
         }
     }
 
@@ -1065,6 +1556,9 @@ mod tests {
         app: Arc<App<TestBackend>>,
         root: PathBuf,
         repository: PathBuf,
+        volumes: TestVolumes,
+        cancel_calls: std::sync::Arc<Mutex<Vec<String>>>,
+        cancel_tx: StartedSignal,
     }
 
     impl Drop for TestFixture {
@@ -1090,14 +1584,23 @@ mod tests {
         );
         git(&repository, &["config", "user.name", "Test"]);
         fs::write(repository.join("seed.txt"), "base\n").unwrap();
-        git(&repository, &["add", "seed.txt"]);
+        fs::write(
+            repository.join("package.json"),
+            "{\"name\":\"fixture\",\"version\":\"1.0.0\",\"scripts\":{\"test\":\"node -e \\\"process.exit(0)\\\"\"}}\n",
+        )
+        .unwrap();
+        git(&repository, &["add", "seed.txt", "package.json"]);
         git(&repository, &["commit", "-qm", "base"]);
         let images: BTreeSet<String> = ["test/image:1".to_owned()].into();
+        let backend = TestBackend::default();
+        let volumes = std::sync::Arc::clone(&backend.volumes);
+        let cancel_calls = std::sync::Arc::clone(&backend.cancel_calls);
+        let cancel_tx = std::sync::Arc::clone(&backend.cancel_tx);
         let manager = WorkspaceManager::new(
             root.join("work"),
             root.join("state"),
             [repository.clone()],
-            TestBackend::default(),
+            backend,
         )
         .unwrap();
         TestFixture {
@@ -1112,9 +1615,14 @@ mod tests {
                 capability_key: TEST_CAPABILITY_KEY.to_vec(),
                 operation_nonces: Mutex::new(HashMap::new()),
                 core_url: reqwest::Url::parse("http://127.0.0.1:1").unwrap(),
+                environment_broker: None,
+                environment_builder: None,
             }),
             root,
             repository,
+            volumes,
+            cancel_calls,
+            cancel_tx,
         }
     }
 
@@ -1197,11 +1705,22 @@ mod tests {
                 "reset": true
             }))
             .unwrap(),
-            "run" => factory_native::attempt_grant::request_digest(&json!({
-                "argv": &body["argv"],
-                "timeout_secs": body["timeoutSecs"]
-            }))
-            .unwrap(),
+            "run" => {
+                let (argv, timeout) = match body.get("check") {
+                    Some(check) => (&check["argv"], &check["timeoutSecs"]),
+                    None => (&body["argv"], &body["timeoutSecs"]),
+                };
+                factory_native::attempt_grant::request_digest(&json!({
+                    "argv": argv,
+                    "timeout_secs": timeout
+                }))
+                .unwrap()
+            }
+            "dependencies" => {
+                let request: factory_native::dependency_service::DependencyAcquireRequest =
+                    serde_json::from_value(body.clone()).unwrap();
+                request.digest().unwrap()
+            }
             _ => "b".repeat(64),
         };
         let claims = factory_native::attempt_grant::OperationGrantClaims {
@@ -1237,6 +1756,320 @@ mod tests {
             .header("x-factory-operation-grant", grant)
             .body(Body::from(body.to_string()))
             .unwrap()
+    }
+
+    const TEST_ENV_BUILDER_IMAGE: &str = "localhost/software-factory-environment-builder:dev";
+    const TEST_ENV_BUILDER_DIGEST: &str =
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+
+    fn environment_check_body() -> serde_json::Value {
+        json!({
+            "image": TEST_ENV_BUILDER_IMAGE,
+            "digest": TEST_ENV_BUILDER_DIGEST,
+            "plan": {
+                "schemaVersion": 1,
+                "planId": "plan-1",
+                "projectId": "project-1",
+                "requestId": "request-1",
+                "actionId": "action-1",
+                "baseCommit": "b".repeat(40),
+                "conventionsSha256": "c".repeat(64),
+                "conventions": {
+                    "schemaVersion": 1,
+                    "projectId": "project-1",
+                    "baseCommit": "b".repeat(40),
+                    "conventionsSha256": "c".repeat(64),
+                    "scannedAt": "2026-11-10T00:00:00Z",
+                    "files": [],
+                    "commands": [],
+                    "conflicts": [],
+                    "truncated": false,
+                    "skippedEntries": 0,
+                    "provenance": "test",
+                    "existingEnvironment": "NONE"
+                },
+                "riskClass": "R0",
+                "status": "FROZEN",
+                "revision": 1,
+                "source": "GENERATED",
+                "files": [],
+                "nix": {
+                    "nixpkgs": "github:NixOS/nixpkgs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "inputs": [],
+                    "allowUnfree": false,
+                    "sandbox": {
+                        "sandbox": true,
+                        "impure": false,
+                        "hostMounts": [],
+                        "privileged": false,
+                        "hostNetwork": false,
+                        "hostSockets": []
+                    }
+                },
+                "resources": {
+                    "cpu": 2,
+                    "memoryMiB": 4096,
+                    "diskMiB": 10240,
+                    "pids": 512,
+                    "timeoutSecs": 1800
+                },
+                "network": {
+                    "build": "NONE",
+                    "fetch": "BROKER",
+                    "fetchAllowlist": []
+                },
+                "builder": {
+                    "image": TEST_ENV_BUILDER_IMAGE,
+                    "digest": TEST_ENV_BUILDER_DIGEST,
+                    "platform": "x86_64-linux",
+                    "policyRevision": "nix-devenv-environment-v1",
+                    "status": "READY"
+                },
+                "planSha256": "4".repeat(64),
+                "createdAt": "2026-11-10T00:00:00Z"
+            },
+            "spec": {
+                "schemaVersion": 1,
+                "specId": "spec-1",
+                "specSha256": "3".repeat(64),
+                "projectId": "project-1",
+                "requestId": "request-1",
+                "actionId": "action-1",
+                "baseCommit": "b".repeat(40),
+                "planId": "plan-1",
+                "planSha256": "4".repeat(64),
+                "conventionsSha256": "c".repeat(64),
+                "reviewId": "review-1",
+                "platform": "x86_64-linux",
+                "nixVersion": "2.28.3",
+                "devenvVersion": "1.11.2",
+                "flakeLockSha256": "e".repeat(64),
+                "devenvLockSha256": "",
+                "licenseInventorySha256": "f".repeat(64),
+                "sbomSha256": "1".repeat(64),
+                "builderImage": TEST_ENV_BUILDER_IMAGE,
+                "builderImageDigest": TEST_ENV_BUILDER_DIGEST,
+                "resourcePolicy": {
+                    "cpu": 2,
+                    "memoryMiB": 4096,
+                    "diskMiB": 10240,
+                    "pids": 512,
+                    "timeoutSecs": 1800
+                },
+                "networkPolicy": {
+                    "build": "NONE",
+                    "fetch": "BROKER",
+                    "fetchAllowlist": []
+                },
+                "status": "FROZEN",
+                "frozenAt": "2026-11-10T00:00:00Z"
+            },
+            "receipt": {
+                "schemaVersion": 1,
+                "receiptId": "receipt-1",
+                "specSha256": "3".repeat(64),
+                "platform": "x86_64-linux",
+                "builderImage": TEST_ENV_BUILDER_IMAGE,
+                "builderImageDigest": TEST_ENV_BUILDER_DIGEST,
+                "builderPolicyRevision": "nix-devenv-environment-v1",
+                "status": "SUCCEEDED",
+                "storePath": "/nix/store/fixture",
+                "outputSha256": "5".repeat(64),
+                "sbomSha256": "1".repeat(64),
+                "logRef": "build.log",
+                "sandboxAttestation": {
+                    "nonRoot": true,
+                    "noSecrets": true,
+                    "noHostNetwork": true,
+                    "noHostSocket": true,
+                    "noHostMount": true,
+                    "sandbox": true,
+                    "impure": false,
+                    "boundedResources": true
+                },
+                "blockers": [],
+                "durationMs": 1,
+                "createdAt": "2026-11-10T00:00:00Z"
+            },
+            "check": {
+                "checkId": "check-1",
+                "description": "fixture environment check",
+                "argv": ["/bin/sh", "-c", "printf 'http\\n' > result.txt"],
+                "cwd": ".",
+                "timeoutSecs": 30,
+                "expectExit": 0
+            }
+        })
+    }
+
+    async fn fake_environment_broker() -> (
+        String,
+        std::sync::Arc<Mutex<Vec<serde_json::Value>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use axum::routing::post;
+        let captured = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let state = std::sync::Arc::clone(&captured);
+        let router = axum::Router::new()
+            .route(
+                "/v1/environments/check",
+                post(
+                    |axum::extract::State(captured): axum::extract::State<
+                        std::sync::Arc<Mutex<Vec<serde_json::Value>>>,
+                    >,
+                     axum::Json(body): axum::Json<serde_json::Value>| async move {
+                        captured.lock().unwrap().push(body.clone());
+                        axum::Json(json!({
+                            "checkId": body["check"]["checkId"],
+                            "description": body["check"]["description"],
+                            "specSha256": body["spec"]["specSha256"],
+                            "status": "PASSED",
+                            "exitCode": 0,
+                            "expectExit": body["check"]["expectExit"],
+                            "passed": true,
+                            "diagnostic": "fixture environment check (exit 0, expected 0)",
+                            "logs": "ok\n",
+                            "logsTruncated": false,
+                            "stdout": "ok\n",
+                            "stderr": "",
+                            "stdoutTruncated": false,
+                            "stderrTruncated": false,
+                            "cleanupConfirmed": true,
+                            "durationMs": 3
+                        }))
+                    },
+                ),
+            )
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (format!("http://{address}"), captured, server)
+    }
+
+    /// Fake broker that reproduces `npm test`'s real exit 254 when the staged
+    /// candidate workspace has no `package.json`. A correctly staged git
+    /// worktree passes; an empty or stale volume fails exactly as the live
+    /// campaign did.
+    async fn fake_environment_broker_checking_workspace(
+        volumes: TestVolumes,
+    ) -> (String, CapturedRequests, tokio::task::JoinHandle<()>) {
+        use axum::routing::post;
+        let captured = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let state = (std::sync::Arc::clone(&captured), volumes);
+        let router = axum::Router::new()
+            .route(
+                "/v1/environments/check",
+                post(
+                    |axum::extract::State((captured, volumes)): axum::extract::State<(
+                        CapturedRequests,
+                        TestVolumes,
+                    )>,
+                     axum::Json(body): axum::Json<serde_json::Value>| async move {
+                        captured.lock().unwrap().push(body.clone());
+                        let volume = body["workspaceVolume"].as_str().unwrap_or("");
+                        let path = volumes.lock().unwrap().get(volume).cloned();
+                        let fresh = path.as_ref().is_some_and(|path| {
+                            std::fs::read_to_string(path.join("package.json"))
+                                .is_ok_and(|body| body.contains("\"fresh\""))
+                        });
+                        let (exit, status, stderr) = if fresh {
+                            (0, "PASSED", "")
+                        } else {
+                            (
+                                254,
+                                "FAILED",
+                                "npm error code ENOENT\nnpm error path /cache/check-workspace/package.json\n",
+                            )
+                        };
+                        axum::Json(json!({
+                            "checkId": body["check"]["checkId"],
+                            "description": body["check"]["description"],
+                            "specSha256": body["spec"]["specSha256"],
+                            "status": status,
+                            "exitCode": exit,
+                            "expectExit": body["check"]["expectExit"],
+                            "passed": exit == 0,
+                            "diagnostic": format!(
+                                "{} (exit {exit}, expected 0): npm error path /cache/check-workspace/package.json",
+                                body["check"]["description"].as_str().unwrap_or("")
+                            ),
+                            "logs": stderr,
+                            "logsTruncated": false,
+                            "stdout": "",
+                            "stderr": stderr,
+                            "stdoutTruncated": false,
+                            "stderrTruncated": false,
+                            "cleanupConfirmed": true,
+                            "durationMs": 3
+                        }))
+                    },
+                ),
+            )
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (format!("http://{address}"), captured, server)
+    }
+
+    /// Fake broker that holds a check in flight until the Supervisor's
+    /// operation fence propagates cancellation. This models a revoked grant
+    /// while the builder is still running.
+    async fn fake_environment_broker_until_cancelled(
+        started_tx: tokio::sync::oneshot::Sender<()>,
+        cancel_rx: tokio::sync::oneshot::Receiver<()>,
+    ) -> (String, CapturedRequests, tokio::task::JoinHandle<()>) {
+        use axum::routing::post;
+        let captured = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let state = (
+            std::sync::Arc::clone(&captured),
+            std::sync::Arc::new(Mutex::new(Some(started_tx))),
+            std::sync::Arc::new(Mutex::new(Some(cancel_rx))),
+        );
+        let router = axum::Router::new()
+            .route(
+                "/v1/environments/check",
+                post(
+                    |axum::extract::State((captured, started, cancel)): axum::extract::State<(
+                        CapturedRequests,
+                        StartedSignal,
+                        CancelSignal,
+                    )>,
+                     axum::Json(body): axum::Json<serde_json::Value>| async move {
+                        captured.lock().unwrap().push(body);
+                        if let Some(tx) = started.lock().unwrap().take() {
+                            let _ = tx.send(());
+                        }
+                        let receiver = cancel.lock().unwrap().take();
+                        if let Some(receiver) = receiver {
+                            let _ = tokio::time::timeout(
+                                Duration::from_secs(15),
+                                receiver,
+                            )
+                            .await;
+                        }
+                        (
+                            StatusCode::CONFLICT,
+                            axum::Json(json!({
+                                "code": "ENVIRONMENT_CHECK_CANCELLED",
+                                "error": "the operation grant was revoked while the check was running"
+                            })),
+                        )
+                    },
+                ),
+            )
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (format!("http://{address}"), captured, server)
     }
 
     async fn status(router: &Router, request: Request<Body>) -> StatusCode {
@@ -1303,6 +2136,97 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(status(&router, reconcile).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn reconcile_reports_durable_and_sweep_state() {
+        let fixture = fixture();
+        let router = build_router(fixture.app.clone());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/reconcile")
+            .header("authorization", format!("Bearer {TEST_TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value = body_json(response).await;
+        assert_eq!(value["recoveredRunning"], 0);
+        assert_eq!(value["removedOrphanVolumes"], 0);
+        assert_eq!(value["removedOrphanContainers"], 0);
+        assert_eq!(value["sweepSupported"], false);
+    }
+
+    #[tokio::test]
+    async fn dependency_acquisition_requires_capability_and_operation_grant() {
+        let fixture = fixture();
+        let router = build_router(fixture.app.clone());
+        let allocate = allocation_body("attempt-deps", &fixture.repository);
+        let response = router
+            .clone()
+            .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let handle = body_json(response).await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let request = json!({
+            "workdir": ".",
+            "lockfilePath": "Cargo.lock",
+            "lockfileSha256": "a".repeat(64),
+            "vendorPath": "vendor",
+            "registry": "sparse+https://index.crates.io/",
+            "timeoutSecs": 600
+        });
+        let uri = format!("/v1/workspaces/{workspace_id}/dependencies");
+
+        let unauthorized = Request::builder()
+            .method("POST")
+            .uri(&uri)
+            .header("content-type", "application/json")
+            .body(Body::from(request.to_string()))
+            .unwrap();
+        assert_eq!(
+            status(&router, unauthorized).await,
+            StatusCode::UNAUTHORIZED
+        );
+
+        let missing_grant = Request::builder()
+            .method("POST")
+            .uri(&uri)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {capability}"))
+            .body(Body::from(request.to_string()))
+            .unwrap();
+        assert_eq!(status(&router, missing_grant).await, StatusCode::FORBIDDEN);
+
+        let response = router
+            .clone()
+            .oneshot(operation_request(
+                &uri,
+                &capability,
+                &operation_grant(&handle, "dependencies", &request),
+                &request,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let receipt = body_json(response).await;
+        assert_eq!(receipt["lockfileSha256"], "a".repeat(64));
+        assert_eq!(receipt["stagingCleaned"], true);
+        assert_eq!(
+            receipt["sbomPath"],
+            "vendor/.factory-supply-chain/sbom.cdx.json"
+        );
+        let stale_grant = operation_grant(&handle, "dependencies", &request);
+        let mut changed = request;
+        changed["lockfileSha256"] = json!("b".repeat(64));
+        let response = router
+            .oneshot(operation_request(&uri, &capability, &stale_grant, &changed))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -1568,6 +2492,406 @@ mod tests {
             .await,
             StatusCode::FORBIDDEN
         );
+    }
+
+    #[tokio::test]
+    async fn environment_check_proxies_typed_binding_with_the_recorded_volume() {
+        let mut fixture = fixture();
+        let digest_file = fixture.root.join("environment-builder.digest");
+        fs::write(&digest_file, format!("{TEST_ENV_BUILDER_DIGEST}\n")).unwrap();
+        let (broker_url, captured, server) = fake_environment_broker().await;
+        {
+            let app = Arc::get_mut(&mut fixture.app).unwrap();
+            app.environment_broker = Some(
+                RuntimeBrokerClient::new(
+                    &broker_url,
+                    TEST_TOKEN.to_owned(),
+                    ResourceOwner::Supervisor,
+                )
+                .unwrap(),
+            );
+            app.environment_builder = Some(EnvironmentBuilderAllowlist {
+                image: TEST_ENV_BUILDER_IMAGE.into(),
+                digest_file,
+            });
+        }
+        let router = build_router(fixture.app.clone());
+        let allocate = allocation_body("environment-check", &fixture.repository);
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let body = environment_check_body();
+        let grant = operation_grant(&handle, "run", &body);
+        let response = router
+            .oneshot(operation_request(
+                &format!("/v1/workspaces/{workspace_id}/environment-check"),
+                &capability,
+                &grant,
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result = body_json(response).await;
+        assert_eq!(result["checkId"], "check-1");
+        assert_eq!(result["status"], "PASSED");
+        assert_eq!(result["passed"], true);
+        assert_eq!(result["cleanupConfirmed"], true);
+        let requests = captured.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let forwarded = &requests[0];
+        assert_eq!(forwarded["schemaVersion"], 1);
+        assert_eq!(forwarded["image"], TEST_ENV_BUILDER_IMAGE);
+        assert_eq!(forwarded["digest"], TEST_ENV_BUILDER_DIGEST);
+        assert_eq!(forwarded["check"]["checkId"], "check-1");
+        assert_eq!(
+            forwarded["workspaceVolume"],
+            fixture.app.manager.workspace_volume(&workspace_id).unwrap()
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn environment_check_stages_the_git_worktree_before_the_broker() {
+        let mut fixture = fixture();
+        let digest_file = fixture.root.join("environment-builder.digest");
+        fs::write(&digest_file, format!("{TEST_ENV_BUILDER_DIGEST}\n")).unwrap();
+        let (broker_url, captured, server) =
+            fake_environment_broker_checking_workspace(std::sync::Arc::clone(&fixture.volumes))
+                .await;
+        {
+            let app = Arc::get_mut(&mut fixture.app).unwrap();
+            app.environment_broker = Some(
+                RuntimeBrokerClient::new(
+                    &broker_url,
+                    TEST_TOKEN.to_owned(),
+                    ResourceOwner::Supervisor,
+                )
+                .unwrap(),
+            );
+            app.environment_builder = Some(EnvironmentBuilderAllowlist {
+                image: TEST_ENV_BUILDER_IMAGE.into(),
+                digest_file,
+            });
+        }
+        let router = build_router(fixture.app.clone());
+        let allocate = allocation_body("environment-check-staging", &fixture.repository);
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let volume = fixture.app.manager.workspace_volume(&workspace_id).unwrap();
+        let mut volume_path = fixture
+            .volumes
+            .lock()
+            .unwrap()
+            .get(&volume)
+            .cloned()
+            .unwrap();
+        assert!(
+            !volume_path.join("package.json").is_file(),
+            "allocation must start with an empty broker volume"
+        );
+        fs::write(volume_path.join("stale.txt"), "must disappear\n").unwrap();
+        // A write after allocation only changes the host worktree. The check
+        // must see this exact content, not the empty or stale volume.
+        fs::write(
+            fixture
+                .root
+                .join("work")
+                .join("environment-check-staging")
+                .join("package.json"),
+            "{\"name\":\"fresh\",\"version\":\"1.0.0\",\"scripts\":{\"test\":\"node -e \\\"process.exit(0)\\\"\"}}\n",
+        )
+        .unwrap();
+        let body = environment_check_body();
+        let grant = operation_grant(&handle, "run", &body);
+        let response = router
+            .oneshot(operation_request(
+                &format!("/v1/workspaces/{workspace_id}/environment-check"),
+                &capability,
+                &grant,
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result = body_json(response).await;
+        assert_eq!(result["status"], "PASSED", "{result}");
+        assert_eq!(result["description"], "fixture environment check");
+        volume_path = fixture
+            .volumes
+            .lock()
+            .unwrap()
+            .get(&volume)
+            .cloned()
+            .unwrap();
+        assert!(
+            fs::read_to_string(volume_path.join("package.json"))
+                .is_ok_and(|body| body.contains("\"fresh\"")),
+            "the Supervisor must stage the current git worktree into the check volume"
+        );
+        assert!(
+            !volume_path.join(".git").exists(),
+            "the workspace archive excludes Git metadata"
+        );
+        assert!(
+            !volume_path.join("stale.txt").exists(),
+            "staging must replace the volume, not merge into it"
+        );
+        let requests = captured.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0]["check"]["description"],
+            "fixture environment check"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn concurrent_environment_check_registration_keeps_the_first_token() {
+        let fixture = fixture();
+        let workspace_id = uuid::Uuid::new_v4().to_string();
+        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let first_token = uuid::Uuid::new_v4().to_string();
+        let second_token = uuid::Uuid::new_v4().to_string();
+        fixture
+            .app
+            .manager
+            .begin_environment_check(&workspace_id, &volume, &first_token)
+            .unwrap();
+        assert!(matches!(
+            fixture
+                .app
+                .manager
+                .begin_environment_check(&workspace_id, &volume, &second_token),
+            Err(ExecutionError::Conflict)
+        ));
+        assert!(
+            fixture
+                .app
+                .manager
+                .cancel_active(&workspace_id)
+                .await
+                .unwrap(),
+            "the first registration must remain cancellable"
+        );
+        let calls = fixture.cancel_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0].ends_with(&first_token),
+            "cancellation must use the first check token, got {}",
+            calls[0]
+        );
+        drop(calls);
+        fixture.app.manager.end_environment_check(&workspace_id);
+    }
+
+    #[tokio::test]
+    async fn environment_check_fence_cancels_an_active_check_on_revocation() {
+        let mut fixture = fixture();
+        let digest_file = fixture.root.join("environment-builder.digest");
+        fs::write(&digest_file, format!("{TEST_ENV_BUILDER_DIGEST}\n")).unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        *fixture.cancel_tx.lock().unwrap() = Some(cancel_tx);
+        let (broker_url, _captured, server) =
+            fake_environment_broker_until_cancelled(started_tx, cancel_rx).await;
+        {
+            let app = Arc::get_mut(&mut fixture.app).unwrap();
+            app.environment_broker = Some(
+                RuntimeBrokerClient::new(
+                    &broker_url,
+                    TEST_TOKEN.to_owned(),
+                    ResourceOwner::Supervisor,
+                )
+                .unwrap(),
+            );
+            app.environment_builder = Some(EnvironmentBuilderAllowlist {
+                image: TEST_ENV_BUILDER_IMAGE.into(),
+                digest_file,
+            });
+        }
+        let router = build_router(fixture.app.clone());
+        let allocate = allocation_body("environment-check-cancel", &fixture.repository);
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let volume = fixture.app.manager.workspace_volume(&workspace_id).unwrap();
+        let body = environment_check_body();
+        let grant = operation_grant(&handle, "run", &body);
+        let request = operation_request(
+            &format!("/v1/workspaces/{workspace_id}/environment-check"),
+            &capability,
+            &grant,
+            &body,
+        );
+        let pending = tokio::spawn(async move { router.oneshot(request).await.unwrap() });
+        tokio::time::timeout(Duration::from_secs(10), started_rx)
+            .await
+            .expect("the broker must receive the active check")
+            .unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(15), pending)
+            .await
+            .expect("the fence must cancel the active check")
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let result = body_json(response).await;
+        assert_eq!(result["code"], "ENVIRONMENT_CHECK_CANCELLED");
+        let cancel_calls = fixture.cancel_calls.lock().unwrap();
+        assert_eq!(cancel_calls.len(), 1);
+        let (cancelled_volume, cancelled_token) = cancel_calls[0].split_once(':').unwrap();
+        assert_eq!(cancelled_volume, volume);
+        assert!(
+            uuid::Uuid::parse_str(cancelled_token).is_ok(),
+            "the per-check cancellation token must be carried to the broker"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn environment_check_requires_grant_exact_image_and_configured_builder() {
+        let mut fixture = fixture();
+        let digest_file = fixture.root.join("environment-builder.digest");
+        fs::write(&digest_file, format!("{TEST_ENV_BUILDER_DIGEST}\n")).unwrap();
+        let (broker_url, _captured, server) = fake_environment_broker().await;
+        {
+            let app = Arc::get_mut(&mut fixture.app).unwrap();
+            app.environment_broker = Some(
+                RuntimeBrokerClient::new(
+                    &broker_url,
+                    TEST_TOKEN.to_owned(),
+                    ResourceOwner::Supervisor,
+                )
+                .unwrap(),
+            );
+            app.environment_builder = Some(EnvironmentBuilderAllowlist {
+                image: TEST_ENV_BUILDER_IMAGE.into(),
+                digest_file,
+            });
+        }
+        let router = build_router(fixture.app.clone());
+        let allocate = allocation_body("environment-check-refusal", &fixture.repository);
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let uri = format!("/v1/workspaces/{workspace_id}/environment-check");
+        let body = environment_check_body();
+        let grant = operation_grant(&handle, "run", &body);
+        let unauthenticated = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+        let ungranted = router
+            .clone()
+            .oneshot(json_request(&uri, Some(&capability), &body))
+            .await
+            .unwrap();
+        assert_eq!(ungranted.status(), StatusCode::FORBIDDEN);
+
+        let mut wrong_argv = body.clone();
+        wrong_argv["check"]["argv"] = json!(["/bin/sh", "-c", "printf 'other\\n'"]);
+        let response = router
+            .clone()
+            .oneshot(operation_request(&uri, &capability, &grant, &wrong_argv))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let mut wrong_image = body.clone();
+        wrong_image["image"] = json!("localhost/other-builder:dev");
+        let wrong_grant = operation_grant(&handle, "run", &wrong_image);
+        let response = router
+            .clone()
+            .oneshot(operation_request(
+                &uri,
+                &capability,
+                &wrong_grant,
+                &wrong_image,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(response).await["code"],
+            "ENVIRONMENT_HASH_MISMATCH"
+        );
+        server.abort();
+
+        let mut unconfigured = self::fixture();
+        let (broker_url, _captured, broker_server) = fake_environment_broker().await;
+        {
+            let app = Arc::get_mut(&mut unconfigured.app).unwrap();
+            app.environment_broker = Some(
+                RuntimeBrokerClient::new(
+                    &broker_url,
+                    TEST_TOKEN.to_owned(),
+                    ResourceOwner::Supervisor,
+                )
+                .unwrap(),
+            );
+        }
+        let router = build_router(unconfigured.app.clone());
+        let allocate = allocation_body("environment-check-unconfigured", &unconfigured.repository);
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let body = environment_check_body();
+        let grant = operation_grant(&handle, "run", &body);
+        let response = router
+            .oneshot(operation_request(
+                &format!("/v1/workspaces/{workspace_id}/environment-check"),
+                &capability,
+                &grant,
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        broker_server.abort();
     }
 
     #[tokio::test]

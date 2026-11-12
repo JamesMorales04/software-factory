@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 
 use crate::db::ActionSpec;
 use crate::execution_policy::{OperationLimits, ProgressPolicy};
+use crate::planning::environment::EnvironmentProposal;
 
 pub const MAX_WORK_UNITS: usize = 8;
 pub const MAX_PREDECESSORS: usize = 8;
@@ -30,6 +31,11 @@ pub const MAX_ASSUMPTIONS: usize = 16;
 pub const MAX_NOTE_CHARS: usize = 500;
 pub const MAX_EVIDENCE_REFS: usize = 32;
 pub const MAX_EFFORT_PERSON_HOURS: u32 = 10_000;
+
+/// Bounded advisory text used when a model omits or overruns the next-action
+/// field. It never creates a proposal, plan, Campaign or authority.
+pub const SUGGESTED_NEXT_ACTION_REVIEW: &str = "Review the assessment before proceeding.";
+pub const SUGGESTED_NEXT_ACTION_NO_ACTION: &str = "No action required; answer only.";
 
 /// Legacy V1 evidence bounds. They remain only to validate the exact bytes of
 /// historical grants; no V2 admission path uses them.
@@ -156,6 +162,14 @@ pub struct SpecCheck {
     pub expect_exit: i32,
     #[serde(default = "default_check_timeout")]
     pub timeout_secs: u32,
+    /// Exact `EnvironmentPlan` this check may execute in. `None` is a legacy
+    /// unbound check and is refused by the environment-aware runner; it never
+    /// falls back to a global language image.
+    #[serde(default)]
+    pub environment_plan_id: Option<String>,
+    /// Exact frozen `EnvironmentSpec` hash this check may execute in.
+    #[serde(default)]
+    pub environment_spec_sha256: Option<String>,
 }
 
 fn default_check_timeout() -> u32 {
@@ -730,6 +744,13 @@ pub struct LeadPlanProposal {
     #[schemars(skip)]
     pub max_sessions: u32,
     pub work_units: Vec<LeadWorkUnit>,
+    /// Bounded, untrusted environment proposal for a greenfield or otherwise
+    /// uncatalogued project. It supplies concrete pins, toolchains, nixpkgs
+    /// packages with SPDX licenses and commands. Core validates it before the
+    /// existing environment compiler can freeze a plan. `None` preserves the
+    /// previous behaviour for existing projects and older proposals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_proposal: Option<EnvironmentProposal>,
 }
 
 impl LeadPlanProposal {
@@ -906,6 +927,7 @@ impl LeadPlanProposal {
             )));
         }
         self.validate_work_units(grant, project)?;
+        self.validate_environment_proposal()?;
         let implementer_attempts = self
             .implementer_task_count()
             .checked_mul(self.budget.max_attempts as usize)
@@ -1041,6 +1063,16 @@ impl LeadPlanProposal {
             )));
         }
         self.validate_work_units_against(&grant.allowed_paths, &grant.capabilities, project)?;
+        self.validate_environment_proposal()?;
+        Ok(())
+    }
+
+    fn validate_environment_proposal(&self) -> Result<(), LeadError> {
+        if let Some(proposal) = &self.environment_proposal {
+            proposal
+                .validate()
+                .map_err(|error| LeadError::Proposal(error.to_string()))?;
+        }
         Ok(())
     }
 
@@ -1234,6 +1266,40 @@ pub enum Intent {
     Change,
 }
 
+pub(crate) fn default_suggested_next_action(intent: Intent) -> &'static str {
+    match intent {
+        Intent::Informational | Intent::Audit => SUGGESTED_NEXT_ACTION_NO_ACTION,
+        Intent::Change => SUGGESTED_NEXT_ACTION_REVIEW,
+    }
+}
+
+/// Deterministically bound the advisory next-action text. Empty or whitespace
+/// values fall back to a truthful default for the intent; overlong values are
+/// truncated on a character boundary. Returns whether the value changed.
+pub(crate) fn bound_suggested_next_action(action: &mut String, intent: Intent) -> bool {
+    let trimmed = action.trim();
+    if trimmed.is_empty() {
+        *action = default_suggested_next_action(intent).to_owned();
+        return true;
+    }
+    let bounded = if trimmed.chars().count() > MAX_NOTE_CHARS {
+        trimmed
+            .chars()
+            .take(MAX_NOTE_CHARS)
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    } else {
+        trimmed.to_owned()
+    };
+    if *action == bounded {
+        false
+    } else {
+        *action = bounded;
+        true
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Complexity {
@@ -1330,6 +1396,7 @@ pub struct LeadAssessment {
     pub assumptions: Vec<String>,
     #[serde(default)]
     pub uncertainty: Vec<String>,
+    #[schemars(length(min = 1, max = MAX_NOTE_CHARS))]
     pub suggested_next_action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposal: Option<LeadPlanProposal>,
@@ -1350,6 +1417,16 @@ impl LeadAssessment {
     pub fn from_json(raw: &[u8], input: &AssessmentInput) -> Result<Self, LeadError> {
         let mut assessment: Self = serde_json::from_slice(raw)
             .map_err(|error| LeadError::Assessment(format!("invalid assessment JSON: {error}")))?;
+        // suggestedNextAction is advisory text. Bound it deterministically so a
+        // harmless model omission cannot block an informational assessment, and
+        // so a change assessment still carries a truthful review step. This
+        // normalization cannot create a proposal, plan, Campaign or authority.
+        if bound_suggested_next_action(&mut assessment.suggested_next_action, assessment.intent) {
+            tracing::debug!(
+                intent = ?assessment.intent,
+                "normalized advisory suggestedNextAction"
+            );
+        }
         // The effort estimate is advisory. When the intent is informational or
         // audit and the operator did not ask for an estimate, a model-supplied
         // estimate cannot affect execution; normalize it to not_requested
@@ -1548,6 +1625,7 @@ pub fn fixture_lead_assessment(
             acceptance_criteria: Vec::new(),
             negative_cases: Vec::new(),
         }],
+        environment_proposal: None,
     };
     proposal.validate_v2(grant, &project_config.binding(), action, now)?;
     let returned_proposal = proposal.clone();
@@ -2139,6 +2217,8 @@ mod tests {
                 command: vec!["cargo".into(), "fmt".into(), "--check".into()],
                 expect_exit: 0,
                 timeout_secs: 60,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "build".into(),
@@ -2147,6 +2227,8 @@ mod tests {
                 command: vec!["cargo".into(), "build".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "test".into(),
@@ -2155,6 +2237,8 @@ mod tests {
                 command: vec!["cargo".into(), "test".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "functional".into(),
@@ -2163,6 +2247,8 @@ mod tests {
                 command: vec!["cargo".into(), "run".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
         ];
         let negative = vec![SpecCheck {
@@ -2172,6 +2258,8 @@ mod tests {
             command: vec!["cargo".into(), "run".into(), "--invalid".into()],
             expect_exit: 1,
             timeout_secs: 60,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
         }];
         (acceptance, negative)
     }
@@ -2214,6 +2302,7 @@ mod tests {
             max_parallel: 2,
             max_sessions: 12,
             work_units: units,
+            environment_proposal: None,
         }
     }
 
@@ -2542,6 +2631,65 @@ mod tests {
     }
 
     #[test]
+    fn informational_no_agent_assessment_with_blank_next_action_is_planless_and_assessed() {
+        let mut value = assessment();
+        value.intent = Intent::Informational;
+        value.proposal = None;
+        value.suggested_next_action = " \t ".into();
+        let input = AssessmentInput {
+            objective: "Explain what a vlog is and list typical features.".into(),
+            ..assessment_input()
+        };
+        let raw = serde_json::to_vec(&value).unwrap();
+        let decoded = LeadAssessment::from_json(&raw, &input).unwrap();
+        assert_eq!(decoded.intent, Intent::Informational);
+        assert_eq!(
+            decoded.suggested_next_action,
+            SUGGESTED_NEXT_ACTION_NO_ACTION
+        );
+        assert!(decoded.proposal.is_none());
+        assert_eq!(
+            project_lead_request_state_with_reason(
+                LeadRequestState::Blocked,
+                None,
+                None,
+                false,
+                Some("informational_assessment: no execution plan is required for this intent"),
+            ),
+            LeadRequestProjectionState::Assessed
+        );
+    }
+
+    #[test]
+    fn change_assessment_with_blank_next_action_gets_review_default_and_requires_a_proposal() {
+        let mut value = assessment();
+        value.suggested_next_action = String::new();
+        let input = assessment_input();
+        let decoded =
+            LeadAssessment::from_json(&serde_json::to_vec(&value).unwrap(), &input).unwrap();
+        assert_eq!(decoded.suggested_next_action, SUGGESTED_NEXT_ACTION_REVIEW);
+        assert!(decoded.proposal.is_some());
+
+        value.proposal = None;
+        assert!(LeadAssessment::from_json(&serde_json::to_vec(&value).unwrap(), &input).is_err());
+    }
+
+    #[test]
+    fn overlong_next_action_is_truncated_on_a_character_boundary() {
+        let mut value = assessment();
+        value.intent = Intent::Audit;
+        value.proposal = None;
+        value.suggested_next_action = "é".repeat(MAX_NOTE_CHARS + 17);
+        let raw = serde_json::to_vec(&value).unwrap();
+        let decoded = LeadAssessment::from_json(&raw, &assessment_input()).unwrap();
+        assert_eq!(
+            decoded.suggested_next_action.chars().count(),
+            MAX_NOTE_CHARS
+        );
+        assert!(decoded.suggested_next_action.starts_with('é'));
+    }
+
+    #[test]
     fn assessment_rejects_strict_schema_and_identity_violations() {
         let input = assessment_input();
         let mut wrong = assessment();
@@ -2634,6 +2782,16 @@ mod tests {
             model: "deepseek-v4.1-flash".into(),
             allowed_paths: vec!["src".into()],
             checks: checks().0.into_iter().chain(checks().1).collect(),
+            dependency_plan: None,
+            dependencies_required: false,
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
+
+            environment_spec_id: None,
         };
         let (assessment, proposal) = fixture_lead_assessment(
             "request-1",
@@ -2663,6 +2821,76 @@ mod tests {
         assert!(Submitted.transition(Running).is_err());
         assert!(Blocked.transition(Running).is_err());
         assert!(Running.transition(Ready).is_err());
+    }
+
+    fn environment_proposal() -> EnvironmentProposal {
+        use crate::planning::environment::{
+            CommandRequirement, PackageRequirement, ToolchainRequirement,
+        };
+        EnvironmentProposal {
+            nixpkgs: Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into()),
+            toolchains: vec![ToolchainRequirement {
+                id: "node".into(),
+                version: "22.14.0".into(),
+                source: "lead-proposal".into(),
+                evidence: Vec::new(),
+            }],
+            packages: vec![PackageRequirement {
+                name: "nodejs".into(),
+                version: "22.14.0".into(),
+                license: "MIT".into(),
+                source: "nixpkgs".into(),
+                attr: "nodejs_22".into(),
+                sha256: String::new(),
+                unfree: false,
+                attribution: "Node.js is MIT licensed.".into(),
+            }],
+            commands: std::collections::BTreeMap::from([(
+                "test".into(),
+                CommandRequirement {
+                    argv: vec!["npm".into(), "test".into()],
+                    cwd: ".".into(),
+                    timeout_secs: 300,
+                    expect_exit: 0,
+                },
+            )]),
+            ..EnvironmentProposal::default()
+        }
+    }
+
+    #[test]
+    fn lead_proposal_round_trips_a_bounded_environment_proposal() {
+        let mut value = proposal(vec![unit("api")]);
+        value.environment_proposal = Some(environment_proposal());
+        let raw = serde_json::to_vec(&value).unwrap();
+        let decoded: LeadPlanProposal = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(decoded.environment_proposal, value.environment_proposal);
+        decoded
+            .environment_proposal
+            .as_ref()
+            .expect("decoded environment proposal")
+            .validate()
+            .unwrap();
+        let schema = serde_json::to_value(schemars::schema_for!(LeadPlanProposal)).unwrap();
+        assert!(schema["properties"]["environmentProposal"].is_object());
+        assert!(
+            crate::model_output::validate_provider_schema(&schema).is_ok(),
+            "the environment proposal schema must remain provider-compatible"
+        );
+    }
+
+    #[test]
+    fn lead_proposal_rejects_an_unfree_environment_proposal() {
+        let mut value = proposal(vec![unit("api")]);
+        let mut environment = environment_proposal();
+        environment.allow_unfree = true;
+        value.environment_proposal = Some(environment);
+        assert!(
+            value
+                .validate(&grant(), &project(), &action(), now())
+                .is_err(),
+            "model output cannot enable allowUnfree"
+        );
     }
 
     #[test]

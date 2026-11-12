@@ -19,7 +19,10 @@ use crate::intake::{
     IntakeAuthorizationReason, IntakeAuthorizationState, IntakeExecutionScope, IntakeMode,
     execution_policy_terms, validate_execution_scope,
 };
-use crate::lead::{ActionStatus, LeadPlanProposal, RiskClass, StandingDelegationV2, plan_hash_v2};
+use crate::lead::{
+    ActionStatus, LeadPlanProposal, RiskClass, StandingDelegationV2, plan_hash_v2,
+    project_lead_request_state_with_reason,
+};
 
 use super::delegations::{
     DelegationUsage, create_standing_delegation_v2_in_tx, load_delegation_v2,
@@ -50,6 +53,12 @@ pub struct IntakeRequestRecord {
     pub delegation_id: String,
     pub lead_request_id: String,
     pub campaign_id: Option<String>,
+    /// Set only on a follow-up request: the terminal request that started it.
+    pub parent_request_id: Option<String>,
+    /// Set only on a follow-up request: the exact operator message that started
+    /// it. Together with `parent_request_id` this makes message replay resolve
+    /// to the same child instead of creating another request.
+    pub source_message_id: Option<String>,
     pub submission_json: String,
     pub submission_hash: String,
     pub idempotency_key: String,
@@ -66,6 +75,17 @@ pub struct IntakeMessageRecord {
     pub body_sha256: String,
     pub idempotency_key: String,
     pub created_at: String,
+    /// Present when this message started a follow-up request.
+    pub follow_up_request_id: Option<String>,
+}
+
+/// Result of recording an operator message. `follow_up` is present only when
+/// the message started a new request from a terminal parent.
+#[derive(Debug, Clone)]
+pub struct IntakeMessageOutcome {
+    pub message: IntakeMessageRecord,
+    pub follow_up: Option<IntakeRequestRecord>,
+    pub created: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,6 +184,7 @@ impl Database {
     /// Create one intake request, its draft Action, Lead request, execution
     /// context and idempotency record in a single transaction. No Campaign is
     /// created and no autonomy is enabled.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_intake_request(
         &self,
         project_id: &str,
@@ -172,6 +193,37 @@ impl Database {
         mode: IntakeMode,
         idempotency_key: &str,
         principal_id: &str,
+        selected_issues: &[crate::issues::NewIssueSelection],
+    ) -> Result<(IntakeRequestRecord, bool), Error> {
+        self.create_intake_request_with_environment(
+            project_id,
+            objective,
+            execution_profile_id,
+            mode,
+            idempotency_key,
+            principal_id,
+            selected_issues,
+            None,
+        )
+        .await
+    }
+
+    /// Create an intake request with explicit production environment
+    /// constraints. The constraints are part of the immutable submission
+    /// snapshot and are the supported input path for a generated environment.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_intake_request_with_environment(
+        &self,
+        project_id: &str,
+        objective: &str,
+        execution_profile_id: Option<&str>,
+        mode: IntakeMode,
+        idempotency_key: &str,
+        principal_id: &str,
+        selected_issues: &[crate::issues::NewIssueSelection],
+        environment_constraints: Option<
+            &crate::planning::environment::RequestEnvironmentConstraints,
+        >,
     ) -> Result<(IntakeRequestRecord, bool), Error> {
         validate_intake_submission(
             project_id,
@@ -180,12 +232,13 @@ impl Database {
             idempotency_key,
             principal_id,
         )?;
-        let prepared = prepare_intake_request(
+        let prepared = prepare_intake_request_with_environment(
             project_id,
             objective,
             execution_profile_id,
             mode,
             principal_id,
+            environment_constraints,
         )?;
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -197,6 +250,20 @@ impl Database {
         )
         .await?
         {
+            if !Database::intake_request_issue_links_match_in_tx(
+                &mut transaction,
+                &id,
+                selected_issues,
+            )
+            .await?
+            {
+                return Err(Error::IntakeConflict {
+                    code: "ISSUE_SELECTION_CHANGED",
+                    message:
+                        "the idempotency key was already used with a different issue selection"
+                            .into(),
+                });
+            }
             let existing = load_intake_request(&mut transaction, &id).await?;
             transaction.commit().await?;
             return Ok((existing, false));
@@ -238,6 +305,12 @@ impl Database {
                 });
             }
         }
+        let issue_links = Database::resolve_selected_issue_links_in_tx(
+            &mut transaction,
+            project_id,
+            selected_issues,
+        )
+        .await?;
         let record = create_intake_request_in_tx(
             &mut transaction,
             project_id,
@@ -248,6 +321,8 @@ impl Database {
             &config,
             &grant,
             prepared,
+            &issue_links,
+            None,
         )
         .await?;
         transaction.commit().await?;
@@ -286,6 +361,16 @@ impl Database {
             model: profile.roles.implementer.model.clone(),
             allowed_paths: config.allowed_paths,
             checks: Vec::new(),
+            dependency_plan: None,
+            dependencies_required: false,
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
+
+            environment_spec_id: None,
         })
     }
 
@@ -346,6 +431,28 @@ impl Database {
         self.intake_request(&id).await
     }
 
+    pub async fn intake_request_for_lead(
+        &self,
+        lead_request_id: &str,
+    ) -> Result<IntakeRequestRecord, Error> {
+        let row: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT id FROM intake_requests WHERE lead_request_id=?1")
+                .bind(lead_request_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        let (id,) = row.ok_or(Error::NotFound)?;
+        self.intake_request(&id).await
+    }
+
+    /// The single follow-up request started by a terminal parent, when present.
+    pub async fn intake_follow_up_for_parent(
+        &self,
+        parent_request_id: &str,
+    ) -> Result<Option<IntakeRequestRecord>, Error> {
+        let mut connection = self.pool.acquire().await?;
+        load_follow_up_for_parent(&mut connection, parent_request_id).await
+    }
+
     pub async fn intake_messages(
         &self,
         request_id: &str,
@@ -366,12 +473,58 @@ impl Database {
     /// A frozen plan, withdrawal or started Campaign refuses new messages:
     /// Core cannot distinguish an informational note from a material amendment,
     /// so a frozen request requires a new request instead of mutating evidence.
+    ///
+    /// This compatibility entry point never starts a follow-up. The authenticated
+    /// HTTP message path uses [`Self::append_intake_message_or_start_follow_up`].
     pub async fn append_intake_message(
         &self,
         request_id: &str,
         body: &str,
         idempotency_key: &str,
     ) -> Result<(IntakeMessageRecord, bool), Error> {
+        let outcome = self
+            .append_intake_message_internal(request_id, body, idempotency_key, None, false)
+            .await?;
+        Ok((outcome.message, outcome.created))
+    }
+
+    /// Record one authenticated operator message. A non-terminal request keeps
+    /// the pre-freeze message behaviour. A terminal request (`COMPLETED` or
+    /// `CANCELLED`) records the message and creates exactly one follow-up
+    /// request in the same Project and Lead thread.
+    ///
+    /// The follow-up is not an amendment: it has a new Action, Lead request,
+    /// execution context and policy binding, and must go through assessment,
+    /// plan/environment freeze and a new Campaign. It never reuses the parent
+    /// frozen plan, ActionSpec, candidate or Campaign.
+    pub async fn append_intake_message_or_start_follow_up(
+        &self,
+        request_id: &str,
+        body: &str,
+        idempotency_key: &str,
+        principal_id: &str,
+    ) -> Result<IntakeMessageOutcome, Error> {
+        if principal_id.trim().is_empty() || principal_id.len() > 200 {
+            return Err(Error::Invalid("intake follow-up principal"));
+        }
+        self.append_intake_message_internal(
+            request_id,
+            body,
+            idempotency_key,
+            Some(principal_id),
+            true,
+        )
+        .await
+    }
+
+    async fn append_intake_message_internal(
+        &self,
+        request_id: &str,
+        body: &str,
+        idempotency_key: &str,
+        principal_id: Option<&str>,
+        allow_follow_up: bool,
+    ) -> Result<IntakeMessageOutcome, Error> {
         if body.trim().is_empty()
             || body.chars().count() > 8_000
             || body.trim() != body
@@ -391,14 +544,20 @@ impl Database {
         )
         .await?
         {
-            let existing = load_intake_message(&mut transaction, &id).await?;
+            let mut existing = load_intake_message(&mut transaction, &id).await?;
             if existing.request_id != request_id || existing.body != body {
                 return Err(Error::Conflict(
                     "message idempotency key identifies another message",
                 ));
             }
+            let follow_up = load_follow_up_for_message(&mut transaction, &existing.id).await?;
+            existing.follow_up_request_id = follow_up.as_ref().map(|record| record.id.clone());
             transaction.commit().await?;
-            return Ok((existing, false));
+            return Ok(IntakeMessageOutcome {
+                message: existing,
+                follow_up,
+                created: false,
+            });
         }
         let record = load_intake_request(&mut transaction, request_id).await?;
         let lead = load_lead_request(&mut transaction, &record.lead_request_id).await?;
@@ -406,6 +565,66 @@ impl Database {
             return Err(Error::IntakeConflict {
                 code: IntakeAuthorizationReason::Withdrawn.as_str(),
                 message: "the request was withdrawn; it cannot accept new messages".into(),
+            });
+        }
+        let state = load_intake_state_in_tx(&mut transaction, &lead).await?;
+        if allow_follow_up && state.is_terminal() {
+            if let Some(existing) = load_follow_up_for_parent(&mut transaction, &record.id).await? {
+                return Err(Error::IntakeConflict {
+                    code: "INTAKE_FOLLOW_UP_EXISTS",
+                    message: format!(
+                        "follow-up request {} already exists for this thread; continue there",
+                        existing.id
+                    ),
+                });
+            }
+            let message = IntakeMessageRecord {
+                id: Uuid::new_v4().to_string(),
+                request_id: record.id.clone(),
+                role: "operator".into(),
+                body: body.into(),
+                body_sha256: body_sha256.clone(),
+                idempotency_key: idempotency_key.into(),
+                created_at: Utc::now().to_rfc3339(),
+                follow_up_request_id: None,
+            };
+            insert_intake_message(&mut transaction, &message).await?;
+            let follow_up = create_intake_follow_up_in_tx(
+                &mut transaction,
+                &self.provider_model_cache(),
+                &record,
+                &message,
+                principal_id.ok_or(Error::Invalid("intake follow-up principal"))?,
+            )
+            .await?;
+            sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+                .bind(idempotency_key)
+                .bind("append_intake_message")
+                .bind(&body_sha256)
+                .bind(&message.id)
+                .execute(&mut *transaction)
+                .await?;
+            record_event(
+                &mut transaction,
+                &record.id,
+                "intake.message_recorded",
+                &message.id,
+            )
+            .await?;
+            record_event(
+                &mut transaction,
+                &record.id,
+                "intake.follow_up_created",
+                &format!("follow_up={} message={}", follow_up.id, message.id),
+            )
+            .await?;
+            transaction.commit().await?;
+            let mut message = message;
+            message.follow_up_request_id = Some(follow_up.id.clone());
+            return Ok(IntakeMessageOutcome {
+                message,
+                follow_up: Some(follow_up),
+                created: true,
             });
         }
         if lead.campaign_id.is_some() {
@@ -426,7 +645,6 @@ impl Database {
                 message: "the plan is frozen; create a new request to amend it".into(),
             });
         }
-        let now = Utc::now().to_rfc3339();
         let message = IntakeMessageRecord {
             id: Uuid::new_v4().to_string(),
             request_id: record.id.clone(),
@@ -434,21 +652,10 @@ impl Database {
             body: body.into(),
             body_sha256: body_sha256.clone(),
             idempotency_key: idempotency_key.into(),
-            created_at: now.clone(),
+            created_at: Utc::now().to_rfc3339(),
+            follow_up_request_id: None,
         };
-        sqlx::query::query(
-            "INSERT INTO intake_messages
-             (id,request_id,role,body,body_sha256,idempotency_key,created_at)
-             VALUES (?1,?2,'operator',?3,?4,?5,?6)",
-        )
-        .bind(&message.id)
-        .bind(&message.request_id)
-        .bind(&message.body)
-        .bind(&message.body_sha256)
-        .bind(&message.idempotency_key)
-        .bind(&message.created_at)
-        .execute(&mut *transaction)
-        .await?;
+        insert_intake_message(&mut transaction, &message).await?;
         sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
             .bind(idempotency_key)
             .bind("append_intake_message")
@@ -464,7 +671,11 @@ impl Database {
         )
         .await?;
         transaction.commit().await?;
-        Ok((message, true))
+        Ok(IntakeMessageOutcome {
+            message,
+            follow_up: None,
+            created: true,
+        })
     }
 
     /// Create one explicit operator-authorized, non-autonomous standing
@@ -748,7 +959,7 @@ impl Database {
                 .await?
                 .ok_or(Error::NotFound)?;
         let gate: Option<(String,)> = sqlx::query_as::query_as(
-            "SELECT gd.outcome FROM gate_decisions gd
+            "SELECT gd.outcome FROM gate_decisions_current gd
              JOIN candidates c ON c.id=gd.candidate_id
              JOIN attempts a ON a.id=c.attempt_id
              JOIN runs r ON r.id=a.run_id
@@ -840,6 +1051,324 @@ impl Database {
     }
 }
 
+async fn insert_intake_message(
+    connection: &mut SqliteConnection,
+    message: &IntakeMessageRecord,
+) -> Result<(), Error> {
+    sqlx::query::query(
+        "INSERT INTO intake_messages
+         (id,request_id,role,body,body_sha256,idempotency_key,created_at)
+         VALUES (?1,?2,'operator',?3,?4,?5,?6)",
+    )
+    .bind(&message.id)
+    .bind(&message.request_id)
+    .bind(&message.body)
+    .bind(&message.body_sha256)
+    .bind(&message.idempotency_key)
+    .bind(&message.created_at)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
+async fn load_follow_up_for_message(
+    connection: &mut SqliteConnection,
+    message_id: &str,
+) -> Result<Option<IntakeRequestRecord>, Error> {
+    let row: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT id FROM intake_requests WHERE source_message_id=?1")
+            .bind(message_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    match row {
+        Some((id,)) => Ok(Some(load_intake_request(connection, &id).await?)),
+        None => Ok(None),
+    }
+}
+
+async fn load_follow_up_for_parent(
+    connection: &mut SqliteConnection,
+    parent_request_id: &str,
+) -> Result<Option<IntakeRequestRecord>, Error> {
+    let row: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT id FROM intake_requests WHERE parent_request_id=?1")
+            .bind(parent_request_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    match row {
+        Some((id,)) => Ok(Some(load_intake_request(connection, &id).await?)),
+        None => Ok(None),
+    }
+}
+
+/// Derive the authoritative intake state inside the message transaction. The
+/// same precedence as the Office projection is used: Campaign/Gate outcome,
+/// then withdrawal, then the Lead request's own progress.
+async fn load_intake_state_in_tx(
+    connection: &mut SqliteConnection,
+    lead: &super::lead::LeadRequestRecord,
+) -> Result<crate::intake::IntakeState, Error> {
+    let campaign_status = match &lead.campaign_id {
+        Some(campaign_id) => {
+            let row: Option<(String,)> =
+                sqlx::query_as::query_as("SELECT status FROM campaigns WHERE id=?1")
+                    .bind(campaign_id)
+                    .fetch_optional(&mut *connection)
+                    .await?;
+            row.map(|(status,)| status)
+        }
+        None => None,
+    };
+    let gate_outcome = match &lead.campaign_id {
+        Some(campaign_id) => {
+            let row: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT gd.outcome FROM gate_decisions_current gd
+                 JOIN candidates c ON c.id=gd.candidate_id
+                 JOIN attempts a ON a.id=c.attempt_id
+                 JOIN runs r ON r.id=a.run_id
+                 WHERE r.campaign_id=?1
+                 ORDER BY gd.decided_at DESC LIMIT 1",
+            )
+            .bind(campaign_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+            row.map(|(outcome,)| outcome)
+        }
+        None => None,
+    };
+    let withdrawn = withdrawal_in_tx(connection, &lead.id).await?;
+    let projection = project_lead_request_state_with_reason(
+        lead.state,
+        campaign_status.as_deref(),
+        gate_outcome.as_deref(),
+        withdrawn,
+        lead.failure_reason.as_deref(),
+    );
+    Ok(crate::intake::IntakeState::from_lead_projection(projection))
+}
+
+/// Create the follow-up record inside the already-open message transaction. It
+/// resolves the same exact profile revision and the same owner-confirmed
+/// execution-policy path. A Core-owned base advance between parent and
+/// follow-up may invalidate the stored project-config hash; in that narrow case
+/// the exact parent grant is re-bound to the current config only when every
+/// material scope value is unchanged, the grant is still valid, and the
+/// authenticated principal is the original granting principal.
+async fn create_intake_follow_up_in_tx(
+    connection: &mut SqliteConnection,
+    cache: &crate::provider_catalog::ProviderModelCache,
+    parent: &IntakeRequestRecord,
+    message: &IntakeMessageRecord,
+    principal_id: &str,
+) -> Result<IntakeRequestRecord, Error> {
+    let config = load_project_config(connection, &parent.project_id).await?;
+    if !config.active {
+        return Err(Error::IntakeConflict {
+            code: "PROJECT_INACTIVE",
+            message: "the Project configuration is inactive".into(),
+        });
+    }
+    let profile = load_exact_intake_profile_in_tx(
+        connection,
+        cache,
+        &parent.profile_id,
+        &parent.profile_revision_id,
+        parent.profile_revision,
+        &parent.profile_hash,
+    )
+    .await?;
+    let grant = resolve_follow_up_policy_grant_in_tx(
+        connection,
+        parent,
+        message,
+        principal_id,
+        &profile,
+        &config,
+    )
+    .await?;
+    let prepared = prepare_follow_up_intake_request(
+        &parent.project_id,
+        &message.body,
+        &parent.profile_id,
+        parent.mode,
+        principal_id,
+        &parent.id,
+        &message.id,
+    )?;
+    let idempotency_key = format!("intake-follow-up:{}", message.id);
+    create_intake_request_in_tx(
+        connection,
+        &parent.project_id,
+        &message.body,
+        parent.mode,
+        &idempotency_key,
+        profile,
+        &config,
+        &grant,
+        prepared,
+        &[],
+        Some((&parent.id, &message.id)),
+    )
+    .await
+}
+
+fn follow_up_policy_required() -> Error {
+    Error::IntakeConflict {
+        code: "FOLLOW_UP_EXECUTION_POLICY_REQUIRED",
+        message:
+            "the parent owner-confirmed execution policy is no longer valid for this Project, profile and scope"
+                .into(),
+    }
+}
+
+async fn resolve_follow_up_policy_grant_in_tx(
+    connection: &mut SqliteConnection,
+    parent: &IntakeRequestRecord,
+    message: &IntakeMessageRecord,
+    principal_id: &str,
+    profile: &ResolvedIntakeProfile,
+    config: &crate::lead::ProjectConfig,
+) -> Result<StandingDelegationV2, Error> {
+    // The parent's exact owner-confirmed policy path is authoritative. A caller
+    // with their own matching grant may not continue another principal's thread.
+    let parent_grant = load_delegation_v2(connection, &parent.delegation_id).await?;
+    let parent_policy = load_execution_policy_grant(connection, &parent_grant.id).await?;
+    if parent_policy.principal_id != principal_id {
+        return Err(Error::IntakeConflict {
+            code: "FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH",
+            message:
+                "only the principal that confirmed the parent execution policy may continue it"
+                    .into(),
+        });
+    }
+    if let Some(grant) = matching_execution_policy_grant_in_tx(
+        connection,
+        &parent.project_id,
+        principal_id,
+        profile,
+        config,
+        parent.mode,
+    )
+    .await?
+    {
+        return Ok(grant);
+    }
+    let now = Utc::now();
+    if parent_grant.revoked_at.is_some()
+        || parent_grant.expires_at <= now
+        || parent_policy.project_id != parent.project_id
+        || parent_policy.profile_id != profile.profile_id
+        || parent_policy.profile_revision_id != profile.revision_id
+        || parent_policy.profile_hash != profile.content_hash
+        || !parent_policy.acknowledged
+        || !delegation_matches_policy_scope(&parent_grant, profile, config, parent.mode)
+    {
+        return Err(follow_up_policy_required());
+    }
+    if parent.mode == IntakeMode::Autonomous
+        && !(parent_policy.autonomous && parent_policy.subscription_confirmed)
+    {
+        return Err(follow_up_policy_required());
+    }
+    // Re-bind the exact parent grant terms to the current Core-owned config. This
+    // is not a widening: the material scope, route, risk and operation limits are
+    // copied unchanged and are validated above against the current config.
+    let scope_key = format!(
+        "follow-up-policy:{}:{}:{}",
+        parent.id, config.revision, config.config_hash
+    );
+    let scope_hash = sha256_hex(scope_key.as_bytes());
+    let mut delegation = parent_grant.clone();
+    delegation.id = format!("follow-up-policy-{scope_hash}");
+    delegation.audit_id = format!("follow-up-policy:{}", message.id);
+    delegation.revision = 1;
+    delegation.content_hash = String::new();
+    delegation.content_hash = delegation.compute_content_hash();
+    let delegation_key = format!("follow-up-delegation:{scope_hash}");
+    let (delegation, _) =
+        create_standing_delegation_v2_in_tx(connection, &delegation, &delegation_key).await?;
+    let now = Utc::now().to_rfc3339();
+    let grant = ExecutionPolicyGrantRecord {
+        delegation_id: delegation.id.clone(),
+        project_id: parent.project_id.clone(),
+        principal_id: principal_id.into(),
+        profile_id: profile.profile_id.clone(),
+        profile_revision_id: profile.revision_id.clone(),
+        profile_revision: profile.revision,
+        profile_hash: profile.content_hash.clone(),
+        project_config_hash: config.config_hash.clone(),
+        acknowledged: true,
+        autonomous: parent_policy.autonomous,
+        subscription_confirmed: parent_policy.subscription_confirmed,
+        idempotency_key: format!("follow-up-grant:{scope_hash}"),
+        created_at: now.clone(),
+    };
+    sqlx::query::query(
+        "INSERT INTO execution_policy_grants
+         (delegation_id,project_id,principal_id,profile_id,profile_revision_id,
+          profile_revision,profile_hash,project_config_hash,acknowledged,idempotency_key,created_at,
+          schema_version,autonomous,subscription_confirmed)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10,2,?11,?12)",
+    )
+    .bind(&grant.delegation_id)
+    .bind(&grant.project_id)
+    .bind(&grant.principal_id)
+    .bind(&grant.profile_id)
+    .bind(&grant.profile_revision_id)
+    .bind(i64::from(grant.profile_revision))
+    .bind(&grant.profile_hash)
+    .bind(&grant.project_config_hash)
+    .bind(&grant.idempotency_key)
+    .bind(&grant.created_at)
+    .bind(i64::from(grant.autonomous))
+    .bind(i64::from(grant.subscription_confirmed))
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+        .bind(&grant.idempotency_key)
+        .bind("create_execution_policy_grant")
+        .bind(&scope_hash)
+        .bind(&delegation.id)
+        .execute(&mut *connection)
+        .await?;
+    insert_audit(
+        connection,
+        &grant.profile_id,
+        Some(grant.profile_revision),
+        "execution_policy_granted",
+        principal_id,
+        &format!(
+            "project={} delegation={} config={} source=follow_up parent={} message={} acknowledged=true autonomous={} subscription_confirmed={}",
+            grant.project_id,
+            grant.delegation_id,
+            grant.project_config_hash,
+            parent.id,
+            message.id,
+            grant.autonomous,
+            grant.subscription_confirmed
+        ),
+        &now,
+    )
+    .await?;
+    record_event(
+        connection,
+        &delegation.id,
+        "execution_policy.granted",
+        &format!(
+            "project={} profile={} revision={} actor={} source=follow_up parent={} autonomous={} subscription_confirmed={}",
+            grant.project_id,
+            grant.profile_id,
+            grant.profile_revision,
+            principal_id,
+            parent.id,
+            grant.autonomous,
+            grant.subscription_confirmed
+        ),
+    )
+    .await?;
+    Ok(delegation)
+}
+
 /// Insert the ordinary intake request, draft Lead request, execution context
 /// and idempotency record inside an existing transaction. Callers own replay
 /// lookup and all authority resolution; this helper only persists a validated
@@ -855,6 +1384,8 @@ pub(super) async fn create_intake_request_in_tx(
     config: &crate::lead::ProjectConfig,
     grant: &StandingDelegationV2,
     prepared: PreparedIntakeRequest,
+    issue_links: &[crate::issues::NewIssueLinkSpec],
+    lineage: Option<(&str, &str)>,
 ) -> Result<IntakeRequestRecord, Error> {
     let draft = NewDraftLeadRequest {
         project_id,
@@ -881,6 +1412,8 @@ pub(super) async fn create_intake_request_in_tx(
         delegation_id: grant.id.clone(),
         lead_request_id: lead.id.clone(),
         campaign_id: None,
+        parent_request_id: lineage.map(|(parent, _)| parent.to_owned()),
+        source_message_id: lineage.map(|(_, message)| message.to_owned()),
         submission_json: prepared.submission_json.clone(),
         submission_hash: prepared.submission_hash.clone(),
         idempotency_key: idempotency_key.into(),
@@ -891,8 +1424,9 @@ pub(super) async fn create_intake_request_in_tx(
         "INSERT INTO intake_requests
          (id,project_id,objective,mode,profile_id,profile_revision_id,profile_revision,
           profile_hash,profile_name,action_id,delegation_id,lead_request_id,campaign_id,
-          submission_json,submission_hash,idempotency_key,created_at,updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL,?13,?14,?15,?16,?16)",
+          parent_request_id,source_message_id,submission_json,submission_hash,idempotency_key,
+          created_at,updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL,?13,?14,?15,?16,?17,?18,?18)",
     )
     .bind(&record.id)
     .bind(&record.project_id)
@@ -906,12 +1440,15 @@ pub(super) async fn create_intake_request_in_tx(
     .bind(&record.action_id)
     .bind(&record.delegation_id)
     .bind(&record.lead_request_id)
+    .bind(record.parent_request_id.as_deref())
+    .bind(record.source_message_id.as_deref())
     .bind(&record.submission_json)
     .bind(&record.submission_hash)
     .bind(&record.idempotency_key)
     .bind(&record.created_at)
     .execute(&mut *transaction)
     .await?;
+    Database::insert_issue_links_in_tx(transaction, project_id, &record.id, issue_links).await?;
     sqlx::query::query(
         "INSERT INTO agentic_operations
          (id,request_id,project_id,director_id,operation_manager_id,priority,status,
@@ -1017,6 +1554,70 @@ pub(super) fn prepare_intake_request(
     mode: IntakeMode,
     principal_id: &str,
 ) -> Result<PreparedIntakeRequest, Error> {
+    prepare_intake_request_with_environment(
+        project_id,
+        objective,
+        execution_profile_id,
+        mode,
+        principal_id,
+        None,
+    )
+}
+
+pub(super) fn prepare_intake_request_with_environment(
+    project_id: &str,
+    objective: &str,
+    execution_profile_id: Option<&str>,
+    mode: IntakeMode,
+    principal_id: &str,
+    environment_constraints: Option<&crate::planning::environment::RequestEnvironmentConstraints>,
+) -> Result<PreparedIntakeRequest, Error> {
+    prepare_intake_request_inner(
+        project_id,
+        objective,
+        execution_profile_id,
+        mode,
+        principal_id,
+        environment_constraints,
+        None,
+    )
+}
+
+/// Prepare the immutable submission snapshot for a follow-up request. The
+/// parent request and exact source message are part of the snapshot, so a
+/// follow-up cannot be confused with an independent request for the same body.
+fn prepare_follow_up_intake_request(
+    project_id: &str,
+    objective: &str,
+    execution_profile_id: &str,
+    mode: IntakeMode,
+    principal_id: &str,
+    parent_request_id: &str,
+    source_message_id: &str,
+) -> Result<PreparedIntakeRequest, Error> {
+    prepare_intake_request_inner(
+        project_id,
+        objective,
+        Some(execution_profile_id),
+        mode,
+        principal_id,
+        None,
+        Some((parent_request_id, source_message_id)),
+    )
+}
+
+fn prepare_intake_request_inner(
+    project_id: &str,
+    objective: &str,
+    execution_profile_id: Option<&str>,
+    mode: IntakeMode,
+    principal_id: &str,
+    environment_constraints: Option<&crate::planning::environment::RequestEnvironmentConstraints>,
+    lineage: Option<(&str, &str)>,
+) -> Result<PreparedIntakeRequest, Error> {
+    let (parent_request_id, source_message_id) = lineage
+        .map(|(parent, message)| (Some(parent), Some(message)))
+        .unwrap_or((None, None));
     let submission_json = serde_json::to_string(&serde_json::json!({
         "schema":"factory-intake-submission-v1",
         "projectId":project_id,
@@ -1024,6 +1625,9 @@ pub(super) fn prepare_intake_request(
         "mode":mode,
         "executionProfileId":execution_profile_id,
         "principalId":principal_id,
+        "environmentConstraints":environment_constraints,
+        "parentRequestId":parent_request_id,
+        "sourceMessageId":source_message_id,
     }))
     .map_err(|_| Error::Invalid("intake submission encoding"))?;
     let submission_hash = sha256_hex(submission_json.as_bytes());
@@ -1032,6 +1636,8 @@ pub(super) fn prepare_intake_request(
         "projectId":project_id,
         "objective":objective,
         "requestedProfileId":execution_profile_id,
+        "parentRequestId":parent_request_id,
+        "sourceMessageId":source_message_id,
     }))
     .map_err(|_| Error::Invalid("intake assessment encoding"))?;
     Ok(PreparedIntakeRequest {
@@ -1185,14 +1791,14 @@ pub(super) async fn load_exact_intake_profile_in_tx(
     })
 }
 
-async fn find_matching_execution_policy_grant_in_tx(
+async fn matching_execution_policy_grant_in_tx(
     connection: &mut SqliteConnection,
     project_id: &str,
     principal_id: &str,
     profile: &ResolvedIntakeProfile,
     config: &crate::lead::ProjectConfig,
     mode: IntakeMode,
-) -> Result<StandingDelegationV2, Error> {
+) -> Result<Option<StandingDelegationV2>, Error> {
     let rows = sqlx::query::query(
         "SELECT delegation_id FROM execution_policy_grants
          WHERE project_id=?1 AND principal_id=?2 AND profile_revision_id=?3
@@ -1217,6 +1823,29 @@ async fn find_matching_execution_policy_grant_in_tx(
         }
         // Cumulative usage is diagnosis telemetry, never an admission ceiling.
         let _usage = load_delegation_usage(connection, &grant.id).await?;
+        return Ok(Some(grant));
+    }
+    Ok(None)
+}
+
+async fn find_matching_execution_policy_grant_in_tx(
+    connection: &mut SqliteConnection,
+    project_id: &str,
+    principal_id: &str,
+    profile: &ResolvedIntakeProfile,
+    config: &crate::lead::ProjectConfig,
+    mode: IntakeMode,
+) -> Result<StandingDelegationV2, Error> {
+    if let Some(grant) = matching_execution_policy_grant_in_tx(
+        connection,
+        project_id,
+        principal_id,
+        profile,
+        config,
+        mode,
+    )
+    .await?
+    {
         return Ok(grant);
     }
     match mode {
@@ -1491,6 +2120,14 @@ async fn load_intake_approval_context(
         proposal.validate_v2(&grant, &config.binding(), &action, now)?;
     }
     let (action_spec, spec_sha256) = load_action_spec(connection, &lead.action_id).await?;
+    if action_spec.dependencies_required && action_spec.dependency_plan.is_none() {
+        return Err(Error::IntakeConflict {
+            code: "DEPENDENCY_PLAN_REQUIRED",
+            message:
+                "the frozen plan requires dependency acquisition but no execution dependency plan was attached"
+                    .into(),
+        });
+    }
     if action_spec.allowed_paths.is_empty()
         || action_spec
             .allowed_paths
@@ -1721,7 +2358,8 @@ pub(super) async fn load_intake_request(
     let row = sqlx::query::query(
         "SELECT id,project_id,objective,mode,profile_id,profile_revision_id,profile_revision,
                 profile_hash,profile_name,action_id,delegation_id,lead_request_id,campaign_id,
-                submission_json,submission_hash,idempotency_key,created_at,updated_at
+                parent_request_id,source_message_id,submission_json,submission_hash,
+                idempotency_key,created_at,updated_at
          FROM intake_requests WHERE id=?1",
     )
     .bind(id)
@@ -1750,6 +2388,8 @@ pub(super) async fn load_intake_request(
         delegation_id: row.try_get("delegation_id")?,
         lead_request_id: row.try_get("lead_request_id")?,
         campaign_id: row.try_get("campaign_id")?,
+        parent_request_id: row.try_get("parent_request_id")?,
+        source_message_id: row.try_get("source_message_id")?,
         submission_json: row.try_get("submission_json")?,
         submission_hash: row.try_get("submission_hash")?,
         idempotency_key: row.try_get("idempotency_key")?,
@@ -1763,8 +2403,9 @@ async fn load_intake_messages(
     request_id: &str,
 ) -> Result<Vec<IntakeMessageRecord>, Error> {
     let rows = sqlx::query::query(
-        "SELECT id,request_id,role,body,body_sha256,idempotency_key,created_at
-         FROM intake_messages WHERE request_id=?1 ORDER BY created_at,id",
+        "SELECT m.id,m.request_id,m.role,m.body,m.body_sha256,m.idempotency_key,m.created_at,
+                (SELECT r.id FROM intake_requests r WHERE r.source_message_id=m.id) AS follow_up_request_id
+         FROM intake_messages m WHERE m.request_id=?1 ORDER BY m.created_at,m.id",
     )
     .bind(request_id)
     .fetch_all(&mut *connection)
@@ -1779,6 +2420,7 @@ async fn load_intake_messages(
                 body_sha256: row.try_get("body_sha256")?,
                 idempotency_key: row.try_get("idempotency_key")?,
                 created_at: row.try_get("created_at")?,
+                follow_up_request_id: row.try_get("follow_up_request_id")?,
             })
         })
         .collect()
@@ -1789,8 +2431,9 @@ async fn load_intake_message(
     id: &str,
 ) -> Result<IntakeMessageRecord, Error> {
     let row = sqlx::query::query(
-        "SELECT id,request_id,role,body,body_sha256,idempotency_key,created_at
-         FROM intake_messages WHERE id=?1",
+        "SELECT m.id,m.request_id,m.role,m.body,m.body_sha256,m.idempotency_key,m.created_at,
+                (SELECT r.id FROM intake_requests r WHERE r.source_message_id=m.id) AS follow_up_request_id
+         FROM intake_messages m WHERE m.id=?1",
     )
     .bind(id)
     .fetch_optional(&mut *connection)
@@ -1804,6 +2447,7 @@ async fn load_intake_message(
         body_sha256: row.try_get("body_sha256")?,
         idempotency_key: row.try_get("idempotency_key")?,
         created_at: row.try_get("created_at")?,
+        follow_up_request_id: row.try_get("follow_up_request_id")?,
     })
 }
 
@@ -1983,8 +2627,8 @@ mod tests {
         let db = Database::open(&path).await.unwrap();
         let base = "b".repeat(40);
         sqlx::query::query(
-            "INSERT INTO projects(id,repository,base_commit,created_at,identity)
-             VALUES ('project','/fixture',?1,?2,'fixture')",
+            "INSERT INTO projects(id,repository,base_commit,created_at,identity,default_branch)
+             VALUES ('project','/fixture',?1,?2,'fixture','main')",
         )
         .bind(&base)
         .bind(Utc::now().to_rfc3339())
@@ -2052,6 +2696,7 @@ mod tests {
             IntakeMode::ReviewPlan,
             key,
             "operator-token",
+            &[],
         )
         .await
         .unwrap()
@@ -2067,6 +2712,8 @@ mod tests {
                 command: vec!["cargo".into(), "build".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "test".into(),
@@ -2075,6 +2722,8 @@ mod tests {
                 command: vec!["cargo".into(), "test".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "functional".into(),
@@ -2083,6 +2732,8 @@ mod tests {
                 command: vec!["cargo".into(), "test".into(), "intake".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "negative".into(),
@@ -2091,6 +2742,8 @@ mod tests {
                 command: vec!["cargo".into(), "test".into(), "--bad".into()],
                 expect_exit: 1,
                 timeout_secs: 60,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
         ]
     }
@@ -2122,6 +2775,16 @@ mod tests {
             model: grant.route.model.clone(),
             allowed_paths: config.allowed_paths.clone(),
             checks: checks(),
+            dependency_plan: None,
+            dependencies_required: false,
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
+
+            environment_spec_id: None,
         };
         let (assessment, proposal) = crate::lead::fixture_lead_assessment(
             &lead.id,
@@ -2201,6 +2864,7 @@ mod tests {
                 IntakeMode::ReviewPlan,
                 "request-no-policy",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap_err();
@@ -2229,6 +2893,7 @@ mod tests {
                 IntakeMode::ReviewPlan,
                 "request-key",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap();
@@ -2267,6 +2932,7 @@ mod tests {
                 IntakeMode::ReviewPlan,
                 "request-key",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap();
@@ -2319,6 +2985,7 @@ mod tests {
                 IntakeMode::Autonomous,
                 "autopilot-request",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap();
@@ -2432,7 +3099,7 @@ mod tests {
             .save_agentic_participant_plan(&request.id, Some(&graph.graph_sha256), &plan)
             .await
             .unwrap();
-        assert_eq!(plan_record.reviewer_count, 2);
+        assert_eq!(plan_record.reviewer_count, 6);
         assert_eq!(plan_record.work_units, 2);
         assert_eq!(
             plan_record.graph_sha256.as_deref(),
@@ -2442,6 +3109,11 @@ mod tests {
             summary: "Bounded validator".into(),
             requirements: vec![crate::agentic::SpecRequirementDraft {
                 statement: "Invalid input is rejected.".into(),
+                work_unit_id: graph
+                    .units
+                    .first()
+                    .map(|unit| unit.id.clone())
+                    .unwrap_or_default(),
                 acceptance: vec!["invalid input returns an error".into()],
                 negative: vec!["valid input is accepted".into()],
             }],
@@ -2836,6 +3508,7 @@ mod tests {
                 IntakeMode::Autonomous,
                 "autonomous-unfinished",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap();
@@ -2848,6 +3521,7 @@ mod tests {
                 IntakeMode::ReviewPlan,
                 "review-unfinished",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap();
@@ -2980,6 +3654,7 @@ mod tests {
                 IntakeMode::ReviewPlan,
                 "after-revoke",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap_err();
@@ -3035,6 +3710,7 @@ mod tests {
                 IntakeMode::ReviewPlan,
                 "stale-profile",
                 "operator-token",
+                &[],
             )
             .await
             .unwrap_err();
@@ -3276,6 +3952,318 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    async fn mark_request_completed(db: &Database, request: &IntakeRequestRecord) {
+        let now = Utc::now().to_rfc3339();
+        let campaign_id = format!("campaign-{}", request.id);
+        let run_id = format!("run-{}", request.id);
+        let attempt_id = format!("attempt-{}", request.id);
+        let candidate_id = format!("candidate-{}", request.id);
+        sqlx::query::query(
+            "INSERT INTO campaigns(id,action_id,status,created_at)
+             VALUES (?1,?2,'SUCCEEDED',?3)",
+        )
+        .bind(&campaign_id)
+        .bind(&request.action_id)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO runs(id,campaign_id,status,created_at) VALUES (?1,?2,'SUCCEEDED',?3)",
+        )
+        .bind(&run_id)
+        .bind(&campaign_id)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO attempts(id,run_id,status,created_at) VALUES (?1,?2,'SUCCEEDED',?3)",
+        )
+        .bind(&attempt_id)
+        .bind(&run_id)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO candidates
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+             VALUES (?1,?2,?3,?4,?5,'fixture',?6)",
+        )
+        .bind(&candidate_id)
+        .bind(&attempt_id)
+        .bind("a".repeat(64))
+        .bind("b".repeat(40))
+        .bind("c".repeat(40))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO gate_decisions(candidate_id,outcome,reasons_json,decided_at)
+             VALUES (?1,'ACCEPTED','[]',?2)",
+        )
+        .bind(&candidate_id)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query("UPDATE lead_requests SET campaign_id=?1 WHERE id=?2")
+            .bind(&campaign_id)
+            .bind(&request.lead_request_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query("UPDATE intake_requests SET campaign_id=?1 WHERE id=?2")
+            .bind(&campaign_id)
+            .bind(&request.id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+
+    async fn count_for(sql: &'static str, id: &str, db: &Database) -> i64 {
+        let (count,): (i64,) = sqlx::query_as::query_as(sql)
+            .bind(id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        count
+    }
+
+    #[tokio::test]
+    async fn terminal_message_creates_one_follow_up_without_reusing_parent_evidence() {
+        let (path, db, profile, config) = fixture().await;
+        let policy = create_policy(&db, &profile, &config).await;
+        let parent = create_request(&db, &profile, "request-parent").await;
+        mark_request_completed(&db, &parent).await;
+
+        let outcome = db
+            .append_intake_message_or_start_follow_up(
+                &parent.id,
+                "Add a CSV export endpoint as a follow-up.",
+                "follow-up-message-1",
+                "operator-token",
+            )
+            .await
+            .unwrap();
+        assert!(outcome.created);
+        let follow_up = outcome.follow_up.as_ref().expect("follow-up request");
+        assert_eq!(
+            follow_up.parent_request_id.as_deref(),
+            Some(parent.id.as_str())
+        );
+        assert_eq!(
+            follow_up.source_message_id.as_deref(),
+            Some(outcome.message.id.as_str())
+        );
+        assert_eq!(
+            outcome.message.follow_up_request_id.as_deref(),
+            Some(follow_up.id.as_str())
+        );
+        assert_eq!(follow_up.objective, outcome.message.body);
+        assert_eq!(follow_up.project_id, parent.project_id);
+        assert_eq!(follow_up.profile_id, parent.profile_id);
+        assert_eq!(follow_up.profile_revision_id, parent.profile_revision_id);
+        assert_eq!(follow_up.mode, parent.mode);
+        assert_eq!(follow_up.campaign_id, None);
+        assert_ne!(follow_up.action_id, parent.action_id);
+        assert_ne!(follow_up.lead_request_id, parent.lead_request_id);
+        // The unchanged config still matches the same owner-confirmed grant.
+        assert_eq!(follow_up.delegation_id, policy.delegation.id);
+
+        // No frozen plan, ActionSpec or Campaign is inherited by the child.
+        assert_eq!(
+            count_for(
+                "SELECT COUNT(*) FROM frozen_lead_plans WHERE request_id=?1",
+                &follow_up.lead_request_id,
+                &db
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            count_for(
+                "SELECT COUNT(*) FROM action_specs WHERE action_id=?1",
+                &follow_up.action_id,
+                &db
+            )
+            .await,
+            0
+        );
+        let child_lead = db.lead_request(&follow_up.lead_request_id).await.unwrap();
+        assert_eq!(child_lead.campaign_id, None);
+        assert_eq!(
+            db.intake_authorization_state(&follow_up.id, crate::intake::IntakeState::Submitted)
+                .await
+                .reason
+                .as_deref(),
+            Some("FROZEN_PLAN_REQUIRED")
+        );
+
+        // Exact replay returns the same message and child, never a second one.
+        let replay = db
+            .append_intake_message_or_start_follow_up(
+                &parent.id,
+                "Add a CSV export endpoint as a follow-up.",
+                "follow-up-message-1",
+                "operator-token",
+            )
+            .await
+            .unwrap();
+        assert!(!replay.created);
+        assert_eq!(replay.follow_up.as_ref().unwrap().id, follow_up.id);
+        assert_eq!(
+            count_for(
+                "SELECT COUNT(*) FROM intake_requests WHERE parent_request_id=?1",
+                &parent.id,
+                &db
+            )
+            .await,
+            1
+        );
+
+        // A different message cannot fork a second follow-up from the same
+        // terminal parent; the operator continues in the created child.
+        let error = db
+            .append_intake_message_or_start_follow_up(
+                &parent.id,
+                "A second unrelated objective.",
+                "follow-up-message-2",
+                "operator-token",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::IntakeConflict {
+                code: "INTAKE_FOLLOW_UP_EXISTS",
+                ..
+            }
+        ));
+        let messages = db.intake_messages(&parent.id).await.unwrap();
+        assert_eq!(messages.len(), 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn another_principal_with_a_matching_grant_cannot_continue_the_parent_policy() {
+        let (path, db, profile, config) = fixture().await;
+        let _parent_policy = create_policy(&db, &profile, &config).await;
+        let parent = create_request(&db, &profile, "request-parent-other-principal").await;
+        mark_request_completed(&db, &parent).await;
+        // A second authenticated principal has its own current grant for the
+        // same Project, exact profile revision and scope.
+        db.create_execution_policy_grant(NewExecutionPolicyGrant {
+            project_id: "project",
+            profile_id: &profile.id,
+            expected_revision: profile.revision,
+            expected_revision_hash: &profile.content_hash,
+            project_config_hash: &config.config_hash,
+            acknowledge: true,
+            autonomous: false,
+            subscription_confirmed: false,
+            idempotency_key: "policy-other-principal",
+            principal_id: "other-operator",
+            principal_label: None,
+        })
+        .await
+        .unwrap();
+
+        let error = db
+            .append_intake_message_or_start_follow_up(
+                &parent.id,
+                "Another principal tries to continue this thread.",
+                "follow-up-message-other-principal",
+                "other-operator",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::IntakeConflict {
+                code: "FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH",
+                ..
+            }
+        ));
+        assert_eq!(
+            count_for(
+                "SELECT COUNT(*) FROM intake_requests WHERE parent_request_id=?1",
+                &parent.id,
+                &db
+            )
+            .await,
+            0
+        );
+        assert!(db.intake_messages(&parent.id).await.unwrap().is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn follow_up_uses_the_merged_base_commit_and_rebinds_the_same_policy() {
+        let (path, db, profile, config) = fixture().await;
+        let policy = create_policy(&db, &profile, &config).await;
+        let parent = create_request(&db, &profile, "request-parent-base").await;
+        mark_request_completed(&db, &parent).await;
+        let merge_commit = "e".repeat(40);
+        let advanced = db
+            .advance_project_base_after_merged_delivery(
+                "project",
+                &merge_commit,
+                "main",
+                config.revision,
+                &config.base_commit,
+            )
+            .await
+            .unwrap();
+        assert_eq!(advanced.base_commit, merge_commit);
+
+        let outcome = db
+            .append_intake_message_or_start_follow_up(
+                &parent.id,
+                "Build the follow-up on merged main.",
+                "follow-up-message-base",
+                "operator-token",
+            )
+            .await
+            .unwrap();
+        let follow_up = outcome.follow_up.expect("follow-up request");
+        let child_config = db.project_config("project").await.unwrap();
+        assert_eq!(child_config.base_commit, merge_commit);
+        let child_lead = db.lead_request(&follow_up.lead_request_id).await.unwrap();
+        assert_eq!(child_lead.project_config_hash, advanced.config_hash);
+        let context = db
+            .lead_execution_context(&follow_up.lead_request_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(context.project_config_hash, advanced.config_hash);
+        let spec = db.intake_assessment_spec(&follow_up.id).await.unwrap();
+        assert_eq!(spec.base_commit, merge_commit);
+
+        // The exact parent grant terms are re-bound to the Core-advanced config;
+        // no autonomy, scope or subscription confirmation is widened.
+        assert_ne!(follow_up.delegation_id, policy.delegation.id);
+        let rebound = db
+            .standing_delegation_v2(&follow_up.delegation_id)
+            .await
+            .unwrap();
+        assert_eq!(rebound.principal_id, policy.delegation.principal_id);
+        assert_eq!(rebound.allowed_paths, policy.delegation.allowed_paths);
+        assert_eq!(rebound.capabilities, policy.delegation.capabilities);
+        assert_eq!(rebound.risk_classes, policy.delegation.risk_classes);
+        assert_eq!(rebound.autonomous_start, policy.delegation.autonomous_start);
+        let rebound_policy = db
+            .execution_policy_grant(&follow_up.delegation_id)
+            .await
+            .unwrap();
+        assert_eq!(rebound_policy.project_config_hash, advanced.config_hash);
+        assert!(!rebound_policy.autonomous);
+        assert!(!rebound_policy.subscription_confirmed);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[tokio::test]
     async fn withdrawal_fences_message_assessment_and_start() {
         let (path, db, profile, config) = fixture().await;
@@ -3412,6 +4400,16 @@ mod tests {
             model: grant.route.model.clone(),
             allowed_paths: config.allowed_paths.clone(),
             checks: checks(),
+            dependency_plan: None,
+            dependencies_required: false,
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
+
+            environment_spec_id: None,
         };
         let (assessment, proposal) = crate::lead::fixture_lead_assessment(
             &lead.id,
@@ -3455,6 +4453,231 @@ mod tests {
         assert!(matches!(error, Error::Forbidden(_)));
         let reloaded = db.lead_request(&request.lead_request_id).await.unwrap();
         assert_eq!(reloaded.state, LeadRequestState::Planned);
+        let _ = std::fs::remove_file(path);
+    }
+
+    async fn seed_issue(
+        db: &Database,
+        number: i64,
+        github_id: i64,
+        state: &str,
+        is_pull_request: bool,
+    ) {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO github_issues
+             (project_id,repo_full_name,number,github_id,title,body,body_truncated,state,
+              state_reason,labels_json,author,author_id,author_association,html_url,comments,
+              created_at,updated_at,closed_at,synced_at,sync_mark,content_hash,
+              repository_github_id,is_pull_request)
+             VALUES ('project','acme/widgets',?1,?2,?3,'body',0,?4,NULL,'[]','octo',1,
+                     'MEMBER','https://github.com/acme/widgets/issues/'||?1,0,?5,?5,NULL,?5,'sync',
+                     'hash',42,?6)",
+        )
+        .bind(number)
+        .bind(github_id)
+        .bind(format!("Issue {number}"))
+        .bind(state)
+        .bind(&now)
+        .bind(i64::from(is_pull_request))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn issue_selection_is_frozen_and_rejects_unsupported_foreign_duplicate_and_closed() {
+        let (path, db, profile, config) = fixture().await;
+        let _policy = create_policy(&db, &profile, &config).await;
+        db.bind_project_github(
+            "project",
+            NewProjectGitHubBinding {
+                owner: "acme",
+                repo: "widgets",
+                default_branch: "main",
+                repository_github_id: Some(42),
+            },
+            "tester",
+        )
+        .await
+        .unwrap();
+        seed_issue(&db, 7, 70, "open", false).await;
+        seed_issue(&db, 8, 80, "closed", false).await;
+        seed_issue(&db, 9, 90, "open", true).await;
+
+        let issue = |number, role| crate::issues::NewIssueSelection {
+            owner: "acme".into(),
+            repo: "widgets".into(),
+            number,
+            role,
+        };
+        let primary = issue(7, crate::issues::IssueRole::Primary);
+
+        let (request, created) = db
+            .create_intake_request(
+                "project",
+                "Deliver selected issue 7",
+                Some(&profile.id),
+                IntakeMode::ReviewPlan,
+                "issue-selection-request",
+                "operator-token",
+                std::slice::from_ref(&primary),
+            )
+            .await
+            .unwrap();
+        assert!(created);
+        let links = db.issue_links_for_request(&request.id).await.unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].issue_number, 7);
+        assert_eq!(links[0].repository_full_name, "acme/widgets");
+        assert_eq!(links[0].role, crate::issues::IssueRole::Primary);
+        assert_eq!(links[0].state, crate::issues::IssueLinkState::Ready);
+        assert_eq!(links[0].github_issue_id, Some(70));
+
+        let replay = db
+            .create_intake_request(
+                "project",
+                "Deliver selected issue 7",
+                Some(&profile.id),
+                IntakeMode::ReviewPlan,
+                "issue-selection-request",
+                "operator-token",
+                std::slice::from_ref(&primary),
+            )
+            .await
+            .unwrap();
+        assert!(!replay.1);
+        assert_eq!(replay.0.id, request.id);
+
+        let changed = db
+            .create_intake_request(
+                "project",
+                "Deliver selected issue 7",
+                Some(&profile.id),
+                IntakeMode::ReviewPlan,
+                "issue-selection-request",
+                "operator-token",
+                &[],
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            changed,
+            Error::IntakeConflict {
+                code: "ISSUE_SELECTION_CHANGED",
+                ..
+            }
+        ));
+
+        for (selection, code) in [
+            (vec![primary.clone(), primary.clone()], "ISSUE_DUPLICATE"),
+            (
+                vec![crate::issues::NewIssueSelection {
+                    owner: "other".into(),
+                    repo: "widgets".into(),
+                    number: 7,
+                    role: crate::issues::IssueRole::Primary,
+                }],
+                "ISSUE_REPOSITORY_FOREIGN",
+            ),
+            (
+                vec![issue(8, crate::issues::IssueRole::Primary)],
+                "ISSUE_CLOSED",
+            ),
+            (
+                vec![issue(99, crate::issues::IssueRole::Primary)],
+                "ISSUE_UNSUPPORTED",
+            ),
+            (
+                vec![issue(9, crate::issues::IssueRole::Primary)],
+                "ISSUE_UNSUPPORTED",
+            ),
+        ] {
+            let error = db
+                .create_intake_request(
+                    "project",
+                    "Reject an invalid issue selection",
+                    Some(&profile.id),
+                    IntakeMode::ReviewPlan,
+                    &format!("issue-selection-{code}"),
+                    "operator-token",
+                    &selection,
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, Error::IntakeConflict { code: actual, .. } if actual == code),
+                "expected {code}, got {error:?}"
+            );
+        }
+
+        // The link follows the request into its Campaign without becoming DONE.
+        sqlx::query::query(
+            "INSERT INTO campaigns VALUES ('campaign-links',?1,'BLOCKED_AUTHORIZATION',?2)",
+        )
+        .bind(&request.action_id)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query("UPDATE intake_requests SET campaign_id='campaign-links' WHERE id=?1")
+            .bind(&request.id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query(
+            "UPDATE lead_requests SET campaign_id='campaign-links',state='RUNNING' WHERE id=?1",
+        )
+        .bind(&request.lead_request_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let campaign_links = db.issue_links_for_campaign("campaign-links").await.unwrap();
+        assert_eq!(campaign_links.len(), 1);
+        assert_eq!(
+            campaign_links[0].state,
+            crate::issues::IssueLinkState::Queued
+        );
+        sqlx::query::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id='campaign-links'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let running = db.issue_links_for_campaign("campaign-links").await.unwrap();
+        assert_eq!(running[0].state, crate::issues::IssueLinkState::InProgress);
+
+        let marker = "<!-- factory:issue-link:test:OPENED:1 -->";
+        let body = format!("{marker}\n\ncomment");
+        let event = NewIssueDeliveryEvent {
+            issue_link_id: &links[0].id,
+            campaign_id: Some("campaign-links"),
+            candidate_id: Some("candidate-links"),
+            action: crate::issues::IssueDeliveryAction::Comment,
+            event_key: "comment:opened:candidate:1",
+            marker: Some(marker),
+            body: Some(&body),
+            label_name: None,
+        };
+        let (first, created) = db.record_issue_delivery_event(event.clone()).await.unwrap();
+        assert!(created);
+        let (replayed, created) = db.record_issue_delivery_event(event).await.unwrap();
+        assert!(!created);
+        assert_eq!(replayed.id, first.id);
+        let conflicting = db
+            .record_issue_delivery_event(NewIssueDeliveryEvent {
+                issue_link_id: &links[0].id,
+                campaign_id: Some("campaign-links"),
+                candidate_id: Some("candidate-links"),
+                action: crate::issues::IssueDeliveryAction::Comment,
+                event_key: "comment:opened:candidate:1",
+                marker: Some(marker),
+                body: Some(&format!("{marker}\n\ndifferent body")),
+                label_name: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(conflicting, Error::Conflict(_)));
+
+        db.close().await;
         let _ = std::fs::remove_file(path);
     }
 

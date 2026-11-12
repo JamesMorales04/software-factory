@@ -99,7 +99,10 @@ export interface ProjectCampaignSummary {
   id: string;
   actionId: string;
   objective: string;
+  /** Raw durable Campaign state, retained for history. */
   status: string;
+  /** Terminal Campaign status, active Run state or latest Gate outcome. */
+  effectiveStatus: string;
   createdAt: string;
 }
 
@@ -327,6 +330,8 @@ export interface ProviderSession {
   updated_at: string;
 }
 
+export type CandidateFinalSource = "MODEL_FINAL" | "STAGNATION_SALVAGE";
+
 export interface Candidate {
   id: string;
   attempt_id: string;
@@ -335,6 +340,7 @@ export interface Candidate {
   tree_sha: string;
   implementer_id: string;
   created_at: string;
+  final_source: CandidateFinalSource;
 }
 
 export type GateOutcome =
@@ -372,6 +378,7 @@ export interface Gate {
   decided_at: string;
   reviewerReceiptIds?: string[];
   repair_authorization?: RepairAuthorization | null;
+  final_source?: CandidateFinalSource;
 }
 
 export interface CheapOpsReport {
@@ -813,14 +820,390 @@ export interface CandidatePullRequestOpenResult {
   source: string;
 }
 
+export type DeliveryMode = "MANUAL" | "RISK_TIERED";
+export type DeliveryRisk = "R0" | "R1" | "R2" | "R3" | "UNKNOWN";
+export type DeliveryAttemptState =
+  | "PENDING"
+  | "AUTHORIZED"
+  | "MERGING"
+  | "MERGED"
+  | "BLOCKED"
+  | "NEEDS_ATTENTION"
+  | "REVERTED";
+export type DeliveryAuthorization = "POLICY_R0" | "CHARTER_R1" | "OWNER_MANUAL";
+export interface CandidateSalvageEvidenceRecord {
+  candidateId: string;
+  commitSha: string;
+  attemptId: string;
+  workItemId: string;
+  frozenChecks: number;
+  passedChecks: number;
+  written: boolean;
+  decision: string;
+  changedPaths: string[];
+  checkReceiptIds: string[];
+}
+
+export type DeliveryIncidentState =
+  | "OPEN"
+  | "ACKNOWLEDGED"
+  | "REVERT_PENDING"
+  | "REVERTED"
+  | "CLOSED";
+
+export interface DeliveryPolicy {
+  schemaVersion: number;
+  projectId: string;
+  revision: number;
+  policySha256: string;
+  mode: DeliveryMode;
+  r1Enabled: boolean;
+  autoMergeBaseBranch: string;
+  manualBaseBranches: string[];
+  requiredChecks: string[];
+  mergeMethod: string;
+  postMergeCheckRequired: boolean;
+  postMergeCheckId: string;
+  postMergeTimeoutSecs: number;
+  killSwitch: boolean;
+  createdBy: string;
+  createdAt: string;
+  expiresAt: string | null;
+}
+
+export interface DeliveryBlock {
+  code: string;
+  detail: string;
+}
+
+export interface DeliveryAttempt {
+  attemptId: string;
+  idempotencyKey: string;
+  schemaVersion: number;
+  operation: string;
+  projectId: string;
+  campaignId: string;
+  candidateId: string;
+  candidateSha: string;
+  candidateTreeSha: string;
+  contentDigest: string;
+  gateRevision: string;
+  gateOutcome: string;
+  policyRevision: number;
+  policySha256: string;
+  riskClass: DeliveryRisk;
+  authorization: DeliveryAuthorization | null;
+  charterGrantId: string | null;
+  pullRequestNumber: number | null;
+  baseBranch: string;
+  expectedHeadSha: string;
+  observedHeadSha: string | null;
+  observedBaseSha: string | null;
+  mergeMethod: string;
+  state: DeliveryAttemptState;
+  mergeCommitSha: string | null;
+  incidentId: string | null;
+  postMergeCheckId: string | null;
+  blockerCode: string | null;
+  blockerDetail: string | null;
+  createdAt: string;
+  updatedAt: string;
+  mergedAt: string | null;
+}
+
+export interface DeliveryDecisionRecord {
+  decisionId: string;
+  attemptId: string;
+  candidateId: string;
+  candidateSha: string;
+  gateRevision: string;
+  gateOutcome: string;
+  policyRevision: number;
+  policySha256: string;
+  charterGrantId: string | null;
+  riskClass: DeliveryRisk;
+  expectedHeadSha: string;
+  baseBranch: string;
+  checksReadAt: string;
+  branchProtectionReadAt: string;
+  decision: "ALLOW" | "DENY";
+  reasons: DeliveryBlock[];
+  decidedAt: string;
+}
+
+export interface DeliveryCheckReceipt {
+  attemptId: string;
+  checkName: string;
+  headSha: string;
+  state: string;
+  conclusion: string;
+  requiredByProtection: boolean;
+  observedAt: string;
+}
+
+export interface DeliveryPostMergeCheck {
+  attemptId: string;
+  checkId: string;
+  mergeCommitSha: string;
+  status: "PENDING" | "PASSED" | "FAILED" | "MISSING";
+  detail: string;
+  observedAt: string;
+}
+
+export interface DeliveryIncident {
+  incidentId: string;
+  projectId: string;
+  attemptId: string;
+  candidateId: string;
+  mergeCommitSha: string;
+  kind: string;
+  state: DeliveryIncidentState;
+  detail: string;
+  createdAt: string;
+  updatedAt: string;
+  acknowledgedBy: string | null;
+  acknowledgedAt: string | null;
+  resolvedAt: string | null;
+}
+
+export interface DeliveryRevertRecord {
+  revertId: string;
+  incidentId: string;
+  revertPrNumber: number;
+  revertMergeSha: string;
+  actor: string;
+  rationale: string;
+  createdAt: string;
+}
+
+export interface DeliveryIssueReceipt {
+  receiptId: string;
+  attemptId: string;
+  issueLinkId: string | null;
+  action: string;
+  state: string;
+  externalId: string | null;
+  detail: string | null;
+  recordedAt: string;
+}
+
+export interface DeliveryProjection {
+  policy: DeliveryPolicy | null;
+  attempts: DeliveryAttempt[];
+  decisions: DeliveryDecisionRecord[];
+  checkReceipts: DeliveryCheckReceipt[];
+  postMergeChecks: DeliveryPostMergeCheck[];
+  incidents: DeliveryIncident[];
+  reverts: DeliveryRevertRecord[];
+  issueReceipts: DeliveryIssueReceipt[];
+}
+
+export interface DeliveryProtection {
+  protected: boolean;
+  requiredStatusChecksStrict: boolean;
+  requiredChecks: string[];
+  requiredPullRequestReviews: boolean;
+  requiredApprovingReviewCount: number;
+  enforceAdmins: boolean;
+  allowForcePushes: boolean;
+  allowDeletions: boolean;
+  requiredConversationResolution: boolean;
+  fetchedAt: string;
+}
+
+export interface DeliveryStatus {
+  campaignId: string;
+  candidateId: string;
+  candidateSha: string;
+  projectId: string;
+  riskClass: DeliveryRisk;
+  finalSource: CandidateFinalSource;
+  salvageRequiresHumanReview: boolean;
+  salvageEvidence: CandidateSalvageEvidenceRecord | null;
+  salvageError: string | null;
+  gateOutcome: string | null;
+  gateRevision: string | null;
+  policy: DeliveryPolicy | null;
+  binding: ProjectGitHubBinding | null;
+  projection: DeliveryProjection;
+  pullRequest: CandidatePullRequest | null;
+  checks: CandidatePullRequestChecks | null;
+  protection: DeliveryProtection | null;
+  eligibility: {
+    decision: "ALLOW" | "DENY";
+    authorization: DeliveryAuthorization | null;
+    reasons: DeliveryBlock[];
+  } | null;
+  liveError: string | null;
+}
+
+export interface DeliveryRunResult {
+  attempt: DeliveryAttempt;
+  policy: DeliveryPolicy;
+  decision: DeliveryDecisionRecord;
+  pullRequest: CandidatePullRequest | null;
+  checks: CandidatePullRequestChecks | null;
+  protection: DeliveryProtection | null;
+  issueOutcome: IssueDeliveryOutcome | null;
+  replayed: boolean;
+}
+
+export interface CandidateDeliveryOpenResult {
+  campaign_id: string;
+  candidate_id: string;
+  operation: "OPEN_PR";
+  pull_request: CandidatePullRequest;
+  created: boolean;
+  issue_delivery: IssueDeliveryOutcome | null;
+  source: string;
+}
+
+export interface ProjectDeliveryPolicyView {
+  policy: DeliveryPolicy | null;
+  revisions: DeliveryPolicy[];
+  binding: ProjectGitHubBinding | null;
+  default_branch: string | null;
+  merge_method: string;
+  source: string;
+}
+
+export interface DeliveryPolicyWrite {
+  enabled: boolean;
+  r1_enabled: boolean;
+  merge_method: "squash";
+  required_checks: string[];
+  post_merge_check_id: string;
+  post_merge_timeout_secs: number;
+  kill_switch: boolean;
+  expires_at: string | null;
+  manual_base_branches?: string[];
+}
+
+export interface DeliveryRevertResult {
+  revert: DeliveryRevertRecord;
+  source: string;
+}
+
+export type IssueRole = "PRIMARY" | "RELATED";
+export type IssueLinkState =
+  | "READY"
+  | "QUEUED"
+  | "IN_PROGRESS"
+  | "NEEDS_ATTENTION"
+  | "IN_REVIEW"
+  | "DONE";
+export type IssueDeliveryState =
+  | "NONE"
+  | "PENDING"
+  | "COMMENTED"
+  | "CLOSED"
+  | "PARTIAL"
+  | "FAILED"
+  | "BLOCKED";
+export type IssueDeliveryAction = "COMMENT" | "LABEL" | "CLOSE" | "FAILURE";
+export type IssueLinkResolution = "UNRESOLVED" | "RESOLVED" | "PARTIAL";
+export type IssueDeliveryEventStatus =
+  | "PENDING"
+  | "APPLIED"
+  | "FAILED"
+  | "BLOCKED";
+
+export interface IssueDeliveryFailure {
+  kind: string;
+  detail: string;
+  retryable: boolean;
+}
+
+export interface IssueDeliveryEvent {
+  id: string;
+  issueLinkId: string;
+  campaignId: string | null;
+  candidateId: string | null;
+  action: IssueDeliveryAction;
+  eventKey: string;
+  marker: string | null;
+  body: string | null;
+  labelName: string | null;
+  status: IssueDeliveryEventStatus;
+  attempts: number;
+  externalId: string | null;
+  errorKind: string | null;
+  errorDetail: string | null;
+  lastAttemptAt: string | null;
+  appliedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IssueLink {
+  id: string;
+  projectId: string;
+  requestId: string;
+  campaignId: string | null;
+  candidateId: string | null;
+  repositoryOwner: string;
+  repositoryName: string;
+  repositoryFullName: string;
+  issueNumber: number;
+  githubIssueId: number | null;
+  issueTitle: string;
+  role: IssueRole;
+  state: IssueLinkState;
+  deliveryState: IssueDeliveryState;
+  resolution: IssueLinkResolution;
+  workUnitId: string | null;
+  pullRequestNumber: number | null;
+  pullRequestUrl: string | null;
+  mergeSha: string | null;
+  mergedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  latestError: IssueDeliveryFailure | null;
+}
+
+export interface IssueLinkProjection extends IssueLink {
+  events: IssueDeliveryEvent[];
+}
+
+export interface IssueLinkSummary {
+  id: string;
+  requestId: string;
+  campaignId: string | null;
+  candidateId: string | null;
+  role: IssueRole;
+  state: IssueLinkState;
+  deliveryState: IssueDeliveryState;
+  resolution: IssueLinkResolution;
+  pullRequestNumber: number | null;
+  pullRequestUrl: string | null;
+  mergeSha: string | null;
+  mergedAt: string | null;
+  latestErrorKind: string | null;
+  latestErrorDetail: string | null;
+  latestErrorEventId: string | null;
+}
+
+export interface IssueDeliveryOutcome {
+  campaignId: string;
+  candidateId: string;
+  attempted: number;
+  applied: number;
+  partial: number;
+  failed: number;
+  failures: IssueDeliveryFailure[];
+  links: IssueLinkProjection[];
+}
+
 export interface CampaignDetail {
   campaign: Campaign;
   authorization: CampaignAuthorization | null;
+  environment?: EnvironmentStateView | null;
   tasks: LeadTask[];
   runs: Run[];
   attempts: Attempt[];
   candidates: Candidate[];
   events: FactoryEvent[];
+  linked_issues?: IssueLinkProjection[] | null;
 }
 
 export interface ExecutionPolicyV2 {
@@ -1422,6 +1805,8 @@ export interface IntakeMessage {
   role: string;
   body: string;
   createdAt: string;
+  /** Present when this message started a follow-up request. */
+  followUpRequestId?: string | null;
 }
 
 export interface IntakeRequestSummary {
@@ -1436,6 +1821,8 @@ export interface IntakeRequestSummary {
   delegationId: string;
   leadRequestId: string;
   campaignId: string | null;
+  /** Present when this request was started by an operator follow-up message. */
+  parentRequestId?: string | null;
   authorization: IntakeAuthorizationState;
   campaignStatus?: string | null;
   gateOutcome?: GateOutcome | null;
@@ -1443,12 +1830,384 @@ export interface IntakeRequestSummary {
   updatedAt: string;
 }
 
+export interface ParticipantPlanReadinessView {
+  required: boolean;
+  present: boolean;
+  ready: boolean;
+  reviewerCount: number;
+  requiredReviewerCount: number;
+  reviewerRoles: AgenticReviewerRole[];
+  requiredRoles: AgenticReviewerRole[];
+  missingRoles: AgenticReviewerRole[];
+  unexpectedRoles: AgenticReviewerRole[];
+  missingAssignments: AgenticReviewerRole[];
+  graphStale: boolean;
+  problems: string[];
+}
+
+export type EnvironmentPlanStatus =
+  | "DRAFT"
+  | "CORE_VALIDATED"
+  | "LEAD_APPROVED"
+  | "FROZEN"
+  | "REJECTED"
+  | "BLOCKED"
+  | "MISSING";
+
+export interface EnvironmentBlockerView {
+  code: string;
+  message: string;
+}
+
+export interface EnvironmentConventionPinView {
+  name: string;
+  value: string;
+  source: string;
+}
+
+export interface EnvironmentConventionFileView {
+  path: string;
+  kind: string;
+  sha256: string;
+  precedence: string;
+  pins: EnvironmentConventionPinView[];
+}
+
+export interface EnvironmentConventionCommandView {
+  name: string;
+  argv: string[];
+  cwd: string;
+  source: string;
+}
+
+export interface EnvironmentConventionConflictView {
+  name: string;
+  detail: string;
+  sources: string[];
+  values: string[];
+}
+
+export interface EnvironmentConventionsView {
+  schemaVersion: number;
+  projectId: string;
+  baseCommit: string;
+  conventionsSha256: string;
+  scannedAt: string;
+  files: EnvironmentConventionFileView[];
+  commands: EnvironmentConventionCommandView[];
+  conflicts: EnvironmentConventionConflictView[];
+  truncated: boolean;
+  skippedEntries: number;
+  provenance: string;
+  existingEnvironment: string;
+}
+
+export interface EnvironmentToolchainView {
+  id: string;
+  version: string;
+  source: string;
+  evidence: string[];
+}
+
+export interface EnvironmentPackageView {
+  name: string;
+  version: string;
+  license: string;
+  source: string;
+  attr: string;
+  sha256: string;
+  unfree: boolean;
+  attribution: string;
+}
+
+export interface EnvironmentServiceView {
+  name: string;
+  version: string;
+  ephemeral: boolean;
+  network: string;
+  port: number | null;
+}
+
+export interface EnvironmentCommandView {
+  argv: string[];
+  cwd: string;
+  timeoutSecs: number;
+  expectExit: number;
+}
+
+export interface EnvironmentBrowserView {
+  name: string;
+  version: string;
+  source: string;
+}
+
+export interface EnvironmentFileView {
+  path: string;
+  sha256: string;
+  origin: string;
+  content?: string;
+}
+
+export interface EnvironmentNixView {
+  nixpkgs: string;
+  inputs: Array<{ name: string; url: string; sha256: string }>;
+  allowUnfree: boolean;
+  sandbox: {
+    sandbox: boolean;
+    impure: boolean;
+    hostMounts: string[];
+    privileged: boolean;
+    hostNetwork: boolean;
+    hostSockets: string[];
+  };
+}
+
+export interface EnvironmentResourceLimitsView {
+  cpu: number;
+  memoryMiB: number;
+  diskMiB: number;
+  pids: number;
+  timeoutSecs: number;
+}
+
+export interface EnvironmentNetworkView {
+  build: string;
+  fetch: string;
+  fetchAllowlist: string[];
+}
+
+export interface EnvironmentLicenseEntryView {
+  name: string;
+  version: string;
+  license: string;
+  source: string;
+  sha256: string;
+  unfree: boolean;
+  ownerOverrideId: string | null;
+  attribution: string;
+}
+
+export interface EnvironmentUnfreeOverrideView {
+  id: string;
+  package: string;
+  version: string;
+  license: string;
+  planSha256: string;
+  reason: string;
+  decisionId: string;
+  expiresAt: string;
+}
+
+export interface EnvironmentLicenseInventoryView {
+  schemaVersion: number;
+  policyRevision: string;
+  allowUnfree: boolean;
+  entries: EnvironmentLicenseEntryView[];
+  overrides: EnvironmentUnfreeOverrideView[];
+  blockers: EnvironmentBlockerView[];
+  inventorySha256: string;
+  sbomSha256: string;
+}
+
+export interface EnvironmentBuilderDescriptorView {
+  image: string;
+  digest: string;
+  platform: string;
+  policyRevision: string;
+  status: string;
+}
+
+export interface EnvironmentBuildReceiptView {
+  schemaVersion: number;
+  receiptId: string;
+  specSha256: string;
+  platform: string;
+  builderImage: string;
+  builderImageDigest: string;
+  builderPolicyRevision: string;
+  status: string;
+  storePath: string;
+  outputSha256: string;
+  logRef: string;
+  sandboxAttestation: Record<string, boolean>;
+  blockers: EnvironmentBlockerView[];
+  durationMs: number;
+  createdAt: string;
+}
+
+export interface EnvironmentReviewModelCallView {
+  mechanism: string;
+  provider: string;
+  model: string;
+  reservationId: string;
+  requestSha256: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costMicros: number;
+  usageKnown: boolean;
+}
+
+export interface EnvironmentPlanReviewView {
+  schemaVersion: number;
+  reviewId: string;
+  requestId: string;
+  actionId: string;
+  planId: string;
+  planSha256: string;
+  planRevision: number;
+  riskClass: string;
+  reviewerRole: string;
+  principalId: string;
+  recordedBy: string;
+  decision: string;
+  rationale: string;
+  constraints: string[];
+  decidedAt: string;
+  evidenceRefs: string[];
+  modelCall: EnvironmentReviewModelCallView;
+}
+
+export interface EnvironmentPlanView {
+  schemaVersion: number;
+  planId: string;
+  projectId: string;
+  requestId: string;
+  actionId: string;
+  campaignId: string | null;
+  baseCommit: string;
+  conventionsSha256: string;
+  conventions: EnvironmentConventionsView;
+  riskClass: string;
+  status: EnvironmentPlanStatus;
+  revision: number;
+  source: string;
+  toolchains: EnvironmentToolchainView[];
+  packages: EnvironmentPackageView[];
+  services: EnvironmentServiceView[];
+  commands: Record<string, EnvironmentCommandView>;
+  browsers: EnvironmentBrowserView[];
+  files: EnvironmentFileView[];
+  nix: EnvironmentNixView;
+  resources: EnvironmentResourceLimitsView;
+  network: EnvironmentNetworkView;
+  licenseInventory: EnvironmentLicenseInventoryView;
+  licenseInventorySha256: string;
+  builder: EnvironmentBuilderDescriptorView;
+  leadReview: EnvironmentPlanReviewView | null;
+  blockers: EnvironmentBlockerView[];
+  commandsRationale: string;
+  planSha256: string;
+  createdAt: string;
+}
+
+export interface EnvironmentSpecView {
+  schemaVersion: number;
+  specId: string;
+  specSha256: string;
+  projectId: string;
+  requestId: string;
+  actionId: string;
+  campaignId: string | null;
+  baseCommit: string;
+  planId: string;
+  planSha256: string;
+  conventionsSha256: string;
+  reviewId: string;
+  platform: string;
+  nixVersion: string;
+  devenvVersion: string;
+  flakeLockSha256: string;
+  devenvLockSha256: string;
+  licenseInventorySha256: string;
+  sbomSha256: string;
+  builderImage: string;
+  builderImageDigest: string;
+  resourcePolicy: EnvironmentResourceLimitsView;
+  networkPolicy: EnvironmentNetworkView;
+  status: string;
+  frozenAt: string;
+}
+
+export interface EnvironmentStateView {
+  required: boolean;
+  status: EnvironmentPlanStatus | string;
+  plan: EnvironmentPlanView | null;
+  planId: string | null;
+  planSha256: string | null;
+  planRevision: number | null;
+  conventions: EnvironmentConventionsView | null;
+  reviews: EnvironmentPlanReviewView[];
+  leadApproval: EnvironmentPlanReviewView | null;
+  spec: EnvironmentSpecView | null;
+  specSha256: string | null;
+  builder: {
+    descriptor: EnvironmentBuilderDescriptorView | null;
+    receipt: EnvironmentBuildReceiptView | null;
+  };
+  licenseInventory: EnvironmentLicenseInventoryView | null;
+  blockers: EnvironmentBlockerView[];
+}
+
+export interface PlanningReadinessView {
+  lane: PlanningLane;
+  artifacts: PlanningArtifactRecord[];
+  review: PlanReviewRecord | null;
+  workflow: PlanningWorkflowRun | null;
+  missingArtifacts: string[];
+  participantPlan: ParticipantPlanReadinessView;
+  reviewStatus: string | null;
+  reviewApproved: boolean;
+  materialsReady: boolean;
+  ready: boolean;
+}
+
 export interface IntakeRequestProjection extends IntakeRequestSummary {
   assessment: LeadAssessmentView | null;
   proposal: LeadPlanProposalView | null;
   plan: FrozenLeadPlanRecord | null;
+  planning?: PlanningReadinessView;
+  environment?: EnvironmentStateView | null;
   campaign: CampaignDetail | null;
   messages: IntakeMessage[];
+  /** The single follow-up request started from this terminal request. */
+  followUpRequest?: IntakeRequestSummary | null;
+  linked_issues?: IssueLinkProjection[] | null;
+}
+
+export interface RequestEnvironmentConstraints {
+  nixpkgs?: string;
+  toolchains?: Array<{
+    id: string;
+    version: string;
+    source?: string;
+    evidence?: string[];
+  }>;
+  packages?: Array<{
+    name: string;
+    version: string;
+    license: string;
+    source?: string;
+    attr?: string;
+    sha256?: string;
+    unfree?: boolean;
+    attribution?: string;
+  }>;
+  services?: Array<{
+    name: string;
+    version: string;
+    ephemeral?: boolean;
+    network?: "LOOPBACK";
+    port?: number | null;
+  }>;
+  browsers?: Array<{ name: string; version: string; source?: string }>;
+  resources?: {
+    cpu: number;
+    memoryMib: number;
+    diskMib: number;
+    pids: number;
+    timeoutSecs: number;
+  };
 }
 
 export interface NewIntakeRequest {
@@ -1457,6 +2216,13 @@ export interface NewIntakeRequest {
   execution_profile_id?: string;
   mode: IntakeMode;
   idempotency_key: string;
+  issue_keys?: {
+    owner: string;
+    repo: string;
+    number: number;
+    role?: "PRIMARY" | "RELATED";
+  }[];
+  environment_constraints?: RequestEnvironmentConstraints;
 }
 
 export interface ApproveIntakeRequest {
@@ -1590,6 +2356,37 @@ export interface AgenticUnitAssignment {
   providerMode: string | null;
 }
 
+export type AgenticReviewerRole =
+  | "FUNCTIONAL"
+  | "ARCHITECTURE"
+  | "CODE_QUALITY"
+  | "SECURITY"
+  | "TESTING"
+  | "OPERABILITY";
+
+export interface AgenticReviewerAssignment {
+  role: AgenticReviewerRole;
+  principalId: string;
+  provider: string;
+  model: string;
+}
+
+export interface AgenticReviewerReceipt {
+  receiptId: string;
+  principalId: string;
+  role: AgenticReviewerRole | null;
+  result: string;
+  evidence: string;
+}
+
+export interface AgenticReviewerEvidence {
+  requiredReviewerCount: number;
+  requiredRoles: AgenticReviewerRole[];
+  assignedPrincipals: AgenticReviewerAssignment[];
+  independentReviewerCount: number;
+  receipts: AgenticReviewerReceipt[];
+}
+
 export interface AgenticParticipantPlan {
   route: AgenticRoute;
   assurance: AgenticAssurance;
@@ -1598,6 +2395,8 @@ export interface AgenticParticipantPlan {
   reasons: string[];
   unitAssignments: AgenticUnitAssignment[];
   reviewerCount: number;
+  reviewerRoles: AgenticReviewerRole[];
+  reviewerAssignments: AgenticReviewerAssignment[];
 }
 
 export interface AgenticSpecification {
@@ -1678,6 +2477,240 @@ export interface AgenticSemanticAssessment {
   };
 }
 
+export type PlanningLane = "DIRECT" | "DELEGATED" | "FORMAL_SPEC" | "REPAIR";
+
+export type PlanReviewStatus =
+  | "PENDING"
+  | "AUTO_APPROVED"
+  | "OWNER_APPROVED"
+  | "CHANGES_REQUESTED"
+  | "REJECTED";
+
+export interface PlanningArtifactRecord {
+  requestId: string;
+  kind: string;
+  revision: number;
+  contentJson: string;
+  contentSha256: string;
+  createdAt: string;
+}
+
+export interface PlanReviewRecord {
+  id: string;
+  requestId: string;
+  planRevision: number;
+  planSha256: string;
+  status: PlanReviewStatus;
+  principalId: string;
+  rationale: string;
+  points: number;
+  reviewedAt: string;
+}
+
+export interface FindingDispositionRecord {
+  id: string;
+  requestId: string;
+  candidateId: string | null;
+  findingId: string;
+  route: string;
+  status: "OPEN" | "RESOLVED" | "REFUTED";
+  reviewerPrincipal: string;
+  resolvedBy: string;
+  evidenceRefs: string[];
+  ownerPrincipal: string | null;
+  ownerDecision: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlanningWorkflowRun {
+  id: string;
+  requestId: string;
+  campaignId: string | null;
+  state: string;
+  revision: number;
+  planSha256: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type WorkflowStateCode =
+  | "SUBMITTED"
+  | "ASSESSING"
+  | "PLANNED"
+  | "PLAN_REVIEW"
+  | "FROZEN"
+  | "EXECUTING"
+  | "VERIFYING"
+  | "REVIEWING"
+  | "GATE"
+  | "REPAIRING"
+  | "REPLANNING"
+  | "CONVERGING"
+  | "ACCEPTED"
+  | "BLOCKED"
+  | "FAILED"
+  | "CANCELLED";
+
+export type WorkflowStepStatusCode =
+  | "PENDING"
+  | "RUNNING"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "BLOCKED";
+
+export type TraceAlertKind =
+  | "DUPLICATE_SEQUENCE"
+  | "MISSING_TRANSITION"
+  | "OPEN_STEP"
+  | "TERMINAL_STATE"
+  | "NON_TERMINAL_STATE"
+  | "TRACE_TRUNCATED"
+  | "STEP_TRUNCATED"
+  | "REPLAY_REJECTED"
+  | "STATE_DIVERGENCE"
+  | "NO_EVENTS"
+  | "MALFORMED_EVENT";
+
+export type TraceAlertSeverity = "INFO" | "WARNING" | "CRITICAL";
+
+export interface TraceAlert {
+  kind: TraceAlertKind;
+  severity: TraceAlertSeverity;
+  sequence: number | null;
+  stepId: string | null;
+  occurrences: number | null;
+  expectedFrom: WorkflowStateCode | null;
+  observedFrom: WorkflowStateCode | null;
+  expectedState: WorkflowStateCode | null;
+  observedState: WorkflowStateCode | null;
+}
+
+export interface ReplayEventView {
+  sequence: number;
+  requestId: string;
+  runId: string;
+  stepId: string | null;
+  kind: string;
+  stateFrom: WorkflowStateCode | null;
+  stateTo: WorkflowStateCode | null;
+  payloadSha256: string;
+  recordedAt: string;
+}
+
+export interface ReplayCheckpointView {
+  sequence: number;
+  stepId: string | null;
+  state: WorkflowStateCode | null;
+  payloadSha256: string;
+  recordedAt: string;
+}
+
+export interface OpenStepView {
+  stepId: string;
+  status: WorkflowStepStatusCode;
+  lastSequence: number;
+}
+
+export interface DuplicateSequenceView {
+  sequence: number;
+  occurrences: number;
+}
+
+export interface MissingTransitionView {
+  sequence: number;
+  expectedFrom: WorkflowStateCode;
+  observedFrom: WorkflowStateCode;
+}
+
+export interface ReplayTraceView {
+  events: ReplayEventView[];
+  finalState: WorkflowStateCode | null;
+  terminal: boolean;
+  checkpoints: ReplayCheckpointView[];
+  openSteps: OpenStepView[];
+  duplicateSequences: DuplicateSequenceView[];
+  missingTransitions: MissingTransitionView[];
+}
+
+export interface TraceEventView {
+  sequence: number;
+  stepId: string | null;
+  kind: string;
+  stateFrom: WorkflowStateCode | null;
+  stateTo: WorkflowStateCode | null;
+  payloadSha256: string;
+  recordedAt: string;
+  payload: unknown;
+}
+
+export interface TraceStepView {
+  stepId: string;
+  kind: string;
+  status: WorkflowStepStatusCode;
+  attempt: number;
+  inputSha256: string;
+  outputSha256: string;
+  createdAt: string;
+  updatedAt: string;
+  open: boolean;
+  lastSequence: number | null;
+}
+
+export interface TraceRunView {
+  id: string;
+  requestId: string;
+  campaignId: string | null;
+  state: WorkflowStateCode;
+  revision: number;
+  planSha256: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkflowTraceView {
+  requestId: string;
+  run: TraceRunView | null;
+  trace: ReplayTraceView | null;
+  events: TraceEventView[];
+  steps: TraceStepView[];
+  alerts: TraceAlert[];
+  terminal: boolean;
+  eventLimit: number;
+  truncated: boolean;
+  stepLimit: number;
+  stepsTruncated: boolean;
+  replayError: string | null;
+}
+
+export interface AgenticPlanningProjection {
+  lane: PlanningLane;
+  signals: {
+    objective: string;
+    greenfield: boolean;
+    large: boolean;
+    missingDocs: boolean;
+    missingStack: boolean;
+    architectureUncertainty: boolean;
+    publicContract: boolean;
+    dataOrSchema: boolean;
+    securityBoundary: boolean;
+    crossModule: boolean;
+    changedFiles: number;
+    expectedUnits: number;
+    explicitRepair: boolean;
+  };
+  artifacts: PlanningArtifactRecord[];
+  review: PlanReviewRecord | null;
+  workflow: PlanningWorkflowRun | null;
+  missingArtifacts: string[];
+  participantPlan: ParticipantPlanReadinessView;
+  reviewStatus: string | null;
+  reviewApproved: boolean;
+  materialsReady: boolean;
+  ready: boolean;
+}
+
 export interface AgenticRequestDetail {
   request: {
     id: string;
@@ -1694,9 +2727,21 @@ export interface AgenticRequestDetail {
     campaignId: string | null;
     failureReason: string | null;
   };
+  assessmentReady: boolean;
+  leadPlanReady: boolean;
+  actionSpecReady: boolean;
   triage: AgenticTriage;
+  planningLane: PlanningLane;
+  planning: {
+    artifacts: PlanningArtifactRecord[];
+    review: PlanReviewRecord | null;
+    workflow: PlanningWorkflowRun | null;
+  };
+  environment?: EnvironmentStateView | null;
+  findings: FindingDispositionRecord[];
   stack: AgenticStackProfile;
   participants: AgenticParticipantPlan;
+  reviewerEvidence: AgenticReviewerEvidence;
   specifications: AgenticSpecification[];
   plan: null | {
     id: string;
@@ -1976,6 +3021,64 @@ export interface AgenticKnowledgeResponse {
 export interface AgenticSkillRegistryEntry {
   skill: AgenticSkillRecord;
   reviewDue: boolean;
+}
+
+export type SkillPackState =
+  | "FRESH"
+  | "DUE"
+  | "REFRESHABLE"
+  | "STALE"
+  | "MISSING";
+
+export type SkillReviewBasis = "SOURCE_AVAILABILITY_ONLY" | "CONTENT_REVIEWED";
+
+export interface SkillPackSummary {
+  version: string;
+  contentSha256: string;
+  sourceCheckedAt: string;
+  contentReviewedAt: string;
+  reviewBasis: SkillReviewBasis;
+  reviewAfter: string;
+}
+
+export interface SkillPackStatus {
+  technology: string;
+  state: SkillPackState;
+  blocking: boolean;
+  persisted: SkillPackSummary | null;
+  builtin: SkillPackSummary | null;
+  reason: string;
+}
+
+export interface SkillRefreshReport {
+  startedAt: string;
+  finishedAt: string;
+  checked: number;
+  projectsChecked: number;
+  projectsSkipped: number;
+  projectTotal: number;
+  refreshed: string[];
+  due: string[];
+  blocked: string[];
+  failed: string[];
+  ok: boolean;
+}
+
+export interface SkillRefreshStatus {
+  running: boolean;
+  intervalSeconds: number;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  lastOutcome: SkillRefreshReport | null;
+  lastError: string | null;
+  packs: SkillPackStatus[];
+  due: number;
+  blocked: number;
+  truncated: boolean;
+  projectOffset: number;
+  projectsChecked: number;
+  projectsSkipped: number;
+  projectTotal: number;
 }
 
 export interface AgenticSpecBoard {
@@ -2801,6 +3904,7 @@ export interface GitHubIssueSummary {
   closed_at: string | null;
   synced_at: string;
   content_hash: string;
+  issueLink?: IssueLinkSummary | null;
 }
 
 export interface GitHubIssueDetail extends GitHubIssueSummary {
@@ -3257,6 +4361,68 @@ export const coreApi = {
     request<{ graph: AgenticWorkGraphRecord | null }>(
       `/agentic/requests/${encodeURIComponent(id)}/plan`,
     ),
+  getAgenticPlanning: (id: string) =>
+    request<AgenticPlanningProjection>(
+      `/agentic/requests/${encodeURIComponent(id)}/planning`,
+    ),
+  getAgenticEnvironment: (id: string) =>
+    request<EnvironmentStateView>(
+      `/agentic/requests/${encodeURIComponent(id)}/environment`,
+    ),
+  reviewAgenticEnvironment: (
+    id: string,
+    input: {
+      planSha256: string;
+      planRevision: number;
+    },
+  ) =>
+    request<EnvironmentStateView>(
+      `/agentic/requests/${encodeURIComponent(id)}/environment/review`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  recompileAgenticEnvironment: (id: string, input: { rationale: string }) =>
+    request<EnvironmentStateView>(
+      `/agentic/requests/${encodeURIComponent(id)}/environment/recompile`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  recompileAgenticPlan: (id: string, input: { rationale: string }) =>
+    request<{
+      plan: PlanningArtifactRecord;
+      graph: AgenticWorkGraphRecord | null;
+      review: PlanReviewRecord | null;
+      artifacts: PlanningArtifactRecord[];
+      environment: EnvironmentStateView;
+      recompiled: boolean;
+      previousRevision: number;
+      revision: number;
+    }>(`/agentic/requests/${encodeURIComponent(id)}/plan/recompile`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  getRequestTrace: (id: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (limit !== undefined) params.set("limit", String(limit));
+    const query = params.toString();
+    return request<WorkflowTraceView>(
+      `/agentic/requests/${encodeURIComponent(id)}/trace${query ? `?${query}` : ""}`,
+    );
+  },
+  reviewAgenticPlan: (
+    id: string,
+    input: {
+      planRevision: number;
+      planSha256: string;
+      decision: "APPROVE" | "CHANGES_REQUESTED" | "REJECT";
+      rationale: string;
+    },
+  ) =>
+    request<{
+      review: PlanReviewRecord;
+      workflow: PlanningWorkflowRun | null;
+    }>(`/agentic/requests/${encodeURIComponent(id)}/plan-review`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   planAgenticRequest: (id: string) =>
     request<{
       graph: AgenticWorkGraphRecord;
@@ -3267,6 +4433,23 @@ export const coreApi = {
     }>(`/agentic/requests/${encodeURIComponent(id)}/plan`, {
       method: "POST",
     }),
+  getAgenticFindings: (id: string) =>
+    request<{ findings: FindingDispositionRecord[] }>(
+      `/agentic/requests/${encodeURIComponent(id)}/findings`,
+    ),
+  resolveAgenticFinding: (
+    id: string,
+    findingId: string,
+    input: {
+      status: "RESOLVED" | "REFUTED";
+      evidenceRefs: string[];
+      ownerDecision?: string;
+    },
+  ) =>
+    request<FindingDispositionRecord>(
+      `/agentic/requests/${encodeURIComponent(id)}/findings/${encodeURIComponent(findingId)}/disposition`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
   getAgenticSpec: (id: string) =>
     request<AgenticSpecDetail>(
       `/agentic/requests/${encodeURIComponent(id)}/spec`,
@@ -3389,6 +4572,12 @@ export const coreApi = {
     request<{ skills: AgenticSkillRegistryEntry[] }>(
       `/agentic/skills${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
     ),
+  getSkillRefreshStatus: () =>
+    request<SkillRefreshStatus>("/agentic/skills/refresh"),
+  runSkillRefresh: () =>
+    request<{ report: SkillRefreshReport }>("/agentic/skills/refresh", {
+      method: "POST",
+    }),
   recordAgenticSkillUse: (
     skillId: string,
     input: {
@@ -3544,6 +4733,59 @@ export const coreApi = {
   getCandidateDiff: (campaignId: string, candidateId: string) =>
     request<CandidateDiffSummary>(
       `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/diff`,
+    ),
+  retryIssueDelivery: (linkId: string, eventId: string) =>
+    request<{
+      event: IssueDeliveryEvent | null;
+      delivery: IssueDeliveryOutcome;
+    }>(
+      `/issue-links/${encodeURIComponent(linkId)}/delivery/${encodeURIComponent(eventId)}/retry`,
+      { method: "POST" },
+    ),
+  getProjectDeliveryPolicy: (projectId: string) =>
+    request<ProjectDeliveryPolicyView>(
+      `/projects/${encodeURIComponent(projectId)}/delivery-policy`,
+    ),
+  updateProjectDeliveryPolicy: (
+    projectId: string,
+    input: DeliveryPolicyWrite,
+  ) =>
+    request<{
+      policy: DeliveryPolicy;
+      created: boolean;
+      binding: ProjectGitHubBinding;
+    }>(`/projects/${encodeURIComponent(projectId)}/delivery-policy`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  getCandidateDelivery: (campaignId: string, candidateId: string) =>
+    request<DeliveryStatus>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/delivery`,
+    ),
+  deliverCandidate: (
+    campaignId: string,
+    candidateId: string,
+    input: {
+      operation: "OPEN_PR" | "MERGE";
+      manual_confirmed: boolean;
+      base_branch?: string;
+    },
+  ) =>
+    request<DeliveryRunResult | CandidateDeliveryOpenResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/delivery`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  recordDeliveryRevert: (
+    incidentId: string,
+    input: {
+      revert_pr_number: number;
+      revert_merge_sha: string;
+      rationale: string;
+    },
+  ) =>
+    request<DeliveryRevertResult>(
+      `/delivery/incidents/${encodeURIComponent(incidentId)}/revert`,
+      { method: "POST", body: JSON.stringify(input) },
     ),
   getProjectGitHub: (projectId: string) =>
     request<CandidatePullRequestBindingResult>(

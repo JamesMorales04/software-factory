@@ -12,25 +12,88 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-PERMANENT = {"core", "supervisor", "worker", "verifier", "reviewer"}
+REVIEWER_SERVICES = {
+    "reviewer-functional",
+    "reviewer-architecture",
+    "reviewer-code-quality",
+    "reviewer-security",
+    "reviewer-testing",
+    "reviewer-operability",
+}
+# Core's full control listener binds only these factory-control/factory-egress
+# aliases. The plain `core` service name is attached to both networks and can
+# resolve to an address where the control listener is not bound.
+CANONICAL_CORE_CONTROL_URL = "http://core-control:8765"
+LEGACY_CORE_CONTROL_HOST = "core"
+LEGACY_CORE_CONTROL_PORT = 8765
+PERMANENT = {"core", "supervisor", "worker", "verifier"} | REVIEWER_SERVICES
 CONFIG_VOLUMES = {
     "runtime": "factory-config-runtime",
     "core": "factory-config-core",
     "supervisor": "factory-config-supervisor",
     "worker": "factory-config-worker",
     "verifier": "factory-config-verifier",
-    "reviewer": "factory-config-reviewer",
+    "reviewer-functional": "factory-config-reviewer-functional",
+    "reviewer-architecture": "factory-config-reviewer-architecture",
+    "reviewer-code-quality": "factory-config-reviewer-code-quality",
+    "reviewer-security": "factory-config-reviewer-security",
+    "reviewer-testing": "factory-config-reviewer-testing",
+    "reviewer-operability": "factory-config-reviewer-operability",
 }
-ALL_CONFIG_VOLUMES = set(CONFIG_VOLUMES.values())
+# Profile-gated one-shot jobs are not part of the steady-state stack, but they
+# still need explicit credential, mount, network and privilege rules.
+OPTIONAL_CONFIG_VOLUMES = {
+    "openspec-validate": "factory-config-openspec",
+}
+ALL_CONFIG_VOLUMES = set(CONFIG_VOLUMES.values()) | set(
+    OPTIONAL_CONFIG_VOLUMES.values()
+)
 EXPECTED_NETWORKS = {
     "core": {"factory-control", "factory-egress"},
     "supervisor": {"factory-control"},
     "worker": {"factory-control", "factory-egress"},
     "verifier": {"factory-control"},
-    # The reviewer owns the dedicated Codex ChatGPT credential and needs
-    # outbound access to the official App Server auth/review endpoints.
-    "reviewer": {"factory-control", "factory-egress"},
+    # Reviewers own dedicated Codex ChatGPT credentials and need outbound
+    # access to the official App Server auth/review endpoints.
+    "reviewer-functional": {"factory-control", "factory-egress"},
+    "reviewer-architecture": {"factory-control", "factory-egress"},
+    "reviewer-code-quality": {"factory-control", "factory-egress"},
+    "reviewer-security": {"factory-control", "factory-egress"},
+    "reviewer-testing": {"factory-control", "factory-egress"},
+    "reviewer-operability": {"factory-control", "factory-egress"},
     "runtime": {"factory-control", "factory-egress"},
+}
+REVIEWER_IDENTITIES = {
+    "reviewer-functional": (
+        "/config/reviewer-functional.token",
+        "reviewer-functional-process",
+        "FUNCTIONAL",
+    ),
+    "reviewer-architecture": (
+        "/config/reviewer-architecture.token",
+        "reviewer-architecture-process",
+        "ARCHITECTURE",
+    ),
+    "reviewer-code-quality": (
+        "/config/reviewer-code-quality.token",
+        "reviewer-code-quality-process",
+        "CODE_QUALITY",
+    ),
+    "reviewer-security": (
+        "/config/reviewer-security.token",
+        "reviewer-security-process",
+        "SECURITY",
+    ),
+    "reviewer-testing": (
+        "/config/reviewer-testing.token",
+        "reviewer-testing-process",
+        "TESTING",
+    ),
+    "reviewer-operability": (
+        "/config/reviewer-operability.token",
+        "reviewer-operability-process",
+        "OPERABILITY",
+    ),
 }
 ALLOWED_RUNTIME_CAPS = {
     "CHOWN",
@@ -64,8 +127,26 @@ def as_set(service, key):
     return set(value)
 
 
+def network_names(service):
+    networks = service.get("networks") or {}
+    if isinstance(networks, dict):
+        return set(networks.keys())
+    return set(networks)
+
+
 def bind_entries(value):
     return [entry.strip() for entry in str(value or "").split(",") if entry.strip()]
+
+
+def targets_legacy_core_control(value):
+    try:
+        parsed = urlsplit(value)
+        return (
+            parsed.hostname == LEGACY_CORE_CONTROL_HOST
+            and parsed.port == LEGACY_CORE_CONTROL_PORT
+        )
+    except ValueError:
+        return False
 
 
 def core_alias_networks(services):
@@ -138,13 +219,30 @@ def main(path: str) -> int:
     def fail(message: str) -> None:
         errors.append(message)
 
-    missing = (PERMANENT | {"init", "provider-bundle", "runtime"}) - set(services)
+    missing = (
+        PERMANENT
+        | {
+            "init",
+            "provider-bundle",
+            "dependency-bundle",
+            "environment-builder-bundle",
+            "runtime",
+        }
+    ) - set(services)
     if missing:
         fail(f"missing services: {sorted(missing)}")
     has_tailscale = "tailscale" in services
-    expected_services = PERMANENT | {"init", "provider-bundle", "runtime"}
+    expected_services = PERMANENT | {
+        "init",
+        "provider-bundle",
+        "dependency-bundle",
+        "environment-builder-bundle",
+        "runtime",
+    }
     if has_tailscale:
         expected_services.add("tailscale")
+    if "openspec-validate" in services:
+        expected_services.add("openspec-validate")
     if set(services) != expected_services:
         fail(f"unexpected services: {sorted(set(services) - expected_services)}")
 
@@ -171,6 +269,22 @@ def main(path: str) -> int:
             normalized = str(option).replace(" ", "")
             if normalized != "no-new-privileges:true":
                 fail(f"{name}: unsupported security_opt {option!r}")
+
+        environment = service.get("environment") or {}
+        for key, value in environment.items():
+            if isinstance(value, str) and targets_legacy_core_control(value):
+                fail(
+                    f"{name}: {key} must use the canonical core-control control host, "
+                    "not the ambiguous core service name"
+                )
+        if "FACTORY_CORE_URL" in environment:
+            if environment["FACTORY_CORE_URL"] != CANONICAL_CORE_CONTROL_URL:
+                fail(
+                    f"{name}: FACTORY_CORE_URL must be "
+                    f"{CANONICAL_CORE_CONTROL_URL} on the control network"
+                )
+            if "factory-control" not in network_names(service):
+                fail(f"{name}: FACTORY_CORE_URL requires the factory-control network")
 
         for volume in service.get("volumes", []) or []:
             source = str(volume.get("source", ""))
@@ -237,12 +351,106 @@ def main(path: str) -> int:
                 fail(
                     f"{name}: must mount only {expected_config}; got {sorted(config_sources)}"
                 )
-            actual_networks = set((service.get("networks") or {}).keys())
+            actual_networks = network_names(service)
             expected_networks = EXPECTED_NETWORKS[name]
             if actual_networks != expected_networks:
                 fail(
                     f"{name}: networks {sorted(actual_networks)} do not match {sorted(expected_networks)}"
                 )
+            if name in REVIEWER_IDENTITIES:
+                token_file, principal, role = REVIEWER_IDENTITIES[name]
+                environment = service.get("environment") or {}
+                if environment.get("FACTORY_REVIEWER_TOKEN_FILE") != token_file:
+                    fail(f"{name}: must read its own reviewer token file")
+                if environment.get("FACTORY_REVIEWER_PRINCIPAL") != principal:
+                    fail(f"{name}: must use its own reviewer principal")
+                if environment.get("FACTORY_REVIEWER_ROLE") != role:
+                    fail(f"{name}: must use its assigned reviewer role")
+                if environment.get("FACTORY_REVIEW_MECHANISM") not in {"AUTO", "MANUAL"}:
+                    fail(f"{name}: reviewer mechanism must be explicit")
+                if any(
+                    key.upper().endswith(("TOKEN", "KEY", "SECRET"))
+                    and str(value or "").strip()
+                    for key, value in environment.items()
+                ):
+                    fail(f"{name}: reviewer secrets must be file-backed, not environment values")
+                state_volume = f"factory-{name}-state"
+                state_mounts = {
+                    str(volume.get("source", ""))
+                    for volume in service.get("volumes", []) or []
+                    if str(volume.get("target", "")) == "/state"
+                }
+                if state_mounts != {state_volume}:
+                    fail(f"{name}: must mount only its own reviewer state volume")
+
+        if "openspec-validate" in services:
+            job = services["openspec-validate"]
+            if job.get("read_only") is not True:
+                fail("openspec-validate: read-only root filesystem is required")
+            if as_set(job, "cap_drop") != {"ALL"}:
+                fail("openspec-validate: cap_drop must be exactly ALL")
+            if as_set(job, "cap_add"):
+                fail("openspec-validate: the validation job must not add capabilities")
+            if not any(
+                str(option).replace(" ", "") == "no-new-privileges:true"
+                for option in job.get("security_opt", []) or []
+            ):
+                fail("openspec-validate: no-new-privileges is required")
+            if str(job.get("user")) != "10001:10001":
+                fail("openspec-validate: must run as the unprivileged factory UID")
+            if job.get("profiles") != ["openspec-validation"]:
+                fail("openspec-validate: only the openspec-validation profile is allowed")
+            if job.get("restart") != "no":
+                fail("openspec-validate: a one-shot job must not restart")
+            if job.get("entrypoint") != ["node", "/opt/openspec/validate.mjs"]:
+                fail("openspec-validate: the image-baked validation entrypoint is required")
+            if job.get("image") != "localhost/software-factory-openspec:1.16.1":
+                fail("openspec-validate: the pinned OpenSpec image is required")
+            expected_config = OPTIONAL_CONFIG_VOLUMES["openspec-validate"]
+            volumes = job.get("volumes") or []
+            volume_sources = [str(volume.get("source", "")) for volume in volumes]
+            if len(volumes) != 1 or volume_sources != [expected_config]:
+                fail(
+                    "openspec-validate: exactly one volume "
+                    f"{expected_config} is allowed; got {volume_sources}"
+                )
+            else:
+                volume = volumes[0]
+                if str(volume.get("type", "")) != "volume":
+                    fail("openspec-validate: the config mount must be a named volume")
+                if (
+                    str(volume.get("target", "")) != "/config"
+                    or volume.get("read_only") is not True
+                ):
+                    fail("openspec-validate: its config volume must be read-only at /config")
+            actual_networks = network_names(job)
+            if actual_networks != {"factory-control"}:
+                fail(
+                    "openspec-validate: must use only the private control network; got "
+                    f"{sorted(actual_networks)}"
+                )
+            environment = job.get("environment") or {}
+            if environment.get("FACTORY_CORE_URL") != CANONICAL_CORE_CONTROL_URL:
+                fail(
+                    "openspec-validate: FACTORY_CORE_URL must target Core on the "
+                    "control network via core-control"
+                )
+            if environment.get("FACTORY_OPERATOR_TOKEN_FILE") != "/config/operator.token":
+                fail("openspec-validate: the operator token must be read from its file")
+            if environment.get("FACTORY_OPENSPEC_WORKSPACE") != "/workspace":
+                fail("openspec-validate: the isolated workspace path is required")
+            if "FACTORY_OPENSPEC_REQUEST_ID" not in environment:
+                fail("openspec-validate: the request id must be operator-supplied")
+            if any(
+                key.upper().endswith("TOKEN") and str(value or "").strip()
+                for key, value in environment.items()
+            ):
+                fail("openspec-validate: secrets must not be passed in the environment")
+            if not any(
+                str(entry).startswith("/workspace:")
+                for entry in job.get("tmpfs", []) or []
+            ):
+                fail("openspec-validate: the isolated workspace tmpfs is required")
 
         for port in service.get("ports", []) or []:
             published.append((name, port))
@@ -319,7 +527,12 @@ def main(path: str) -> int:
         if core_environment.get("FACTORY_OFFICE_ACCESS_BIND") is not None:
             fail("core: the Office listener must not bind a TCP port")
 
-    for name in ("init", "provider-bundle"):
+    for name in (
+        "init",
+        "provider-bundle",
+        "dependency-bundle",
+        "environment-builder-bundle",
+    ):
         service = services.get(name, {})
         if service.get("network_mode") != "none":
             fail(f"{name}: one-shot initialization must use network_mode none")
@@ -340,6 +553,23 @@ def main(path: str) -> int:
         unexpected = as_set(service, "cap_add") - allowed_caps
         if unexpected:
             fail(f"{name}: unsupported one-shot capabilities {sorted(unexpected)}")
+        if name in {
+            "provider-bundle",
+            "dependency-bundle",
+            "environment-builder-bundle",
+        }:
+            volumes = service.get("volumes") or []
+            if len(volumes) != 1:
+                fail(f"{name}: exactly one image bundle mount is allowed")
+            else:
+                volume = volumes[0]
+                if (
+                    str(volume.get("source", "")) != "factory-image-bundle"
+                    or str(volume.get("target", "")) != "/bundle"
+                    or str(volume.get("type", "")) != "volume"
+                    or volume.get("read_only") is True
+                ):
+                    fail(f"{name}: must write only the shared image-bundle volume at /bundle")
 
     init_socket = [
         volume
@@ -382,6 +612,31 @@ def main(path: str) -> int:
     }
     if runtime_config != {"factory-config-runtime"}:
         fail(f"runtime: must mount only its own config volume; got {sorted(runtime_config)}")
+    runtime_environment = runtime.get("environment") or {}
+    if runtime_environment.get("FACTORY_RUNTIME_BROKER_TOKEN_DIR") != "/config":
+        fail("runtime: owner tokens must be read from its private config volume")
+    if runtime_environment.get("FACTORY_RUNTIME_DEPENDENCY_IMAGE") != (
+        "localhost/software-factory-dependency:dev"
+    ):
+        fail("runtime: the pinned dependency image is required")
+    if runtime_environment.get("FACTORY_RUNTIME_DEPENDENCY_BUNDLE") != (
+        "/bundles/dependency-rootfs.tar"
+    ):
+        fail("runtime: the dependency image bundle is required")
+    if runtime_environment.get("FACTORY_RUNTIME_DEPENDENCY_EGRESS_NETWORK") != (
+        "factory-deps-egress"
+    ):
+        fail("runtime: dependency acquisition must use its dedicated internal network")
+    if runtime_environment.get("FACTORY_RUNTIME_DEPENDENCY_EGRESS_SUBNET") != "10.90.0.0/24":
+        fail("runtime: dependency acquisition must use a fixed private subnet")
+    if runtime_environment.get("FACTORY_RUNTIME_DEPENDENCY_EGRESS_GATEWAY") != "10.90.0.1":
+        fail("runtime: dependency acquisition must use its fixed proxy gateway")
+    if any(
+        key.upper().endswith(("TOKEN", "KEY", "SECRET"))
+        and str(value or "").strip()
+        for key, value in runtime_environment.items()
+    ):
+        fail("runtime: broker secrets must be file-backed, not environment values")
 
     if has_tailscale:
         tailscale = services["tailscale"]
@@ -570,9 +825,15 @@ def main(path: str) -> int:
         "factory-image-bundle",
         "factory-engine",
         "factory-office-socket",
+        "factory-codex-home",
+        "factory-supervisor-state",
+        "factory-verifier-state",
     ):
         if required not in named_volumes:
             fail(f"missing durable volume {required}")
+    for service in REVIEWER_SERVICES:
+        if f"factory-{service}-state" not in named_volumes:
+            fail(f"missing reviewer state volume for {service}")
 
     if errors:
         for error in errors:

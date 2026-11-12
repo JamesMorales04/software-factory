@@ -378,6 +378,19 @@ impl Database {
                 "assignment has no frozen allowed-path scope".into(),
             ));
         }
+        super::validate_dependency_requirement(&spec)?;
+        super::validate_environment_requirement(&spec)?;
+        let environment = self.campaign_environment(&campaign_id).await.ok();
+        let environment_execution = self
+            .environment_execution_for_campaign(&campaign_id)
+            .await?;
+        if spec.environment_required && environment_execution.is_none() {
+            #[cfg(not(any(test, feature = "test-support")))]
+            return Err(Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the Campaign has no exact frozen environment execution binding".into(),
+            });
+        }
         let skills = self.adopted_skills_for_campaign(&campaign_id).await?;
         Ok(WorkerAssignment {
             lease: lease.clone(),
@@ -402,6 +415,8 @@ impl Database {
                 .map_err(|_| Error::Invalid("stored allowed tools encoding"))?,
             attempt_grant: String::new(),
             skills,
+            environment,
+            environment_execution,
         })
     }
 
@@ -547,7 +562,7 @@ impl Database {
     ) -> Result<WorkspaceOperationAuthorization, Error> {
         if !matches!(
             operation,
-            "write" | "run" | "finalize" | "apply" | "execute"
+            "write" | "run" | "finalize" | "apply" | "execute" | "dependencies"
         ) {
             return Err(Error::Invalid("workspace operation"));
         }
@@ -594,7 +609,10 @@ impl Database {
                 "execute operation is reserved for FIXTURE attempts".into(),
             ));
         }
-        if matches!(operation, "write" | "run" | "finalize" | "apply") {
+        if matches!(
+            operation,
+            "write" | "run" | "finalize" | "apply" | "dependencies"
+        ) {
             let provider_state: Option<(String,)> = sqlx::query_as::query_as(
                 "SELECT state FROM provider_sessions WHERE attempt_id=?1 AND generation=?2",
             )
@@ -682,6 +700,8 @@ impl Database {
             || report.receipt_id.len() > 128
             || report.generation <= 0
             || !is_sha256(&report.result_sha256)
+            || report.reason.len() > 4_096
+            || report.reason.chars().any(|character| character == '\0')
             || !matches!(
                 report.terminal_status.as_str(),
                 "FAILED" | "CANCELLED" | "BLOCKED"
@@ -752,8 +772,10 @@ impl Database {
                 &run_id,
                 "run.status_changed",
                 &format!(
-                    "status={} attempt={}",
-                    report.terminal_status, report.attempt_id
+                    "status={} attempt={} reason={}",
+                    report.terminal_status,
+                    report.attempt_id,
+                    report.reason.chars().take(1_024).collect::<String>()
                 ),
             )
             .await?;
@@ -786,8 +808,10 @@ impl Database {
                 .bind(&campaign_id)
                 .bind(&work_item_id)
                 .bind(format!(
-                    "worker reported BLOCKED receipt={} result={}",
-                    report.receipt_id, report.result_sha256
+                    "worker reported BLOCKED receipt={} result={} reason={}",
+                    report.receipt_id,
+                    report.result_sha256,
+                    report.reason.chars().take(1_024).collect::<String>()
                 ))
                 .bind(Utc::now().to_rfc3339())
                 .execute(&mut *transaction)
@@ -797,7 +821,11 @@ impl Database {
             super::lead::fail_lead_work(
                 &mut transaction,
                 &report.attempt_id,
-                &format!("worker terminal {}", report.terminal_status),
+                &format!(
+                    "worker terminal {} reason={}",
+                    report.terminal_status,
+                    report.reason.chars().take(1_024).collect::<String>()
+                ),
             )
             .await?;
         }

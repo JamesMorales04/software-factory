@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "updated_at": "2026-11-09T07:05:00Z",
+ "updated_at": "2026-11-12T03:04:28Z",
  "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
  "capabilities": {
   "CAP-011": {
@@ -127,7 +127,11 @@
     "POST /projects/import/github",
     "GET /projects/{id}/summary",
     "GET /projects/{id}/discovery",
-    "POST /projects/{id}/discovery"
+    "POST /projects/{id}/discovery",
+    "GET /agentic/requests/{id}/trace",
+    "POST /issue-links/{link_id}/delivery/{event_id}/retry",
+    "POST /agentic/requests/{id}/environment/recompile",
+    "POST /agentic/requests/{id}/plan/recompile"
    ],
    "user_actions": [
     "register a Project",
@@ -157,6 +161,7 @@
     "configure a default-off Project issue-intake policy with explicit repository, author, label, profile, path, R0 and budget acknowledgement",
     "select exact synchronized issue snapshots manually and acknowledge a finite batch",
     "reconcile an eligible acknowledged issue into an ordinary REVIEW_PLAN intake proposal that still requires the separate unified-intake assessment and approval; reconciliation itself never starts a Campaign or calls a provider",
+    "retry a failed issue comment/close delivery event through Core without duplicating its marker",
     "submit a Project-scoped unified intake request with an exact execution profile revision",
     "for unified intake, explicitly enable a bounded non-autonomous execution policy for a Project and profile revision",
     "submit a Lead request only with an active V2 execution-policy grant; V1 delegation records remain historical provenance",
@@ -171,7 +176,11 @@
     "scan bounded repository manifests at the frozen base commit and review advisory toolchains, capabilities and safe check suggestions before explicitly applying capabilities",
     "start from a conversation-first Home composer with compact Project and execution-profile selectors, keyboard submission, and selectable objective prompts",
     "review the latest non-terminal or most recent durable intake request in a Core-backed Home Lead thread and continue it in the existing Request workspace",
-    "authorize one explicit inference envelope and review recent work, pending decisions and Core status without operating internal domain objects"
+    "authorize one explicit inference envelope and review recent work, pending decisions and Core status without operating internal domain objects",
+    "review the exact formal plan revision and approve, request changes or reject it with a rationale",
+    "inspect required reviewer roles, assigned principals, per-role receipts and the frozen-plan assignment mismatch",
+    "resolve or refute a reviewer finding with evidence and, for refutation, the authenticated owner's approved decision",
+    "recompile a plan or environment revision explicitly before execution, recording the operator rationale and the prior revision"
    ],
    "states": [
     "loading",
@@ -224,7 +233,36 @@
     "project-source-unknown",
     "inference-authorization-required",
     "inference-authorization-exhausted",
-    "inference-authorization-changed"
+    "inference-authorization-changed",
+    "plan-review-pending",
+    "plan-review-approved",
+    "plan-review-changes-requested",
+    "plan-review-rejected",
+    "plan-review-missing-artifact",
+    "plan-review-stale-hash",
+    "environment-plan-missing",
+    "environment-conventions-conflict",
+    "environment-core-validated",
+    "environment-lead-model-unavailable",
+    "environment-lead-review-trigger",
+    "environment-lead-approved",
+    "environment-frozen",
+    "environment-blocked",
+    "environment-license-blocked",
+    "environment-builder-unavailable",
+    "reviewer-role-assignment-mismatch",
+    "reviewer-receipt-missing",
+    "reviewer-receipt-changes-requested",
+    "reviewer-receipt-failing",
+    "finding-open",
+    "finding-resolved",
+    "finding-refuted",
+    "finding-owner-decision-required",
+    "environment-recompile",
+    "environment-recompile-bound",
+    "environment-recompile-rationale-required",
+    "plan-recompile",
+    "plan-recompile-bound"
    ],
    "acceptance": [
     "office/e2e-browser/rust-journey.mjs",
@@ -257,9 +295,18 @@
     "scripts/compose-e2e.sh",
     "scripts/compose-product-browser-uat.mjs",
     "office/src/views/Home.styles.test.ts",
-    "office/e2e-browser/office-home-visual-polish.mjs"
+    "office/e2e-browser/office-home-visual-polish.mjs",
+    "office/e2e-browser/wave12-acceptance.mjs",
+    "native/src/db/wave12_fixture.rs",
+    "native/src/bin/core_support/wave12_support.rs",
+    "docs/implementation/wp10-browser-acceptance-evidence.md",
+    "docs/evidence/wave12-office-acceptance-2026-11-10/manifest.json",
+    "docs/evidence/live-vlog-acceptance-2026-11-10.md",
+    "office/src/components/office/LinkedIssues.test.tsx",
+    "native/src/issues/delivery_tests.rs",
+    "office/src/views/EnvironmentPanel.test.tsx"
    ],
-   "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Core reports CONNECTED, DISCONNECTED, UNKNOWN or DISABLED from its private Office health projection; this does not prove mobile-network reachability. Requests, Decision Inbox, the tabbed Campaign workspace, Runtime, Settings, Access & Devices, Agent Office and the automatic Issues kanban are implemented. Agent Office projects recorded participants only; its Visual Office tab is a deterministic isometric SVG/DOM floor over the same projection, with one avatar per distinct participant_id, role stations, identity-stable slots, keyboard selection and clamped pan/zoom. It adds no simulated activity, and PixiJS remains uninstalled under the recorded renderer decision. Fixture Chromium screenshots exercise the renderer only; real Core/Compose browser acceptance remains NOT_TESTED. The 2026-10-28 studio amendment adds room composition, lighting, furniture and deterministic per-participant avatar appearances, and renders STALE/FINAL/UNKNOWN participants standing rather than at a workstation; Owner visual approval, real Core/Compose browser acceptance and independent acceptance remain NOT_TESTED. Issues has an encrypted GitHub connection, one repository binding per Project, per-page ETag sync with credential-generation fencing and credential-wide backoff, stable issue identity and safe plain-text detail; default-off governed issue intake now has append-only policy revisions, explicit immutable repository/author/label/profile/path/R0/budget acknowledgement, manually selected finite batches, deterministic eligibility, a durable lease/retry queue and reconciliation into ordinary REVIEW_PLAN proposals; execution remains disabled (no Campaign start, provider call or PR write), and a real authorized GitHub read, browser acceptance and issue-to-Campaign execution remain NOT_TESTED. Board ordering, issue writing and comment synchronization remain later work. The Issues view is wired at /issues and component-tested; real browser acceptance remains pending. Unified intake now has a durable Project-scoped request, append-only pre-freeze operator messages, an explicit non-autonomous execution-policy grant, exact profile revision/plan-hash approval, and authoritative Lead withdrawal fencing. Assessment requires an authorized model gateway; no fixture fallback fabricates checks. A real Chromium journey now follows the ordinary intake path through Worker claim, exact candidate, independent verifier, semantic reviewer with model provenance, deterministic Quality Gate, changed files and Core-restart persistence using deterministic fixtures. Exact per-role routing is implemented: the frozen profile Lead route serves intake assessment, the frozen Semantic Reviewer route serves candidate review through candidate \u2192 Campaign \u2192 start evidence, and the implementer route remains the Campaign authorization route. A Codex App Server connection is executable for implementation but not one-shot assessment/review. Discovered-only model IDs depend on the current Core process discovery cache. Live provider inference, Compose acceptance for the intake path, aggregate cross-role token/cost accounting and independent acceptance remain unimplemented; these are displayed as explicit limits, not inferred state. The legacy Compose stack E2E passes. Factory Office chrome and owned user journeys are available in EN and ES with a persisted locale and 320 px layouts; machine identifiers, statuses, repository content and Core/evidence prose remain untranslated. Docs workspace/editing remains a later slice. Decision Inbox now exposes only Core-backed actions with exact identity guards: approval of a frozen intake plan requires the exact plan hash/profile revision and explicit confirmation; ambiguous model reservations can be released; Lead withdrawal and Campaign cancellation require a reason and confirmation; every mutating action re-reads /office/decisions and aborts when the item revision changed or disappeared. Informational events remain separate and never render action controls. Full-scope Campaign authorization is not posted from the Inbox. Real browser acceptance for the new Inbox actions remains pending. Project onboarding now covers authorized GitHub repository listing and import through the existing encrypted connection, approved-root local import, human Project identity, a Core-backed summary and evidence-based manifest discovery. GitHub App/OAuth installation onboarding is not implemented; fine-grained tokens do not report OAuth scopes, and Office states no installation-wide access. Discovery evidence is advisory and never grants capabilities or check authority. The supported rootless Compose CI also exercises the unified intake lifecycle end to end (request, assessment, exact approval, Worker candidate, verifier/reviewer receipts, Gate ACCEPTED and restart persistence) at implementation `056c502`; it is deterministic-fixture evidence and does not prove live inference, Compose browser acceptance or independent acceptance. The subscription route requires an exact Owner-confirmed, request-scoped subscription admission. Productivity caps are not enforced. A real browser run reached a frozen Lead plan, a governed Campaign and an independent reviewer receipt in this workspace; independent acceptance remains outstanding. The 2026-10-29 visual-polish slice adds semantic shell/content tokens, a deep-navy application rail/top bar, 40/44 px controls and a conversation-first Home with compact Project/profile selectors, one explicit Core-required governed-execution acknowledgement, and lightweight recent-work/decision/status surfaces. Fixture Chromium screenshots at 1440/834/390/320 (EN and ES) verify structure and no horizontal overflow only; they are not acceptance evidence. Product Owner visual acceptance and real Core/Compose browser acceptance remain outstanding, and other Office views keep their existing composition until their own slices. Funding enforcement follow-up (2026-10-29): Core and Worker subscription refusals now provide stable SUBSCRIPTION_FUNDING_BINDING_REQUIRED, SUBSCRIPTION_FUNDING_VERIFICATION_REQUIRED or SUBSCRIPTION_FUNDING_EVIDENCE_INVALID codes with safe error reasons through existing API error surfaces. Worker checks subscription eligibility before historical monetary prerequisites. No subscription dispatch or recovery action is enabled. Dedicated subscription UI, real Core/Compose browser acceptance and pre-Project request admission remain NOT_VERIFIED; a positive monetary envelope cannot substitute for verified subscription funding. Agent Office V3 source candidate a294a43f1c837b721f3b40f4cf217294255742cb adds the continuous studio renderer, stable identity-sorted avatar appearance assignment, a 200-participant regression, and staggered back/front workstation rows with perspective-scaled original vector figures. Chromium fixture captures at 1440, 834 and 390 px are recorded in docs/evidence/agent-office-isometric-v3-2026-10-29/; they do not prove live Core or inspector acceptance. Exact-SHA independent review and Product Owner visual approval remain pending; vector art remains below the approved reference fidelity. The normative shell, Home, Campaign pulse, Agent Office and responsive rules are defined by docs/product/office-ui-standard.md; fixture screenshots are labeled and are not live acceptance. ADR-0034 removes fixed Office model token/time/retry/subscription-cost caps: those values are telemetry, not productivity budgets; authority, egress binding, leases and the Quality Gate remain."
+   "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Core reports CONNECTED, DISCONNECTED, UNKNOWN or DISABLED from its private Office health projection; this does not prove mobile-network reachability. Requests, Decision Inbox, the tabbed Campaign workspace, Runtime, Settings, Access & Devices, Agent Office and the automatic Issues kanban are implemented. Agent Office projects recorded participants only; its Visual Office tab is a deterministic isometric SVG/DOM floor over the same projection, with one avatar per distinct participant_id, role stations, identity-stable slots, keyboard selection and clamped pan/zoom. It adds no simulated activity, and PixiJS remains uninstalled under the recorded renderer decision. Fixture Chromium screenshots exercise the renderer only; real Core/Compose browser acceptance remains NOT_TESTED. The 2026-10-28 studio amendment adds room composition, lighting, furniture and deterministic per-participant avatar appearances, and renders STALE/FINAL/UNKNOWN participants standing rather than at a workstation; Owner visual approval, real Core/Compose browser acceptance and independent acceptance remain NOT_TESTED. Issues has an encrypted GitHub connection, one repository binding per Project, per-page ETag sync with credential-generation fencing and credential-wide backoff, stable issue identity and safe plain-text detail; default-off governed issue intake now has append-only policy revisions, explicit immutable repository/author/label/profile/path/R0/budget acknowledgement, manually selected finite batches, deterministic eligibility, a durable lease/retry queue and reconciliation into ordinary REVIEW_PLAN proposals; execution remains disabled (no Campaign start, provider call or PR write), and a real authorized GitHub read, browser acceptance and issue-to-Campaign execution remain NOT_TESTED. Board ordering and non-delivery issue editing remain later work; Core-led comment/close receipts and retry are implemented, while PR-open/merge hooks remain WP3 work and live GitHub writes remain NOT_TESTED. The Issues view is wired at /issues and component-tested; real browser acceptance remains pending. Unified intake now has a durable Project-scoped request, append-only pre-freeze operator messages, an explicit non-autonomous execution-policy grant, exact profile revision/plan-hash approval, and authoritative Lead withdrawal fencing. Assessment requires an authorized model gateway; no fixture fallback fabricates checks. A real Chromium journey now follows the ordinary intake path through Worker claim, exact candidate, independent verifier, semantic reviewer with model provenance, deterministic Quality Gate, changed files and Core-restart persistence using deterministic fixtures. Exact per-role routing is implemented: the frozen profile Lead route serves intake assessment, the frozen Semantic Reviewer route serves candidate review through candidate → Campaign → start evidence, and the implementer route remains the Campaign authorization route. A Codex App Server connection is executable for implementation but not one-shot assessment/review. Discovered-only model IDs depend on the current Core process discovery cache. Live provider inference, Compose acceptance for the intake path, aggregate cross-role token/cost accounting and independent acceptance remain unimplemented; these are displayed as explicit limits, not inferred state. The legacy Compose stack E2E passes. Factory Office chrome and owned user journeys are available in EN and ES with a persisted locale and 320 px layouts; machine identifiers, statuses, repository content and Core/evidence prose remain untranslated. Docs workspace/editing remains a later slice. Decision Inbox now exposes only Core-backed actions with exact identity guards: approval of a frozen intake plan requires the exact plan hash/profile revision and explicit confirmation; ambiguous model reservations can be released; Lead withdrawal and Campaign cancellation require a reason and confirmation; every mutating action re-reads /office/decisions and aborts when the item revision changed or disappeared. Informational events remain separate and never render action controls. Full-scope Campaign authorization is not posted from the Inbox. Real browser acceptance for the new Inbox actions remains pending. Project onboarding now covers authorized GitHub repository listing and import through the existing encrypted connection, approved-root local import, human Project identity, a Core-backed summary and evidence-based manifest discovery. GitHub App/OAuth installation onboarding is not implemented; fine-grained tokens do not report OAuth scopes, and Office states no installation-wide access. Discovery evidence is advisory and never grants capabilities or check authority. The supported rootless Compose CI also exercises the unified intake lifecycle end to end (request, assessment, exact approval, Worker candidate, verifier/reviewer receipts, Gate ACCEPTED and restart persistence) at implementation `056c502`; it is deterministic-fixture evidence and does not prove live inference, Compose browser acceptance or independent acceptance. The subscription route requires an exact Owner-confirmed, request-scoped subscription admission. Productivity caps are not enforced. A real browser run reached a frozen Lead plan, a governed Campaign and an independent reviewer receipt in this workspace; independent acceptance remains outstanding. The 2026-10-29 visual-polish slice adds semantic shell/content tokens, a deep-navy application rail/top bar, 40/44 px controls and a conversation-first Home with compact Project/profile selectors, one explicit Core-required governed-execution acknowledgement, and lightweight recent-work/decision/status surfaces. Fixture Chromium screenshots at 1440/834/390/320 (EN and ES) verify structure and no horizontal overflow only; they are not acceptance evidence. Product Owner visual acceptance and real Core/Compose browser acceptance remain outstanding, and other Office views keep their existing composition until their own slices. Funding enforcement follow-up (2026-10-29): Core and Worker subscription refusals now provide stable SUBSCRIPTION_FUNDING_BINDING_REQUIRED, SUBSCRIPTION_FUNDING_VERIFICATION_REQUIRED or SUBSCRIPTION_FUNDING_EVIDENCE_INVALID codes with safe error reasons through existing API error surfaces. Worker checks subscription eligibility before historical monetary prerequisites. No subscription dispatch or recovery action is enabled. Dedicated subscription UI, real Core/Compose browser acceptance and pre-Project request admission remain NOT_VERIFIED; a positive monetary envelope cannot substitute for verified subscription funding. Agent Office V3 source candidate a294a43f1c837b721f3b40f4cf217294255742cb adds the continuous studio renderer, stable identity-sorted avatar appearance assignment, a 200-participant regression, and staggered back/front workstation rows with perspective-scaled original vector figures. Chromium fixture captures at 1440, 834 and 390 px are recorded in docs/evidence/agent-office-isometric-v3-2026-10-29/; they do not prove live Core or inspector acceptance. Exact-SHA independent review and Product Owner visual approval remain pending; vector art remains below the approved reference fidelity. The normative shell, Home, Campaign pulse, Agent Office and responsive rules are defined by docs/product/office-ui-standard.md; fixture screenshots are labeled and are not live acceptance. ADR-0034 removes fixed Office model token/time/retry/subscription-cost caps: those values are telemetry, not productivity budgets; authority, egress binding, leases and the Quality Gate remain. WP10 implementer Chromium acceptance against an isolated real Core exercised the Director plan review (lane/artifacts/stack/architecture/docs/skills/DoD/OpenSpec, pending/approved/changes-requested/rejected, missing-artifact approval blocking, rationale validation, stale plan hash refusal), reviewer independence (five required roles and assigned principals, per-role PASS/CHANGES_REQUESTED/FAIL/missing receipts with evidence, frozen-plan assignment mismatch), and finding resolve/refute with evidence and an authenticated owner decision. The run used labelled test-support fixture rows and real Core HTTP/SQLite projections, not model inference. It found and fixed a real Core defect: refutation required an owner-decision status RESOLVED that the owner-decision schema cannot store, so the action was unreachable; Core now accepts only the authenticated owner's APPROVED decision. It also fixed cross-request review-notice leakage, a misleading FORMAL_SPEC-with-no-spec message and unresolved {order} copy. Screenshots and a 39-row matrix are in docs/evidence/wave12-office-acceptance-2026-11-10/. The final integration rerun at code candidate `97690f4` repeated the 39/39 matrix and regenerated the manifest and screenshots; docs-only commits followed. This is implementer self-test evidence; independent acceptance and owner visual approval remain pending. A refutation is accepted only for owner-decision matter `FINDING_REFUTATION` with selected option `APPROVE_REFUTATION`; an unrelated matter or option is rejected. The debug test-support trace-fault endpoint is restricted to the seeded retry request, bounded to one map entry and rejects unknown IDs. The 2026-11-10 vlog run exercised the Project detail summary after Gate acceptance: the accepted Campaign d61a09f9 is shown as Accepted, the Project repository and GitHub connection are Core-backed, the issue-sync panel reports `OK` with `No issue synchronization recorded`, and old Campaigns and pending decisions remain visible as historical state. The Project summary uses the Gate-effective Campaign status (`934eabf`). This is implementer browser evidence at 1440, not independent acceptance. WP2 issue-linked delivery now freezes selected issues with the request, exposes Core-derived READY/QUEUED/IN_PROGRESS/NEEDS_ATTENTION/IN_REVIEW/DONE state on the Issues board and Request/Campaign detail, and Core owns an idempotent GitHub comment/close receipt ledger plus an operator retry that cannot duplicate a marker. A Gate acceptance alone never closes an issue; only a recorded merge can complete a mapped issue, and partially resolved issues receive one deterministic comment and stay open. PR-open and merge delivery hooks are not invoked by WP2 and remain WP3 work. Read-only tokens are typed blocked before any write. Real authorized GitHub write acceptance, the WP3 PR-open/merge integration and owner visual acceptance remain NOT_TESTED. WP1 adds an agnostic environment compiler surface: Core discovers committed conventions from the exact base commit, records a typed EnvironmentPlan, asks the frozen Lead model route for a schema-bound decision, records the Lead model call identity and an exact-plan/risk review, enforces the license gate, and freezes an immutable EnvironmentSpec before Campaign authorization. The operator may only trigger or retry the Lead review; the operator/Owner cannot choose or forge the environment decision. Director, Request and Campaign views show detection evidence, plan identity, license inventory/blockers, builder status and truthful missing/blocked/frozen states. The environment builder image/runtime and real Nix/devenv build are WP1-B and remain NOT_TESTED; no live Nix build, browser acceptance or independent acceptance is claimed. Greenfield planning now makes one bounded Lead-route stack-selection model call against the deterministic option catalog when triage/detection are empty, records a validated MODEL stack decision, and may use a bounded untrusted EnvironmentProposal to fill missing toolchains/packages/commands without overriding explicit constraints or committed conventions. Model proposals cannot supply Nix files; Core generates them, and the builder independently verifies every selected package version/licence/source against the pinned nixpkgs attribute before freeze. Resolution also realises the actual closure, rejects unfree/denied/unknown transitive packages and verifies planned command executables in the devShell. The selected stack profile drives architecture, skill and Definition of Done artifacts. The Office environment panel needs no new control for this: it already renders the resulting plan toolchains/packages/commands and the typed blocked/validated/frozen states. Live calculator re-plan and independent browser acceptance remain NOT_TESTED. Explicit operator recompile actions create a new immutable plan/environment revision only while execution is unbound; the prior rows are preserved, the rationale and prior status/revision/spec hash are audited, and the new environment requires Lead review again. The actions are hidden when a Campaign or authored specification is bound."
   },
   "CAP-049": {
    "name": "Requests and Decision Inbox",
@@ -286,17 +333,22 @@
     "POST /campaigns/{id}/cancel",
     "POST /intake/requests/{id}/approve",
     "POST /intake/requests/{id}/cancel",
-    "POST /lead/requests/{id}/withdraw"
+    "POST /lead/requests/{id}/withdraw",
+    "GET /agentic/requests/{id}/trace"
    ],
    "user_actions": [
     "start a request, follow its human-readable state and filter the request list by Project or state",
+    "send one additional operator message to a completed or cancelled request to start exactly one follow-up request in the same Project and profile, with a visible parent/child thread link",
     "inspect decisions, blocked work, unresolved usage and recent events and deep-link each item to its exact Project, Campaign, request, candidate or runtime object",
     "enable one autonomous R0 policy and subscription confirmation, then select that profile and let the Lead assess, freeze and start without per-request approval",
     "approve an exact frozen intake plan only with its plan hash and profile revision, an explicit rationale and confirmation",
     "resolve an AMBIGUOUS or UNKNOWN Core model call with an explicit operator reason",
     "withdraw a frozen Lead request or cancel a Campaign with a reason and proportionate confirmation",
     "open the exact request workspace, Campaign, Project or runtime object without exposing removed pages",
-    "cancel an autonomous request or Campaign through the authoritative Core boundary"
+    "cancel an autonomous request or Campaign through the authoritative Core boundary",
+    "inspect the bounded, redacted workflow trace for a request: replayed final state, per-step status, ordered event log and structured replay alerts",
+    "inspect duplicate-sequence, missing-transition, open-step, terminal, truncated and malformed trace alerts without rendering tokens, prompts or unknown payload values",
+    "see plan-review missing artifacts and participant-plan readiness before an exact intake approval and open the Director to complete the plan review"
    ],
    "states": [
     "loading",
@@ -310,7 +362,28 @@
     "stale-revision-guard",
     "offline-last-loaded",
     "double-submit-guard",
-    "destructive-confirmation"
+    "destructive-confirmation",
+    "trace-loading",
+    "trace-empty",
+    "trace-error",
+    "trace-offline",
+    "trace-truncated",
+    "trace-alerts",
+    "trace-replay-rejected",
+    "trace-step-truncated",
+    "trace-rejected-outcome",
+    "trace-duplicate-sequence",
+    "trace-missing-transition",
+    "trace-open-step",
+    "trace-malformed-event",
+    "trace-seeded-fault-retry",
+    "plan-review-incomplete",
+    "plan-review-pending",
+    "participant-plan-required",
+    "follow-up-eligible",
+    "follow-up-created",
+    "follow-up-exists",
+    "follow-up-policy-required"
    ],
    "acceptance": [
     "office/e2e-browser/rust-journey.mjs",
@@ -318,9 +391,20 @@
     "office/src/views/DecisionInbox.test.tsx",
     "office/src/views/RequestWorkspace.test.tsx",
     "office/src/views/Home.test.tsx",
-    "native/src/bin/core.rs"
+    "native/src/bin/core.rs",
+    "office/src/views/RequestTrace.test.tsx",
+    "native/src/trace.rs",
+    "native/src/db/events.rs",
+    "native/src/replay.rs",
+    "native/src/workflow.rs",
+    "office/e2e-browser/wave12-acceptance.mjs",
+    "native/src/db/wave12_fixture.rs",
+    "native/src/bin/core_support/wave12_support.rs",
+    "docs/implementation/wp10-browser-acceptance-evidence.md",
+    "docs/evidence/wave12-office-acceptance-2026-11-10/manifest.json",
+    "docs/evidence/live-vlog-acceptance-2026-11-10.md"
    ],
-   "notes": "Requests and decisions are operator-authenticated Core projections; the client does not synthesize state. Removed routes redirect to the closest current workspace, unknown routes return Home, and copied path URLs without a hash redirect for browser navigation. The request list and Decision Inbox filter by Project. A V2 profile whose auto_start policy enables R0 is an autopilot profile: the owner grants the autonomous policy and subscription confirmation once, then Core owns assessment, freeze and start for subsequent requests without per-request UI approval. Manual profiles keep the exact plan approval flow. The Inbox exposes exact-revision intake approval, model-call resolution, Lead withdrawal, Campaign cancellation and navigation; every action revalidates the current decision revision, requires proportionate confirmation and is disabled while Core is unreachable. Full-scope Campaign authorization is not posted from the Inbox. Autonomous Gate repair and provider-session termination remain outside the Inbox. A real Chromium run against Compose exercised the request list, Inbox, filters, deep links and the autonomous R0 path; see docs/evidence/office-autonomy-ux-2026-11-08/manifest.json and docs/evidence/autopilot-r0-2026-11-08/manifest.json. It is implementer evidence, not independent acceptance. No SSE or live-stream claim."
+   "notes": "Requests and decisions are operator-authenticated Core projections; the client does not synthesize state. Removed routes redirect to the closest current workspace, unknown routes return Home, and copied path URLs without a hash redirect for browser navigation. The request list and Decision Inbox filter by Project. A V2 profile whose auto_start policy enables R0 is an autopilot profile: the owner grants the autonomous policy and subscription confirmation once, then Core owns assessment, freeze and start for subsequent requests without per-request UI approval. Manual profiles keep the exact plan approval flow. The Inbox exposes exact-revision intake approval, model-call resolution, Lead withdrawal, Campaign cancellation and navigation; every action revalidates the current decision revision, requires proportionate confirmation and is disabled while Core is unreachable. Full-scope Campaign authorization is not posted from the Inbox. Autonomous Gate repair and provider-session termination remain outside the Inbox. A real Chromium run against Compose exercised the request list, Inbox, filters, deep links and the autonomous R0 path; see docs/evidence/office-autonomy-ux-2026-11-08/manifest.json and docs/evidence/autopilot-r0-2026-11-08/manifest.json. It is implementer evidence, not independent acceptance. No SSE or live-stream claim. WP11 adds an operator-authenticated GET /agentic/requests/{id}/trace read of the latest durable workflow run. It returns a bounded ReplayTrace, per-step rows, a redacted event log ordered by durable sequence, and structured alerts for duplicate sequences, gaps, open steps, terminal/non-terminal state, truncation, malformed rows and replay rejection. Payloads are redacted by Core; free-form step detail is not exposed. The Request workspace renders loading, empty, error/offline, alert, step and long event-log states. WP10 now exercises the trace in a real Chromium run against an isolated real Core with seeded workflow rows: loading, no-run empty, Core error plus retry, populated run facts, duplicate/gap/open/terminal/truncated/malformed alerts, step trace, ordered event log with redacted payloads, rejected replay state, and 1440/834/390/320 px EN/ES layouts. The duplicate-sequence projection is injected by the test-support endpoint because the durable event primary key cannot hold a duplicate sequence; it still runs through the real trace module. Compose acceptance and independent acceptance remain pending; this is implementer evidence only. WP11 review repair: allowlisted payload strings are retained only when they parse as canonical workflow/step/outcome enums, lowercase SHA-256, operational identifiers or numbers/booleans; free-form strings are hashed. Property names outside the canonical payload keys are replaced by a bounded hash label, event IDs must match canonical UUID / workflow-<uuid> / step-<uuid> formats, and the Office refuses invalid payload keys, values or identifier text again. Transition rows with JSON-looking invalid detail or missing/invalid from/to states raise MALFORMED_EVENT, and a rejected replay is shown as unknown rather than in progress. Step rows are bounded to the newest 500 with STEP_TRUNCATED and a visible step-truncation state. Intake approval is fail-closed: Core returns PLAN_ARTIFACTS_REQUIRED with the missing artifact list, PARTICIPANT_PLAN_REQUIRED when the recorded participant plan does not match the frozen reviewer roles, count and assignments, or PLAN_REVIEW_REQUIRED while the latest plan-review decision is pending or not approved. The Request workspace shows the blocker and links to the Director plan review; the Decision Inbox does not offer the approve action while readiness is incomplete. The 2026-11-10 vlog run exercised the ready path in real Chromium: the exact request `037165ad-bc3f-4b5e-b8bc-db9f59338f83` rendered the completed assessment, frozen plan, five-role participant plan and workflow trace at 1440/768/390 with no document or body horizontal overflow, no unnamed controls and one h1. The blocking missing-artifact, participant-plan-mismatch, stale-review and changes-requested states were not exercised in this browser run and remain NOT_TESTED. Intake follow-up now records one authenticated message on a COMPLETED or CANCELLED request and creates exactly one child request in the same Project and exact profile revision; the child has its own Action, Lead request, execution context, policy binding, assessment, plan/environment/spec freeze and Campaign, and never reuses the parent plan, candidate or Campaign. A successful Factory delivery merges the protected default branch into the Project config base with a versioned revision, so the follow-up plans from merged main. The Request workspace shows the parent and the created child with its state, explains that sending starts a follow-up, refuses a second fork and renders localized EN/ES attention/refusal when Core returns FOLLOW_UP_EXECUTION_POLICY_REQUIRED or FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH, including that another principal's grant is never reused. Core tests cover the different-principal refusal and the base-advance evidence guards; Office component tests cover the copy and states. Real Chromium/Compose browser acceptance and independent acceptance remain NOT_TESTED."
   },
   "CAP-050": {
    "name": "Campaign operational workspace",
@@ -391,13 +475,16 @@
     "office/src/views/CampaignDetail.test.tsx",
     "office/src/views/RequestWorkspace.test.tsx",
     "office/src/components/office/CandidateDiff.test.tsx",
+    "office/src/components/office/CandidateEvidence.test.tsx",
     "office/src/components/office/CandidatePullRequest.test.tsx",
     "office/src/components/office/CandidateDiff.styles.test.ts",
     "office/src/components/office/WorkGraph.test.tsx",
     "office/src/components/office/workGraphLayout.test.ts",
-    "scripts/compose-agent-office-smoke.mjs"
+    "office/src/components/office/CampaignPulse.test.tsx",
+    "scripts/compose-agent-office-smoke.mjs",
+    "docs/evidence/live-vlog-acceptance-2026-11-10.md"
    ],
-   "notes": "Campaign authorization, Run state, Attempt state and Gate outcome are displayed separately. The Campaign and Request views consume the camelCase V2 `CampaignAuthorizationRecord`: schema version, risk/execution mode, route, authorized paths/tools, `policy.operations`, `policy.progress` and `monetaryEnvelopeId`. Historical V1 caps are optional `legacy` evidence only; missing/empty arrays never crash the Budget & usage tab. The WorkGraph now includes a deterministic dependency layout, keyboard selection and a WorkUnit inspector while preserving the authoritative table. Graph presentation states are explicitly derived from recorded task status and dependencies; malformed data is surfaced, not repaired. Candidate diffs are bounded Core projections from the frozen base to the exact candidate commit/tree: changed-file status, additions/deletions, unified patches, binary/large/non-file omissions, file/patch/byte caps and exact candidate/Gate identity. GitHub pull request reads and actions use the encrypted Core connection; tokens stay server-side. Merge requires explicit confirmation and a fresh PR/check read, never bypasses GitHub branch protection and is never automatic. Real GitHub execution is NOT_TESTED until performed. Participant, tool-event and visual Office projections are provided by Agent Office."
+   "notes": "Campaign authorization, Run state, Attempt state and Gate outcome are displayed separately. The Campaign and Request views consume the camelCase V2 `CampaignAuthorizationRecord`: schema version, risk/execution mode, route, authorized paths/tools, `policy.operations`, `policy.progress` and `monetaryEnvelopeId`. Historical V1 caps are optional `legacy` evidence only; missing/empty arrays never crash the Budget & usage tab. The WorkGraph now includes a deterministic dependency layout, keyboard selection and a WorkUnit inspector while preserving the authoritative table. Graph presentation states are explicitly derived from recorded task status and dependencies; malformed data is surfaced, not repaired. Candidate diffs are bounded Core projections from the frozen base to the exact candidate commit/tree: changed-file status, additions/deletions, unified patches, binary/large/non-file omissions, file/patch/byte caps and exact candidate/Gate identity. GitHub pull request reads and actions use the encrypted Core connection; tokens stay server-side. Merge requires explicit confirmation and a fresh PR/check read, never bypasses GitHub branch protection and is never automatic. Real GitHub execution is NOT_TESTED until performed. Participant, tool-event and visual Office projections are provided by Agent Office. The Campaign pulse derives the Lead completion/blocking status from the Gate and Campaign state rather than the raw Lead request state, so an accepted Campaign cannot display a running Lead. The 2026-11-10 vlog Campaign `d61a09f9-1564-4625-bb74-8e4a0ceded19` exercised the real Campaign detail: candidate `be5eb14f`, one verifier plus five reviewer PASS receipts, an initial `REPAIR_REQUIRED` on five informational findings, and a re-evaluated `ACCEPTED` Gate at `2026-11-10T16:51:03Z`. The Gate tab showed the two acceptance reasons and no operator attention signal at 1440/768/390 with no overflow or unnamed controls. The old repair-authorization banner was removed by `fc2b957`, included in code candidate `7960123`; the final 12:47 1440 px browser check against that candidate reported no repair-authorization banner (`has repair banner: false`) while retaining the Accepted Gate, candidate and reasons. The Campaign candidate and Gate surfaces now label the recorded `final_source` as Model final or Stagnation salvage; R1+ salvage also carries the typed `SALVAGE_HUMAN_REVIEW_REQUIRED` hold. Candidate `be5eb14f` predates this field and is not claimed as salvage; migration `0075` assigns the safe `MODEL_FINAL` default and no historical row is rewritten. This is implementer browser evidence, not independent acceptance."
   },
   "CAP-051": {
    "name": "Runtime operational console",
@@ -718,6 +805,7 @@
     "GET /agentic/portfolio",
     "GET /agentic/requests/{id}",
     "POST /agentic/requests/{id}/assess",
+    "POST /intake/requests/{id}/assess",
     "GET /agentic/scheduler",
     "POST /agentic/requests/{id}/priority"
    ],
@@ -725,6 +813,7 @@
     "load the owner portfolio and inspect an operation",
     "inspect route, assurance, StackProfile and the deterministic ParticipantPlan",
     "run a bounded semantic triage with real provider inference and inspect the measured usage",
+    "run the required Lead assessment before compiling a Planner WorkGraph",
     "inspect the Operation Manager, resource-derived scheduler capacity and per-attempt worktree policy",
     "update queue priority from the Director page",
     "retry a failed portfolio or detail load"
@@ -736,6 +825,8 @@
     "offline",
     "deterministic-only",
     "semantic-recorded",
+    "assessment-required",
+    "assessment-complete",
     "no-admission",
     "no-operation-record",
     "scheduler-unavailable",
@@ -751,7 +842,7 @@
     "docs/evidence/operation-scheduler-2026-11-08/manifest.json",
     "office/e2e-browser/rust-journey.mjs"
    ],
-   "notes": "Director and Operation Manager projection with a durable operation record, priority queue and resource-derived start capacity. Two-operation worktree isolation, Planner/Spec Manager integration, GitHub projection, Explorer/Librarian/skills and dynamic fleets are staged. The Director page never grants authority or accepts work."
+   "notes": "Director and Operation Manager projection with a durable operation record, priority queue and resource-derived start capacity. The projection exposes assessmentReady, leadPlanReady and actionSpecReady; Compile plan stays disabled until the Lead assessment, frozen Lead plan and executable ActionSpec exist, and the Director offers the same Core-backed intake assessment action instead of a decorative control. Core gates every Compile/repair path, including requests with a stored PLAN, and rejects a missing prerequisite with 409 ASSESSMENT_REQUIRED before any Planner model call, repair or WorkGraph write; informational requests with a stored PLAN still return PLANNER_NOT_APPLICABLE. DEPENDENCY_PLAN_REQUIRED remains an internal failure. Two-operation worktree isolation, Planner/Spec Manager integration, GitHub projection, Explorer/Librarian/skills and dynamic fleets are staged. The Director page never grants authority or accepts work."
   },
   "CAP-064": {
    "name": "Bounded repair orchestration",
@@ -796,15 +887,27 @@
    "core_api": [
     "GET /agentic/requests/{id}/plan",
     "POST /agentic/requests/{id}/plan",
+    "GET /agentic/requests/{id}/planning",
+    "GET /agentic/requests/{id}/environment",
+    "POST /agentic/requests/{id}/environment/review",
+    "POST /agentic/requests/{id}/plan-review",
+    "GET /agentic/requests/{id}/findings",
+    "POST /agentic/requests/{id}/findings/{finding_id}/disposition",
     "GET /agentic/requests/{id}/spec",
     "POST /agentic/requests/{id}/spec",
-    "POST /agentic/requests/{id}/spec/freeze"
+    "POST /agentic/requests/{id}/spec/freeze",
+    "POST /agentic/requests/{id}/environment/recompile",
+    "POST /agentic/requests/{id}/plan/recompile"
    ],
    "user_actions": [
     "compile a Planner WorkGraph and inspect validation, order and digest",
+    "inspect the planning lane, required artifacts, stack, architecture, documentation, skill packs, Definition of Done and OpenSpec projection",
+    "approve, request changes or reject the exact plan revision with an authenticated rationale",
+    "inspect reviewer findings and resolve or refute each finding with evidence and the required owner decision",
     "author a formal specification draft for a FORMAL_SPEC request",
     "freeze the exact draft revision by its preview digest",
     "inspect requirement, assertion and check traceability",
+    "inspect whether the frozen reviewer plan is fully staffed before approving the plan",
     "retry a failed model call or reload after a conflict"
    ],
    "states": [
@@ -815,18 +918,46 @@
     "plan-frozen",
     "spec-not-required",
     "spec-empty",
+    "planning-pending",
+    "plan-review-pending",
+    "environment-core-validated",
+    "environment-lead-model-unavailable",
+    "environment-lead-review-trigger",
+    "environment-lead-approved",
+    "environment-frozen",
+    "environment-blocked",
+    "environment-license-blocked",
+    "plan-auto-approved",
+    "plan-owner-approved",
+    "plan-changes-requested",
+    "plan-rejected",
+    "plan-missing-artifacts",
+    "participant-plan-required",
+    "participant-plan-mismatch",
+    "findings-open",
+    "finding-resolved",
+    "finding-refuted",
     "spec-draft",
     "spec-frozen",
     "spec-revision-changed",
     "error",
-    "responsive"
+    "responsive",
+    "environment-recompile",
+    "environment-recompile-bound",
+    "environment-recompile-rationale-required",
+    "plan-recompile",
+    "plan-recompile-bound"
    ],
    "acceptance": [
     "office/src/views/Director.test.tsx",
+    "office/src/views/RequestWorkspace.test.tsx",
     "office/src/views/Specs.test.tsx",
-    "docs/evidence/spec-board-2026-11-09/manifest.json"
+    "native/tests/planning_pipeline.rs",
+    "docs/evidence/spec-board-2026-11-09/manifest.json",
+    "docs/evidence/live-vlog-acceptance-2026-11-10.md",
+    "office/src/views/EnvironmentPanel.test.tsx"
    ],
-   "notes": "The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas. Core validates the graph and compiles the frozen identities deterministically. A frozen specification is immutable; authoring creates a new revision."
+   "notes": "The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas. Core validates the graph and compiles the frozen identities deterministically. Planning is lane-routed and every lane requires a plan review; Core auto-approves only within the frozen policy and otherwise requires an authenticated owner decision. Plan approval fails closed until every lane artifact exists and the recorded participant plan binds exactly the frozen reviewer count, roles, assignments and WorkGraph. Planning artifacts are exact revisions bound to a SHA-256. Reviewer findings are durable dispositions and an OPEN finding blocks the Gate even when the reviewer receipt passed. A frozen specification is immutable; authoring creates a new revision. Wave 12 integration adds the supervisor/verifier/provider runtime-broker owner tokens, the six-reviewer fleet, the skill-pack refresh scheduler (source availability is separate from content review), the profile-gated OpenSpec validation job, and brokered dependency acquisition with an internal allowlisted egress proxy. Dependency acquisition is dispatched after provider writes and before offline checks; it is not visible as a new Office action. The 2026-11-10 vlog run exercised the ready planning path in real Chromium: one Planner WorkGraph, 13 FormalSpec design units, nine participant assignments, five required reviewer roles, one specification revision/freeze and an exact intake approval at 1440/768/390. The blocking plan-review states, finding resolve/refute controls, Skills refresh and trace surfaces were not exercised in this browser run and remain NOT_TESTED. Explicit operator recompile actions create a new immutable plan/environment revision only while execution is unbound; the prior rows are preserved, the rationale and prior status/revision/spec hash are audited, and the new environment requires Lead review again. The actions are hidden when a Campaign or authored specification is bound."
   },
   "CAP-061": {
    "name": "Spec issue projection and kanban",
@@ -876,6 +1007,8 @@
    ],
    "core_api": [
     "GET /agentic/skills",
+    "GET /agentic/skills/refresh",
+    "POST /agentic/skills/refresh",
     "POST /agentic/skills/{id}/uses",
     "POST /agentic/skills/{id}/license",
     "POST /agentic/skills/{id}/promote",
@@ -884,11 +1017,14 @@
    ],
    "user_actions": [
     "inspect skill scope status provenance license uses and review dates",
+    "inspect technology-pack freshness, review deadlines and the last refresh outcome",
+    "run an explicit deterministic technology-pack refresh pass",
     "record a license review",
     "record a weekly review",
     "promote a ready RUN skill to PROJECT",
     "promote a PROJECT skill to GLOBAL after the owner decision",
-    "revoke a skill with a reason"
+    "revoke a skill with a reason",
+    "distinguish source-availability-only packs from content-reviewed packs before planning"
    ],
    "states": [
     "loading",
@@ -903,13 +1039,26 @@
     "expired",
     "license-required",
     "owner-decision-required",
-    "responsive"
+    "pack-fresh",
+    "pack-due",
+    "pack-refreshable",
+    "pack-stale",
+    "pack-missing",
+    "refresh-blocked",
+    "responsive",
+    "pack-source-only-content-review-required"
    ],
    "acceptance": [
     "office/src/views/Skills.test.tsx",
-    "docs/evidence/knowledge-skills-2026-11-09/manifest.json"
+    "docs/implementation/wp3-skill-refresh-evidence.md",
+    "docs/evidence/knowledge-skills-2026-11-09/manifest.json",
+    "office/e2e-browser/wave12-acceptance.mjs",
+    "native/src/db/wave12_fixture.rs",
+    "native/src/bin/core_support/wave12_support.rs",
+    "docs/implementation/wp10-browser-acceptance-evidence.md",
+    "docs/evidence/wave12-office-acceptance-2026-11-10/manifest.json"
    ],
-   "notes": "The registry enforces read-only tools, license review, two-use PROJECT promotion, an explicit owner decision for GLOBAL, weekly review and revocation. A skill never grants write or execution tools."
+   "notes": "The registry enforces read-only tools, license review, two-use PROJECT promotion, an explicit owner decision for GLOBAL, weekly review and revocation. A skill never grants write or execution tools. The same Skills route shows Core-backed technology-pack freshness; the explicit refresh action only persists a newer curated revision and never approves a plan, hides a stale pack or grants authority. Project scanning is bounded to 64 projects per pass with a durable rotating cursor and explicit skipped-project counts. Source availability and content review are separate; only content-reviewed packs count as fresh and the remaining source-availability-only packs block until reviewed. WP10 implementer Chromium acceptance against an isolated real Core exercised the Skills route with seeded persisted technology packs: due/refreshable/blocked counts, REFRESHABLE and DUE badges, the explicit source-only/content-review-required reason, loading, Core-backed read error and retry, the empty registry, and the explicit refresh action (two persisted packs refreshed, the blocked pack retained). EN/ES and 1440/834/390/320 px layouts showed no document overflow. The state was seeded; no paid inference was used. Real Compose scheduler/restart evidence and independent acceptance remain pending."
   },
   "CAP-062": {
    "name": "Explorer, Librarian and temporary skills",
@@ -952,12 +1101,13 @@
   "CAP-063": {
    "name": "Dynamic participant composition and cheap operations",
    "user_facing": true,
-   "job": "Inspect the deterministic participant plan, unit routing, reviewer count and the observation-only Cheap Ops interpretation of candidate receipts.",
+   "job": "Inspect the deterministic participant plan, unit routing, required reviewer roles, assigned principals, independent receipt count and the observation-only Cheap Ops interpretation of candidate receipts.",
    "routes": [
     "/director",
     "/campaigns/:campaignId"
    ],
    "core_api": [
+    "GET /agentic/requests/{id}",
     "GET /agentic/requests/{id}/participants",
     "POST /agentic/requests/{id}/participants",
     "GET /quality/candidates/{id}/interpretation"
@@ -965,7 +1115,8 @@
    "user_actions": [
     "record the participant plan",
     "inspect unit specialization and provider/model routing",
-    "inspect the number of independent reviewers",
+    "inspect required reviewer roles, assigned principals, per-role receipt result/evidence and the independent receipt count",
+    "block plan approval and Campaign start unless the recorded participant plan matches the frozen reviewer roles, count and assignments",
     "interpret verifier and reviewer receipts without changing the Gate"
    ],
    "states": [
@@ -973,6 +1124,10 @@
     "plan-recorded",
     "no-plan",
     "no-work-graph",
+    "roles-assigned",
+    "roles-unassigned",
+    "participant-plan-required",
+    "participant-plan-mismatch",
     "multi-reviewer",
     "observation-only",
     "error",
@@ -981,9 +1136,10 @@
    "acceptance": [
     "office/src/views/Director.test.tsx",
     "office/src/components/office/CheapOpsPanel.test.tsx",
-    "docs/evidence/dynamic-fleets-2026-11-09/manifest.json"
+    "docs/implementation/wp9-reviewer-independence-evidence.md",
+    "docs/evidence/live-vlog-acceptance-2026-11-10.md"
    ],
-   "notes": "The plan is deterministic and cannot be widened by a model. Cheap Ops is OBSERVATION_ONLY: it restates receipts and the Gate but cannot accept, repair or fail a candidate."
+   "notes": "The plan is deterministic and cannot be widened by a model. Reviewer independence is the authenticated identity/process, not provider/model choice; the Office shows required roles, assigned principals, per-role receipt result/evidence and distinct PASS receipts from Core, including a missing-receipt state and a frozen-plan assignment-mismatch alert. Cheap Ops is OBSERVATION_ONLY: it restates receipts and the Gate but cannot accept, repair or fail a candidate. The 2026-11-10 vlog Campaign exercised five required reviewer roles with five distinct authenticated principals and five `PASS`/`EXECUTED` receipts at assurance `NONE`; `operability` was not required. The participant plan recorded nine assignments over 13 design units, while the Campaign executed one implementation unit, so multi-unit per-unit coordination remains NOT_TESTED."
   },
   "CAP-065": {
    "name": "Owner charter and delegated autonomy",
@@ -1025,13 +1181,111 @@
     "docs/evidence/owner-charter-2026-11-09/manifest.json"
    ],
    "notes": "Policy autonomy is never offered. Reserved matters remain owner decisions; the recommendation is advisory and the owner resolution is durable. Delivery autonomy is present as a separate flag but delivery effects are not implemented."
+  },
+  "CAP-026": {
+   "name": "Risk-tiered delivery and auto-merge",
+   "user_facing": true,
+   "job": "Configure an append-only Project delivery policy, inspect risk/eligibility, open the exact-candidate PR and deliver or manually approve a merge while seeing checks, protection, blockers, merge SHA, issue receipts and incident/revert state.",
+   "routes": [
+    "/campaigns/:campaignId",
+    "/projects/:projectId"
+   ],
+   "core_api": [
+    "GET /projects/{id}/delivery-policy",
+    "PUT /projects/{id}/delivery-policy",
+    "GET /campaigns/{id}/candidates/{candidate_id}/delivery",
+    "POST /campaigns/{id}/candidates/{candidate_id}/delivery",
+    "POST /delivery/incidents/{id}/revert"
+   ],
+   "user_actions": [
+    "enable or disable risk-tiered delivery and the R1 opt-in",
+    "set required checks, the post-merge check, timeout, expiry and kill switch",
+    "open or reuse the exact-candidate pull request",
+    "deliver an eligible R0/R1 candidate automatically or confirm an R2/R3/manual merge",
+    "inspect blockers, checks, protection, merge SHA and issue receipts",
+    "record a manual revert after a post-merge incident",
+    "inspect final_source/salvage state and the R1+ human-review hold"
+   ],
+   "states": [
+    "loading",
+    "empty",
+    "error",
+    "offline-live-read",
+    "policy-required",
+    "policy-disabled",
+    "risk-tiered",
+    "r0-auto",
+    "r1-opt-in",
+    "manual-only",
+    "pr-open",
+    "pr-closed",
+    "blocked",
+    "merged",
+    "incident-open",
+    "needs-attention",
+    "reverted",
+    "responsive",
+    "salvage-r0",
+    "salvage-human-review-required",
+    "salvage-evidence-error",
+    "base-change-conflict"
+   ],
+   "acceptance": [
+    "office/src/components/office/CampaignDelivery.test.tsx",
+    "office/src/components/office/DeliveryPolicyEditor.test.tsx",
+    "office/e2e-browser/delivery-policy.mjs"
+   ],
+   "notes": "Core remains the only delivery authority. Gate ACCEPTED is necessary but never sufficient. R0 auto-merge requires an enabled RISK_TIERED policy; R1 adds explicit opt-in, a current Owner Charter delivery grant and a post-merge check; R2/R3/unknown are manual. A failed post-merge check opens an incident, freezes auto-merge and requires a manual revert. Real Chromium acceptance remains pending. R1/R2/R3 stagnation salvage is blocked with SALVAGE_HUMAN_REVIEW_REQUIRED; R0 salvage remains on the ordinary R0 path. Every R1 merge, including owner-confirmed manual delivery, runs the post-merge check. A blocked attempt cannot reuse its PR for a different base; the change is a typed BASE_MISMATCH. Missing or invalid R0 salvage evidence is shown as a blocker and disables delivery. The durable attempt is reserved before GitHub effects; concurrent different-base requests cannot both push/open a PR or call the issue hook."
+  },
+  "CAP-067": {
+   "name": "Delivery policy editor and incident control",
+   "user_facing": true,
+   "job": "Append a Project delivery policy revision and operate the delivery panel with truthful policy, risk, PR, checks, blockers, merge, issue and incident state.",
+   "routes": [
+    "/projects/:projectId",
+    "/campaigns/:campaignId"
+   ],
+   "core_api": [
+    "GET /projects/{id}/delivery-policy",
+    "PUT /projects/{id}/delivery-policy",
+    "GET /campaigns/{id}/candidates/{candidate_id}/delivery",
+    "POST /campaigns/{id}/candidates/{candidate_id}/delivery",
+    "POST /delivery/incidents/{id}/revert"
+   ],
+   "user_actions": [
+    "open the Project delivery policy editor",
+    "toggle risk-tiered delivery, R1 opt-in and the kill switch",
+    "set required checks, post-merge check, timeout and expiry",
+    "refresh delivery state and inspect blockers",
+    "record a manual revert after an incident",
+    "configure and select supported manual delivery base branches"
+   ],
+   "states": [
+    "loading",
+    "empty",
+    "error",
+    "unbound",
+    "policy-required",
+    "policy-disabled",
+    "risk-tiered",
+    "incident-open",
+    "reverted",
+    "responsive",
+    "manual-base-selection"
+   ],
+   "acceptance": [
+    "office/src/components/office/CampaignDelivery.test.tsx",
+    "office/src/components/office/DeliveryPolicyEditor.test.tsx",
+    "office/e2e-browser/delivery-policy.mjs"
+   ],
+   "notes": "Office never receives the GitHub token and cannot merge without a fresh Core eligibility read. R2/R3/unknown remain manual. No decorative action is offered; every control invokes an authenticated Core operation. The policy editor displays non-default manual bases and the Campaign panel can select them for manual delivery."
   }
  },
  "deferred": [
   {
    "module": "Issues",
    "planned_slice": "Slice 5 (read-only GitHub snapshot foundation delivered)",
-   "reason": "GitHub connection, Project repository binding, bounded synchronization, plain-text detail, default-off governed issue-intake policy, finite batch acknowledgement and queue reconciliation into proposals exist at /issues. Autonomous execution, board ordering, issue writing, comments and real authorized GitHub acceptance remain deferred; execution is intentionally disabled."
+   "reason": "GitHub connection, Project repository binding, bounded synchronization, plain-text detail, default-off governed issue-intake policy, finite batch acknowledgement, queue reconciliation into proposals and Core-owned comment/close delivery receipts exist at /issues. Autonomous execution, board ordering, real authorized GitHub write acceptance and independent acceptance remain deferred; execution is intentionally disabled."
   },
   {
    "module": "Docs",

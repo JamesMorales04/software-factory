@@ -1,0 +1,4 @@
+require-sigs=true
+warning: you don't have Internet access; disabling some network-dependent features
+trusted-public-keys=warning: you don't have Internet access; disabling some network-dependent features
+cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=

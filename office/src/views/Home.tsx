@@ -165,9 +165,11 @@ export function Home() {
   const [projectId, setProjectId] = useState(initialWorkspace.projectId);
   const [profileId, setProfileId] = useState(initialWorkspace.profileId);
   const [objective, setObjective] = useState("");
+  const [environmentConstraints, setEnvironmentConstraints] = useState("");
   const [fieldErrors, setFieldErrors] = useState<{
     project?: string;
     objective?: string;
+    environmentConstraints?: string;
   }>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -443,17 +445,45 @@ export function Home() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     const trimmed = objective.trim();
-    const nextErrors: { project?: string; objective?: string } = {};
+    const nextErrors: {
+      project?: string;
+      objective?: string;
+      environmentConstraints?: string;
+    } = {};
     if (projectId === "") nextErrors.project = t("home.validation.project");
     if (trimmed === "") {
       nextErrors.objective = t("home.validation.objective");
     }
+    let constraints: NewIntakeRequest["environment_constraints"];
+    if (environmentConstraints.trim() !== "") {
+      try {
+        const parsed: unknown = JSON.parse(environmentConstraints);
+        if (
+          typeof parsed !== "object" ||
+          parsed === null ||
+          Array.isArray(parsed)
+        ) {
+          throw new Error("constraints must be a JSON object");
+        }
+        constraints = parsed as NewIntakeRequest["environment_constraints"];
+      } catch {
+        nextErrors.environmentConstraints = t(
+          "home.environmentConstraints.invalid",
+        );
+      }
+    }
     setFieldErrors(nextErrors);
-    if (nextErrors.project || nextErrors.objective) {
+    if (
+      nextErrors.project ||
+      nextErrors.objective ||
+      nextErrors.environmentConstraints
+    ) {
       if (nextErrors.project) {
         document.getElementById("home-project")?.focus();
-      } else {
+      } else if (nextErrors.objective) {
         document.getElementById("home-objective")?.focus();
+      } else {
+        document.getElementById("home-environment-constraints")?.focus();
       }
       return;
     }
@@ -471,6 +501,9 @@ export function Home() {
         ? "AUTONOMOUS"
         : "REVIEW_PLAN",
       idempotency_key: requestKey.current,
+      ...(constraints === undefined
+        ? {}
+        : { environment_constraints: constraints }),
     };
     await submitRequest(input);
   }
@@ -605,6 +638,31 @@ export function Home() {
                     </button>
                   ))}
                 </fieldset>
+
+                <details className="home-environment-constraints">
+                  <summary>{t("home.environmentConstraints.summary")}</summary>
+                  <p className="muted">
+                    {t("home.environmentConstraints.help")}
+                  </p>
+                  <Textarea
+                    id="home-environment-constraints"
+                    label={t("home.environmentConstraints.label")}
+                    value={environmentConstraints}
+                    onChange={(event) => {
+                      setEnvironmentConstraints(event.target.value);
+                      setFieldErrors((current) => ({
+                        ...current,
+                        environmentConstraints: undefined,
+                      }));
+                      resetRequestKey();
+                    }}
+                    placeholder={
+                      '{\n  "nixpkgs": "github:NixOS/nixpkgs/<revision>",\n  "packages": []\n}'
+                    }
+                    error={fieldErrors.environmentConstraints}
+                    rows={6}
+                  />
+                </details>
 
                 <div className="home-composer-toolbar">
                   <div className="home-context-chips">

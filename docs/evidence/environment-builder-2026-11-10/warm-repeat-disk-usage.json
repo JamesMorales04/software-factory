@@ -1,0 +1,12 @@
+{
+  "enforcement": "POST_HOC_DU",
+  "exact": false,
+  "exceeded": false,
+  "observedKiB": 9989808,
+  "observedMiB": 9755.672,
+  "phase": "post-build",
+  "planDiskMiB": 10240,
+  "runDir": "/home/james/.cache/sf-quality-wave12/environment-builder/cache/runs/r3-78021b0477264c23a303f98efc62233c",
+  "schemaVersion": 1,
+  "storeCache": "/home/james/.cache/sf-quality-wave12/environment-builder/cache/nix-store-r3"
+}

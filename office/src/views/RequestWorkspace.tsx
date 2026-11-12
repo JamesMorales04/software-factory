@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { LinkedIssues } from "../components/office/LinkedIssues";
 import { StatusBadge } from "../components/office/StatusBadge";
 import { Badge } from "../components/ui/Badge";
 import { Button, buttonClass } from "../components/ui/Button";
@@ -19,13 +20,16 @@ import {
 } from "../coreApi";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
+import { EnvironmentPanel } from "./EnvironmentPanel";
 import { RequestAssessment } from "./RequestAssessment";
 import { RequestPlan } from "./RequestPlan";
 import {
   IntakeModeBadge,
   IntakeStateBadge,
   isTerminalIntakeState,
+  supportsIntakeFollowUp,
 } from "./RequestState";
+import { RequestTrace } from "./RequestTrace";
 
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof CoreApiError
@@ -73,6 +77,7 @@ export function RequestWorkspace() {
   const [repairBusy, setRepairBusy] = useState(false);
   const [repairError, setRepairError] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState("");
+  const [authoredSpecFrozen, setAuthoredSpecFrozen] = useState(false);
   const messageKey = useRef(newIdempotencyKey());
 
   const load = useCallback(
@@ -103,6 +108,21 @@ export function RequestWorkspace() {
     },
     [requestId, t],
   );
+
+  useEffect(() => {
+    let active = true;
+    coreApi
+      .getAgenticSpec(requestId)
+      .then((spec) => {
+        if (active) setAuthoredSpecFrozen(Boolean(spec.frozen));
+      })
+      .catch(() => {
+        if (active) setAuthoredSpecFrozen(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [requestId]);
 
   useEffect(() => {
     setData(null);
@@ -138,6 +158,27 @@ export function RequestWorkspace() {
       setNotice(success);
       return true;
     } catch (cause) {
+      if (
+        cause instanceof CoreApiError &&
+        cause.code === "FOLLOW_UP_EXECUTION_POLICY_REQUIRED"
+      ) {
+        setActionError(t("request.followUp.policyRequired"));
+        return false;
+      }
+      if (
+        cause instanceof CoreApiError &&
+        cause.code === "FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH"
+      ) {
+        setActionError(t("request.followUp.principalMismatch"));
+        return false;
+      }
+      if (
+        cause instanceof CoreApiError &&
+        cause.code === "INTAKE_FOLLOW_UP_EXISTS"
+      ) {
+        setActionError(t("request.followUp.exists"));
+        return false;
+      }
       if (
         cause instanceof CoreApiError &&
         cause.code === "LEAD_ALREADY_STARTED"
@@ -189,7 +230,12 @@ export function RequestWorkspace() {
   }
 
   const terminal = isTerminalIntakeState(data.state);
-  const canMessage = !terminal && data.plan === null;
+  const followUpEligible =
+    supportsIntakeFollowUp(data.state) &&
+    data.authorization.reason !== "INTAKE_WITHDRAWN";
+  const followUpRequest = data.followUpRequest ?? null;
+  const canFollowUp = followUpEligible && followUpRequest === null;
+  const canMessage = (!terminal && data.plan === null) || canFollowUp;
   const canCancel = !terminal && data.state !== "EXECUTING";
   const authorizationPending = [
     "AWAITING_APPROVAL",
@@ -199,12 +245,28 @@ export function RequestWorkspace() {
   const authorizationAvailable = data.authorization.available;
   const isAutopilot = data.mode === "AUTONOMOUS";
   const offline = connectionError !== null;
+  const planning = data.planning ?? null;
+  const planningReady = planning?.ready === true;
+  const missingPlanArtifacts = planning?.missingArtifacts ?? [];
+  const participantPlan = planning?.participantPlan ?? null;
+  const participantPlanIncomplete =
+    participantPlan?.required === true && participantPlan.ready !== true;
+  const planningIncomplete =
+    data.state === "AWAITING_APPROVAL" && data.plan !== null && !planningReady;
+  const planningProblemValues = participantPlan
+    ? [
+        ...participantPlan.missingRoles,
+        ...participantPlan.unexpectedRoles,
+        ...participantPlan.missingAssignments,
+      ]
+    : [];
   const approvalReady =
     data.state === "AWAITING_APPROVAL" && data.plan !== null;
   const approveDisabled =
     busy !== null ||
     offline ||
     !approvalReady ||
+    !planningReady ||
     !authorizationAvailable ||
     rationale.trim() === "" ||
     !approvedScope;
@@ -289,7 +351,9 @@ export function RequestWorkspace() {
           idempotency_key: messageKey.current,
         });
       },
-      t("request.notice.message"),
+      canFollowUp
+        ? t("request.notice.followUpStarted")
+        : t("request.notice.message"),
     );
     if (ok) {
       messageKey.current = newIdempotencyKey();
@@ -445,6 +509,67 @@ export function RequestWorkspace() {
         </p>
       )}
 
+      {planningIncomplete && (
+        <div
+          className="ui-callout ui-callout--attention request-callout"
+          role="status"
+        >
+          <p>
+            <strong>{t("request.planning.incompleteTitle")}</strong>{" "}
+            {t("request.planning.incompleteBody")}
+          </p>
+          {planning === null ? (
+            <p>{t("request.planning.unavailable")}</p>
+          ) : (
+            <>
+              {missingPlanArtifacts.length > 0 && (
+                <p>
+                  {t("request.planning.missingArtifacts", {
+                    values: missingPlanArtifacts.join(", "),
+                  })}
+                </p>
+              )}
+              {participantPlanIncomplete && participantPlan && (
+                <p>
+                  {participantPlan.present
+                    ? t("request.planning.participantIncomplete", {
+                        values:
+                          planningProblemValues.length > 0
+                            ? planningProblemValues.join(", ")
+                            : t("request.planning.participantAssignments"),
+                      })
+                    : t("request.planning.participantMissing")}
+                </p>
+              )}
+              {!planning.reviewApproved && (
+                <p>
+                  {planning.reviewStatus === "PENDING"
+                    ? t("request.planning.reviewPending")
+                    : t("request.planning.reviewNotApproved", {
+                        status: planning.reviewStatus ?? "—",
+                      })}
+                </p>
+              )}
+              {participantPlan?.present &&
+                planningProblemValues.length === 0 &&
+                participantPlan.problems.length > 0 && (
+                  <ul className="muted">
+                    {participantPlan.problems.map((problem) => (
+                      <li key={problem}>{problem}</li>
+                    ))}
+                  </ul>
+                )}
+            </>
+          )}
+          <Link
+            className={buttonClass("secondary")}
+            to={`/director?request=${encodeURIComponent(data.id)}`}
+          >
+            {t("request.planning.openDirector")}
+          </Link>
+        </div>
+      )}
+
       {actionError && (
         <div className="ui-callout ui-callout--danger" role="alert">
           <p>{actionError}</p>
@@ -463,6 +588,11 @@ export function RequestWorkspace() {
           {notice}
         </p>
       )}
+
+      <LinkedIssues
+        links={data.linked_issues}
+        onRetried={() => void load(true)}
+      />
 
       <div className="request-layout">
         <div className="request-column">
@@ -606,7 +736,9 @@ export function RequestWorkspace() {
                           label={t("request.approval.rationale")}
                           value={rationale}
                           onChange={(event) => setRationale(event.target.value)}
-                          disabled={!authorizationAvailable || offline}
+                          disabled={
+                            !authorizationAvailable || offline || !planningReady
+                          }
                           help={t("request.approval.rationaleHelp")}
                           required
                         />
@@ -616,7 +748,9 @@ export function RequestWorkspace() {
                           onChange={(event) =>
                             setApprovedScope(event.target.checked)
                           }
-                          disabled={!authorizationAvailable || offline}
+                          disabled={
+                            !authorizationAvailable || offline || !planningReady
+                          }
                         />
                         <div className="request-form-actions">
                           <Button
@@ -631,6 +765,11 @@ export function RequestWorkspace() {
                           {!authorizationAvailable && (
                             <span className="muted">
                               {t("request.approval.disabled")}
+                            </span>
+                          )}
+                          {authorizationAvailable && !planningReady && (
+                            <span className="muted">
+                              {t("request.approval.planningDisabled")}
                             </span>
                           )}
                         </div>
@@ -706,6 +845,15 @@ export function RequestWorkspace() {
 
           <RequestAssessment assessment={data.assessment} />
           <RequestPlan proposal={data.proposal} plan={data.plan} />
+          <EnvironmentPanel
+            environment={data.environment ?? null}
+            requestId={data.id}
+            executionBound={Boolean(data.campaignId || data.campaign)}
+            authoredSpecBound={authoredSpecFrozen}
+            onEnvironmentUpdated={() => void load(true)}
+            onPlanRecompiled={() => void load(true)}
+          />
+          <RequestTrace requestId={data.id} />
 
           {(data.campaignId || data.campaign) && (
             <Panel className="request-panel">
@@ -857,7 +1005,35 @@ export function RequestWorkspace() {
                 })}
               </span>
             </div>
-            <p className="muted">{t("request.conversation.description")}</p>
+            <p className="muted">
+              {canFollowUp
+                ? t("request.conversation.followUpDescription")
+                : t("request.conversation.description")}
+            </p>
+            {data.parentRequestId && (
+              <p className="muted request-follow-up-parent">
+                {t("request.conversation.followUpFrom")}{" "}
+                <Link
+                  to={`/requests/${encodeURIComponent(data.parentRequestId)}`}
+                >
+                  {shortId(data.parentRequestId)}
+                </Link>
+              </p>
+            )}
+            {followUpRequest && (
+              <div className="ui-callout request-follow-up" role="status">
+                <p>
+                  {t("request.conversation.followUpCreated")}{" "}
+                  <IntakeStateBadge state={followUpRequest.state} />
+                </p>
+                <Link
+                  className={buttonClass("secondary")}
+                  to={`/requests/${encodeURIComponent(followUpRequest.id)}`}
+                >
+                  {t("request.conversation.openFollowUp")}
+                </Link>
+              </div>
+            )}
             {data.messages.length === 0 ? (
               <EmptyState
                 title={t("request.conversation.emptyTitle")}
@@ -887,10 +1063,18 @@ export function RequestWorkspace() {
                 onSubmit={(event) => void sendMessage(event)}
               >
                 <Textarea
-                  label={t("request.conversation.messageLabel")}
+                  label={
+                    canFollowUp
+                      ? t("request.conversation.followUpLabel")
+                      : t("request.conversation.messageLabel")
+                  }
                   value={messageBody}
                   onChange={(event) => setMessageBody(event.target.value)}
-                  placeholder={t("request.conversation.messagePlaceholder")}
+                  placeholder={
+                    canFollowUp
+                      ? t("request.conversation.followUpPlaceholder")
+                      : t("request.conversation.messagePlaceholder")
+                  }
                   disabled={offline}
                 />
                 <div className="request-form-actions">
@@ -902,10 +1086,16 @@ export function RequestWorkspace() {
                   >
                     {busy === "message"
                       ? t("request.conversation.sending")
-                      : t("request.conversation.send")}
+                      : canFollowUp
+                        ? t("request.conversation.startFollowUp")
+                        : t("request.conversation.send")}
                   </Button>
                 </div>
               </form>
+            ) : followUpRequest !== null ? (
+              <p className="muted">
+                {t("request.conversation.followUpExists")}
+              </p>
             ) : data.plan !== null ? (
               <p className="muted">{t("request.conversation.frozen")}</p>
             ) : (

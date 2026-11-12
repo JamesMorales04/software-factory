@@ -394,21 +394,59 @@ impl StackProfile {
     }
 }
 
+/// Bounded root entry names. Detection never recurses: a repository with a
+/// large tree must not turn stack inspection into an unbounded scan.
+fn root_entry_names(root: &Path) -> Vec<String> {
+    let mut names = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .take(512)
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+fn inspect_manifest(root: &Path, stack: &mut StackProfile, relative: &str) -> Option<String> {
+    let path = root.join(relative);
+    if path.is_file() {
+        StackProfile::push_unique(&mut stack.evidence_refs, relative);
+        std::fs::read_to_string(&path).ok()
+    } else {
+        None
+    }
+}
+
+fn inspect_any(root: &Path, stack: &mut StackProfile, relatives: &[&str]) -> Option<String> {
+    for relative in relatives {
+        if let Some(value) = inspect_manifest(root, stack, relative) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn detect_data_technologies(manifest: &str, stack: &mut StackProfile) {
+    let lower = manifest.to_ascii_lowercase();
+    for (needle, technology) in [
+        ("postgres", "postgresql"),
+        ("mysql", "mysql"),
+        ("redis", "redis"),
+    ] {
+        if lower.contains(needle) {
+            StackProfile::push_unique(&mut stack.data, technology);
+        }
+    }
+}
+
 /// Deterministic manifest and file evidence. The semantic assessor may add
 /// interpretation, but this function never invents a technology.
 pub fn detect_stack(root: &Path) -> StackProfile {
     let mut stack = StackProfile::default();
-    let mut inspect = |relative: &str| -> Option<String> {
-        let path = root.join(relative);
-        if path.is_file() {
-            StackProfile::push_unique(&mut stack.evidence_refs, relative);
-            std::fs::read_to_string(&path).ok()
-        } else {
-            None
-        }
-    };
+    let root_entries = root_entry_names(root);
 
-    if let Some(cargo) = inspect("Cargo.toml") {
+    if let Some(cargo) = inspect_manifest(root, &mut stack, "Cargo.toml") {
         StackProfile::push_unique(&mut stack.languages, "rust");
         StackProfile::push_unique(&mut stack.package_managers, "cargo");
         StackProfile::push_unique(&mut stack.build_tools, "cargo");
@@ -419,20 +457,53 @@ pub fn detect_stack(root: &Path) -> StackProfile {
             ("sqlx", "sqlx"),
             ("diesel", "diesel"),
             ("tokio", "tokio"),
+            ("serde", "serde"),
+            ("tracing", "tracing"),
+            ("reqwest", "reqwest"),
+            ("hyper", "hyper"),
+            ("tonic", "tonic"),
+            ("tauri", "tauri"),
         ] {
             if cargo.contains(needle) {
                 StackProfile::push_unique(&mut stack.frameworks, value);
             }
         }
+        detect_data_technologies(&cargo, &mut stack);
     }
-    if let Some(package) = inspect("package.json") {
+    if let Some(package) = inspect_manifest(root, &mut stack, "package.json") {
+        let lower = package.to_ascii_lowercase();
         StackProfile::push_unique(&mut stack.languages, "typescript");
         StackProfile::push_unique(&mut stack.runtimes, "node");
-        StackProfile::push_unique(&mut stack.package_managers, "npm");
+        let package_manager = if lower.contains("\"packagemanager\":\"pnpm")
+            || lower.contains("\"packagemanager\": \"pnpm")
+            || root_entries.iter().any(|name| name == "pnpm-lock.yaml")
+        {
+            "pnpm"
+        } else if lower.contains("\"packagemanager\":\"yarn")
+            || lower.contains("\"packagemanager\": \"yarn")
+            || root_entries.iter().any(|name| name == "yarn.lock")
+        {
+            "yarn"
+        } else if lower.contains("\"packagemanager\":\"bun")
+            || lower.contains("\"packagemanager\": \"bun")
+            || root_entries
+                .iter()
+                .any(|name| name == "bun.lock" || name == "bun.lockb")
+        {
+            "bun"
+        } else {
+            "npm"
+        };
+        StackProfile::push_unique(&mut stack.package_managers, package_manager);
         for (needle, value) in [
             ("react", "react"),
             ("vite", "vite"),
             ("next", "next"),
+            ("vue", "vue"),
+            ("svelte", "svelte"),
+            ("@angular/core", "angular"),
+            ("electron", "electron"),
+            ("@tauri-apps", "tauri"),
             ("vitest", "vitest"),
             ("jest", "jest"),
             ("@playwright/test", "playwright"),
@@ -450,29 +521,163 @@ pub fn detect_stack(root: &Path) -> StackProfile {
                 }
             }
         }
+        detect_data_technologies(&package, &mut stack);
     }
-    if inspect("pyproject.toml").is_some() || inspect("requirements.txt").is_some() {
+    if root_entries.iter().any(|name| name == "pnpm-lock.yaml") {
+        StackProfile::push_unique(&mut stack.package_managers, "pnpm");
+    }
+    if root_entries.iter().any(|name| name == "yarn.lock") {
+        StackProfile::push_unique(&mut stack.package_managers, "yarn");
+    }
+    if root_entries
+        .iter()
+        .any(|name| name == "bun.lock" || name == "bun.lockb")
+    {
+        StackProfile::push_unique(&mut stack.package_managers, "bun");
+        StackProfile::push_unique(&mut stack.runtimes, "bun");
+    }
+    if root_entries
+        .iter()
+        .any(|name| matches!(name.as_str(), "deno.json" | "deno.jsonc" | "deno.lock"))
+    {
+        StackProfile::push_unique(&mut stack.languages, "typescript");
+        StackProfile::push_unique(&mut stack.runtimes, "deno");
+        StackProfile::push_unique(&mut stack.package_managers, "deno");
+        StackProfile::push_unique(&mut stack.build_tools, "deno");
+    }
+    if let Some(python) = inspect_any(root, &mut stack, &["pyproject.toml", "requirements.txt"]) {
         StackProfile::push_unique(&mut stack.languages, "python");
         StackProfile::push_unique(&mut stack.runtimes, "python3");
         StackProfile::push_unique(&mut stack.package_managers, "pip");
+        let lower = python.to_ascii_lowercase();
+        for (needle, value) in [("django", "django"), ("flask", "flask")] {
+            if lower.contains(needle) {
+                StackProfile::push_unique(&mut stack.frameworks, value);
+            }
+        }
+        if lower.contains("pytest") {
+            StackProfile::push_unique(&mut stack.test_frameworks, "pytest");
+        }
+        if lower.contains("ruff") {
+            StackProfile::push_unique(&mut stack.build_tools, "ruff");
+        }
+        if root_entries.iter().any(|name| name == "uv.lock") {
+            StackProfile::push_unique(&mut stack.package_managers, "uv");
+        }
+        detect_data_technologies(&python, &mut stack);
     }
-    if inspect("go.mod").is_some() {
+    if let Some(pom) = inspect_manifest(root, &mut stack, "pom.xml") {
+        StackProfile::push_unique(&mut stack.languages, "java");
+        StackProfile::push_unique(&mut stack.package_managers, "maven");
+        StackProfile::push_unique(&mut stack.build_tools, "maven");
+        detect_data_technologies(&pom, &mut stack);
+    }
+    for gradle_file in ["build.gradle", "build.gradle.kts"] {
+        if let Some(gradle) = inspect_manifest(root, &mut stack, gradle_file) {
+            let lower = gradle.to_ascii_lowercase();
+            let kotlin =
+                lower.contains("kotlin") || root_entries.iter().any(|name| name.ends_with(".kt"));
+            if kotlin {
+                StackProfile::push_unique(&mut stack.languages, "kotlin");
+            }
+            if lower.contains("java") || !kotlin {
+                StackProfile::push_unique(&mut stack.languages, "java");
+            }
+            StackProfile::push_unique(&mut stack.package_managers, "gradle");
+            StackProfile::push_unique(&mut stack.build_tools, "gradle");
+            detect_data_technologies(&gradle, &mut stack);
+        }
+    }
+    if root_entries.iter().any(|name| name.ends_with(".kt")) {
+        StackProfile::push_unique(&mut stack.languages, "kotlin");
+    }
+    if let Some(project) = root_entries.iter().find(|name| name.ends_with(".csproj")) {
+        StackProfile::push_unique(&mut stack.evidence_refs, project);
+        StackProfile::push_unique(&mut stack.languages, "csharp");
+        StackProfile::push_unique(&mut stack.package_managers, "nuget");
+        StackProfile::push_unique(&mut stack.build_tools, "dotnet");
+    } else if root_entries.iter().any(|name| {
+        name.ends_with(".sln") || name == "global.json" || name == "Directory.Build.props"
+    }) {
+        StackProfile::push_unique(&mut stack.package_managers, "nuget");
+        StackProfile::push_unique(&mut stack.build_tools, "dotnet");
+    }
+    if let Some(gemfile) = inspect_any(root, &mut stack, &["Gemfile", "Gemfile.lock"]) {
+        StackProfile::push_unique(&mut stack.languages, "ruby");
+        StackProfile::push_unique(&mut stack.package_managers, "bundler");
+        if gemfile.to_ascii_lowercase().contains("rails") {
+            StackProfile::push_unique(&mut stack.frameworks, "rails");
+        }
+        detect_data_technologies(&gemfile, &mut stack);
+    }
+    if let Some(composer) = inspect_any(root, &mut stack, &["composer.json", "composer.lock"]) {
+        StackProfile::push_unique(&mut stack.languages, "php");
+        StackProfile::push_unique(&mut stack.package_managers, "composer");
+        if composer.to_ascii_lowercase().contains("laravel") {
+            StackProfile::push_unique(&mut stack.frameworks, "laravel");
+        }
+        detect_data_technologies(&composer, &mut stack);
+    }
+    if inspect_manifest(root, &mut stack, "Package.swift").is_some()
+        || root_entries
+            .iter()
+            .any(|name| name.ends_with(".swift") || name.ends_with(".xcodeproj"))
+    {
+        StackProfile::push_unique(&mut stack.languages, "swift");
+        StackProfile::push_unique(&mut stack.package_managers, "swift");
+        StackProfile::push_unique(&mut stack.build_tools, "swift");
+    }
+    if inspect_manifest(root, &mut stack, "go.mod").is_some() {
         StackProfile::push_unique(&mut stack.languages, "go");
         StackProfile::push_unique(&mut stack.package_managers, "go");
         StackProfile::push_unique(&mut stack.build_tools, "go");
     }
-    if inspect("compose.yaml").is_some() || inspect("compose.yml").is_some() {
+    if let Some(compose) = inspect_any(root, &mut stack, &["compose.yaml", "compose.yml"]) {
         StackProfile::push_unique(&mut stack.infra, "podman-compose");
         StackProfile::push_unique(&mut stack.build_tools, "podman");
+        detect_data_technologies(&compose, &mut stack);
     }
-    if inspect("Dockerfile").is_some() || inspect("Containerfile").is_some() {
+    if inspect_any(root, &mut stack, &["Dockerfile", "Containerfile"]).is_some() {
         StackProfile::push_unique(&mut stack.infra, "container");
     }
-    if inspect("playwright.config.ts").is_some() || inspect("playwright.config.js").is_some() {
+    if root.join("k8s").is_dir()
+        || root.join("kubernetes").is_dir()
+        || root.join("Chart.yaml").is_file()
+        || root.join("kustomization.yaml").is_file()
+    {
+        StackProfile::push_unique(&mut stack.infra, "kubernetes");
+        for evidence in ["k8s", "kubernetes", "Chart.yaml", "kustomization.yaml"] {
+            if root.join(evidence).exists() {
+                StackProfile::push_unique(&mut stack.evidence_refs, evidence);
+            }
+        }
+    }
+    if root.join("terraform").is_dir() || root_entries.iter().any(|name| name.ends_with(".tf")) {
+        StackProfile::push_unique(&mut stack.infra, "terraform");
+        StackProfile::push_unique(
+            &mut stack.evidence_refs,
+            if root.join("terraform").is_dir() {
+                "terraform"
+            } else {
+                "*.tf"
+            },
+        );
+    }
+    if root.join(".github/workflows").is_dir() {
+        StackProfile::push_unique(&mut stack.infra, "github-actions");
+        StackProfile::push_unique(&mut stack.evidence_refs, ".github/workflows");
+    }
+    if inspect_any(
+        root,
+        &mut stack,
+        &["playwright.config.ts", "playwright.config.js"],
+    )
+    .is_some()
+    {
         StackProfile::push_unique(&mut stack.test_frameworks, "playwright");
         StackProfile::push_unique(&mut stack.browser, "playwright");
     }
-    if inspect("migrations").is_some() {
+    if inspect_manifest(root, &mut stack, "migrations").is_some() {
         StackProfile::push_unique(&mut stack.data, "migrations");
     }
     if root.join("migrations").is_dir() {
@@ -526,6 +731,13 @@ pub struct ParticipantPlan {
     pub unit_assignments: Vec<AgentUnitAssignment>,
     #[serde(default)]
     pub reviewer_count: u32,
+    #[serde(default)]
+    pub reviewer_roles: Vec<crate::planning::ReviewerRole>,
+    /// Concrete role-to-principal assignments compiled from trusted reviewer
+    /// identities. Empty for a route with no reviewer or before Core compiles
+    /// them. Model/provider equality is never a reason to reject an assignment.
+    #[serde(default)]
+    pub reviewer_assignments: Vec<crate::review_roles::ReviewerIdentityAssignment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -570,11 +782,15 @@ pub fn participant_plan(
         .cloned()
         .unwrap_or_else(|| "cross-cutting".into());
     let units = work_units.max(1);
-    let reviewers = if assurance >= Assurance::Elevated {
-        2
-    } else {
-        1
-    };
+    let lane = lane_for_route(route);
+    let reviewer_plan = lane.map(|lane| {
+        crate::planning::ReviewerPlan::for_lane(lane, assurance >= Assurance::Elevated)
+    });
+    let reviewer_roles = reviewer_plan
+        .as_ref()
+        .map(|plan| plan.required.clone())
+        .unwrap_or_default();
+    let reviewers = u32::try_from(reviewer_roles.len()).unwrap_or(u32::MAX);
     let mut assignments = Vec::new();
     match route {
         ChangeRoute::NoAgent => {
@@ -658,6 +874,19 @@ pub fn participant_plan(
         reasons,
         unit_assignments: Vec::new(),
         reviewer_count: reviewers,
+        reviewer_roles,
+        reviewer_assignments: Vec::new(),
+    }
+}
+
+/// Planning lane for an executable route. `NoAgent` has no reviewer plan.
+pub fn lane_for_route(route: ChangeRoute) -> Option<crate::planning::PlanningLane> {
+    match route {
+        ChangeRoute::NoAgent => None,
+        ChangeRoute::Direct => Some(crate::planning::PlanningLane::Direct),
+        ChangeRoute::Delegated => Some(crate::planning::PlanningLane::Delegated),
+        ChangeRoute::FormalSpec => Some(crate::planning::PlanningLane::FormalSpec),
+        ChangeRoute::Repair => Some(crate::planning::PlanningLane::Repair),
     }
 }
 
@@ -1068,6 +1297,11 @@ pub struct SpecDraftModel {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SpecRequirementDraft {
     pub statement: String,
+    /// Exact WorkGraph unit that implements this requirement. Core validates
+    /// the id and the OpenSpec tasks are derived from this explicit mapping,
+    /// never from list position.
+    #[serde(default)]
+    pub work_unit_id: String,
     #[serde(default)]
     pub acceptance: Vec<String>,
     #[serde(default)]
@@ -1090,6 +1324,10 @@ pub struct FrozenSpec {
 pub struct FrozenRequirement {
     pub id: String,
     pub statement: String,
+    /// Exact WorkGraph unit that implements this requirement. Empty only for
+    /// legacy stored specs; new specs require a validated unit id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub work_unit_id: String,
     pub assertions: Vec<FrozenAssertion>,
 }
 
@@ -1175,6 +1413,7 @@ pub fn compile_spec(draft: &SpecDraftModel, revision: u32) -> Result<FrozenSpec,
         requirements.push(FrozenRequirement {
             id: format!("REQ-{number:03}"),
             statement: requirement.statement.clone(),
+            work_unit_id: requirement.work_unit_id.clone(),
             assertions,
         });
     }
@@ -1434,6 +1673,7 @@ mod tests {
             summary: "Bounded calendar validation".into(),
             requirements: vec![SpecRequirementDraft {
                 statement: "Invalid dates are rejected.".into(),
+                work_unit_id: "a".into(),
                 acceptance: vec!["2025-13-01 is rejected".into()],
                 negative: vec!["2024-02-29 is accepted".into()],
             }],
@@ -1496,7 +1736,8 @@ mod tests {
             "deepseek-v4.1-flash",
             "build",
         );
-        assert_eq!(plan.reviewer_count, 2);
+        assert_eq!(plan.reviewer_count, 6);
+        assert_eq!(plan.reviewer_roles.len(), 6);
         assert_eq!(plan.unit_assignments.len(), 2);
         assert_eq!(plan.unit_assignments[0].specialization, "rust");
         assert_eq!(
@@ -1506,7 +1747,7 @@ mod tests {
         assert!(
             plan.assignments
                 .iter()
-                .any(|assignment| assignment.role == "Reviewer" && assignment.count == 2)
+                .any(|assignment| assignment.role == "Reviewer" && assignment.count == 6)
         );
     }
 

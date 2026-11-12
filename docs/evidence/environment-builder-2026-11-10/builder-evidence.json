@@ -1,0 +1,26 @@
+{
+  "closureEntries": 481,
+  "createdAt": "2026-11-11T07:27:40Z",
+  "devenvVersion": "1.11.2",
+  "environmentDigest": "5bcadda94a65c2516f97d731c141c58a472e4654e549f8fac26af7c647dc043b",
+  "frozenSbomSha256": "5f2a9b5b3ec0d7dbfea7c890af8fbb0f1ef267b3f26bf6b0c0a195fb3521539e",
+  "licenseInventorySha256": "8cce25b2a1f0351bee1dd1f0c2169362d42418c9e1c7997e1b72615cea09bff6",
+  "nixVersion": "2.28.3",
+  "outputSha256": "12dfb45e5adf93454e35c846472d8101d7a52eec0438aaa95e867636f7f7c23a",
+  "planSha256": "694f8cdc14adddca30e8ac3d5ce4aa2f387515bf0e90571e121cf678bbbec93d",
+  "sandboxAttestation": {
+    "boundedResources": true,
+    "impure": false,
+    "noHostMount": true,
+    "noHostNetwork": true,
+    "noHostSocket": true,
+    "noSecrets": true,
+    "nonRoot": true,
+    "sandbox": true
+  },
+  "sbomDocumentSha256": "0a587c2adf5e1446c8faa46240691ae82c750eb2d66cc604ded92aa35cc18945",
+  "schemaVersion": 1,
+  "specSha256": "cb365859f1f8bcb7cadedfe8f3188d7aa57e0dd8768cfbcfbc82e79a7add7d85",
+  "status": "SUCCEEDED",
+  "storePath": "/nix/store/c2nf1xssr9jvifvw55v4dpf1hnp1qk5g-devenv-shell-env"
+}

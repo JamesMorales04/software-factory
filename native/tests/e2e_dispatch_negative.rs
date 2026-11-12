@@ -446,7 +446,7 @@ fn run_verifier(root: &Path, base_url: &str, candidate_id: &str, principal: &str
         .env("FACTORY_CORE_URL", base_url)
         .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
         .env("FACTORY_CANDIDATE_ID", candidate_id)
-        .env("FACTORY_VERIFIER_PRINCIPAL", principal)
+        .env("FACTORY_VERIFIER_PRINCIPAL", "verifier-process")
         .env(
             "FACTORY_VERIFIER_WORKSPACE",
             root.join(format!("verifier-workspaces-{principal}")),
@@ -933,7 +933,7 @@ async fn failing_frozen_check_produces_repair_required_gate_not_accepted() {
         .unwrap()
         .iter()
         .find(|receipt| receipt["role"] == "verifier")
-        .expect("verifier receipt");
+        .unwrap_or_else(|| panic!("verifier receipt; log:\n{log}"));
     assert_eq!(verifier_receipt["result"], "FAIL");
     assert_eq!(verifier_receipt["evidence"], "EXECUTED");
 
@@ -956,7 +956,8 @@ async fn failing_frozen_check_produces_repair_required_gate_not_accepted() {
         .json(&json!({
             "candidate_id": candidate_id,
             "receipt_id": "reviewer-negative-check",
-            "principal_id": "reviewer-negative-check",
+            "principal_id": "reviewer-process",
+            "reviewerRole": "FUNCTIONAL",
             "actionSpecSha256": fixture.action_spec_sha256,
             "commitSha": candidate["commit_sha"],
             "treeSha": candidate["tree_sha"],

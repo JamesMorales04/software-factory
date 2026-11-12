@@ -5,7 +5,9 @@
 
 use super::*;
 
-use crate::execution_policy::{InferenceRole, ReserveInferenceInput, UsdMicros};
+use crate::execution_policy::{
+    InferenceRole, ReserveInferenceInput, UsdMicros, check_model_call_technical_ceilings,
+};
 use crate::inference_ledger::MarkInferenceDispatchedInput;
 use chrono::Utc;
 use sqlx::connection::Connection;
@@ -389,20 +391,19 @@ impl Database {
             };
             // The frozen quote is monetary evidence, not a token/productivity
             // ceiling. V2 records actual usage; the shared ledger enforces the
-            // operator's monetary envelope.
-            let uncapped = i64::try_from(crate::execution_policy::UNCAPPED_TOKENS)
-                .map_err(|_| Error::Invalid("uncapped provider turn budget"))?;
+            // operator's monetary envelope. The legacy columns still need
+            // finite technical bounds so their signed-integer sums stay safe.
+            let (safe_input, safe_output, safe_total) = provider_turn_safe_token_bounds()?;
             let _ = quote;
-            (uncapped, uncapped, uncapped, 0, 0, 0, 0, 0, 0, 0, 0)
+            (safe_input, safe_output, safe_total, 0, 0, 0, 0, 0, 0, 0, 0)
         } else if subscription {
             // A subscription turn has no billable monetary envelope and no
             // productivity token/time cap. The legacy reservation columns
-            // hold finite sentinels so SQLite remains valid; no executor
-            // treats them as a ceiling. Observed usage and latency are
+            // hold finite technical ceilings so SQLite remains valid; no
+            // executor treats them as a ceiling. Observed usage and latency are
             // telemetry, and progress supervision is the only automatic brake.
-            let uncapped = i64::try_from(crate::execution_policy::UNCAPPED_TOKENS)
-                .map_err(|_| Error::Invalid("uncapped token sentinel"))?;
-            (uncapped, uncapped, uncapped, 0, 0, 0, 0, 0, 0, 0, 0)
+            let (safe_input, safe_output, safe_total) = provider_turn_safe_token_bounds()?;
+            (safe_input, safe_output, safe_total, 0, 0, 0, 0, 0, 0, 0, 0)
         } else if authorization_version == 1 {
             let max_input: Option<i64> = lease.try_get("max_input_tokens")?;
             let max_output: Option<i64> = lease.try_get("max_output_tokens")?;
@@ -417,38 +418,55 @@ impl Database {
                         return Err(Error::Invalid("legacy authorization is missing its caps"));
                     }
                 };
-            let used: (i64, i64, i64, i64) = sqlx::query_as::query_as(
-                "SELECT COALESCE(SUM(ps.input_tokens),0),COALESCE(SUM(ps.output_tokens),0),
-                        COALESCE(SUM(ps.total_tokens),0),COALESCE(SUM(ps.cost_micros),0)
+            let used = super::accounting::checked_stream_totals(
+                &mut transaction,
+                "SELECT ps.input_tokens,ps.output_tokens,ps.total_tokens,ps.cost_micros
                  FROM provider_sessions ps JOIN attempts a ON a.id=ps.attempt_id
                  JOIN runs r ON r.id=a.run_id WHERE r.campaign_id=?1",
+                &[campaign_id.as_str()],
+                &[
+                    "input_tokens",
+                    "output_tokens",
+                    "total_tokens",
+                    "cost_micros",
+                ],
+                "provider session usage",
             )
-            .bind(&campaign_id)
-            .fetch_one(&mut *transaction)
             .await?;
-            let reserved: (i64, i64, i64) = sqlx::query_as::query_as(
-                "SELECT COALESCE(SUM(ptr.max_input_tokens),0),
-                        COALESCE(SUM(ptr.max_output_tokens),0),
-                        COALESCE(SUM(ptr.max_cost_micros),0)
+            let reserved = super::accounting::checked_stream_totals(
+                &mut transaction,
+                "SELECT ptr.max_input_tokens,ptr.max_output_tokens,ptr.max_cost_micros
                  FROM provider_turn_reservations ptr JOIN attempts a ON a.id=ptr.attempt_id
                  JOIN runs r ON r.id=a.run_id
                  WHERE r.campaign_id=?1 AND ptr.state='RESERVED'",
+                &[campaign_id.as_str()],
+                &["max_input_tokens", "max_output_tokens", "max_cost_micros"],
+                "provider turn reservation",
             )
-            .bind(&campaign_id)
-            .fetch_one(&mut *transaction)
             .await?;
+            let [used_input, used_output, used_total, used_cost] = used.as_slice() else {
+                return Err(Error::Invalid("provider session usage"));
+            };
+            let [reserved_input, reserved_output, reserved_cost] = reserved.as_slice() else {
+                return Err(Error::Invalid("provider turn reservation"));
+            };
+            // The legacy V1 budget columns are signed `i64`. A checked total
+            // above that range saturates at `i64::MAX`, which makes every
+            // remaining allowance zero (fail-closed) instead of raising a
+            // database error or wrapping into apparent availability.
+            let saturate_i64 = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
             (
                 max_input,
                 max_output,
                 max_cost,
                 deadline_secs,
-                used.0,
-                used.1,
-                used.2,
-                used.3,
-                reserved.0,
-                reserved.1,
-                reserved.2,
+                saturate_i64(*used_input),
+                saturate_i64(*used_output),
+                saturate_i64(*used_total),
+                saturate_i64(*used_cost),
+                saturate_i64(*reserved_input),
+                saturate_i64(*reserved_output),
+                saturate_i64(*reserved_cost),
             )
         } else {
             return Err(Error::Invalid("unknown authorization policy version"));
@@ -468,7 +486,7 @@ impl Database {
             .saturating_sub(used_cost)
             .saturating_sub(reserved_cost);
         let requested_output = if subscription {
-            i64::try_from(crate::execution_policy::UNCAPPED_TOKENS)
+            i64::try_from(crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS)
                 .map_err(|_| Error::Invalid("uncapped provider turn output"))?
         } else if requested_output_tokens == 0 {
             // A billable or legacy turn still has a monetary envelope. Use
@@ -484,6 +502,18 @@ impl Database {
             i64::try_from(requested_output_tokens)
                 .map_err(|_| Error::Invalid("provider turn output"))?
         };
+        if let Some(quote) = &ledger_quote {
+            // The frozen quote is copied into the shared ledger and the legacy
+            // provider-turn columns. A quote above the technical ceiling must
+            // be refused before either durable write, exactly like the
+            // model-call authorization path.
+            check_model_call_technical_ceilings(
+                quote.input_tokens,
+                quote.output_tokens,
+                quote.upper_bound_micros.get(),
+            )
+            .map_err(|error| Error::Invalid(error.message()))?;
+        }
         let (reservation_input, grant_output, reservation_total) =
             if let Some(quote) = &ledger_quote {
                 // V2 grants only the frozen per-request token envelope; it does
@@ -513,6 +543,18 @@ impl Database {
             }
             None => remaining_cost,
         };
+        // Validate the exact amounts that will become durable columns. For a
+        // legacy V1 authorization this refuses a sentinel-sized remainder
+        // instead of storing an amount whose sums cannot stay finite.
+        check_model_call_technical_ceilings(
+            u64::try_from(reservation_input)
+                .map_err(|_| Error::Invalid("provider turn input reservation"))?,
+            u64::try_from(grant_output)
+                .map_err(|_| Error::Invalid("provider turn output reservation"))?,
+            u64::try_from(reservation_cost)
+                .map_err(|_| Error::Invalid("provider turn cost reservation"))?,
+        )
+        .map_err(|error| Error::Invalid(error.message()))?;
         let reservation_id = Uuid::new_v4().to_string();
         let expires_at_ms = if subscription || authorization_version >= 2 {
             crate::execution_policy::UNCAPPED_EXPIRES_AT_MS
@@ -1449,19 +1491,31 @@ impl Database {
             .fetch_one(&mut *transaction)
             .await?;
         let (campaign_id, _authorization_version, max_input, max_output, max_cost) = campaign;
-        let (used_input, used_output, used_total, used_cost): (i64, i64, i64, i64) =
-            sqlx::query_as::query_as(
-                "SELECT COALESCE(SUM(ps.input_tokens),0),COALESCE(SUM(ps.output_tokens),0),
-                        COALESCE(SUM(ps.total_tokens),0),COALESCE(SUM(ps.cost_micros),0)
-                 FROM provider_sessions ps
-                 JOIN attempts a ON a.id=ps.attempt_id
-                 JOIN runs r ON r.id=a.run_id
-                 WHERE r.campaign_id=?1 AND ps.session_record_id<>?2",
-            )
-            .bind(&campaign_id)
-            .bind(&record_id)
-            .fetch_one(&mut *transaction)
-            .await?;
+        let used = super::accounting::checked_stream_totals(
+            &mut transaction,
+            "SELECT ps.input_tokens,ps.output_tokens,ps.total_tokens,ps.cost_micros
+             FROM provider_sessions ps
+             JOIN attempts a ON a.id=ps.attempt_id
+             JOIN runs r ON r.id=a.run_id
+             WHERE r.campaign_id=?1 AND ps.session_record_id<>?2",
+            &[campaign_id.as_str(), record_id.as_str()],
+            &[
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+                "cost_micros",
+            ],
+            "provider session usage",
+        )
+        .await?;
+        let [used_input, used_output, used_total, used_cost] = used.as_slice() else {
+            return Err(Error::Invalid("provider session usage"));
+        };
+        let saturate_i64 = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
+        let used_input = saturate_i64(*used_input);
+        let used_output = saturate_i64(*used_output);
+        let used_total = saturate_i64(*used_total);
+        let used_cost = saturate_i64(*used_cost);
         let existing: (i64, i64, i64, i64) = sqlx::query_as::query_as(
             "SELECT input_tokens,output_tokens,total_tokens,cost_micros
              FROM provider_sessions WHERE session_record_id=?1",
@@ -1742,6 +1796,20 @@ impl Database {
 
 fn nullable(value: &str) -> Option<&str> {
     (!value.trim().is_empty()).then_some(value)
+}
+
+/// Technical token ceilings for a subscription/ledger-bound provider turn.
+/// These keep the legacy signed-integer reservation columns and their sums
+/// finite; they are not productivity limits and are never enforced as such.
+fn provider_turn_safe_token_bounds() -> Result<(i64, i64, i64), Error> {
+    Ok((
+        i64::try_from(crate::execution_policy::SAFE_MAX_MODEL_CALL_INPUT_TOKENS)
+            .map_err(|_| Error::Invalid("safe provider turn input bound"))?,
+        i64::try_from(crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS)
+            .map_err(|_| Error::Invalid("safe provider turn output bound"))?,
+        i64::try_from(crate::execution_policy::SAFE_MAX_MODEL_CALL_TOTAL_TOKENS)
+            .map_err(|_| Error::Invalid("safe provider turn total bound"))?,
+    ))
 }
 
 async fn load_provider_session(
@@ -2073,6 +2141,260 @@ mod tests {
             "the subscription funding hold must prevent repeated assignment"
         );
         db.close().await;
+    }
+
+    #[tokio::test]
+    async fn provider_turn_refuses_quote_above_the_technical_ceiling_without_rows() {
+        let (_path, db, session) = active_turn_fixture_v2().await;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO provider_settings
+             (provider,kind,model,base_url,auth_mode,credential_ciphertext,credential_nonce,
+              credential_fingerprint,enabled,is_default,max_turns,max_input_tokens,
+              max_output_tokens,max_cost_micros,input_micros_per_million,
+              output_micros_per_million,revision,updated_at)
+             VALUES ('opencode','opencode','deepseek-v4.1-flash','http://127.0.0.1:9','api_key',
+                     'cipher','nonce','fingerprint',1,0,1,?1,100,1000,1000000,0,1,?2)",
+        )
+        .bind(i64::try_from(crate::execution_policy::SAFE_MAX_MODEL_CALL_INPUT_TOKENS + 1).unwrap())
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        // A legacy provider setting freezes a token envelope above the shared
+        // ceiling. The provider-turn path must apply the same check as
+        // authorize_model_call before copying the quote into durable columns.
+        db.create_inference_pricing_quote(&NewInferencePricingQuote {
+            provider: "opencode".into(),
+            model: "deepseek-v4.1-flash".into(),
+            revision: 1,
+            evidence_sha256: "e".repeat(64),
+            actor: "operator".into(),
+        })
+        .await
+        .unwrap();
+        let envelope = db
+            .create_inference_envelope(&NewInferenceEnvelope {
+                request_id: "request-turn-ceiling".into(),
+                project_id: "project".into(),
+                authorized_micros: UsdMicros::new(20_000_000).unwrap(),
+                actor: "operator".into(),
+                scope_sha256: "a".repeat(64),
+                evidence_sha256: "b".repeat(64),
+                idempotency_key: "envelope-turn-ceiling".into(),
+            })
+            .await
+            .unwrap();
+        sqlx::query::query(
+            "INSERT INTO inference_campaign_modes
+             (campaign_id,mode,classified_at_ms,evidence_sha256)
+             VALUES ('campaign','V2',?1,?2)",
+        )
+        .bind(Utc::now().timestamp_millis())
+        .bind("c".repeat(64))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO inference_campaign_bindings(campaign_id,envelope_id,bound_at_ms)
+             VALUES ('campaign',?1,?2)",
+        )
+        .bind(&envelope.envelope_id)
+        .bind(Utc::now().timestamp_millis())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        db.admit_test_subscription_dispatch("campaign")
+            .await
+            .unwrap();
+
+        let error = db
+            .authorize_provider_turn(&session, "worker", 1, 100, &"a".repeat(64), 1)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Invalid(_)),
+            "an oversized frozen quote must fail with the shared bounded error: {error:?}"
+        );
+        let counts: (i64, i64) = sqlx::query_as::query_as(
+            "SELECT (SELECT COUNT(*) FROM provider_turn_reservations),
+                    (SELECT COUNT(*) FROM inference_reservations)",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            counts,
+            (0, 0),
+            "refusal must precede every provider-turn and ledger write"
+        );
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn provider_egress_binding_refuses_over_ceiling_token_quote_without_rows() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        ledger_link_tests::setup_turn_envelope(
+            &db,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "request-egress-token-ceiling",
+            1_000,
+        )
+        .await;
+        db.admit_test_subscription_dispatch("campaign")
+            .await
+            .unwrap();
+        insert_reserved_turn(
+            &db,
+            &session,
+            "reserved-egress-ceiling",
+            "opencode",
+            "deepseek-v4.1-flash",
+        )
+        .await;
+        // Replace the trusted quote with a newer revision whose cost is well
+        // under the monetary ceiling but whose output token envelope is above
+        // the shared token ceiling. The egress binding must draw the same
+        // boundary as a direct ledger reservation and roll back its intent.
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "UPDATE provider_settings
+             SET max_input_tokens=1000000,max_output_tokens=?1,max_cost_micros=?2,
+                 revision=2,updated_at=?3
+             WHERE provider='opencode'",
+        )
+        .bind(
+            i64::try_from(crate::execution_policy::SAFE_MAX_MODEL_CALL_OUTPUT_TOKENS + 1).unwrap(),
+        )
+        .bind(2_000_001_i64)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        db.create_inference_pricing_quote(&NewInferencePricingQuote {
+            provider: "opencode".into(),
+            model: "deepseek-v4.1-flash".into(),
+            revision: 2,
+            evidence_sha256: "f".repeat(64),
+            actor: "operator".into(),
+        })
+        .await
+        .unwrap();
+
+        let error = db
+            .bind_provider_turn(&ProviderTurnBindingInput {
+                reservation_id: "reserved-egress-ceiling".into(),
+                session_record_id: session,
+                worker_id: "worker".into(),
+                generation: 1,
+                request_sha256: "b".repeat(64),
+                model: "deepseek-v4.1-flash".into(),
+                path: "/v1/chat/completions".into(),
+                body_bytes: 123,
+                sequence: 0,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Invalid(_)),
+            "provider egress must inherit the ledger token ceiling: {error:?}"
+        );
+        let counts: (i64, i64, i64, i64) = sqlx::query_as::query_as(
+            "SELECT (SELECT COUNT(*) FROM provider_turn_egress_requests
+                     WHERE reservation_id='reserved-egress-ceiling'),
+                    (SELECT COUNT(*) FROM provider_turn_ledger_requests
+                     WHERE reservation_id='reserved-egress-ceiling'),
+                    (SELECT COUNT(*) FROM inference_reservations),
+                    (SELECT requests_bound FROM provider_turn_reservations
+                     WHERE reservation_id='reserved-egress-ceiling')",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            counts,
+            (0, 0, 0, 0),
+            "the refused egress binding must leave no durable intent or reservation"
+        );
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn legacy_provider_accounting_folds_near_i64_rows_without_sql_overflow() {
+        let (path, db, session) = active_turn_fixture(100).await;
+        let now = Utc::now().to_rfc3339();
+        let legacy = i64::MAX / 2;
+        for index in 0..3 {
+            let attempt = format!("legacy-attempt-{index}");
+            sqlx::query::query(
+                "INSERT INTO attempts(id,run_id,status,created_at)
+                 VALUES (?1,'run','ACCEPTED',?2)",
+            )
+            .bind(&attempt)
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+            sqlx::query::query(
+                "INSERT INTO provider_sessions
+                 (session_record_id,attempt_id,worker_id,generation,provider,model,provider_mode,
+                  state,input_tokens,output_tokens,total_tokens,cost_micros,usage_known,
+                  created_at,updated_at)
+                 VALUES (?1,?2,'worker',1,'opencode','deepseek-v4.1-flash','build','COMPLETED',
+                         ?3,?3,?3,?3,1,?4,?4)",
+            )
+            .bind(format!("legacy-session-{index}"))
+            .bind(&attempt)
+            .bind(legacy)
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        }
+        db.admit_test_subscription_dispatch("campaign")
+            .await
+            .unwrap();
+        // The V1 budget path used SQL SUM() and failed with a database error
+        // once these rows were aggregated. It must stay finite and fail closed.
+        let error = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, Error::Forbidden(message) if message.contains("budget is exhausted")),
+            "legacy usage must exhaust the remaining budget, not overflow SQL: {error:?}"
+        );
+        let reservations: (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(reservations.0, 0);
+
+        // The terminal settlement path uses the same streaming fold and must
+        // also accept the legacy history without raising `integer overflow`.
+        let record = db
+            .record_provider_terminal(&ProviderTerminal {
+                session_record_id: session,
+                worker_id: "worker".into(),
+                generation: 1,
+                state: "COMPLETED".into(),
+                provider_session_id: "ses_turn".into(),
+                turn_id: "turn".into(),
+                input_tokens: 1,
+                output_tokens: 1,
+                total_tokens: 2,
+                cost_micros: 1,
+                usage_known: true,
+                cleanup_receipt: "session_delete_verified_absent".into(),
+                error: String::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(record.state, "COMPLETED");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
@@ -2817,6 +3139,8 @@ mod tests {
                 check: Some(ExecutionCheckInput {
                     command: vec!["cargo".into(), "test".into()],
                     candidate_sha256: "c".repeat(64),
+                    candidate_commit_sha: None,
+                    candidate_tree_sha: None,
                     exit_code: Some(0),
                 }),
             })
@@ -2855,6 +3179,8 @@ mod tests {
                 check: Some(ExecutionCheckInput {
                     command: vec!["false".into()],
                     candidate_sha256: "c".repeat(64),
+                    candidate_commit_sha: None,
+                    candidate_tree_sha: None,
                     exit_code: Some(0),
                 }),
             })
@@ -2877,6 +3203,8 @@ mod tests {
                 check: Some(ExecutionCheckInput {
                     command: vec!["cargo".into(), "test".into()],
                     candidate_sha256: "not-a-digest".into(),
+                    candidate_commit_sha: None,
+                    candidate_tree_sha: None,
                     exit_code: Some(0),
                 }),
             })
@@ -2927,6 +3255,8 @@ mod tests {
                         check: Some(ExecutionCheckInput {
                             command: vec!["false".into()],
                             candidate_sha256: "c".repeat(64),
+                            candidate_commit_sha: None,
+                            candidate_tree_sha: None,
                             exit_code: Some(0),
                         }),
                     })
@@ -2947,6 +3277,8 @@ mod tests {
                         check: Some(ExecutionCheckInput {
                             command: vec!["cargo".into(), "test".into()],
                             candidate_sha256: "c".repeat(64),
+                            candidate_commit_sha: None,
+                            candidate_tree_sha: None,
                             exit_code: Some(0),
                         }),
                     })
@@ -3368,7 +3700,7 @@ mod ledger_link_tests {
     use crate::execution_policy::ReservationState;
     use crate::inference_ledger::NewInferenceEnvelope;
 
-    async fn setup_turn_envelope(
+    pub(super) async fn setup_turn_envelope(
         db: &Database,
         provider: &str,
         model: &str,

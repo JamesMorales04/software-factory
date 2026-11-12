@@ -49,6 +49,21 @@ rejected. Every finding must set `points` to the canonical severity weight
 finding points are advisory input and never grant repair or acceptance.
 Malformed or uncertain output is never converted into approval.
 
+Informational (`info`) findings on a passing, executed reviewer receipt are
+observations. They remain durable in `findings_json` and the finding ledger and
+stay visible in Office, but they do not block an otherwise accepted Gate and
+never produce or authorize a repair cycle. The observation exception is
+receipt-aware: `Info` on a non-passing or non-executed receipt remains
+actionable for repair scoring exactly as before. Warning, blocking and critical
+findings keep their open-disposition and repair rules.
+
+When an authenticated operator resolves or refutes a finding that is bound to a
+candidate with an existing Gate decision, Core deterministically re-evaluates
+the same immutable verifier/reviewer receipts and current dispositions. A
+changed outcome or reason set appends an immutable Gate revision; unchanged
+evidence appends nothing. Re-evaluation accepts no new evidence, creates no
+candidate, and keeps existing blocking/critical/risk/budget policy unchanged.
+
 ## Verdict mapping
 
 | Semantic verdict | Receipt result | Gate effect |

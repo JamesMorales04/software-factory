@@ -32,6 +32,10 @@ use factory_native::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+#[cfg(feature = "test-support")]
+#[path = "core_support/wave12_support.rs"]
+mod wave12_support;
+
 struct SetupState {
     failures: u32,
     blocked_until_ms: i64,
@@ -46,9 +50,8 @@ struct App {
     setup: Mutex<SetupState>,
     worker_bootstrap_token: String,
     verifier_token: String,
-    reviewer_token: String,
     verifier_principal: String,
-    reviewer_principal: String,
+    reviewer_identities: factory_native::reviewer_identity::ReviewerIdentitySet,
     lead_fixture_assessor: bool,
     lead_autonomous_start: bool,
     model_gateway: Option<factory_native::model_gateway::ModelGateway>,
@@ -57,6 +60,8 @@ struct App {
     github_sync: tokio::sync::Mutex<()>,
     attempt_grant_key: Vec<u8>,
     observability: factory_native::observability::ExporterHandle,
+    environment_builder:
+        std::sync::RwLock<factory_native::planning::environment::SharedEnvironmentBuilder>,
     /// Single-flight guard for the Core-owned autopilot runner. It prevents a
     /// create-time spawn and a restart resume from assessing or starting the
     /// same request twice. Durable start idempotency remains the final fence.
@@ -238,6 +243,8 @@ struct NewAction {
     allowed_paths: Vec<String>,
     #[serde(default)]
     checks: Vec<factory_native::lead::SpecCheck>,
+    #[serde(default)]
+    dependency_plan: Option<factory_native::dependencies::DependencyPlan>,
 }
 
 #[derive(Deserialize)]
@@ -395,6 +402,51 @@ struct NewIntakeRequest {
     /// reserved before the first billable Lead assessment.
     #[serde(default)]
     authorized_micros: Option<u64>,
+    /// Optional production constraints for the generated Nix/devenv
+    /// environment. Committed conventions still take precedence; missing pins
+    /// fall back to the builder's documented default pin and otherwise block.
+    #[serde(default)]
+    environment_constraints:
+        Option<factory_native::planning::environment::RequestEnvironmentConstraints>,
+    /// Optional exact GitHub issue selection. Links are frozen with the
+    /// request; omitted or empty means the request has no issue mapping.
+    #[serde(default)]
+    issue_keys: Vec<IssueKeyRequest>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssueKeyRequest {
+    owner: String,
+    repo: String,
+    number: u64,
+    #[serde(default)]
+    role: Option<String>,
+}
+
+impl NewIntakeRequest {
+    fn issue_selection(&self) -> Result<Vec<factory_native::issues::NewIssueSelection>, Error> {
+        self.issue_keys
+            .iter()
+            .map(|key| {
+                let role = match key.role.as_deref().unwrap_or("PRIMARY") {
+                    "PRIMARY" => factory_native::issues::IssueRole::Primary,
+                    "RELATED" => factory_native::issues::IssueRole::Related,
+                    _ => {
+                        return Err(Error::Validation(
+                            "issue role must be PRIMARY or RELATED".into(),
+                        ));
+                    }
+                };
+                Ok(factory_native::issues::NewIssueSelection {
+                    owner: key.owner.trim().to_owned(),
+                    repo: key.repo.trim().to_owned(),
+                    number: key.number,
+                    role,
+                })
+            })
+            .collect()
+    }
 }
 
 #[cfg(feature = "test-support")]
@@ -695,6 +747,8 @@ struct QualityReceiptRequest {
     candidate_id: String,
     receipt_id: String,
     principal_id: String,
+    #[serde(default, rename = "reviewerRole")]
+    reviewer_role: Option<factory_native::planning::ReviewerRole>,
     #[serde(rename = "actionSpecSha256")]
     action_spec_sha256: String,
     #[serde(rename = "commitSha")]
@@ -744,21 +798,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker_bootstrap_token =
         factory_native::secrets::required("FACTORY_WORKER_BOOTSTRAP_TOKEN")?;
     let verifier_token = factory_native::secrets::required("FACTORY_VERIFIER_TOKEN")?;
-    let reviewer_token = factory_native::secrets::required("FACTORY_REVIEWER_TOKEN")?;
     let verifier_principal =
         env::var("FACTORY_VERIFIER_PRINCIPAL").unwrap_or_else(|_| "verifier-process".into());
-    let reviewer_principal =
-        env::var("FACTORY_REVIEWER_PRINCIPAL").unwrap_or_else(|_| "reviewer-process".into());
-    let tokens = [
+    let reviewer_identities = factory_native::reviewer_identity::ReviewerIdentitySet::from_env()?;
+    let mut tokens = vec![
         operator_token.as_str(),
         worker_bootstrap_token.as_str(),
         verifier_token.as_str(),
-        reviewer_token.as_str(),
     ];
+    tokens.extend(reviewer_identities.tokens());
     if operator_token.is_empty()
         || worker_bootstrap_token.len() < 32
         || verifier_token.len() < 32
-        || reviewer_token.len() < 32
         || tokens
             .iter()
             .enumerate()
@@ -778,6 +829,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
     let control_addrs = resolve_binds(&bind, container_mode).await?;
     let db = Database::open(Path::new(&database)).await?;
+    let skill_refresh_config =
+        factory_native::planning::skill_refresh::SkillRefreshConfig::from_env()?;
+    factory_native::planning::skill_refresh::start_scheduler(db.clone(), skill_refresh_config);
     let observability = match factory_native::observability::Config::from_env() {
         Ok(Some(config)) => match factory_native::observability::start(db.clone(), config) {
             Ok(handle) => handle,
@@ -823,9 +877,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
         worker_bootstrap_token,
         verifier_token,
-        reviewer_token,
         verifier_principal,
-        reviewer_principal,
+        reviewer_identities,
         lead_fixture_assessor: env::var("FACTORY_LEAD_FIXTURE_ASSESSOR").ok().as_deref()
             == Some("1"),
         lead_autonomous_start: env::var("FACTORY_ENABLE_AUTONOMOUS_START").ok().as_deref()
@@ -836,8 +889,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         github_sync: tokio::sync::Mutex::new(()),
         attempt_grant_key: attempt_grant_key.into_bytes(),
         observability,
+        environment_builder: std::sync::RwLock::new(
+            factory_native::planning::environment::unavailable_environment_builder(),
+        ),
         autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
     });
+    match factory_native::planning::environment::RuntimeBrokerEnvironmentBuilder::from_env().await {
+        Ok(Some(builder)) => app.set_environment_builder(builder),
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(%error, "environment builder is unavailable; generated environments remain blocked")
+        }
+    }
     {
         let app_for_autopilot = Arc::clone(&app);
         tokio::spawn(async move {
@@ -900,6 +963,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     futures_util::future::try_join_all(servers).await?;
+    factory_native::planning::skill_refresh::shutdown_scheduler().await;
     app.observability.shutdown().await;
     app.db.close().await;
     Ok(())
@@ -981,6 +1045,14 @@ async fn shutdown_signal() {
     }
 }
 
+async fn health(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    Json(json!({
+        "healthy": true,
+        "version": "0.1.0",
+        "environmentBuilder": app.environment_builder().descriptor(),
+    }))
+}
+
 fn build_router(app: Arc<App>) -> Router {
     let api =
         api_router(Arc::clone(&app)).merge(factory_native::device_pairing::routes(app.db.clone()));
@@ -1021,10 +1093,7 @@ fn build_office_access_router(app: Arc<App>, office_directory: Option<PathBuf>) 
 
 fn office_api_router(app: Arc<App>) -> Router {
     let api = Router::new()
-        .route(
-            "/health",
-            get(|| async { Json(json!({"healthy":true,"version":"0.1.0"})) }),
-        )
+        .route("/health", get(health))
         .route("/auth/bootstrap", post(auth_bootstrap))
         .route("/auth/session", get(auth_session))
         .route("/auth/logout", post(auth_logout))
@@ -1099,6 +1168,37 @@ fn office_api_router(app: Arc<App>) -> Router {
             "/agentic/requests/{id}/plan",
             get(get_agentic_plan).post(plan_agentic_request),
         )
+        .route("/agentic/requests/{id}/planning", get(get_agentic_planning))
+        .route(
+            "/agentic/requests/{id}/environment",
+            get(get_agentic_environment),
+        )
+        .route(
+            "/agentic/requests/{id}/environment/review",
+            post(review_agentic_environment),
+        )
+        .route(
+            "/agentic/requests/{id}/environment/recompile",
+            post(recompile_agentic_environment),
+        )
+        .route(
+            "/agentic/requests/{id}/plan/recompile",
+            post(recompile_agentic_plan),
+        )
+        .route("/agentic/requests/{id}/openspec", get(get_agentic_openspec))
+        .route(
+            "/agentic/requests/{id}/openspec/archive",
+            post(archive_agentic_openspec),
+        )
+        .route(
+            "/agentic/requests/{id}/plan-review",
+            post(review_agentic_plan),
+        )
+        .route("/agentic/requests/{id}/findings", get(get_agentic_findings))
+        .route(
+            "/agentic/requests/{id}/findings/{finding_id}/disposition",
+            post(resolve_agentic_finding),
+        )
         .route(
             "/agentic/requests/{id}/participants",
             get(get_agentic_participants).post(record_agentic_participants),
@@ -1133,6 +1233,10 @@ fn office_api_router(app: Arc<App>) -> Router {
             post(adopt_agentic_skill),
         )
         .route("/agentic/skills", get(agentic_skills))
+        .route(
+            "/agentic/skills/refresh",
+            get(skill_refresh_status).post(run_skill_refresh_pass),
+        )
         .route("/agentic/skills/{id}/uses", post(record_agentic_skill_use))
         .route(
             "/agentic/skills/{id}/license",
@@ -1158,6 +1262,7 @@ fn office_api_router(app: Arc<App>) -> Router {
             post(resolve_agentic_owner_decision),
         )
         .route("/agentic/requests/{id}", get(agentic_request_detail))
+        .route("/agentic/requests/{id}/trace", get(agentic_request_trace))
         .route(
             "/provider/sessions/{session_record_id}/tool_events",
             get(provider_session_tool_events),
@@ -1228,10 +1333,16 @@ fn office_api_router(app: Arc<App>) -> Router {
         .merge(issue_intake_routes());
 
     #[cfg(feature = "test-support")]
-    let api = api.route(
-        "/test-support/subscription-dispatch-admissions",
-        post(admit_test_subscription_dispatch),
-    );
+    let api = api
+        .route(
+            "/test-support/subscription-dispatch-admissions",
+            post(admit_test_subscription_dispatch),
+        )
+        .route("/test-support/wave12/seed", post(wave12_support::seed))
+        .route(
+            "/test-support/wave12/trace-fault/{id}",
+            post(wave12_support::arm_trace_failure),
+        );
 
     let api = api
         .with_state(Arc::clone(&app))
@@ -1292,10 +1403,7 @@ async fn office_api_route_not_found() -> Response {
 
 fn api_router(app: Arc<App>) -> Router {
     let api = Router::new()
-        .route(
-            "/health",
-            get(|| async { Json(json!({"healthy":true,"version":"0.1.0"})) }),
-        )
+        .route("/health", get(health))
         .route("/auth/bootstrap", post(auth_bootstrap))
         .route("/auth/session", get(auth_session))
         .route("/auth/logout", post(auth_logout))
@@ -1378,6 +1486,37 @@ fn api_router(app: Arc<App>) -> Router {
             "/agentic/requests/{id}/plan",
             get(get_agentic_plan).post(plan_agentic_request),
         )
+        .route("/agentic/requests/{id}/planning", get(get_agentic_planning))
+        .route(
+            "/agentic/requests/{id}/environment",
+            get(get_agentic_environment),
+        )
+        .route(
+            "/agentic/requests/{id}/environment/review",
+            post(review_agentic_environment),
+        )
+        .route(
+            "/agentic/requests/{id}/environment/recompile",
+            post(recompile_agentic_environment),
+        )
+        .route(
+            "/agentic/requests/{id}/plan/recompile",
+            post(recompile_agentic_plan),
+        )
+        .route("/agentic/requests/{id}/openspec", get(get_agentic_openspec))
+        .route(
+            "/agentic/requests/{id}/openspec/archive",
+            post(archive_agentic_openspec),
+        )
+        .route(
+            "/agentic/requests/{id}/plan-review",
+            post(review_agentic_plan),
+        )
+        .route("/agentic/requests/{id}/findings", get(get_agentic_findings))
+        .route(
+            "/agentic/requests/{id}/findings/{finding_id}/disposition",
+            post(resolve_agentic_finding),
+        )
         .route(
             "/agentic/requests/{id}/participants",
             get(get_agentic_participants).post(record_agentic_participants),
@@ -1412,6 +1551,10 @@ fn api_router(app: Arc<App>) -> Router {
             post(adopt_agentic_skill),
         )
         .route("/agentic/skills", get(agentic_skills))
+        .route(
+            "/agentic/skills/refresh",
+            get(skill_refresh_status).post(run_skill_refresh_pass),
+        )
         .route("/agentic/skills/{id}/uses", post(record_agentic_skill_use))
         .route(
             "/agentic/skills/{id}/license",
@@ -1437,6 +1580,7 @@ fn api_router(app: Arc<App>) -> Router {
             post(resolve_agentic_owner_decision),
         )
         .route("/agentic/requests/{id}", get(agentic_request_detail))
+        .route("/agentic/requests/{id}/trace", get(agentic_request_trace))
         .route(
             "/provider/sessions/{session_record_id}/tool_events",
             get(provider_session_tool_events),
@@ -1571,15 +1715,40 @@ fn api_router(app: Arc<App>) -> Router {
         .merge(issue_intake_routes());
 
     #[cfg(feature = "test-support")]
-    let api = api.route(
-        "/test-support/subscription-dispatch-admissions",
-        post(admit_test_subscription_dispatch),
-    );
+    let api = api
+        .route(
+            "/test-support/subscription-dispatch-admissions",
+            post(admit_test_subscription_dispatch),
+        )
+        .route("/test-support/wave12/seed", post(wave12_support::seed))
+        .route(
+            "/test-support/wave12/trace-fault/{id}",
+            post(wave12_support::arm_trace_failure),
+        );
 
     api.with_state(app)
 }
 
 impl App {
+    fn environment_builder(
+        &self,
+    ) -> factory_native::planning::environment::SharedEnvironmentBuilder {
+        self.environment_builder
+            .read()
+            .expect("environment builder lock poisoned")
+            .clone()
+    }
+
+    fn set_environment_builder(
+        &self,
+        builder: factory_native::planning::environment::SharedEnvironmentBuilder,
+    ) {
+        *self
+            .environment_builder
+            .write()
+            .expect("environment builder lock poisoned") = builder;
+    }
+
     async fn current_model_gateway(&self) -> Option<factory_native::model_gateway::ModelGateway> {
         if let Some(gateway) = &self.model_gateway {
             return Some(gateway.clone());
@@ -2167,7 +2336,7 @@ fn request_host_allowed(headers: &HeaderMap, trusted: &[String]) -> bool {
     if loopback_host(authority.host()) {
         return true;
     }
-    if authority.host() == "core" && authority.port_u16() == Some(8765) {
+    if authority.host() == "core-control" && authority.port_u16() == Some(8765) {
         return true;
     }
     trusted.iter().any(|origin| {
@@ -2345,13 +2514,10 @@ async fn review_config(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    let token = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    let authorized = token
-        .is_some_and(|token| constant_time_eq(token.as_bytes(), app.reviewer_token.as_bytes()));
-    if !authorized {
+    let Some(identity) = quality_identity(&app, &headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if identity.role != QualityRole::Reviewer {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let selection = match app.db.reviewer_selection(&id).await {
@@ -2395,6 +2561,8 @@ async fn review_config(
         "model": model,
         "maxOutputTokens": 0,
         "reason": reason,
+        "principalId": identity.principal_id,
+        "reviewerRole": identity.reviewer_role.map(|role| role.as_str()),
     }))
     .into_response()
 }
@@ -2404,23 +2572,21 @@ async fn pending_quality(
     headers: HeaderMap,
     Query(query): Query<PendingQualityQuery>,
 ) -> Response {
-    let token = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    let authorized = match (query.role.as_str(), token) {
-        ("verifier", Some(token)) => {
-            constant_time_eq(token.as_bytes(), app.verifier_token.as_bytes())
-        }
-        ("reviewer", Some(token)) => {
-            constant_time_eq(token.as_bytes(), app.reviewer_token.as_bytes())
-        }
-        _ => false,
+    let Some(identity) = quality_identity(&app, &headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
     };
-    if !authorized {
+    if query.role != identity.role.as_str() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match app.db.pending_quality_candidates(&query.role).await {
+    let candidates = match (identity.role, identity.reviewer_role) {
+        (QualityRole::Reviewer, Some(reviewer_role)) => {
+            app.db
+                .pending_quality_candidates_for_reviewer(&identity.principal_id, reviewer_role)
+                .await
+        }
+        _ => app.db.pending_quality_candidates(&query.role).await,
+    };
+    match candidates {
         Ok(candidates) => Json(json!({"candidates": candidates})).into_response(),
         Err(error) => api_error(error),
     }
@@ -3536,6 +3702,22 @@ fn github_integration_routes() -> Router<Arc<App>> {
         .route("/projects/{id}/issues", get(project_issues))
         .route("/projects/{id}/issues/{number}", get(project_issue))
         .route(
+            "/issue-links/{link_id}/delivery/{event_id}/retry",
+            post(retry_issue_delivery),
+        )
+        .route(
+            "/projects/{id}/delivery-policy",
+            get(get_delivery_policy).put(put_delivery_policy),
+        )
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/delivery",
+            get(candidate_delivery).post(deliver_candidate),
+        )
+        .route(
+            "/delivery/incidents/{id}/revert",
+            post(record_delivery_manual_revert),
+        )
+        .route(
             "/campaigns/{id}/candidates/{candidate_id}/pull-request",
             get(candidate_pull_request).post(open_candidate_pull_request),
         )
@@ -3656,6 +3838,112 @@ async fn github_connection_state(app: &App) -> Result<serde_json::Value, Respons
         "connection": github_connection_view(record.as_ref()),
         "audit": audit,
     }))
+}
+
+fn issue_delivery_error_response(error: factory_native::issues::IssueDeliveryError) -> Response {
+    use factory_native::issues::IssueDeliveryError;
+    match error {
+        IssueDeliveryError::Database(error) => api_error(error),
+        IssueDeliveryError::NotFound => StatusCode::NOT_FOUND.into_response(),
+        IssueDeliveryError::Conflict(message) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": message, "kind": "DELIVERY_CONFLICT"})),
+        )
+            .into_response(),
+        error => {
+            let status = match error.kind() {
+                "GITHUB_UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
+                "GITHUB_FORBIDDEN" | "GITHUB_WRITE_PERMISSION_REQUIRED" => StatusCode::FORBIDDEN,
+                "GITHUB_NOT_FOUND" => StatusCode::NOT_FOUND,
+                "GITHUB_RATE_LIMITED" => StatusCode::TOO_MANY_REQUESTS,
+                "GITHUB_REJECTED" | "GITHUB_BLOCKED" => StatusCode::CONFLICT,
+                "ISSUE_DELIVERY_IN_PROGRESS" | "ISSUE_DELIVERY_ATTEMPTS_EXHAUSTED" => {
+                    StatusCode::CONFLICT
+                }
+                _ => StatusCode::BAD_GATEWAY,
+            };
+            (
+                status,
+                Json(json!({
+                    "error": error.detail(),
+                    "kind": error.kind(),
+                    "retryable": error.retryable(),
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn retry_issue_delivery(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((link_id, event_id)): AxumPath<(String, String)>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let event = match app.db.issue_delivery_event(&event_id).await {
+        Ok(event) => event,
+        Err(error) => return api_error(error),
+    };
+    if event.issue_link_id != link_id {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let service =
+        match factory_native::issues::IssueDeliveryService::new(&app.db, &app.github, &credential)
+            .await
+        {
+            Ok(service) => service,
+            Err(error) => return issue_delivery_error_response(error),
+        };
+    match service.retry_event(&event_id, &principal_id).await {
+        Ok(outcome) => {
+            let event = app.db.issue_delivery_event(&event_id).await.ok();
+            let (status, body) = issue_delivery_retry_result(event, outcome);
+            (status, Json(body)).into_response()
+        }
+        Err(error) => issue_delivery_error_response(error),
+    }
+}
+
+fn issue_delivery_retry_result(
+    event: Option<factory_native::issues::IssueDeliveryEventRecord>,
+    outcome: factory_native::issues::IssueDeliveryOutcome,
+) -> (StatusCode, serde_json::Value) {
+    if outcome.failed > 0 || !outcome.failures.is_empty() {
+        let retryable = outcome.failures.iter().any(|failure| failure.retryable);
+        let (status, kind) = if retryable {
+            (StatusCode::BAD_GATEWAY, "DELIVERY_RETRY_FAILED")
+        } else {
+            (StatusCode::CONFLICT, "DELIVERY_RETRY_BLOCKED")
+        };
+        return (
+            status,
+            json!({
+                "error": "issue delivery retry did not complete every issue effect",
+                "kind": kind,
+                "retryable": retryable,
+                "failures": outcome.failures,
+                "event": event,
+                "delivery": outcome,
+            }),
+        );
+    }
+    (
+        StatusCode::OK,
+        json!({
+            "event": event,
+            "delivery": outcome,
+        }),
+    )
 }
 
 fn github_upstream_error(error: factory_native::github::GitHubError) -> Response {
@@ -4213,12 +4501,7 @@ async fn project_summary(
     };
     let active_campaigns: Vec<_> = campaigns
         .iter()
-        .filter(|campaign| {
-            !matches!(
-                campaign.status.as_str(),
-                "CANCELLED" | "FAILED" | "COMPLETED" | "ACCEPTED" | "REJECTED"
-            )
-        })
+        .filter(|campaign| campaign.is_active())
         .cloned()
         .collect();
     let decisions = match build_decisions(&app).await {
@@ -4474,6 +4757,293 @@ async fn get_project_github(
         Err(error) => return api_error(error),
     };
     Json(json!({"binding": binding, "sync_state": sync_state})).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeliveryPolicyBody {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    r1_enabled: bool,
+    #[serde(default = "default_delivery_merge_method")]
+    merge_method: String,
+    #[serde(default)]
+    required_checks: Vec<String>,
+    #[serde(default)]
+    post_merge_check_id: String,
+    #[serde(default = "default_delivery_post_merge_timeout")]
+    post_merge_timeout_secs: u64,
+    #[serde(default)]
+    kill_switch: bool,
+    #[serde(default)]
+    expires_at: Option<String>,
+    #[serde(default)]
+    manual_base_branches: Vec<String>,
+}
+
+fn default_delivery_merge_method() -> String {
+    "squash".into()
+}
+
+fn default_delivery_post_merge_timeout() -> u64 {
+    900
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CandidateDeliveryInput {
+    operation: String,
+    #[serde(default)]
+    manual_confirmed: bool,
+    #[serde(default)]
+    base_branch: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeliveryRevertInput {
+    revert_pr_number: u64,
+    revert_merge_sha: String,
+    rationale: String,
+}
+
+async fn get_delivery_policy(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.project_exists(&id).await {
+        Ok(true) => {}
+        Ok(false) => return api_error(Error::NotFound),
+        Err(error) => return api_error(error),
+    }
+    let policy = match app.db.delivery_policy(&id).await {
+        Ok(policy) => policy,
+        Err(error) => return api_error(error),
+    };
+    let revisions = match app.db.delivery_policies(&id).await {
+        Ok(revisions) => revisions,
+        Err(error) => return api_error(error),
+    };
+    let binding = match app.db.project_github_binding(&id).await {
+        Ok(binding) => Some(binding),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    Json(json!({
+        "policy": policy,
+        "revisions": revisions,
+        "binding": binding,
+        "default_branch": binding.as_ref().map(|binding| binding.default_branch.clone()),
+        "merge_method": "squash",
+        "source": "Project delivery policy revisions are append-only Core records",
+    }))
+    .into_response()
+}
+
+async fn put_delivery_policy(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<DeliveryPolicyBody>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let binding = match app.db.project_github_binding(&id).await {
+        Ok(binding) => binding,
+        Err(Error::NotFound) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "Project is not bound to a GitHub repository",
+                    "kind": "NOT_BOUND",
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => return api_error(error),
+    };
+    let manual_base_branches = if body.manual_base_branches.is_empty() {
+        vec![binding.default_branch.clone()]
+    } else {
+        body.manual_base_branches.clone()
+    };
+    let input = factory_native::delivery::DeliveryPolicyInput {
+        enabled: body.enabled,
+        r1_enabled: body.r1_enabled,
+        auto_merge_base_branch: binding.default_branch.clone(),
+        manual_base_branches,
+        required_checks: body.required_checks,
+        merge_method: body.merge_method,
+        post_merge_check_id: body.post_merge_check_id,
+        post_merge_timeout_secs: body.post_merge_timeout_secs,
+        kill_switch: body.kill_switch,
+        expires_at: body.expires_at,
+    };
+    match app
+        .db
+        .append_delivery_policy(&id, &binding.default_branch, &input, "office-operator")
+        .await
+    {
+        Ok((policy, created)) => Json(json!({
+            "policy": policy,
+            "created": created,
+            "binding": binding,
+            "source": "delivery policy revision appended by an authenticated Core operation",
+        }))
+        .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn candidate_delivery(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let credential = load_github_credential(&app).await.ok();
+    match factory_native::delivery::load_delivery_status(
+        &app.db,
+        Some(&app.github),
+        credential.as_ref(),
+        &campaign_id,
+        &candidate_id,
+    )
+    .await
+    {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => delivery_error_response(error),
+    }
+}
+
+async fn deliver_candidate(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Json(body): Json<CandidateDeliveryInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let operation = match body.operation.as_str() {
+        "OPEN_PR" | "OPEN_PULL_REQUEST" => {
+            factory_native::delivery::DeliveryOperation::OpenPullRequest
+        }
+        "MERGE" | "DELIVER" => factory_native::delivery::DeliveryOperation::Merge,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "delivery operation must be OPEN_PR or MERGE",
+                    "kind": "INVALID_REQUEST",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let hook = match factory_native::delivery::LiveIssueDeliveryHook::new(
+        &app.db,
+        &app.github,
+        &credential,
+    )
+    .await
+    {
+        Ok(hook) => hook,
+        Err(error) => {
+            return delivery_error_response(factory_native::delivery::DeliveryError::from(error));
+        }
+    };
+    let service =
+        factory_native::delivery::DeliveryService::new(&app.db, &app.github, &credential, &hook);
+    let request = factory_native::delivery::DeliveryRequest {
+        campaign_id: &campaign_id,
+        candidate_id: &candidate_id,
+        base_branch: body.base_branch.as_deref(),
+        operation,
+        manual_confirmed: body.manual_confirmed,
+        actor: "office-operator",
+    };
+    if operation == factory_native::delivery::DeliveryOperation::OpenPullRequest {
+        return match service.open_pull_request(&request).await {
+            Ok(opened) => Json(json!({
+                "campaign_id": campaign_id,
+                "candidate_id": candidate_id,
+                "operation": "OPEN_PR",
+                "pull_request": opened.pull_request,
+                "created": opened.created,
+                "issue_delivery": opened.issue_outcome,
+                "source": "Core pushed the exact candidate, verified the PR head/base and reused an idempotent PR when present",
+            }))
+            .into_response(),
+            Err(error) => delivery_error_response(error),
+        };
+    }
+    match service.deliver(&request).await {
+        Ok(run) => Json(run).into_response(),
+        Err(error) => delivery_error_response(error),
+    }
+}
+
+async fn record_delivery_manual_revert(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<DeliveryRevertInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .record_delivery_revert(
+            &id,
+            body.revert_pr_number,
+            &body.revert_merge_sha,
+            "operator-token",
+            &body.rationale,
+        )
+        .await
+    {
+        Ok(record) => Json(json!({
+            "revert": record,
+            "source": "manual revert evidence recorded by an authenticated Core operation; Factory did not revert automatically",
+        }))
+        .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+fn delivery_error_response(error: factory_native::delivery::DeliveryError) -> Response {
+    let status = match error.code() {
+        "DELIVERY_PERMISSION_REQUIRED" => StatusCode::FORBIDDEN,
+        "NOT_FOUND" => StatusCode::NOT_FOUND,
+        "INVALID_BRANCH" | "INVALID_REMOTE" => StatusCode::BAD_REQUEST,
+        "GITHUB_UNAVAILABLE" | "DATABASE" => StatusCode::BAD_GATEWAY,
+        _ => StatusCode::CONFLICT,
+    };
+    let mut body = json!({
+        "error": error.detail(),
+        "kind": error.kind(),
+        "code": error.code(),
+        "retryable": error.retryable(),
+        "blockers": error.blockers(),
+    });
+    if let Some(attempt_id) = error.attempt_id() {
+        body["attempt_id"] = json!(attempt_id);
+    }
+    (status, Json(body)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -5880,6 +6450,7 @@ async fn create_action(
             factory_native::db::ActionSpecInput {
                 allowed_paths: &input.allowed_paths,
                 checks: &input.checks,
+                dependency_plan: input.dependency_plan.as_ref(),
             },
         )
         .await
@@ -6373,6 +6944,21 @@ impl<'a> DecisionProjection<'a> {
             } else {
                 None
             };
+            let planning = match context.as_ref() {
+                Some(_) => {
+                    let triage = agentic_triage_context(self.app, record).await?;
+                    let revision = latest_planning_revision(self.app, &record.id).await?;
+                    Some(planning_readiness(self.app, &record.id, revision, &triage).await?)
+                }
+                None => None,
+            };
+            let planning_ready = planning.as_ref().is_some_and(PlanningReadiness::ready);
+            if context.is_some() && !planning_ready {
+                blocked_reason = planning
+                    .as_ref()
+                    .and_then(|readiness| readiness.conflict())
+                    .map(|conflict| conflict.code.to_owned());
+            }
             let plan_hash = context
                 .as_ref()
                 .map(|context| context.plan.plan_hash.clone())
@@ -6453,8 +7039,38 @@ impl<'a> DecisionProjection<'a> {
             if let Some(action_spec_sha256) = action_spec_sha256 {
                 evidence.push(decision_evidence("Action spec", action_spec_sha256));
             }
+            if let Some(readiness) = &planning {
+                evidence.push(decision_evidence(
+                    "Plan review",
+                    if readiness.ready() {
+                        "ready"
+                    } else {
+                        "incomplete"
+                    },
+                ));
+                if !readiness.missing_artifacts.is_empty() {
+                    evidence.push(decision_evidence(
+                        "Missing planning artifacts",
+                        readiness.missing_artifacts.join(", "),
+                    ));
+                }
+                if readiness.participant_plan.required {
+                    evidence.push(decision_evidence(
+                        "Participant plan",
+                        if readiness.participant_plan.ready {
+                            "ready"
+                        } else {
+                            "incomplete"
+                        },
+                    ));
+                }
+                evidence.push(decision_evidence(
+                    "Plan review decision",
+                    readiness.review_status.as_deref().unwrap_or("not recorded"),
+                ));
+            }
             let mut decision_actions = Vec::new();
-            if context.is_some() {
+            if context.is_some() && planning_ready {
                 decision_actions.push(DecisionAction::ApproveIntakePlan {
                     label: "Approve frozen plan".into(),
                     intake_id: record.id.clone(),
@@ -6473,8 +7089,10 @@ impl<'a> DecisionProjection<'a> {
                 "severity": "attention",
                 "actionable": true,
                 "title": "Frozen plan awaiting approval",
-                "detail": if context.is_some() {
+                "detail": if context.is_some() && planning_ready {
                     "The frozen plan is ready for exact operator approval. Core revalidates the plan hash, profile revision, scope, route, budget and policy before starting."
+                } else if context.is_some() {
+                    "The frozen plan is recorded, but the plan review is incomplete. Complete the planning artifacts and participant plan in the Director before approval."
                 } else {
                     "The frozen plan is recorded, but Core cannot derive an authorization for this exact revision. Resolve the reported authority conflict before approval."
                 },
@@ -6488,6 +7106,7 @@ impl<'a> DecisionProjection<'a> {
                     &profile_revision_id,
                     &profile_hash,
                     if context.is_some() { "available" } else { "blocked" },
+                    if planning_ready { "planning-ready" } else { "planning-incomplete" },
                 ]),
                 "project": decision_project(Some(record.project_id.as_str()), &self.project_by_id),
                 "campaign": Value::Null,
@@ -7364,32 +7983,37 @@ async fn build_overview(app: &App) -> Result<serde_json::Value, Error> {
         .iter()
         .filter(|session| !session.usage_known)
         .count();
-    let unmeasured_bound_cost: u64 = sessions
-        .iter()
-        .filter(|session| !session.usage_known)
-        .map(|session| session.cost_micros)
-        .sum::<u64>()
-        + unresolved_model_bound;
-    let measured_session_cost: u64 = sessions
-        .iter()
-        .filter(|session| session.usage_known)
-        .map(|session| session.cost_micros)
-        .sum();
-    let measured_session_tokens: u64 = sessions
-        .iter()
-        .filter(|session| session.usage_known)
-        .map(|session| session.total_tokens)
-        .sum();
-    let measured_model_cost: u64 = model_calls
-        .iter()
-        .filter(|call| call.usage_known)
-        .map(|call| call.cost_micros)
-        .sum();
-    let measured_model_tokens: u64 = model_calls
-        .iter()
-        .filter(|call| call.usage_known)
-        .map(|call| call.total_tokens)
-        .sum();
+    let unmeasured_bound_cost = factory_native::execution_policy::total_model_call_units(
+        sessions
+            .iter()
+            .filter(|session| !session.usage_known)
+            .map(|session| session.cost_micros)
+            .chain(std::iter::once(unresolved_model_bound)),
+    );
+    let measured_session_cost = factory_native::execution_policy::total_model_call_units(
+        sessions
+            .iter()
+            .filter(|session| session.usage_known)
+            .map(|session| session.cost_micros),
+    );
+    let measured_session_tokens = factory_native::execution_policy::total_model_call_units(
+        sessions
+            .iter()
+            .filter(|session| session.usage_known)
+            .map(|session| session.total_tokens),
+    );
+    let measured_model_cost = factory_native::execution_policy::total_model_call_units(
+        model_calls
+            .iter()
+            .filter(|call| call.usage_known)
+            .map(|call| call.cost_micros),
+    );
+    let measured_model_tokens = factory_native::execution_policy::total_model_call_units(
+        model_calls
+            .iter()
+            .filter(|call| call.usage_known)
+            .map(|call| call.total_tokens),
+    );
     let recent_events: Vec<_> = events.iter().rev().take(12).cloned().collect();
     let recent_decisions: Vec<_> = decisions.iter().take(5).cloned().collect();
 
@@ -7524,6 +8148,7 @@ async fn campaign_detail_projection(app: &App, id: &str) -> Result<serde_json::V
         .into_iter()
         .filter(|event| related_subjects.contains(&event.subject_id))
         .collect::<Vec<_>>();
+    let linked_issues = app.db.issue_link_projections_for_campaign(id).await?;
     let inference = match app.db.inference_envelope_for_campaign(id).await? {
         Some(envelope) => {
             let status = app
@@ -7538,15 +8163,48 @@ async fn campaign_detail_projection(app: &App, id: &str) -> Result<serde_json::V
         }
         None => Value::Null,
     };
+    let environment = match app.db.intake_request_for_campaign(id).await {
+        Ok(record) => environment_projection_for_request(app, &record).await?,
+        Err(Error::NotFound) => {
+            let required = app
+                .db
+                .action(&campaign.action_id)
+                .await
+                .map(|action| action.spec.environment_required)
+                .unwrap_or(false);
+            json!({
+                "required": required,
+                "status": "MISSING",
+                "plan": null,
+                "planId": null,
+                "planSha256": null,
+                "planRevision": null,
+                "conventions": null,
+                "reviews": [],
+                "leadApproval": null,
+                "spec": null,
+                "specSha256": null,
+                "builder": {"descriptor": app.environment_builder().descriptor(), "receipt": null},
+                "licenseInventory": null,
+                "blockers": [{
+                    "code": "ENVIRONMENT_PLAN_REQUIRED",
+                    "message": "No unified-intake environment plan is bound to this legacy Campaign. Execution and checks are refused until Core compiles and freezes one.",
+                }],
+            })
+        }
+        Err(error) => return Err(error),
+    };
     Ok(json!({
         "campaign": campaign,
         "authorization": authorization,
+        "environment": environment,
         "inference": inference,
         "tasks": tasks,
         "runs": runs,
         "attempts": attempts,
         "candidates": candidates,
-        "events": events
+        "events": events,
+        "linked_issues": linked_issues
     }))
 }
 
@@ -7871,25 +8529,30 @@ async fn repair_campaign(
         Ok(config) => config,
         Err(error) => return api_error(error),
     };
-    let reviewer = app
+    let receipts = app
         .db
         .quality_receipts(&candidate.id)
         .await
-        .ok()
-        .and_then(|receipts| {
-            receipts
-                .into_iter()
-                .find(|receipt| receipt.role == factory_native::db::QualityRole::Reviewer)
-        });
+        .unwrap_or_default();
     let mut findings = Vec::new();
-    if let Some(reviewer) = &reviewer {
-        for finding in reviewer.findings.iter().take(6) {
+    for receipt in &receipts {
+        if !matches!(
+            receipt.role,
+            factory_native::db::QualityRole::Verifier | factory_native::db::QualityRole::Reviewer
+        ) {
+            continue;
+        }
+        for finding in receipt.findings.iter().take(6) {
             if matches!(
                 finding.severity,
                 factory_native::review::FindingSeverity::Blocking
                     | factory_native::review::FindingSeverity::Warning
             ) {
-                findings.push(format!("{:?}: {}", finding.severity, finding.message));
+                findings.push(format!(
+                    "{:?}: {}",
+                    finding.severity,
+                    finding.message.chars().take(900).collect::<String>()
+                ));
             }
         }
     }
@@ -7975,6 +8638,7 @@ async fn repair_campaign(
             factory_native::intake::IntakeMode::Autonomous,
             &request_key,
             &principal_id,
+            &[],
         )
         .await
     {
@@ -8269,8 +8933,10 @@ async fn worker_workspace_operation(
             // lifetime made that fence cancel commands that legitimately
             // outlived it. Write/apply/finalize are quick, unfenced mutations
             // and keep a short admission lifetime so revocation remains fresh.
-            let lifetime_ms = if matches!(input.operation.as_str(), "execute" | "run" | "integrate")
-            {
+            let lifetime_ms = if matches!(
+                input.operation.as_str(),
+                "execute" | "run" | "integrate" | "dependencies"
+            ) {
                 WORKSPACE_OPERATION_GRANT_MILLIS
             } else {
                 5_000
@@ -8737,7 +9403,7 @@ async fn model_call(
 }
 
 async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
-    let Some(role) = quality_role(&app, &headers) else {
+    let Some(identity) = quality_identity(&app, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let input: QualityReceiptRequest = match serde_json::from_slice(&body) {
@@ -8750,17 +9416,42 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
                 .into_response();
         }
     };
-    if !cfg!(any(test, feature = "test-support")) {
-        let expected = match role {
-            QualityRole::Verifier => &app.verifier_principal,
-            QualityRole::Reviewer => &app.reviewer_principal,
+    if input.principal_id != identity.principal_id {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "receipt principal does not match the authenticated quality identity",
+                "code": "QUALITY_PRINCIPAL_MISMATCH",
+            })),
+        )
+            .into_response();
+    }
+    if input.reviewer_role != identity.reviewer_role {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "receipt reviewer role does not match the authenticated quality identity",
+                "code": "QUALITY_ROLE_MISMATCH",
+            })),
+        )
+            .into_response();
+    }
+    let role = identity.role;
+    if role == QualityRole::Reviewer {
+        let required = match app.db.candidate_reviewer_roles(&input.candidate_id).await {
+            Ok(required) => required,
+            Err(error) => return api_error(error),
         };
-        if input.principal_id != *expected {
+        if !required.is_empty()
+            && !input
+                .reviewer_role
+                .is_some_and(|reviewer_role| required.contains(&reviewer_role))
+        {
             return (
                 StatusCode::FORBIDDEN,
                 Json(json!({
-                    "error": "receipt principal does not match the authenticated quality role",
-                    "code": "QUALITY_PRINCIPAL_MISMATCH",
+                    "error": "receipt reviewer role is not required by the frozen reviewer plan",
+                    "code": "QUALITY_ROLE_MISMATCH",
                 })),
             )
                 .into_response();
@@ -8769,6 +9460,7 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
     let receipt = QualityReceiptInput {
         receipt_id: input.receipt_id,
         principal_id: input.principal_id,
+        reviewer_role: input.reviewer_role,
         action_spec_sha256: input.action_spec_sha256,
         commit_sha: input.commit_sha,
         tree_sha: input.tree_sha,
@@ -9042,6 +9734,10 @@ async fn assess_lead_request(
     } else {
         "FIXTURE"
     };
+    let greenfield = agentic_stack_for_project(&app, &request.project_id)
+        .await
+        .languages
+        .is_empty();
     let (mut assessment, proposal) = if let Some(gateway) = &current_gateway {
         match factory_native::lead_model::assess(
             gateway,
@@ -9054,6 +9750,7 @@ async fn assess_lead_request(
                 objective: &request.objective,
                 grant: &grant,
                 now: chrono::Utc::now(),
+                greenfield,
             },
         )
         .await
@@ -9211,6 +9908,9 @@ async fn start_lead_request(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    if let Err(response) = ensure_lead_planning_ready(&app, &id).await {
+        return response;
+    }
     let autonomy = match factory_native::db::ValidatedAutonomyContext::from_deployment_policy(
         app.lead_autonomous_start,
     ) {
@@ -9306,6 +10006,9 @@ async fn approve_lead_request(
 ) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if let Err(response) = ensure_lead_planning_ready(&app, &id).await {
+        return response;
     }
     let (principal_id, device_label) =
         authenticated_operator(session.as_ref().map(|Extension(device)| device));
@@ -9504,22 +10207,7 @@ async fn get_lead_request(
 fn intake_state_from_lead(
     state: factory_native::lead::LeadRequestProjectionState,
 ) -> factory_native::intake::IntakeState {
-    use factory_native::intake::IntakeState;
-    use factory_native::lead::LeadRequestProjectionState;
-    match state {
-        LeadRequestProjectionState::Submitted => IntakeState::Submitted,
-        LeadRequestProjectionState::Assessing => IntakeState::Assessing,
-        LeadRequestProjectionState::PlanReady => IntakeState::PlanReady,
-        LeadRequestProjectionState::AwaitingApproval => IntakeState::AwaitingApproval,
-        LeadRequestProjectionState::Executing => IntakeState::Executing,
-        LeadRequestProjectionState::Completed => IntakeState::Completed,
-        LeadRequestProjectionState::Blocked => IntakeState::Blocked,
-        LeadRequestProjectionState::Failed => IntakeState::Failed,
-        LeadRequestProjectionState::Assessed => IntakeState::Assessed,
-        LeadRequestProjectionState::Withdrawn | LeadRequestProjectionState::Cancelled => {
-            IntakeState::Cancelled
-        }
-    }
+    factory_native::intake::IntakeState::from_lead_projection(state)
 }
 
 fn intake_state_detail(
@@ -9584,10 +10272,9 @@ fn intake_state_detail(
     }
 }
 
-async fn intake_request_value(
+async fn intake_request_summary_value(
     app: &App,
     record: &factory_native::db::IntakeRequestRecord,
-    detail: bool,
 ) -> Result<serde_json::Value, Error> {
     let lead = app.db.lead_request(&record.lead_request_id).await?;
     let projection = app.db.lead_request_projection(&lead.id).await?;
@@ -9632,12 +10319,40 @@ async fn intake_request_value(
         "delegationId": record.delegation_id,
         "leadRequestId": record.lead_request_id,
         "campaignId": campaign_id,
+        "parentRequestId": record.parent_request_id,
         "authorization": authorization,
         "spending": spending,
         "createdAt": record.created_at,
         "updatedAt": record.updated_at,
     });
+    // The Campaign status and latest Gate outcome are separate authoritative
+    // facts. Both the list and detail projections expose them so Office never
+    // has to infer a Gate badge from unrelated candidate state.
+    if let Some(campaign_status) = campaign_status {
+        value["campaignStatus"] = json!(campaign_status);
+    }
+    if let Some(gate_outcome) = gate_outcome {
+        value["gateOutcome"] = json!(gate_outcome);
+    }
+    Ok(value)
+}
+
+async fn intake_request_value(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    detail: bool,
+) -> Result<serde_json::Value, Error> {
+    let lead = app.db.lead_request(&record.lead_request_id).await?;
+    let campaign_id = lead
+        .campaign_id
+        .clone()
+        .or_else(|| record.campaign_id.clone());
+    let mut value = intake_request_summary_value(app, record).await?;
     if detail {
+        let linked_issues = app
+            .db
+            .issue_link_projections_for_request(&record.id)
+            .await?;
         let assessment = match app.db.lead_assessment(&lead.id).await {
             Ok(record) => Some(
                 serde_json::from_str::<serde_json::Value>(&record.assessment_json)
@@ -9664,9 +10379,35 @@ async fn intake_request_value(
             None => None,
         };
         let messages = app.db.intake_messages(&record.id).await?;
+        value["linked_issues"] = serde_json::to_value(linked_issues)
+            .map_err(|_| Error::Invalid("linked issue encoding"))?;
+        let planning_artifacts = app.db.planning_artifacts(&record.id).await?;
+        let plan_review = match app.db.latest_plan_review(&record.id).await {
+            Ok(review) => Some(review),
+            Err(Error::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+        let workflow = app.db.workflow_run_for_request(&record.id).await?;
+        let triage_context = agentic_triage_context(app, record).await?;
+        let planning_revision = latest_planning_revision(app, &record.id).await?;
+        let readiness =
+            planning_readiness(app, &record.id, planning_revision, &triage_context).await?;
         value["assessment"] = json!(assessment);
         value["proposal"] = json!(proposal);
         value["plan"] = json!(plan);
+        value["planning"] = json!({
+            "lane": readiness.lane,
+            "artifacts": planning_artifacts,
+            "review": plan_review,
+            "workflow": workflow,
+            "missingArtifacts": readiness.missing_artifacts,
+            "participantPlan": readiness.participant_plan,
+            "reviewStatus": readiness.review_status,
+            "reviewApproved": readiness.review_approved,
+            "materialsReady": readiness.materials_ready,
+            "ready": readiness.ready(),
+        });
+        value["environment"] = environment_projection_for_request(app, record).await?;
         value["campaign"] = json!(campaign);
         value["messages"] = json!(
             messages
@@ -9676,18 +10417,13 @@ async fn intake_request_value(
                     "role": message.role,
                     "body": message.body,
                     "createdAt": message.created_at,
+                    "followUpRequestId": message.follow_up_request_id,
                 }))
                 .collect::<Vec<_>>()
         );
-    }
-    // The Campaign status and latest Gate outcome are separate authoritative
-    // facts. Both the list and detail projections expose them so Office never
-    // has to infer a Gate badge from unrelated candidate state.
-    if let Some(campaign_status) = campaign_status {
-        value["campaignStatus"] = json!(campaign_status);
-    }
-    if let Some(gate_outcome) = gate_outcome {
-        value["gateOutcome"] = json!(gate_outcome);
+        if let Some(follow_up) = app.db.intake_follow_up_for_parent(&record.id).await? {
+            value["followUpRequest"] = intake_request_summary_value(app, &follow_up).await?;
+        }
     }
     Ok(value)
 }
@@ -10025,6 +10761,18 @@ fn assurance_for_risk(risk: factory_native::lead::RiskClass) -> factory_native::
     }
 }
 
+/// Deterministic documentation-baseline signal for planning. This only raises
+/// the planning lane; it never grants, denies or bypasses execution authority.
+fn project_has_engineering_docs(repository: &str) -> bool {
+    let root = std::path::Path::new(repository);
+    let has_readme = ["README.md", "README.rst", "README.txt", "README"]
+        .iter()
+        .any(|name| root.join(name).is_file());
+    let has_agents = root.join("AGENTS.md").is_file();
+    let has_docs = root.join("docs").is_dir();
+    has_readme && (has_agents || has_docs)
+}
+
 async fn agentic_stack_for_project(
     app: &App,
     project_id: &str,
@@ -10052,6 +10800,8 @@ struct AgenticTriageContext {
     risk: factory_native::lead::RiskClass,
     stack: factory_native::agentic::StackProfile,
     triage: factory_native::agentic::TriageDecision,
+    planning_lane: factory_native::planning::PlanningLane,
+    planning_signals: factory_native::planning::PlanningSignals,
     semantic: Option<(
         factory_native::db::AgenticAssessmentRecord,
         factory_native::agentic::AgenticTriageModel,
@@ -10151,7 +10901,7 @@ async fn agentic_triage_context(
             None
         },
         ambiguous: proposal.is_none() && !explicit_informational && !explicit_audit,
-        architecture_uncertainty: false,
+        architecture_uncertainty: proposal.is_none() && !explicit_informational && !explicit_audit,
         cross_module: work_units > 1,
         public_contract: false,
         data_or_schema: false,
@@ -10161,9 +10911,57 @@ async fn agentic_triage_context(
         explicit_repair: false,
     };
     let deterministic_stack = agentic_stack_for_project(app, &record.project_id).await;
+    let missing_docs = match app.db.project(&record.project_id).await {
+        Ok(project) => !project_has_engineering_docs(&project.repository),
+        Err(_) => true,
+    };
+    let planning_signals = factory_native::planning::PlanningSignals {
+        objective: record.objective.clone(),
+        greenfield: deterministic_stack.languages.is_empty(),
+        large: work_units > 1 || record.objective.chars().count() > 500,
+        missing_docs,
+        missing_stack: deterministic_stack.languages.is_empty(),
+        architecture_uncertainty: deterministic_signals.architecture_uncertainty,
+        public_contract: false,
+        data_or_schema: false,
+        security_boundary: false,
+        cross_module: work_units > 1,
+        changed_files: u32::try_from(deterministic_signals.files.len()).unwrap_or(u32::MAX),
+        expected_units: u32::try_from(work_units).unwrap_or(u32::MAX),
+        explicit_repair: false,
+    };
+    let planning_lane = factory_native::planning::route::route_for(
+        &factory_native::planning::route::PlanningRouteInput {
+            signals: planning_signals.clone(),
+            user_constraints: Default::default(),
+        },
+    )
+    .map_err(Error::Validation)?;
     // Deterministic floors are computed first. A semantic assessment may raise
     // them, but never replace the deterministic signals or lower a floor.
     let deterministic_decision = agentic::triage(&deterministic_signals);
+    let deterministic_decision = match planning_lane {
+        factory_native::planning::PlanningLane::FormalSpec
+            if deterministic_decision.route != agentic::ChangeRoute::FormalSpec =>
+        {
+            agentic::TriageDecision {
+                route: agentic::ChangeRoute::FormalSpec,
+                ..deterministic_decision
+            }
+        }
+        factory_native::planning::PlanningLane::Delegated
+            if matches!(
+                deterministic_decision.route,
+                agentic::ChangeRoute::Direct | agentic::ChangeRoute::NoAgent
+            ) =>
+        {
+            agentic::TriageDecision {
+                route: agentic::ChangeRoute::Delegated,
+                ..deterministic_decision
+            }
+        }
+        _ => deterministic_decision,
+    };
     let (stack, triage) = match &semantic {
         Some((_, model)) => (
             model.stack.clone(),
@@ -10176,6 +10974,8 @@ async fn agentic_triage_context(
         risk,
         stack,
         triage,
+        planning_lane,
+        planning_signals,
         semantic,
     })
 }
@@ -10192,7 +10992,9 @@ async fn agentic_projection_for_request(
             match serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
                 &graph_record.graph_json,
             ) {
-                Ok(graph) => deterministic_participant_plan(app, record, &context, &graph).await,
+                Ok(graph) => deterministic_participant_plan(app, record, &context, &graph)
+                    .await
+                    .ok(),
                 Err(_) => None,
             }
         }
@@ -10203,6 +11005,7 @@ async fn agentic_projection_for_request(
         .map(|proposal| proposal.work_units.len())
         .unwrap_or(0);
     let plan = app.db.frozen_lead_plan(&record.lead_request_id).await.ok();
+    let prerequisites = lead_planning_prerequisites(app, record).await?;
     let tasks = if let Some(campaign_id) = &record.campaign_id {
         app.db.campaign_tasks(campaign_id).await.unwrap_or_default()
     } else {
@@ -10220,6 +11023,46 @@ async fn agentic_projection_for_request(
             &stack,
         )
     });
+    let reviewer_receipts = match record.campaign_id.as_deref() {
+        Some(campaign_id) => match app.db.latest_candidate_for_campaign(campaign_id).await {
+            Ok(candidate) => app
+                .db
+                .quality_receipts(&candidate.id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|receipt| receipt.role == QualityRole::Reviewer)
+                .collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+    let independent_reviewer_count = reviewer_receipts
+        .iter()
+        .filter(|receipt| receipt.result == ReceiptResult::Pass)
+        .map(|receipt| receipt.principal_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let reviewer_receipt_view = reviewer_receipts
+        .iter()
+        .map(|receipt| {
+            json!({
+                "receiptId": receipt.receipt_id,
+                "principalId": receipt.principal_id,
+                "role": receipt.reviewer_role.map(|role| role.as_str()),
+                "result": receipt.result.as_str(),
+                "evidence": receipt.evidence.as_str(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let planning_artifacts = app.db.planning_artifacts(&record.id).await?;
+    let plan_review = match app.db.latest_plan_review(&record.id).await {
+        Ok(review) => Some(review),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    let workflow = app.db.workflow_run_for_request(&record.id).await?;
+    let findings = app.db.finding_dispositions(&record.id).await?;
     let specifications = proposal
         .map(|proposal| {
             proposal
@@ -10264,9 +11107,27 @@ async fn agentic_projection_for_request(
             "campaignId": lead.campaign_id,
             "failureReason": lead.failure_reason,
         },
+        "assessmentReady": prerequisites.assessment_ready,
+        "leadPlanReady": prerequisites.lead_plan_ready,
+        "actionSpecReady": prerequisites.action_spec_ready,
         "triage": triage,
+        "planningLane": planning_lane_code(context.planning_lane),
+        "planning": {
+            "artifacts": planning_artifacts,
+            "review": plan_review,
+            "workflow": workflow,
+        },
+        "environment": environment_projection_for_request(app, record).await?,
+        "findings": findings,
         "stack": stack,
         "participants": participants,
+        "reviewerEvidence": {
+            "requiredReviewerCount": participants.reviewer_count,
+            "requiredRoles": participants.reviewer_roles,
+            "assignedPrincipals": participants.reviewer_assignments,
+            "independentReviewerCount": independent_reviewer_count,
+            "receipts": reviewer_receipt_view,
+        },
         "specifications": specifications,
         "plan": plan.map(|plan| serde_json::json!({
             "id": plan.id,
@@ -10358,6 +11219,100 @@ struct AgenticModelOutcome {
     usage_known: bool,
 }
 
+/// Planner, Semantic Triage and Spec Manager structured Lead calls need
+/// headroom for a reasoning model. A reasoning model spends
+/// `reasoning_content` inside the same `max_tokens` envelope, so 4_096 output
+/// tokens can be exhausted before the assistant emits any JSON; the observed
+/// upstream result was empty content with `finish_reason=length`. This request
+/// bound only selects the structured Lead attempt. The frozen provider quote
+/// (100_000 output tokens in the supported profile) and the shared technical
+/// ceilings remain authoritative and can still refuse or settle the call.
+const AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS: u64 = 16_384;
+/// A stack selection is a tiny structured decision; keep the paid output
+/// bounded well below the full planner budget.
+const STACK_SELECTION_OUTPUT_TOKENS: u64 = 4_096;
+/// A single truncation retry may double the request, never beyond this bound.
+const AGENTIC_LEAD_TRUNCATION_RETRY_CEILING: u64 = 32_768;
+
+/// Return the larger bound for the one permitted truncation retry. `None`
+/// means the request is already at the ceiling and must fail typed instead of
+/// retrying forever or reusing an unresolved reservation.
+fn agentic_truncation_retry_output_tokens(requested: u64) -> Option<u64> {
+    let doubled = requested.checked_mul(2)?;
+    let retry = doubled.min(AGENTIC_LEAD_TRUNCATION_RETRY_CEILING);
+    (retry > requested).then_some(retry)
+}
+
+/// The shared identity and prompts for one bounded structured Lead call.
+/// Planner, Semantic Triage and Spec Manager keep their distinct purpose,
+/// scope and HTTP error mapping while sharing the truncation retry policy.
+struct LeadModelCall<'a> {
+    principal_id: &'a str,
+    project_id: &'a str,
+    objective_id: &'a str,
+    scope_id: &'a str,
+    purpose: &'a str,
+    system_prompt: &'a str,
+    user_prompt: &'a str,
+    max_output_tokens: u64,
+}
+
+impl LeadModelCall<'_> {
+    fn request(
+        &self,
+        max_output_tokens: u64,
+    ) -> factory_native::model_gateway::ModelCallRequest<'_> {
+        factory_native::model_gateway::ModelCallRequest {
+            role: factory_native::db::ModelCallRole::Lead,
+            principal_id: self.principal_id,
+            project_id: self.project_id,
+            objective_id: self.objective_id,
+            scope_id: self.scope_id,
+            purpose: self.purpose,
+            system_prompt: self.system_prompt,
+            user_prompt: self.user_prompt,
+            max_output_tokens,
+        }
+    }
+}
+
+/// Execute one structured Lead call. Only a measured, content-empty length
+/// stop is retryable. The first attempt stays UNKNOWN with its own reservation
+/// and budget hold; the new output bound changes the request digest and
+/// therefore owns a fresh reservation. Transport failures, HTTP errors,
+/// refusals, usage-unknown outcomes and budget exhaustion are never retried.
+async fn call_lead_model_with_truncation_retry(
+    gateway: &factory_native::model_gateway::ModelGateway,
+    database: &factory_native::db::Database,
+    call: &LeadModelCall<'_>,
+) -> Result<factory_native::db::ModelCallResult, factory_native::model_gateway::ModelGatewayError> {
+    let mut requested_output_tokens = call.max_output_tokens;
+    let mut result = gateway
+        .call(database, call.request(requested_output_tokens))
+        .await;
+    if let Err(factory_native::model_gateway::ModelGatewayError::Truncated(detail)) = &result
+        && let Some(retry_output_tokens) =
+            agentic_truncation_retry_output_tokens(requested_output_tokens)
+    {
+        tracing::warn!(
+            purpose = call.purpose,
+            requested_output_tokens,
+            retry_output_tokens,
+            diagnostic = %detail,
+            "agentic Lead model output was truncated; retrying once with a larger bound"
+        );
+        requested_output_tokens = retry_output_tokens;
+        result = gateway
+            .call(database, call.request(requested_output_tokens))
+            .await;
+    }
+    result
+}
+
+fn bounded_agentic_model_error(message: &str) -> String {
+    message.chars().take(480).collect()
+}
+
 fn agentic_model_error(error: factory_native::model_gateway::ModelGatewayError) -> Response {
     use factory_native::model_gateway::ModelGatewayError;
     match error {
@@ -10378,6 +11333,16 @@ fn agentic_model_error(error: factory_native::model_gateway::ModelGatewayError) 
         )
             .into_response(),
         ModelGatewayError::Database(other) => api_error(other),
+        ModelGatewayError::Truncated(detail) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({
+                "error": bounded_agentic_model_error(&format!(
+                    "the model exhausted its output token budget before returning usable JSON; no output was accepted; {detail}"
+                )),
+                "code": "AGENTIC_MODEL_OUTPUT_TRUNCATED",
+            })),
+        )
+            .into_response(),
         ModelGatewayError::Invalid(message) => (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": message, "code": "AGENTIC_MODEL_INVALID"})),
@@ -10427,23 +11392,22 @@ async fn call_agentic_lead_model(
                 .into_response()
         })?;
     let principal_id = grant.principal_id.clone();
-    let result = gateway
-        .call(
-            &app.db,
-            factory_native::model_gateway::ModelCallRequest {
-                role: factory_native::db::ModelCallRole::Lead,
-                principal_id: &principal_id,
-                project_id: &record.project_id,
-                objective_id: &record.lead_request_id,
-                scope_id: &record.delegation_id,
-                purpose,
-                system_prompt,
-                user_prompt,
-                max_output_tokens,
-            },
-        )
-        .await
-        .map_err(agentic_model_error)?;
+    let result = call_lead_model_with_truncation_retry(
+        &gateway,
+        &app.db,
+        &LeadModelCall {
+            principal_id: &principal_id,
+            project_id: &record.project_id,
+            objective_id: &record.lead_request_id,
+            scope_id: &record.delegation_id,
+            purpose,
+            system_prompt,
+            user_prompt,
+            max_output_tokens,
+        },
+    )
+    .await
+    .map_err(agentic_model_error)?;
     Ok(AgenticModelOutcome {
         content: result.content,
         provider: result.provider,
@@ -10457,10 +11421,10 @@ async fn call_agentic_lead_model(
     })
 }
 
-fn agentic_conflict(code: &'static str, message: &'static str) -> Response {
+fn agentic_conflict(code: &'static str, message: impl Into<String>) -> Response {
     (
         StatusCode::CONFLICT,
-        Json(json!({"error": message, "code": code})),
+        Json(json!({"error": message.into(), "code": code})),
     )
         .into_response()
 }
@@ -10510,6 +11474,2087 @@ async fn get_agentic_plan(
     }
 }
 
+fn planning_artifact_code(
+    kind: factory_native::planning::route::PlanningArtifactKind,
+) -> &'static str {
+    use factory_native::planning::route::PlanningArtifactKind;
+    match kind {
+        PlanningArtifactKind::Spec => "SPEC",
+        PlanningArtifactKind::Stack => "STACK",
+        PlanningArtifactKind::Architecture => "ARCHITECTURE",
+        PlanningArtifactKind::Documentation => "DOCUMENTATION",
+        PlanningArtifactKind::Skills => "SKILL",
+        PlanningArtifactKind::WorkGraph => "PLAN",
+        PlanningArtifactKind::DoD => "DOD",
+        PlanningArtifactKind::OpenSpec => "OPENSPEC",
+    }
+}
+
+fn planning_lane_code(lane: factory_native::planning::PlanningLane) -> &'static str {
+    use factory_native::planning::PlanningLane;
+    match lane {
+        PlanningLane::Direct => "DIRECT",
+        PlanningLane::Delegated => "DELEGATED",
+        PlanningLane::FormalSpec => "FORMAL_SPEC",
+        PlanningLane::Repair => "REPAIR",
+    }
+}
+
+fn planning_lane_from_code(code: &str) -> Option<factory_native::planning::PlanningLane> {
+    use factory_native::planning::PlanningLane;
+    match code {
+        "DIRECT" => Some(PlanningLane::Direct),
+        "DELEGATED" => Some(PlanningLane::Delegated),
+        "FORMAL_SPEC" => Some(PlanningLane::FormalSpec),
+        "REPAIR" => Some(PlanningLane::Repair),
+        _ => None,
+    }
+}
+
+fn planning_lane_rank(lane: factory_native::planning::PlanningLane) -> u8 {
+    use factory_native::planning::PlanningLane;
+    match lane {
+        PlanningLane::Direct => 0,
+        PlanningLane::Delegated => 1,
+        PlanningLane::FormalSpec => 2,
+        PlanningLane::Repair => 3,
+    }
+}
+
+/// The lane recorded with the frozen plan is authoritative for approval. A
+/// later filesystem state may raise the deterministic floor, so readiness uses
+/// the deeper of the frozen lane and the current floor and can never weaken a
+/// plan that was approved at a stronger lane.
+fn frozen_planning_lane(
+    artifact: &factory_native::db::PlanningArtifactRecord,
+) -> Option<factory_native::planning::PlanningLane> {
+    let bundle = serde_json::from_str::<Value>(&artifact.content_json).ok()?;
+    planning_lane_from_code(bundle.get("lane")?.as_str()?)
+}
+
+fn planning_conflict(code: &'static str, message: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({"error": message, "code": code})),
+    )
+        .into_response()
+}
+
+fn planning_work_graph_conflict(message: &str, missing: &[&'static str]) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": message,
+            "code": "WORK_GRAPH_REQUIRED",
+            "missingArtifacts": missing,
+        })),
+    )
+        .into_response()
+}
+
+/// The Lead assessment is the prerequisite that records the proposal, freezes
+/// the Lead plan and derives the first executable ActionSpec. The Planner must
+/// never run against a request that has not crossed that boundary: doing so
+/// spends a model call and then fails while attaching the dependency plan.
+#[derive(Debug, Clone, Copy)]
+struct LeadPlanningPrerequisites {
+    assessment_ready: bool,
+    lead_plan_ready: bool,
+    action_spec_ready: bool,
+}
+
+impl LeadPlanningPrerequisites {
+    fn ready(self) -> bool {
+        self.assessment_ready && self.lead_plan_ready && self.action_spec_ready
+    }
+
+    fn missing(self) -> Vec<&'static str> {
+        let mut missing = Vec::new();
+        if !self.assessment_ready {
+            missing.push("LEAD_ASSESSMENT");
+        }
+        if !self.lead_plan_ready {
+            missing.push("FROZEN_LEAD_PLAN");
+        }
+        if !self.action_spec_ready {
+            missing.push("ACTION_SPEC");
+        }
+        missing
+    }
+}
+
+async fn lead_planning_prerequisites(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<LeadPlanningPrerequisites, Error> {
+    let assessment_ready = match app.db.lead_assessment(&record.lead_request_id).await {
+        Ok(_) => true,
+        Err(Error::NotFound) => false,
+        Err(error) => return Err(error),
+    };
+    let lead_plan_ready = match app.db.frozen_lead_plan(&record.lead_request_id).await {
+        Ok(_) => true,
+        Err(Error::NotFound) => false,
+        Err(error) => return Err(error),
+    };
+    let action_spec_ready = match app.db.action(&record.action_id).await {
+        Ok(_) => true,
+        Err(Error::NotFound) => false,
+        Err(error) => return Err(error),
+    };
+    Ok(LeadPlanningPrerequisites {
+        assessment_ready,
+        lead_plan_ready,
+        action_spec_ready,
+    })
+}
+
+fn assessment_required_response(prerequisites: LeadPlanningPrerequisites) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "code": "ASSESSMENT_REQUIRED",
+            "error": "Lead assessment is required before compiling a plan; run the assessment so Core records the frozen Lead plan and ActionSpec first.",
+            "action": "Run assessment",
+            "assessmentReady": prerequisites.assessment_ready,
+            "leadPlanReady": prerequisites.lead_plan_ready,
+            "actionSpecReady": prerequisites.action_spec_ready,
+            "missingPrerequisites": prerequisites.missing(),
+        })),
+    )
+        .into_response()
+}
+
+async fn ensure_planning_workflow(
+    app: &App,
+    request_id: &str,
+    plan_sha256: &str,
+) -> Result<String, Error> {
+    use factory_native::planning::WorkflowState;
+    let run_id = app
+        .db
+        .ensure_workflow_run(request_id, None, plan_sha256)
+        .await?;
+    let mut run = app.db.workflow_run(&run_id).await?;
+    let advance = |state: WorkflowState| -> Option<(WorkflowState, WorkflowState)> {
+        match state {
+            WorkflowState::Submitted => Some((WorkflowState::Submitted, WorkflowState::Assessing)),
+            WorkflowState::Assessing => Some((WorkflowState::Assessing, WorkflowState::Planned)),
+            WorkflowState::Planned | WorkflowState::Replanning => {
+                Some((state, WorkflowState::PlanReview))
+            }
+            _ => None,
+        }
+    };
+    while let Some((from, to)) = advance(run.state) {
+        app.db
+            .transition_workflow(&run_id, from, to, "planning artifacts persisted")
+            .await?;
+        run = app.db.workflow_run(&run_id).await?;
+    }
+    Ok(run_id)
+}
+
+fn repository_file_sha256(
+    repository: &std::path::Path,
+    base_commit: &str,
+    path: &str,
+) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let output = std::process::Command::new("git")
+        .args([
+            "-C",
+            repository.to_str()?,
+            "show",
+            &format!("{base_commit}:{path}"),
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(format!("{:x}", Sha256::digest(&output.stdout)))
+}
+
+/// The builder image is Factory infrastructure, not a project toolchain. WP1-B
+/// supplies the image/digest; an absent value is a truthful unavailable builder,
+/// not a language-image fallback.
+const DEFAULT_ENVIRONMENT_NIX_VERSION: &str = "2.28.3";
+const DEFAULT_ENVIRONMENT_DEVENV_VERSION: &str = "1.11.2";
+
+fn empty_conventions(
+    project_id: &str,
+    base_commit: &str,
+    error: &factory_native::planning::environment::EnvironmentError,
+) -> factory_native::planning::environment::ProjectConventions {
+    use factory_native::planning::environment::{
+        ENVIRONMENT_SCHEMA_VERSION, ExistingEnvironmentKind, ProjectConventions,
+    };
+    let mut conventions = ProjectConventions {
+        schema_version: ENVIRONMENT_SCHEMA_VERSION,
+        project_id: project_id.into(),
+        base_commit: base_commit.into(),
+        conventions_sha256: String::new(),
+        scanned_at: chrono::Utc::now().to_rfc3339(),
+        files: Vec::new(),
+        commands: Vec::new(),
+        conflicts: Vec::new(),
+        truncated: false,
+        skipped_entries: 1,
+        provenance: format!("unavailable: {}", error.message),
+        existing_environment: ExistingEnvironmentKind::None,
+    };
+    conventions.conventions_sha256 = conventions.compute_sha256();
+    conventions
+}
+
+fn blocked_environment_plan(
+    record: &factory_native::db::IntakeRequestRecord,
+    revision: u32,
+    risk_class: &str,
+    conventions: &factory_native::planning::environment::ProjectConventions,
+    blocker: factory_native::planning::environment::EnvironmentBlocker,
+    builder: factory_native::planning::environment::EnvironmentBuilderDescriptor,
+) -> factory_native::planning::environment::EnvironmentPlan {
+    use factory_native::planning::environment::{
+        ENVIRONMENT_SCHEMA_VERSION, EnvironmentBlockerCode, EnvironmentNixPolicy, EnvironmentPlan,
+        EnvironmentPlanSource, EnvironmentPlanStatus, LicenseInventory, NetworkPolicy,
+        ResourceLimits, SandboxPolicy,
+    };
+    let now = chrono::Utc::now();
+    let mut plan = EnvironmentPlan {
+        schema_version: ENVIRONMENT_SCHEMA_VERSION,
+        plan_id: uuid::Uuid::new_v4().simple().to_string(),
+        project_id: record.project_id.clone(),
+        request_id: record.id.clone(),
+        action_id: record.action_id.clone(),
+        campaign_id: None,
+        base_commit: conventions.base_commit.clone(),
+        conventions_sha256: conventions.conventions_sha256.clone(),
+        conventions: conventions.clone(),
+        risk_class: risk_class.to_owned(),
+        status: EnvironmentPlanStatus::Blocked,
+        revision,
+        source: EnvironmentPlanSource::ProjectCommitted,
+        toolchains: Vec::new(),
+        packages: Vec::new(),
+        services: Vec::new(),
+        commands: Default::default(),
+        browsers: Vec::new(),
+        files: Vec::new(),
+        nix: EnvironmentNixPolicy {
+            nixpkgs: String::new(),
+            inputs: Vec::new(),
+            allow_unfree: false,
+            sandbox: SandboxPolicy::default(),
+        },
+        resources: ResourceLimits::default(),
+        network: NetworkPolicy::default(),
+        license_inventory: LicenseInventory::default(),
+        license_inventory_sha256: String::new(),
+        builder,
+        resolution: None,
+        lead_review: None,
+        blockers: vec![blocker],
+        commands_rationale: String::new(),
+        plan_sha256: String::new(),
+        created_at: now.to_rfc3339(),
+    };
+    plan.license_inventory.refresh_hashes(&plan.plan_id);
+    plan.license_inventory_sha256 = plan.license_inventory.inventory_sha256.clone();
+    plan.refresh_hash();
+    // A blocked plan is recorded truthfully but is never executable.
+    plan.blockers
+        .push(factory_native::planning::environment::EnvironmentBlocker {
+            code: EnvironmentBlockerCode::EnvironmentPlanRequired,
+            message: "no executable environment was frozen".into(),
+        });
+    plan
+}
+
+async fn compile_environment_for_request(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    config: &factory_native::lead::ProjectConfig,
+    revision: u32,
+    risk_class: &str,
+    model_environment_proposal: Option<factory_native::planning::environment::EnvironmentProposal>,
+) -> Result<factory_native::planning::environment::EnvironmentPlan, Response> {
+    use factory_native::planning::environment::{
+        CompileEnvironmentInput, EnvironmentBlocker, compile_environment_plan,
+        discover_project_conventions,
+    };
+    let repository = std::path::PathBuf::from(&config.repository);
+    let risk_class = risk_class.to_owned();
+    let now = chrono::Utc::now();
+    let conventions = match discover_project_conventions(
+        &record.project_id,
+        &repository,
+        &config.base_commit,
+        now,
+    ) {
+        Ok(conventions) => conventions,
+        Err(error) => {
+            let conventions = empty_conventions(&record.project_id, &config.base_commit, &error);
+            let plan = blocked_environment_plan(
+                record,
+                revision,
+                &risk_class,
+                &conventions,
+                EnvironmentBlocker {
+                    code: error.code,
+                    message: error.message,
+                },
+                app.environment_builder().descriptor(),
+            );
+            app.db
+                .save_environment_plan(&plan)
+                .await
+                .map_err(api_error)?;
+            return Ok(plan);
+        }
+    };
+    if let Err(error) = conventions.validate() {
+        let plan = blocked_environment_plan(
+            record,
+            revision,
+            &risk_class,
+            &conventions,
+            EnvironmentBlocker {
+                code: error.code,
+                message: error.message,
+            },
+            app.environment_builder().descriptor(),
+        );
+        app.db
+            .save_environment_plan(&plan)
+            .await
+            .map_err(api_error)?;
+        return Ok(plan);
+    }
+    let mut requirements = match serde_json::from_str::<serde_json::Value>(&record.submission_json)
+    {
+        Ok(submission) => match submission.get("environmentConstraints") {
+            None | Some(serde_json::Value::Null) => {
+                factory_native::planning::environment::EnvironmentRequirements::default()
+            }
+            Some(value) => match serde_json::from_value::<
+                factory_native::planning::environment::RequestEnvironmentConstraints,
+            >(value.clone())
+            {
+                Ok(constraints) => constraints.into_requirements(),
+                Err(error) => {
+                    let blocked = blocked_environment_plan(
+                        record,
+                        revision,
+                        &risk_class,
+                        &conventions,
+                        EnvironmentBlocker {
+                            code: factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPlanInvalid,
+                            message: format!(
+                                "the stored environmentConstraints are malformed: {error}"
+                            ),
+                        },
+                        app.environment_builder().descriptor(),
+                    );
+                    app.db
+                        .save_environment_plan(&blocked)
+                        .await
+                        .map_err(api_error)?;
+                    return Ok(blocked);
+                }
+            },
+        },
+        Err(error) => {
+            let blocked = blocked_environment_plan(
+                record,
+                revision,
+                &risk_class,
+                &conventions,
+                EnvironmentBlocker {
+                    code: factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPlanInvalid,
+                    message: format!("the stored intake submission is malformed: {error}"),
+                },
+                app.environment_builder().descriptor(),
+            );
+            app.db
+                .save_environment_plan(&blocked)
+                .await
+                .map_err(api_error)?;
+            return Ok(blocked);
+        }
+    };
+    // A greenfield project can only receive a concrete environment from an
+    // untrusted model proposal. The recorded Lead planning proposal is
+    // preferred; a model-selected stack may carry a fallback proposal when an
+    // older assessment has none. Neither overrides explicit request constraints
+    // or committed conventions; the existing compiler validates and freezes the
+    // merged plan, and the Lead environment review still approves it.
+    let lead_environment_proposal = app
+        .db
+        .lead_proposal(&record.lead_request_id)
+        .await
+        .ok()
+        .and_then(|record| {
+            serde_json::from_str::<factory_native::lead::LeadPlanProposal>(&record.proposal_json)
+                .ok()
+        })
+        .and_then(|proposal| proposal.environment_proposal);
+    if let Some(proposal) = lead_environment_proposal.or(model_environment_proposal) {
+        requirements.proposal = Some(proposal);
+    }
+    if let Ok(raw) = std::env::var("FACTORY_ENVIRONMENT_FETCH_ALLOWLIST") {
+        requirements.network.fetch_allowlist = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(str::to_owned)
+            .collect();
+    }
+    if requirements.explicit_constraints.nixpkgs.is_none()
+        && conventions.pins_named("nixpkgs").is_empty()
+        && requirements
+            .proposal
+            .as_ref()
+            .and_then(|proposal| proposal.nixpkgs.as_ref())
+            .is_none()
+    {
+        let descriptor = app.environment_builder().descriptor();
+        if !descriptor.default_nixpkgs.trim().is_empty() {
+            requirements.explicit_constraints.nixpkgs = Some(descriptor.default_nixpkgs);
+        }
+    }
+    match compile_environment_plan(CompileEnvironmentInput {
+        plan_id: uuid::Uuid::new_v4().simple().to_string(),
+        project_id: &record.project_id,
+        request_id: &record.id,
+        action_id: &record.action_id,
+        campaign_id: None,
+        revision,
+        risk_class: &risk_class,
+        conventions: &conventions,
+        requirements: &requirements,
+        builder: app.environment_builder().descriptor(),
+        now,
+    }) {
+        Ok(mut plan) => {
+            let has_lock = plan.files.iter().any(|file| {
+                file.path.eq_ignore_ascii_case("flake.lock")
+                    || file.path.eq_ignore_ascii_case("devenv.lock")
+            });
+            // A plan with selected packages always requires builder resolution:
+            // lock files alone do not prove the package version/licence claims.
+            let requires_package_verification = !plan.packages.is_empty();
+            if (plan.source
+                == factory_native::planning::environment::EnvironmentPlanSource::Generated
+                && !has_lock)
+                || requires_package_verification
+            {
+                match resolve_generated_environment(app, &plan, Some(repository.as_path())).await {
+                    Ok(resolved) => plan = resolved,
+                    Err(blocker) => {
+                        let blocked = blocked_environment_plan(
+                            record,
+                            revision,
+                            &risk_class,
+                            &conventions,
+                            blocker,
+                            app.environment_builder().descriptor(),
+                        );
+                        app.db
+                            .save_environment_plan(&blocked)
+                            .await
+                            .map_err(api_error)?;
+                        return Ok(blocked);
+                    }
+                }
+            }
+            app.db
+                .save_environment_plan(&plan)
+                .await
+                .map_err(api_error)?;
+            Ok(plan)
+        }
+        Err(error) => {
+            let plan = blocked_environment_plan(
+                record,
+                revision,
+                &risk_class,
+                &conventions,
+                EnvironmentBlocker {
+                    code: error.code,
+                    message: error.message,
+                },
+                app.environment_builder().descriptor(),
+            );
+            app.db
+                .save_environment_plan(&plan)
+                .await
+                .map_err(api_error)?;
+            Ok(plan)
+        }
+    }
+}
+
+async fn resolve_generated_environment(
+    app: &App,
+    plan: &factory_native::planning::environment::EnvironmentPlan,
+    workspace: Option<&std::path::Path>,
+) -> Result<
+    factory_native::planning::environment::EnvironmentPlan,
+    factory_native::planning::environment::EnvironmentBlocker,
+> {
+    use factory_native::planning::environment::{EnvironmentBlockerCode, EnvironmentBuilderStatus};
+    let builder = app.environment_builder();
+    let resolution = builder.resolve(plan, workspace).await.map_err(|error| {
+        factory_native::planning::environment::EnvironmentBlocker {
+            code: error.code,
+            message: error.message,
+        }
+    })?;
+    if let Err(error) = resolution.validate_for(plan) {
+        return Err(factory_native::planning::environment::EnvironmentBlocker {
+            code: error.code,
+            message: error.message,
+        });
+    }
+    let descriptor = builder.descriptor();
+    if !descriptor.is_available() || descriptor.status == EnvironmentBuilderStatus::Unavailable {
+        return Err(factory_native::planning::environment::EnvironmentBlocker {
+            code: EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
+            message: "the environment builder returned a resolution without a digest-pinned builder identity".into(),
+        });
+    }
+    let mut resolved = plan.clone();
+    resolved.files.retain(|file| {
+        !file.path.eq_ignore_ascii_case("flake.lock")
+            && !file.path.eq_ignore_ascii_case("devenv.lock")
+    });
+    resolved.files.extend(resolution.files.iter().cloned());
+    resolved.builder = descriptor;
+    resolved.resolution = Some(resolution);
+    resolved.refresh_hash();
+    // The builder resolved the pre-merge plan. Rebind its evidence to the
+    // final plan hash, which now covers the resolved lock files; the binding
+    // field is excluded from the content hash so this is not circular.
+    if let Some(resolution) = &mut resolved.resolution {
+        resolution.plan_sha256 = resolved.plan_sha256.clone();
+    }
+    if let Err(error) = resolved.validate(chrono::Utc::now()) {
+        return Err(factory_native::planning::environment::EnvironmentBlocker {
+            code: error.code,
+            message: error.message,
+        });
+    }
+    Ok(resolved)
+}
+
+async fn build_environment_before_freeze(
+    app: &App,
+    plan: &factory_native::planning::environment::EnvironmentPlan,
+    spec: &factory_native::planning::environment::EnvironmentSpec,
+    workspace: Option<&std::path::Path>,
+) -> Result<Option<factory_native::planning::environment::EnvironmentBuildReceipt>, Response> {
+    use factory_native::planning::environment::EnvironmentBuilderStatus;
+    let builder = app.environment_builder();
+    let descriptor = builder.descriptor();
+    if !descriptor.is_available() || descriptor.status == EnvironmentBuilderStatus::Unavailable {
+        return Ok(None);
+    }
+    let receipt = builder
+        .build(spec, plan, workspace)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.message,
+                    "code": error.code_str(),
+                })),
+            )
+                .into_response()
+        })?;
+    receipt.validate_for(spec).map_err(|error| {
+        (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": error.message,
+                "code": error.code_str(),
+            })),
+        )
+            .into_response()
+    })?;
+    Ok(Some(receipt))
+}
+
+async fn run_lead_environment_review(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    planned_sha256: Option<(&str, u32)>,
+) -> Result<
+    Option<(
+        factory_native::planning::environment::EnvironmentPlanReview,
+        Option<factory_native::planning::environment::EnvironmentSpec>,
+    )>,
+    Response,
+> {
+    use factory_native::planning::environment::{
+        EnvironmentPlanStatus, EnvironmentReviewModelCall, RecordLeadReviewInput,
+        record_lead_review,
+    };
+    let stored = match app.db.latest_environment_plan(&record.id).await {
+        Ok(plan) => plan,
+        Err(Error::NotFound) => return Ok(None),
+        Err(error) => return Err(api_error(error)),
+    };
+    if let Some((sha, revision)) = planned_sha256
+        && (stored.plan_sha256 != sha || stored.plan.revision != revision)
+    {
+        return Err(planning_conflict(
+            "ENVIRONMENT_HASH_MISMATCH",
+            "the Lead environment review request does not bind the current plan revision and hash",
+        ));
+    }
+    if stored.status == "FROZEN" {
+        let spec = app.db.environment_spec_for_request(&record.id).await.ok();
+        let review = app
+            .db
+            .latest_environment_plan_review(&stored.plan_sha256)
+            .await
+            .ok();
+        return Ok(review.map(|review| (review, spec.map(|value| value.spec))));
+    }
+    if stored.status == "BLOCKED" {
+        return Err(environment_plan_conflict(&stored.plan));
+    }
+    if let Ok(existing) = app
+        .db
+        .latest_environment_plan_review(&stored.plan_sha256)
+        .await
+    {
+        if existing.decision == factory_native::planning::environment::LeadReviewDecision::Approved
+        {
+            if let Ok(spec) = app.db.environment_spec_for_request(&record.id).await {
+                return Ok(Some((existing, Some(spec.spec))));
+            }
+            let spec =
+                freeze_reviewed_environment(app, record, stored.plan, existing.clone()).await?;
+            return Ok(Some((existing, Some(spec))));
+        }
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": existing.rationale,
+                "code": "ENVIRONMENT_LEAD_REVIEW_REJECTED",
+                "decision": existing.decision,
+            })),
+        )
+            .into_response());
+    }
+    let profile = app
+        .db
+        .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+        .await
+        .map_err(api_error)?;
+    let gateway = match app.intake_assess_gateway(&profile).await {
+        Ok(gateway) => gateway,
+        Err(error) => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": format!("the frozen Lead route is unavailable: {error}"),
+                    "code": "ENVIRONMENT_LEAD_MODEL_UNAVAILABLE",
+                })),
+            )
+                .into_response());
+        }
+    };
+    match app.db.inference_envelope_for_request(&record.id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return Err(api_error(Error::IntakeConflict {
+                code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                message:
+                    "the Lead environment review is a billable model call and requires an explicit request-scoped inference authorization"
+                        .into(),
+            }));
+        }
+        Err(error) => return Err(api_error(error)),
+    }
+    if let Err(error) = ensure_inference_pricing_quote(
+        app,
+        gateway.provider(),
+        gateway.model(),
+        "lead-environment-review",
+    )
+    .await
+    {
+        return Err(api_error(error));
+    }
+    let config = app
+        .db
+        .project_config(&record.project_id)
+        .await
+        .map_err(api_error)?;
+    let grant = app
+        .db
+        .standing_delegation_v2(&record.delegation_id)
+        .await
+        .map_err(api_error)?;
+    let (model_review, model_result) = match factory_native::lead_model::review_environment(
+        &gateway,
+        &app.db,
+        factory_native::lead_model::EnvironmentReviewRequest {
+            request_id: &record.id,
+            objective_id: &record.lead_request_id,
+            project: &config,
+            plan: &stored.plan,
+            grant: &grant,
+            now: chrono::Utc::now(),
+        },
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(factory_native::lead::LeadError::TransientAssessment(detail)) => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": detail,
+                    "code": "ENVIRONMENT_LEAD_MODEL_UNAVAILABLE",
+                })),
+            )
+                .into_response());
+        }
+        Err(error) => {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "ENVIRONMENT_LEAD_REVIEW_INVALID",
+                })),
+            )
+                .into_response());
+        }
+    };
+    let model_call = EnvironmentReviewModelCall {
+        mechanism: "MODEL".into(),
+        provider: model_result.provider,
+        model: model_result.model,
+        reservation_id: model_result.reservation_id,
+        request_sha256: model_result.request_sha256,
+        input_tokens: model_result.input_tokens,
+        output_tokens: model_result.output_tokens,
+        total_tokens: model_result.total_tokens,
+        cost_micros: model_result.cost_micros,
+        usage_known: model_result.usage_known,
+    };
+    let decision = model_review.decision.as_lead_review();
+    let mut plan = stored.plan;
+    let plan_sha256 = plan.plan_sha256.clone();
+    let lead_principal = format!("lead:{}", record.lead_request_id);
+    let review = match record_lead_review(
+        &mut plan,
+        RecordLeadReviewInput {
+            review_id: uuid::Uuid::new_v4().to_string(),
+            principal_id: &lead_principal,
+            recorded_by: "core:lead-environment-review",
+            decision,
+            rationale: &model_review.rationale,
+            constraints: model_review.constraints,
+            evidence_refs: vec![
+                format!("request:{}", record.id),
+                format!("plan:{plan_sha256}"),
+                format!("model-call:{}", model_call.reservation_id),
+            ],
+            model_call,
+            now: chrono::Utc::now(),
+        },
+    ) {
+        Ok(review) => review,
+        Err(error) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.message,
+                    "code": error.code_str(),
+                })),
+            )
+                .into_response());
+        }
+    };
+    app.db
+        .save_environment_plan_review(&review)
+        .await
+        .map_err(api_error)?;
+    if decision != factory_native::planning::environment::LeadReviewDecision::Approved {
+        app.db
+            .mark_environment_plan_status(&plan.plan_sha256, EnvironmentPlanStatus::Blocked)
+            .await
+            .map_err(api_error)?;
+        return Ok(Some((review, None)));
+    }
+    let spec = freeze_reviewed_environment(app, record, plan, review.clone()).await?;
+    Ok(Some((review, Some(spec))))
+}
+
+async fn freeze_reviewed_environment(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    mut plan: factory_native::planning::environment::EnvironmentPlan,
+    review: factory_native::planning::environment::EnvironmentPlanReview,
+) -> Result<factory_native::planning::environment::EnvironmentSpec, Response> {
+    use factory_native::planning::environment::{
+        EnvironmentPlanStatus, EnvironmentSpecStatus, FreezeEnvironmentInput,
+        freeze_environment_spec,
+    };
+    plan.lead_review = Some(review.clone());
+    plan.status = EnvironmentPlanStatus::LeadApproved;
+    let nix_version = plan
+        .resolution
+        .as_ref()
+        .map(|resolution| resolution.nix_version.clone())
+        .or_else(|| std::env::var("FACTORY_ENVIRONMENT_NIX_VERSION").ok())
+        .unwrap_or_else(|| DEFAULT_ENVIRONMENT_NIX_VERSION.into());
+    let devenv_version = plan
+        .resolution
+        .as_ref()
+        .map(|resolution| resolution.devenv_version.clone())
+        .or_else(|| std::env::var("FACTORY_ENVIRONMENT_DEVENV_VERSION").ok())
+        .unwrap_or_else(|| DEFAULT_ENVIRONMENT_DEVENV_VERSION.into());
+    let spec = freeze_environment_spec(
+        &plan,
+        &review,
+        FreezeEnvironmentInput {
+            spec_id: uuid::Uuid::new_v4().to_string(),
+            nix_version: &nix_version,
+            devenv_version: &devenv_version,
+            now: chrono::Utc::now(),
+        },
+    )
+    .map_err(|error| {
+        (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": error.message,
+                "code": error.code_str(),
+            })),
+        )
+            .into_response()
+    })?;
+    if spec.status != EnvironmentSpecStatus::Frozen {
+        return Err(StatusCode::CONFLICT.into_response());
+    }
+    // The frozen spec was constructed from the Lead-approved plan. Execution
+    // evidence is bound to a FROZEN plan, so mark the in-memory status before
+    // the builder call; the durable status transition happens only after the
+    // build receipt and spec are persisted.
+    plan.status = EnvironmentPlanStatus::Frozen;
+    let repository = app
+        .db
+        .project_config(&record.project_id)
+        .await
+        .ok()
+        .map(|config| std::path::PathBuf::from(config.repository));
+    let build_receipt =
+        build_environment_before_freeze(app, &plan, &spec, repository.as_deref()).await?;
+    if plan.source == factory_native::planning::environment::EnvironmentPlanSource::Generated
+        && build_receipt.is_none()
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "a generated environment requires a successful builder receipt before freeze",
+                "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
+            })),
+        )
+            .into_response());
+    }
+    if let Some(receipt) = &build_receipt {
+        app.db
+            .save_environment_build_receipt(receipt)
+            .await
+            .map_err(api_error)?;
+    }
+    app.db
+        .save_environment_license_inventory(
+            &plan.plan_sha256,
+            Some(&spec.spec_sha256),
+            &plan.license_inventory,
+        )
+        .await
+        .map_err(api_error)?;
+    app.db
+        .save_environment_spec(&spec)
+        .await
+        .map_err(api_error)?;
+    app.db
+        .mark_environment_plan_status(&plan.plan_sha256, EnvironmentPlanStatus::Frozen)
+        .await
+        .map_err(api_error)?;
+    let mut frozen_plan = plan.clone();
+    frozen_plan.status = EnvironmentPlanStatus::Frozen;
+    app.db
+        .set_action_environment_binding(&record.action_id, &frozen_plan, &spec)
+        .await
+        .map_err(api_error)?;
+    Ok(spec)
+}
+
+fn environment_plan_conflict(
+    plan: &factory_native::planning::environment::EnvironmentPlan,
+) -> Response {
+    let blocker = plan
+        .blockers
+        .first()
+        .map(|blocker| (blocker.code.as_str(), blocker.message.clone()))
+        .unwrap_or((
+            factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPlanInvalid
+                .as_str(),
+            "the environment plan is not executable".into(),
+        ));
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": blocker.1,
+            "code": blocker.0,
+            "environment": {
+                "planId": plan.plan_id,
+                "planSha256": plan.plan_sha256,
+                "status": plan.status,
+                "blockers": plan.blockers,
+            }
+        })),
+    )
+        .into_response()
+}
+
+async fn environment_projection_for_request(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<Value, Error> {
+    let action_required = app
+        .db
+        .action(&record.action_id)
+        .await
+        .map(|action| action.spec.environment_required)
+        .unwrap_or(false);
+    let stored = match app.db.latest_environment_plan(&record.id).await {
+        Ok(plan) => Some(plan),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    let reviews = app
+        .db
+        .environment_plan_reviews(&record.id)
+        .await
+        .unwrap_or_default();
+    let spec = app
+        .db
+        .environment_spec_for_request(&record.id)
+        .await
+        .ok()
+        .filter(|spec| {
+            // A frozen spec belongs to one immutable plan. A newer recompiled
+            // plan must not inherit the old spec or its approval.
+            stored
+                .as_ref()
+                .is_some_and(|stored| spec.spec.plan_sha256 == stored.plan.plan_sha256)
+        });
+    let receipt = match &spec {
+        Some(spec) => app
+            .db
+            .latest_environment_build_receipt(&spec.spec_sha256)
+            .await
+            .ok(),
+        None => None,
+    };
+    let (plan, status, blockers) = match &stored {
+        Some(stored) => {
+            let mut blockers = stored.plan.blockers.clone();
+            if stored.status != "FROZEN" && spec.is_none() {
+                blockers.push(factory_native::planning::environment::EnvironmentBlocker {
+                    code: factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPlanRequired,
+                    message: "Lead approval and Core freeze are required before execution or checks."
+                        .into(),
+                });
+            }
+            (Some(stored.plan.clone()), stored.status.clone(), blockers)
+        }
+        None => (
+            None,
+            "MISSING".into(),
+            vec![factory_native::planning::environment::EnvironmentBlocker {
+                code: factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPlanRequired,
+                message:
+                    "No environment plan is recorded for this request. Execution and checks are refused until Core compiles and freezes one."
+                        .into(),
+            }],
+        ),
+    };
+    let lead_approval = reviews
+        .iter()
+        .rev()
+        .find(|review| {
+            review.reviewer_role
+                == factory_native::planning::environment::EnvironmentReviewerRole::Lead
+        })
+        .cloned();
+    Ok(json!({
+        "required": action_required || stored.is_some(),
+        "status": status,
+        "plan": plan,
+        "planId": plan.as_ref().map(|plan| plan.plan_id.clone()),
+        "planSha256": plan.as_ref().map(|plan| plan.plan_sha256.clone()),
+        "planRevision": plan.as_ref().map(|plan| plan.revision),
+        "conventions": plan.as_ref().map(|plan| plan.conventions.clone()),
+        "reviews": reviews,
+        "leadApproval": lead_approval,
+        "spec": spec.as_ref().map(|spec| spec.spec.clone()),
+        "specSha256": spec.as_ref().map(|spec| spec.spec_sha256.clone()),
+        "builder": {
+            "descriptor": plan
+                .as_ref()
+                .map(|plan| plan.builder.clone())
+                .or_else(|| Some(app.environment_builder().descriptor())),
+            "receipt": receipt,
+        },
+        "licenseInventory": plan.as_ref().map(|plan| plan.license_inventory.clone()),
+        "blockers": blockers,
+    }))
+}
+
+async fn environment_ready_for_request(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<(), Response> {
+    match app.db.latest_environment_plan(&record.id).await {
+        Ok(plan) => {
+            if plan.status == "BLOCKED" || !plan.plan.blockers.is_empty() {
+                return Err(environment_plan_conflict(&plan.plan));
+            }
+            if plan.status != "FROZEN"
+                && app
+                    .db
+                    .environment_spec_for_request(&record.id)
+                    .await
+                    .is_err()
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": "the environment plan is not frozen; a Lead planning decision and Core freeze are required before execution.",
+                        "code": "ENVIRONMENT_PLAN_REQUIRED",
+                        "planId": plan.plan.plan_id,
+                        "planSha256": plan.plan_sha256,
+                        "status": plan.status,
+                    })),
+                )
+                    .into_response());
+            }
+            let action = app.db.action(&record.action_id).await.map_err(api_error)?;
+            if let Err(error) = factory_native::db::validate_environment_requirement(&action.spec) {
+                return Err(api_error(error));
+            }
+            Ok(())
+        }
+        Err(Error::NotFound) => {
+            let action = app.db.action(&record.action_id).await.map_err(api_error)?;
+            factory_native::db::validate_environment_requirement(&action.spec)
+                .map_err(api_error)?;
+            Ok(())
+        }
+        Err(error) => Err(api_error(error)),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PlanningCompileConflict {
+    code: &'static str,
+    message: String,
+    options: Option<Value>,
+}
+
+#[derive(Debug)]
+enum PlanningCompileFailure {
+    Conflict(PlanningCompileConflict),
+    Internal(Error),
+}
+
+/// The deterministic stack decision plus an optional untrusted environment
+/// proposal produced by the same bounded stack-selection model call. The
+/// proposal is only a fallback when the recorded Lead plan did not already
+/// carry one.
+#[derive(Debug)]
+struct CompiledStackDecision {
+    decision: factory_native::planning::StackDecision,
+    /// Profile consumed by architecture, skills and DoD. It preserves the raw
+    /// triage evidence and adds the selected language/framework.
+    stack_profile: factory_native::agentic::StackProfile,
+    environment_proposal: Option<factory_native::planning::environment::EnvironmentProposal>,
+}
+
+impl From<Error> for PlanningCompileFailure {
+    fn from(error: Error) -> Self {
+        Self::Internal(error)
+    }
+}
+
+fn planning_compile_conflict_response(
+    conflict: PlanningCompileConflict,
+    missing: &[&'static str],
+) -> Response {
+    let mut body = json!({
+        "code": conflict.code,
+        "error": conflict.message,
+        "missingArtifacts": missing,
+    });
+    if let Some(options) = conflict.options {
+        body["options"] = options;
+    }
+    (StatusCode::CONFLICT, Json(body)).into_response()
+}
+
+fn planning_compile_conflict_value(conflict: PlanningCompileConflict) -> Value {
+    match conflict.options {
+        Some(options) => json!({
+            "code": conflict.code,
+            "message": conflict.message,
+            "options": options,
+        }),
+        None => json!({
+            "code": conflict.code,
+            "message": conflict.message,
+        }),
+    }
+}
+
+/// Attach the frozen dependency plan to the ActionSpec. This is deterministic
+/// Core state, not model authority; it is required before authorization.
+async fn attach_dependency_plan(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    stack: &factory_native::planning::StackDecision,
+    repository: &std::path::Path,
+    base_commit: &str,
+) -> Result<(), PlanningCompileFailure> {
+    use factory_native::planning::DependencyStrategy;
+    let lockfile_sha256 = repository_file_sha256(repository, base_commit, "Cargo.lock");
+    let vendor_path = if stack.dependency_plan.cache_ref.trim().is_empty() {
+        "vendor"
+    } else {
+        stack.dependency_plan.cache_ref.as_str()
+    };
+    let execution_plan = match factory_native::dependencies::from_frozen_planning(
+        &stack.dependency_plan,
+        factory_native::dependencies::DependencyKind::Rust,
+        lockfile_sha256.as_deref(),
+        vendor_path,
+        &stack.dependency_plan.sbom_ref,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return Err(PlanningCompileFailure::Conflict(PlanningCompileConflict {
+                code: "DEPENDENCY_PLAN_INVALID",
+                message: format!("the frozen dependency plan is not executable: {error}"),
+                options: None,
+            }));
+        }
+    };
+    let dependencies_required = stack.dependency_plan.strategy != DependencyStrategy::NotRequired;
+    if let Err(error) = app
+        .db
+        .set_action_dependency_plan(
+            &record.action_id,
+            execution_plan.as_ref(),
+            dependencies_required,
+        )
+        .await
+    {
+        return Err(PlanningCompileFailure::Conflict(PlanningCompileConflict {
+            code: "DEPENDENCY_PLAN_REQUIRED",
+            message: format!(
+                "the frozen dependency plan could not be attached before authorization: {error}"
+            ),
+            options: None,
+        }));
+    }
+    Ok(())
+}
+
+fn stack_selection_conflict(
+    code: &'static str,
+    message: impl Into<String>,
+    options: &[factory_native::planning::stack::StackSelectionOption],
+) -> PlanningCompileFailure {
+    PlanningCompileFailure::Conflict(PlanningCompileConflict {
+        code,
+        message: message.into(),
+        options: Some(json!(options)),
+    })
+}
+
+fn stack_selection_system_prompt(schema: &str) -> String {
+    format!(
+        "You are the bounded Software Factory Stack Selector. Return ONLY one JSON object that \
+validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. \
+Choose exactly one deterministic option from the supplied list. Echo its optionId, language and \
+framework. You may omit optionId only when language and framework identify exactly one option. \
+Choose an option whose requiredCapability is present in the supplied project capabilities. \
+Rationale is required: provide one concise single sentence of at most {max_rationale} characters \
+explaining why the selected deterministic option fits the objective and the supplied project \
+capabilities. A concrete environmentProposal is also required for this greenfield selection: it MUST \
+cover the selected language/framework with at least one toolchain or package (exact or numeric-prefix \
+versions), at least build/test/lint/format/typecheck/run commands as argv vectors where applicable, \
+bounded resources, and no unfree package. The proposal must actually cover the selected language and \
+framework with a matching toolchain id, package name/attribute or command runtime (for example \
+python/fastapi, rust/axum, node/typescript/react); a mismatched proposal fails closed. An exact \
+pinned nixpkgs revision may be supplied; omit nixpkgs to use the builder's documented default. Never invent an option, language, framework, \
+capability, path, package or command. There is no language default. Model output is advisory; Core \
+validates the selection and the environment proposal against the deterministic catalog, the \
+existing environment compiler and the project's authorized capabilities.\n\nJSON Schema:\n{schema}",
+        max_rationale = factory_native::planning::stack::MAX_SELECTION_RATIONALE_CHARS,
+        schema = schema
+    )
+}
+
+/// One bounded HYBRID stack decision: the Lead model selects exactly one
+/// deterministic Core option (or a language/framework that maps to one), and
+/// Core validates the catalog entry and project capability before use. A
+/// greenfield project may also receive a concrete environment proposal from the
+/// same call when the recorded Lead plan has none.
+async fn select_stack_option_with_model(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    config: &factory_native::lead::ProjectConfig,
+    options: &[factory_native::planning::stack::StackSelectionOption],
+) -> Result<
+    (
+        factory_native::planning::stack::StackSelectionOption,
+        factory_native::planning::environment::EnvironmentProposal,
+    ),
+    PlanningCompileFailure,
+> {
+    let profile = app
+        .db
+        .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+        .await
+        .map_err(PlanningCompileFailure::Internal)?;
+    let gateway = app.intake_assess_gateway(&profile).await.map_err(|error| {
+        stack_selection_conflict(
+            "STACK_SELECTION_MODEL_UNAVAILABLE",
+            format!("the frozen Lead route is unavailable: {error}"),
+            options,
+        )
+    })?;
+    match app.db.inference_envelope_for_request(&record.id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return Err(stack_selection_conflict(
+                "STACK_SELECTION_MODEL_UNAVAILABLE",
+                "a stack-selection model call requires an explicit request inference authorization",
+                options,
+            ));
+        }
+        Err(error) => return Err(PlanningCompileFailure::Internal(error)),
+    }
+    let grant = app
+        .db
+        .standing_delegation_v2(&record.delegation_id)
+        .await
+        .map_err(PlanningCompileFailure::Internal)?;
+    let schema = serde_json::to_string(&factory_native::model_output::stack_selection_schema())
+        .map_err(|error| {
+            PlanningCompileFailure::Internal(Error::Validation(format!(
+                "stack-selection schema encoding failed: {error}"
+            )))
+        })?;
+    let system_prompt = stack_selection_system_prompt(&schema);
+    let user_prompt = serde_json::json!({
+        "objective": record.objective.chars().take(4_000).collect::<String>(),
+        "projectId": record.project_id,
+        "allowedPaths": config.allowed_paths,
+        "capabilities": config.capabilities,
+        "options": options,
+    })
+    .to_string();
+    let result = call_lead_model_with_truncation_retry(
+        &gateway,
+        &app.db,
+        &LeadModelCall {
+            principal_id: &grant.principal_id,
+            project_id: &record.project_id,
+            objective_id: &record.lead_request_id,
+            scope_id: &record.delegation_id,
+            purpose: "lead_stack_selection",
+            system_prompt: &system_prompt,
+            user_prompt: &user_prompt,
+            max_output_tokens: STACK_SELECTION_OUTPUT_TOKENS,
+        },
+    )
+    .await
+    .map_err(|error| {
+        stack_selection_conflict(
+            "STACK_SELECTION_MODEL_FAILED",
+            bounded_agentic_model_error(&error.to_string()),
+            options,
+        )
+    })?;
+    if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&result.content)
+        && raw
+            .get("environmentProposal")
+            .is_none_or(serde_json::Value::is_null)
+    {
+        return Err(stack_selection_conflict(
+            "STACK_ENVIRONMENT_REQUIRED",
+            "a greenfield stack selection must include a concrete environment proposal",
+            options,
+        ));
+    }
+    let selection = factory_native::model_output::decode_stack_selection(result.content.as_bytes())
+        .map_err(|error| {
+            stack_selection_conflict(
+                "STACK_SELECTION_MODEL_FAILED",
+                format!("the stack-selection model output is invalid: {error}"),
+                options,
+            )
+        })?;
+    let selected = factory_native::planning::stack::resolve_model_stack_selection(
+        options,
+        &selection,
+        &config.capabilities,
+    )
+    .map_err(|error| match error {
+        factory_native::planning::stack::StackSelectionError::EnvironmentRequired(message) => {
+            stack_selection_conflict("STACK_ENVIRONMENT_REQUIRED", message, options)
+        }
+        factory_native::planning::stack::StackSelectionError::EnvironmentMismatch(message) => {
+            stack_selection_conflict("STACK_ENVIRONMENT_MISMATCH", message, options)
+        }
+        error => stack_selection_conflict("STACK_SELECTION_INVALID", error.to_string(), options),
+    })?;
+    let _ = app
+        .db
+        .record_event_once(
+            &format!("request:{}", record.id),
+            "stack.selection.model",
+            &format!(
+                "selected {} ({}/{}); reservation {}; provider {}; model {}",
+                selected.id,
+                selected.language,
+                selected.framework,
+                result.reservation_id,
+                result.provider,
+                result.model
+            ),
+        )
+        .await;
+    Ok((selected, selection.environment_proposal))
+}
+async fn compile_stack_decision(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    lane: factory_native::planning::PlanningLane,
+    detected: &factory_native::agentic::StackProfile,
+    config: &factory_native::lead::ProjectConfig,
+    attach_dependencies: bool,
+) -> Result<CompiledStackDecision, PlanningCompileFailure> {
+    use factory_native::planning::DependencyStrategy;
+    let repository = std::path::PathBuf::from(&config.repository);
+    let (mut stack, stack_profile, environment_proposal) = if detected.languages.is_empty() {
+        let options = factory_native::planning::stack::selection_options(&record.objective);
+        if options.is_empty() {
+            return Err(PlanningCompileFailure::Conflict(PlanningCompileConflict {
+                code: "STACK_SELECTION_REQUIRED",
+                message: "A greenfield request needs a stack selection before planning.".into(),
+                options: Some(json!(options)),
+            }));
+        }
+        let (selected, environment_proposal) =
+            select_stack_option_with_model(app, record, config, &options).await?;
+        let decision = factory_native::planning::stack::build_model_stack_decision(
+            lane,
+            detected,
+            &selected,
+            &options,
+            &record.objective,
+        )
+        .map_err(|error| PlanningCompileFailure::Internal(Error::Validation(error.to_string())))?;
+        let stack_profile = factory_native::planning::stack::selected_stack_profile(
+            detected,
+            &decision,
+            &record.objective,
+        );
+        (decision, stack_profile, Some(environment_proposal))
+    } else {
+        let stack = match factory_native::planning::stack::build_stack_decision(
+            lane,
+            detected,
+            &factory_native::planning::route::UserPlanningConstraints::default(),
+            &record.objective,
+        ) {
+            Ok(stack) => stack,
+            Err(factory_native::planning::stack::StackBuildError::SelectionRequired {
+                options,
+            }) => {
+                return Err(PlanningCompileFailure::Conflict(PlanningCompileConflict {
+                    code: "STACK_SELECTION_REQUIRED",
+                    message:
+                        "A greenfield request needs an explicit stack selection before planning."
+                            .into(),
+                    options: Some(json!(options)),
+                }));
+            }
+            Err(error) => {
+                return Err(PlanningCompileFailure::Internal(Error::Validation(
+                    error.to_string(),
+                )));
+            }
+        };
+        (stack, detected.clone(), None)
+    };
+    let lockfile_sha256 = repository_file_sha256(&repository, &config.base_commit, "Cargo.lock");
+    if stack.dependency_plan.strategy == DependencyStrategy::VendorCache
+        && !repository.join("vendor").is_dir()
+        && lockfile_sha256.is_some()
+    {
+        // A repository with a lockfile but no committed vendor tree can use
+        // the brokered fetch; the frozen lockfile digest binds the request.
+        stack.dependency_plan.strategy = DependencyStrategy::BrokeredFetch;
+    }
+    stack
+        .validate(lane)
+        .map_err(|error| PlanningCompileFailure::Internal(Error::Validation(error)))?;
+    if attach_dependencies {
+        attach_dependency_plan(app, record, &stack, &repository, &config.base_commit).await?;
+    }
+    Ok(CompiledStackDecision {
+        decision: stack,
+        stack_profile,
+        environment_proposal,
+    })
+}
+
+async fn compile_skill_plan(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    stack: &factory_native::agentic::StackProfile,
+) -> Result<factory_native::planning::SkillPlan, PlanningCompileFailure> {
+    let persisted = app.db.skill_packs().await?;
+    let mut persisted_packs = Vec::with_capacity(persisted.len());
+    for record in &persisted {
+        let pack = factory_native::planning::SkillPack::from_persisted_json(&record.content_json)
+            .map_err(|_| {
+            PlanningCompileFailure::Internal(Error::Invalid(
+                "stored skill pack is not a valid planning artifact",
+            ))
+        })?;
+        persisted_packs.push(pack);
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    let skill_plan =
+        match factory_native::planning::skills::build_skill_plan(stack, &persisted_packs, &now) {
+            Ok(plan) => plan,
+            Err(error) => {
+                let _ = app
+                    .db
+                    .record_event_once(
+                        &format!("request:{}", record.id),
+                        "skill.pack.refresh_blocked",
+                        &format!("planning blocked: {error}"),
+                    )
+                    .await;
+                return Err(PlanningCompileFailure::Conflict(PlanningCompileConflict {
+                    code: "SKILL_PACK_REQUIRED",
+                    message: error.to_string(),
+                    options: None,
+                }));
+            }
+        };
+    for pack in &skill_plan.proposed {
+        app.db.save_skill_pack(pack).await?;
+    }
+    Ok(skill_plan)
+}
+
+async fn save_repaired_artifact<T: serde::Serialize>(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    kind: &'static str,
+    revision: u32,
+    value: &T,
+    missing: &[&'static str],
+) -> Result<(), Response> {
+    let content = serde_json::to_string(value)
+        .map_err(|_| api_error(Error::Invalid("planning artifact encoding")))?;
+    app.db
+        .save_planning_artifact(&record.id, kind, revision, &content)
+        .await
+        .map_err(|error| {
+            planning_compile_conflict_response(
+                PlanningCompileConflict {
+                    code: "PLAN_ARTIFACTS_REQUIRED",
+                    message: format!(
+                        "could not persist the repaired {kind} artifact at revision {revision}: {error}"
+                    ),
+                    options: None,
+                },
+                missing,
+            )
+        })?;
+    Ok(())
+}
+
+/// Recompute only the missing compile-time artifacts at the existing frozen
+/// PLAN revision. It never writes a new PLAN, review or workflow state.
+async fn repair_planning_artifacts(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    context: &AgenticTriageContext,
+    graph: &factory_native::agentic::ValidatedWorkGraph,
+    lane: factory_native::planning::PlanningLane,
+    revision: u32,
+    missing: &[&'static str],
+) -> Result<(), Response> {
+    use factory_native::planning::route::required_reviewers;
+    use factory_native::planning::{DocumentationPlan, StackDecision};
+
+    let config = app
+        .db
+        .project_config(&record.project_id)
+        .await
+        .map_err(api_error)?;
+    let repository = std::path::PathBuf::from(&config.repository);
+    let missing_set = missing.iter().copied().collect::<BTreeSet<_>>();
+    for kind in missing {
+        if !matches!(
+            *kind,
+            "STACK" | "ARCHITECTURE" | "DOCUMENTATION" | "SKILL" | "DOD"
+        ) {
+            return Err(planning_compile_conflict_response(
+                PlanningCompileConflict {
+                    code: "PLAN_ARTIFACTS_REQUIRED",
+                    message: format!(
+                        "artifact {kind} cannot be repaired without recompiling the frozen plan"
+                    ),
+                    options: None,
+                },
+                missing,
+            ));
+        }
+    }
+
+    let stack_was_missing = missing_set.contains("STACK");
+    let stack_decision = if stack_was_missing {
+        match compile_stack_decision(app, record, lane, &context.stack, &config, true).await {
+            Ok(stack) => Some(stack.decision),
+            Err(PlanningCompileFailure::Conflict(conflict)) => {
+                return Err(planning_compile_conflict_response(conflict, missing));
+            }
+            Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
+        }
+    } else {
+        let artifact = match app
+            .db
+            .planning_artifact(&record.id, "STACK", revision)
+            .await
+        {
+            Ok(artifact) => artifact,
+            Err(Error::NotFound) => {
+                return Err(planning_compile_conflict_response(
+                    PlanningCompileConflict {
+                        code: "PLAN_ARTIFACTS_REQUIRED",
+                        message: "STACK is missing from the existing PLAN revision".into(),
+                        options: None,
+                    },
+                    missing,
+                ));
+            }
+            Err(error) => return Err(api_error(error)),
+        };
+        let stack = match serde_json::from_str::<StackDecision>(&artifact.content_json) {
+            Ok(stack) => stack,
+            Err(_) => {
+                return Err(planning_compile_conflict_response(
+                    PlanningCompileConflict {
+                        code: "PLAN_ARTIFACTS_REQUIRED",
+                        message: "the stored STACK artifact is not decodable".into(),
+                        options: None,
+                    },
+                    missing,
+                ));
+            }
+        };
+        match attach_dependency_plan(app, record, &stack, &repository, &config.base_commit).await {
+            Ok(()) => {}
+            Err(PlanningCompileFailure::Conflict(conflict)) => {
+                return Err(planning_compile_conflict_response(conflict, missing));
+            }
+            Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
+        }
+        Some(stack)
+    };
+    let artifact_stack = stack_decision
+        .as_ref()
+        .map(|decision| {
+            factory_native::planning::stack::selected_stack_profile(
+                &context.stack,
+                decision,
+                &record.objective,
+            )
+        })
+        .unwrap_or_else(|| context.stack.clone());
+
+    let documentation = if missing_set.contains("DOCUMENTATION") {
+        let documentation =
+            factory_native::planning::docs::build_documentation_plan(&repository, lane);
+        documentation
+            .validate()
+            .map_err(|error| api_error(Error::Validation(error)))?;
+        Some(documentation)
+    } else if missing_set.contains("DOD") {
+        let artifact = match app
+            .db
+            .planning_artifact(&record.id, "DOCUMENTATION", revision)
+            .await
+        {
+            Ok(artifact) => artifact,
+            Err(Error::NotFound) => {
+                return Err(planning_compile_conflict_response(
+                    PlanningCompileConflict {
+                        code: "PLAN_ARTIFACTS_REQUIRED",
+                        message: "DOCUMENTATION is missing from the existing PLAN revision".into(),
+                        options: None,
+                    },
+                    missing,
+                ));
+            }
+            Err(error) => return Err(api_error(error)),
+        };
+        let documentation = match serde_json::from_str::<DocumentationPlan>(&artifact.content_json)
+        {
+            Ok(documentation) => documentation,
+            Err(_) => {
+                return Err(planning_compile_conflict_response(
+                    PlanningCompileConflict {
+                        code: "PLAN_ARTIFACTS_REQUIRED",
+                        message: "the stored DOCUMENTATION artifact is not decodable".into(),
+                        options: None,
+                    },
+                    missing,
+                ));
+            }
+        };
+        documentation
+            .validate()
+            .map_err(|error| api_error(Error::Validation(error)))?;
+        Some(documentation)
+    } else {
+        None
+    };
+
+    let architecture = if missing_set.contains("ARCHITECTURE") {
+        let architecture = factory_native::planning::architecture::build_architecture_plan(
+            &record.objective,
+            graph,
+            &artifact_stack,
+        );
+        architecture
+            .validate()
+            .map_err(|error| api_error(Error::Validation(error)))?;
+        Some(architecture)
+    } else {
+        None
+    };
+
+    let skill_plan = if missing_set.contains("SKILL") {
+        match compile_skill_plan(app, record, &artifact_stack).await {
+            Ok(plan) => Some(plan),
+            Err(PlanningCompileFailure::Conflict(conflict)) => {
+                return Err(planning_compile_conflict_response(conflict, missing));
+            }
+            Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
+        }
+    } else {
+        None
+    };
+
+    let definition_of_done = if missing_set.contains("DOD") {
+        let documentation = documentation.as_ref().ok_or_else(|| {
+            planning_compile_conflict_response(
+                PlanningCompileConflict {
+                    code: "PLAN_ARTIFACTS_REQUIRED",
+                    message: "DOCUMENTATION is required to rebuild the Definition of Done".into(),
+                    options: None,
+                },
+                missing,
+            )
+        })?;
+        let reviewer_plan = required_reviewers(lane, context.assurance());
+        reviewer_plan
+            .validate()
+            .map_err(|error| api_error(Error::Validation(error)))?;
+        let definition = factory_native::planning::dod::build_definition_of_done(
+            lane,
+            &artifact_stack,
+            documentation.clone(),
+            reviewer_plan,
+        );
+        definition
+            .validate()
+            .map_err(|error| api_error(Error::Validation(error)))?;
+        Some(definition)
+    } else {
+        None
+    };
+
+    if stack_was_missing && let Some(stack) = &stack_decision {
+        save_repaired_artifact(app, record, "STACK", revision, stack, missing).await?;
+    }
+    if let Some(architecture) = &architecture {
+        save_repaired_artifact(app, record, "ARCHITECTURE", revision, architecture, missing)
+            .await?;
+    }
+    if missing_set.contains("DOCUMENTATION")
+        && let Some(documentation) = &documentation
+    {
+        save_repaired_artifact(
+            app,
+            record,
+            "DOCUMENTATION",
+            revision,
+            documentation,
+            missing,
+        )
+        .await?;
+    }
+    if let Some(skill_plan) = &skill_plan {
+        save_repaired_artifact(app, record, "SKILL", revision, skill_plan, missing).await?;
+    }
+    if let Some(definition) = &definition_of_done {
+        save_repaired_artifact(app, record, "DOD", revision, definition, missing).await?;
+    }
+    Ok(())
+}
+
+async fn persist_planning_plan(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    context: &AgenticTriageContext,
+    graph: &factory_native::agentic::ValidatedWorkGraph,
+    environment_revision: Option<u32>,
+    precompiled_stack: Option<CompiledStackDecision>,
+) -> Result<Value, Response> {
+    use factory_native::planning::route::{required_artifacts, required_reviewers};
+    use factory_native::planning::{PlanningLane, R0_AUTONOMY_POINTS};
+
+    let lane = context.planning_lane;
+    let config = app
+        .db
+        .project_config(&record.project_id)
+        .await
+        .map_err(api_error)?;
+    let repository = PathBuf::from(&config.repository);
+    let precompiled = precompiled_stack.is_some();
+    let stack = match precompiled_stack {
+        Some(stack) => stack,
+        None => {
+            match compile_stack_decision(app, record, lane, &context.stack, &config, true).await {
+                Ok(stack) => stack,
+                Err(PlanningCompileFailure::Conflict(conflict)) => {
+                    return Ok(planning_compile_conflict_value(conflict));
+                }
+                Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
+            }
+        }
+    };
+    if precompiled {
+        match attach_dependency_plan(
+            app,
+            record,
+            &stack.decision,
+            &repository,
+            &config.base_commit,
+        )
+        .await
+        {
+            Ok(()) => {}
+            Err(PlanningCompileFailure::Conflict(conflict)) => {
+                return Ok(planning_compile_conflict_value(conflict));
+            }
+            Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
+        }
+    }
+    let architecture = factory_native::planning::architecture::build_architecture_plan(
+        &record.objective,
+        graph,
+        &stack.stack_profile,
+    );
+    architecture
+        .validate()
+        .map_err(|error| api_error(Error::Validation(error)))?;
+    let documentation = factory_native::planning::docs::build_documentation_plan(&repository, lane);
+    documentation
+        .validate()
+        .map_err(|error| api_error(Error::Validation(error)))?;
+    let skill_plan = match compile_skill_plan(app, record, &stack.stack_profile).await {
+        Ok(plan) => plan,
+        Err(PlanningCompileFailure::Conflict(conflict)) => {
+            return Ok(planning_compile_conflict_value(conflict));
+        }
+        Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
+    };
+    let reviewer_plan = required_reviewers(lane, context.assurance());
+    reviewer_plan
+        .validate()
+        .map_err(|error| api_error(Error::Validation(error)))?;
+    let dod = factory_native::planning::dod::build_definition_of_done(
+        lane,
+        &stack.stack_profile,
+        documentation.clone(),
+        reviewer_plan.clone(),
+    );
+    dod.validate()
+        .map_err(|error| api_error(Error::Validation(error)))?;
+
+    let required = required_artifacts(lane);
+    let revision = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
+        Ok(plan) => plan.revision.saturating_add(1),
+        Err(Error::NotFound) => 1,
+        Err(error) => return Err(api_error(error)),
+    };
+    let environment_risk = format!("{:?}", context.risk);
+    let environment_revision = environment_revision.unwrap_or(revision);
+    let _environment_plan = compile_environment_for_request(
+        app,
+        record,
+        &config,
+        environment_revision,
+        &environment_risk,
+        stack.environment_proposal.clone(),
+    )
+    .await?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let plan_bundle = json!({
+        "schemaVersion": factory_native::planning::SCHEMA_VERSION,
+        "requestId": record.id,
+        "lane": planning_lane_code(lane),
+        "planRevision": revision,
+        "graphSha256": graph.graph_sha256,
+        "requiredArtifacts": required.iter().map(|kind| planning_artifact_code(*kind)).collect::<Vec<_>>(),
+        "reviewerPlan": reviewer_plan,
+        "openspecRequired": factory_native::planning::route::openspec_required(lane),
+        "planReviewRequired": factory_native::planning::route::plan_review_required(lane),
+        "signals": context.planning_signals,
+        // Persist the exact untrusted environment proposal used by this plan
+        // revision so an operator environment recompile reuses the same input
+        // instead of re-running a paid stack-selection call.
+        "environmentProposal": stack.environment_proposal,
+        "createdAt": now,
+    });
+    let plan_record = app
+        .db
+        .save_planning_artifact(&record.id, "PLAN", revision, &plan_bundle.to_string())
+        .await
+        .map_err(api_error)?;
+    app.db
+        .save_planning_artifact(
+            &record.id,
+            "STACK",
+            revision,
+            &serde_json::to_string(&stack.decision)
+                .map_err(|_| api_error(Error::Invalid("stack encoding")))?,
+        )
+        .await
+        .map_err(api_error)?;
+    app.db
+        .save_planning_artifact(
+            &record.id,
+            "ARCHITECTURE",
+            revision,
+            &serde_json::to_string(&architecture)
+                .map_err(|_| api_error(Error::Invalid("architecture encoding")))?,
+        )
+        .await
+        .map_err(api_error)?;
+    app.db
+        .save_planning_artifact(
+            &record.id,
+            "DOCUMENTATION",
+            revision,
+            &serde_json::to_string(&documentation)
+                .map_err(|_| api_error(Error::Invalid("documentation encoding")))?,
+        )
+        .await
+        .map_err(api_error)?;
+    app.db
+        .save_planning_artifact(
+            &record.id,
+            "SKILL",
+            revision,
+            &serde_json::to_string(&skill_plan)
+                .map_err(|_| api_error(Error::Invalid("skill plan encoding")))?,
+        )
+        .await
+        .map_err(api_error)?;
+    app.db
+        .save_planning_artifact(
+            &record.id,
+            "DOD",
+            revision,
+            &serde_json::to_string(&dod).map_err(|_| api_error(Error::Invalid("DoD encoding")))?,
+        )
+        .await
+        .map_err(api_error)?;
+
+    let owner_required = context.assurance() >= factory_native::agentic::Assurance::Elevated
+        || context.planning_signals.large
+        || stack.decision.stack_change
+        || stack.decision.autonomy_points > R0_AUTONOMY_POINTS
+        || (lane == PlanningLane::FormalSpec
+            && (context.planning_signals.public_contract
+                || context.planning_signals.data_or_schema
+                || context.planning_signals.security_boundary));
+    let (status, principal, rationale) = if owner_required {
+        (
+            "PENDING",
+            "core:planning",
+            "The plan requires an authenticated owner decision under the frozen policy.",
+        )
+    } else {
+        (
+            "AUTO_APPROVED",
+            "core:auto-plan-review",
+            "The plan satisfies the deterministic auto-approval policy for its lane and assurance.",
+        )
+    };
+    let review = app
+        .db
+        .save_plan_review(factory_native::db::NewPlanReview {
+            request_id: &record.id,
+            plan_revision: revision,
+            plan_sha256: &plan_record.content_sha256,
+            status,
+            principal_id: principal,
+            rationale,
+            points: stack.decision.autonomy_points,
+        })
+        .await
+        .map_err(api_error)?;
+    let workflow_run_id = ensure_planning_workflow(app, &record.id, &plan_record.content_sha256)
+        .await
+        .map_err(api_error)?;
+    let readiness = planning_readiness(app, &record.id, revision, context)
+        .await
+        .map_err(api_error)?;
+    if status == "AUTO_APPROVED" && readiness.ready() {
+        let run = app
+            .db
+            .workflow_run(&workflow_run_id)
+            .await
+            .map_err(api_error)?;
+        if run.state == factory_native::planning::WorkflowState::PlanReview {
+            app.db
+                .transition_workflow(
+                    &workflow_run_id,
+                    factory_native::planning::WorkflowState::PlanReview,
+                    factory_native::planning::WorkflowState::Frozen,
+                    "deterministic auto-approval",
+                )
+                .await
+                .map_err(api_error)?;
+        }
+    }
+    let missing_artifacts = readiness.missing_artifacts.clone();
+    let compile_missing = missing_artifacts
+        .iter()
+        .copied()
+        .filter(|kind| !matches!(*kind, "SPEC" | "OPENSPEC"))
+        .collect::<Vec<_>>();
+    if !compile_missing.is_empty() {
+        return Ok(json!({
+            "code": "PLAN_ARTIFACTS_REQUIRED",
+            "message": "Core could not persist every planning artifact required before the next plan-review step.",
+            "missingArtifacts": compile_missing,
+            "participantPlan": readiness.participant_plan,
+        }));
+    }
+    let workflow = app
+        .db
+        .workflow_run(&workflow_run_id)
+        .await
+        .map_err(api_error)?;
+    Ok(json!({
+        "plan": plan_record,
+        "stack": stack.decision,
+        "architecture": architecture,
+        "documentation": documentation,
+        "skillPlan": skill_plan,
+        "definitionOfDone": dod,
+        "review": review,
+        "workflowRunId": workflow_run_id,
+        "workflowState": workflow.state,
+        "missingArtifacts": missing_artifacts,
+        "participantPlan": readiness.participant_plan,
+        "ready": readiness.ready(),
+    }))
+}
+
+/// One initial Planner attempt plus at most two bounded repairs. A repair is a
+/// fresh model call with its own request digest, reservation and budget hold;
+/// no graph is persisted until one attempt decodes and validates.
+const AGENTIC_PLAN_MAX_ATTEMPTS: usize = 3;
+
+#[derive(Debug)]
+enum PlannerWorkGraphFailure {
+    OutputInvalid(String),
+    GraphInvalid(String),
+}
+
+impl PlannerWorkGraphFailure {
+    fn output_invalid(error: impl std::fmt::Display) -> Self {
+        Self::OutputInvalid(bounded_agentic_model_error(&error.to_string()))
+    }
+
+    fn graph_invalid(error: impl std::fmt::Display) -> Self {
+        Self::GraphInvalid(bounded_agentic_model_error(&error.to_string()))
+    }
+
+    fn detail(&self) -> &str {
+        match self {
+            Self::OutputInvalid(detail) | Self::GraphInvalid(detail) => detail,
+        }
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::OutputInvalid(_) => "AGENTIC_PLAN_OUTPUT_INVALID",
+            Self::GraphInvalid(_) => "AGENTIC_PLAN_INVALID",
+        }
+    }
+
+    fn status(&self) -> StatusCode {
+        match self {
+            Self::OutputInvalid(_) => StatusCode::BAD_GATEWAY,
+            Self::GraphInvalid(_) => StatusCode::BAD_REQUEST,
+        }
+    }
+
+    fn response(self) -> Response {
+        (
+            self.status(),
+            Json(json!({"error": self.detail(), "code": self.code()})),
+        )
+            .into_response()
+    }
+}
+
+fn planner_repair_instruction(attempt: usize, error: &str) -> String {
+    format!(
+        "The previous WorkGraph was rejected by Core: {error}. Return a corrected WorkGraph. If independent units share a write path, add a dependency between them or merge them into one unit. Do not change the objective, allowed paths or scope. This is Planner repair attempt {attempt} of {AGENTIC_PLAN_MAX_ATTEMPTS}."
+    )
+}
+
 async fn plan_agentic_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -10526,6 +13571,14 @@ async fn plan_agentic_request(
         Ok(context) => context,
         Err(error) => return api_error(error),
     };
+    let latest_plan = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
+        Ok(plan) => Some(plan),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    // Both gates run before the persisted-PLAN branch so a stored plan cannot
+    // bypass the Lead prerequisite or turn an informational request into a
+    // planning/repair path.
     if matches!(
         context.triage.route,
         factory_native::agentic::ChangeRoute::NoAgent
@@ -10535,11 +13588,206 @@ async fn plan_agentic_request(
             "informational requests do not compile a Planner WorkGraph",
         );
     }
-    if app.db.agentic_spec(&record.id).await.is_ok() {
-        return agentic_conflict(
-            "PLAN_ALREADY_SPECIFIED",
-            "a specification already binds this plan; a material change requires a new request or spec revision",
-        );
+    // Check before reviewer validation, model reservations, repair or any
+    // WorkGraph write. A missing Lead assessment is an operator-actionable
+    // prerequisite, not an internal dependency-plan failure discovered after
+    // the model call.
+    let prerequisites = match lead_planning_prerequisites(&app, &record).await {
+        Ok(prerequisites) => prerequisites,
+        Err(error) => return api_error(error),
+    };
+    if !prerequisites.ready() {
+        return assessment_required_response(prerequisites);
+    }
+    if let Some(plan) = latest_plan {
+        let review = match app.db.latest_plan_review(&record.id).await {
+            Ok(review) => Some(review),
+            Err(Error::NotFound) => None,
+            Err(error) => return api_error(error),
+        };
+        let artifacts = match app.db.planning_artifacts(&record.id).await {
+            Ok(artifacts) => artifacts,
+            Err(error) => return api_error(error),
+        };
+        let readiness = match planning_readiness(&app, &record.id, plan.revision, &context).await {
+            Ok(readiness) => readiness,
+            Err(error) => return api_error(error),
+        };
+        let compile_missing = readiness
+            .missing_artifacts
+            .iter()
+            .copied()
+            .filter(|kind| !matches!(*kind, "SPEC" | "OPENSPEC"))
+            .collect::<Vec<_>>();
+        if !compile_missing.is_empty() {
+            if let Some(review) = review.as_ref()
+                && matches!(review.status.as_str(), "CHANGES_REQUESTED" | "REJECTED")
+            {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": "the latest plan review was rejected or requested changes; a repair cannot replace that owner decision",
+                        "code": "PLAN_REVIEW_REJECTED",
+                        "reviewStatus": review.status,
+                        "missingArtifacts": compile_missing,
+                    })),
+                )
+                    .into_response();
+            }
+            let graph_record = match app.db.agentic_work_graph(&record.id).await {
+                Ok(record) => record,
+                Err(Error::NotFound) => {
+                    return planning_work_graph_conflict(
+                        "the recorded plan is missing generated artifacts and has no WorkGraph to repair from",
+                        &compile_missing,
+                    );
+                }
+                Err(error) => return api_error(error),
+            };
+            let stored_graph = match serde_json::from_str::<
+                factory_native::agentic::ValidatedWorkGraph,
+            >(&graph_record.graph_json)
+            {
+                Ok(graph) => graph,
+                Err(_) => {
+                    return planning_work_graph_conflict(
+                        "the stored WorkGraph is not decodable; the plan cannot be repaired deterministically",
+                        &compile_missing,
+                    );
+                }
+            };
+            let config = match app.db.project_config(&record.project_id).await {
+                Ok(config) => config,
+                Err(error) => return api_error(error),
+            };
+            let model = factory_native::agentic::WorkGraphModel {
+                units: stored_graph.units.clone(),
+                assumptions: stored_graph.assumptions.clone(),
+                risks: stored_graph.risks.clone(),
+            };
+            let graph = match factory_native::agentic::validate_work_graph(
+                &model,
+                &config.allowed_paths,
+            ) {
+                Ok(graph) => graph,
+                Err(_) => {
+                    return planning_work_graph_conflict(
+                        "the stored WorkGraph does not validate against the current Project scope; the plan cannot be repaired deterministically",
+                        &compile_missing,
+                    );
+                }
+            };
+            let stored_order = match serde_json::from_str::<Vec<String>>(
+                &graph_record.topological_order_json,
+            ) {
+                Ok(order) => order,
+                Err(_) => {
+                    return planning_work_graph_conflict(
+                        "the stored WorkGraph order is not decodable; the plan cannot be repaired deterministically",
+                        &compile_missing,
+                    );
+                }
+            };
+            if graph.graph_sha256 != graph_record.graph_sha256
+                || graph.graph_sha256 != stored_graph.graph_sha256
+                || graph.topological_order != stored_graph.topological_order
+                || graph.topological_order != stored_order
+            {
+                return planning_work_graph_conflict(
+                    "the stored WorkGraph digest or order does not match its validated content; the plan cannot be repaired deterministically",
+                    &compile_missing,
+                );
+            }
+            let lane = planning_lane_from_code(readiness.lane).unwrap_or(context.planning_lane);
+            if let Err(response) = repair_planning_artifacts(
+                &app,
+                &record,
+                &context,
+                &graph,
+                lane,
+                plan.revision,
+                &compile_missing,
+            )
+            .await
+            {
+                return response;
+            }
+            let plan = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
+                Ok(plan) => plan,
+                Err(error) => return api_error(error),
+            };
+            let review = match app.db.latest_plan_review(&record.id).await {
+                Ok(review) => Some(review),
+                Err(Error::NotFound) => None,
+                Err(error) => return api_error(error),
+            };
+            let artifacts = match app.db.planning_artifacts(&record.id).await {
+                Ok(artifacts) => artifacts,
+                Err(error) => return api_error(error),
+            };
+            let readiness =
+                match planning_readiness(&app, &record.id, plan.revision, &context).await {
+                    Ok(readiness) => readiness,
+                    Err(error) => return api_error(error),
+                };
+            let graph_record = match app.db.agentic_work_graph(&record.id).await {
+                Ok(record) => Some(record),
+                Err(Error::NotFound) => None,
+                Err(error) => return api_error(error),
+            };
+            return Json(json!({
+                "plan": plan,
+                "graph": graph_record,
+                "review": review,
+                "artifacts": artifacts,
+                "alreadyPlanned": true,
+                "repaired": true,
+                "missingArtifacts": readiness.missing_artifacts,
+                "participantPlan": readiness.participant_plan,
+                "reviewStatus": readiness.review_status,
+                "reviewApproved": readiness.review_approved,
+                "materialsReady": readiness.materials_ready,
+                "ready": readiness.ready(),
+            }))
+            .into_response();
+        }
+        let graph_record = match app.db.agentic_work_graph(&record.id).await {
+            Ok(record) => Some(record),
+            Err(Error::NotFound) => None,
+            Err(error) => return api_error(error),
+        };
+        return Json(json!({
+            "plan": plan,
+            "graph": graph_record,
+            "review": review,
+            "artifacts": artifacts,
+            "alreadyPlanned": true,
+            "repaired": false,
+            "missingArtifacts": readiness.missing_artifacts,
+            "participantPlan": readiness.participant_plan,
+            "reviewStatus": readiness.review_status,
+            "reviewApproved": readiness.review_approved,
+            "materialsReady": readiness.materials_ready,
+            "ready": readiness.ready(),
+        }))
+        .into_response();
+    }
+    let reviewer_plan = factory_native::planning::route::required_reviewers(
+        context.planning_lane,
+        context.assurance(),
+    );
+    if let Err(message) = app.reviewer_identities.validate_plan(&reviewer_plan) {
+        return agentic_conflict("REVIEWER_INDEPENDENCE_REQUIRED", &message);
+    }
+    match app.db.agentic_spec(&record.id).await {
+        Ok(_) => {
+            return agentic_conflict(
+                "PLAN_ALREADY_SPECIFIED",
+                "a specification already binds this plan; a material change requires a new request or spec revision",
+            );
+        }
+        Err(Error::NotFound) => {}
+        Err(error) => return api_error(error),
     }
     let config = match app.db.project_config(&record.project_id).await {
         Ok(config) => config,
@@ -10588,41 +13836,55 @@ JSON Schema:
         }
     })
     .to_string();
-    let result = match call_agentic_lead_model(
-        &app,
-        &record,
-        "agentic_planner",
-        &system_prompt,
-        &user_prompt,
-        4_096,
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(response) => return response,
-    };
-    let model = match factory_native::model_output::decode_work_graph(result.content.as_bytes()) {
-        Ok(model) => model,
-        Err(error) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({
-                    "error": error.to_string(),
-                    "code": "AGENTIC_PLAN_OUTPUT_INVALID",
-                })),
-            )
-                .into_response();
+    let mut repair_error: Option<String> = None;
+    let mut attempt = 1usize;
+    let (graph, result) = loop {
+        let attempt_prompt = match repair_error.as_deref() {
+            Some(error) => format!(
+                "{user_prompt}\n\n{}",
+                planner_repair_instruction(attempt, error)
+            ),
+            None => user_prompt.clone(),
+        };
+        let result = match call_agentic_lead_model(
+            &app,
+            &record,
+            "agentic_planner",
+            &system_prompt,
+            &attempt_prompt,
+            AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(response) => return response,
+        };
+        let failure =
+            match factory_native::model_output::decode_work_graph(result.content.as_bytes()) {
+                Ok(model) => {
+                    match factory_native::agentic::validate_work_graph(
+                        &model,
+                        &config.allowed_paths,
+                    ) {
+                        Ok(graph) => break (graph, result),
+                        Err(error) => PlannerWorkGraphFailure::graph_invalid(error),
+                    }
+                }
+                Err(error) => PlannerWorkGraphFailure::output_invalid(error),
+            };
+        if attempt == AGENTIC_PLAN_MAX_ATTEMPTS {
+            return failure.response();
         }
-    };
-    let graph = match factory_native::agentic::validate_work_graph(&model, &config.allowed_paths) {
-        Ok(graph) => graph,
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": error, "code": "AGENTIC_PLAN_INVALID"})),
-            )
-                .into_response();
-        }
+        tracing::warn!(
+            purpose = "agentic_planner",
+            attempt,
+            max_attempts = AGENTIC_PLAN_MAX_ATTEMPTS,
+            code = failure.code(),
+            diagnostic = failure.detail(),
+            "Planner WorkGraph was rejected by Core; retrying with a bounded repair instruction"
+        );
+        repair_error = Some(failure.detail().to_owned());
+        attempt += 1;
     };
     match app
         .db
@@ -10643,19 +13905,43 @@ JSON Schema:
     {
         Ok(saved_graph) => {
             let participants =
-                deterministic_participant_plan(&app, &record, &context, &graph).await;
-            let participant_record = match participants {
-                Some(plan) => app
-                    .db
-                    .save_agentic_participant_plan(&record.id, Some(&graph.graph_sha256), &plan)
-                    .await
-                    .ok(),
-                None => None,
+                match deterministic_participant_plan(&app, &record, &context, &graph).await {
+                    Ok(plan) => plan,
+                    Err(failure) => {
+                        return agentic_conflict(failure.code, &failure.message);
+                    }
+                };
+            let participant_record = match app
+                .db
+                .save_agentic_participant_plan(&record.id, Some(&graph.graph_sha256), &participants)
+                .await
+            {
+                Ok(record) => record,
+                Err(error) => return api_error(error),
             };
+            let planning =
+                match persist_planning_plan(&app, &record, &context, &graph, None, None).await {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+            if let Some(code) = planning.get("code").and_then(Value::as_str) {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "code": code,
+                        "error": planning.get("message").and_then(Value::as_str).unwrap_or("planning is blocked"),
+                        "missingArtifacts": planning.get("missingArtifacts").cloned().unwrap_or(Value::Null),
+                        "participantPlan": planning.get("participantPlan").cloned().unwrap_or(Value::Null),
+                        "options": planning.get("options").cloned().unwrap_or(Value::Null),
+                    })),
+                )
+                    .into_response();
+            }
             Json(json!({
                 "graph": saved_graph,
                 "validated": graph,
                 "participantPlan": participant_record,
+                "planning": planning,
                 "provider": result.provider,
                 "model": result.model,
                 "usage": {
@@ -10672,18 +13958,1853 @@ JSON Schema:
     }
 }
 
+fn openspec_change_for_plan(
+    record: &factory_native::db::IntakeRequestRecord,
+    spec: &factory_native::agentic::FrozenSpec,
+    graph: &factory_native::agentic::ValidatedWorkGraph,
+    stack: &factory_native::agentic::StackProfile,
+    architecture: &factory_native::planning::ArchitecturePlan,
+    evidence: &[String],
+) -> Result<factory_native::openspec::OpenSpecChange, String> {
+    use factory_native::agentic::SpecAssertionKind;
+    use factory_native::openspec::{OpenSpecChange, OpenSpecRequirement, OpenSpecTask};
+    let change_id = format!(
+        "request-{}",
+        record
+            .id
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .take(16)
+            .collect::<String>()
+            .to_ascii_lowercase()
+    );
+    let requirements = spec
+        .requirements
+        .iter()
+        .map(|requirement| OpenSpecRequirement {
+            id: requirement.id.clone(),
+            statement: requirement.statement.clone(),
+            acceptance: requirement
+                .assertions
+                .iter()
+                .filter(|assertion| assertion.kind == SpecAssertionKind::Acceptance)
+                .map(|assertion| assertion.statement.clone())
+                .collect(),
+            negative: requirement
+                .assertions
+                .iter()
+                .filter(|assertion| assertion.kind == SpecAssertionKind::Negative)
+                .map(|assertion| assertion.statement.clone())
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    // Tasks are the WorkGraph units. Each task carries exactly the
+    // requirements that explicitly declare that unit; the authoring boundary
+    // has already rejected an empty or unknown unit id and any uncovered unit.
+    if graph.units.is_empty() {
+        return Err("the WorkGraph has no units for OpenSpec tasks".into());
+    }
+    let tasks = graph
+        .units
+        .iter()
+        .enumerate()
+        .map(|(index, unit)| {
+            let mut acceptance = unit.acceptance.clone();
+            for requirement in spec
+                .requirements
+                .iter()
+                .filter(|requirement| requirement.work_unit_id == unit.id)
+            {
+                acceptance.push(format!("Requirement: {}", requirement.id));
+            }
+            OpenSpecTask {
+                id: format!("T{}", index + 1),
+                title: unit.title.clone(),
+                paths: unit.paths.clone(),
+                acceptance,
+                evidence: evidence.to_vec(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let change = OpenSpecChange {
+        change_id,
+        title: record
+            .objective
+            .lines()
+            .next()
+            .unwrap_or("Request")
+            .chars()
+            .take(200)
+            .collect(),
+        why: spec.summary.clone(),
+        what_changes: requirements
+            .iter()
+            .map(|requirement| requirement.statement.clone())
+            .collect(),
+        non_goals: Vec::new(),
+        requirements,
+        design: format!(
+            "## Stack\n\n{}\n\n## Architecture\n\n{}",
+            stack.languages.join(", "),
+            architecture.components.join("\n")
+        ),
+        tasks,
+        stack_summary: format!(
+            "{} {}",
+            stack.languages.join(", "),
+            stack.frameworks.join(", ")
+        )
+        .trim()
+        .to_string(),
+        architecture_summary: architecture.components.join("; "),
+    };
+    change.validate().map_err(|error| error.to_string())?;
+    Ok(change)
+}
+
+async fn persist_openspec_projection(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    spec: &factory_native::agentic::FrozenSpec,
+    graph: &factory_native::agentic::ValidatedWorkGraph,
+) -> Result<(), Response> {
+    let config = app
+        .db
+        .project_config(&record.project_id)
+        .await
+        .map_err(api_error)?;
+    let stack = factory_native::agentic::detect_stack(std::path::Path::new(&config.repository));
+    let architecture = factory_native::planning::architecture::build_architecture_plan(
+        &record.objective,
+        graph,
+        &stack,
+    );
+    let revision = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
+        Ok(plan) => plan.revision,
+        Err(Error::NotFound) => 1,
+        Err(error) => return Err(api_error(error)),
+    };
+    let evidence = match app.db.planning_artifact(&record.id, "DOD", revision).await {
+        Ok(record) => {
+            serde_json::from_str::<factory_native::planning::DefinitionOfDone>(&record.content_json)
+                .ok()
+                .map(|dod| {
+                    dod.project_checks
+                        .iter()
+                        .map(|check| check.command.join(" "))
+                        .collect::<Vec<_>>()
+                })
+        }
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(api_error(error)),
+    }
+    .unwrap_or_else(|| vec!["Run the deterministic Definition of Done checks.".into()]);
+    let change =
+        match openspec_change_for_plan(record, spec, graph, &stack, &architecture, &evidence) {
+            Ok(change) => change,
+            Err(error) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": error, "code": "OPENSPEC_CHANGE_INVALID"})),
+                )
+                    .into_response());
+            }
+        };
+    let artifacts = match factory_native::openspec::render(&change) {
+        Ok(artifacts) => artifacts,
+        Err(error) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": error.to_string(), "code": "OPENSPEC_RENDER_FAILED"})),
+            )
+                .into_response());
+        }
+    };
+    if let Err(error) = artifacts.validate() {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error.to_string(), "code": "OPENSPEC_VALIDATION_FAILED"})),
+        )
+            .into_response());
+    }
+    let projection = match artifacts.projection(true) {
+        Ok(projection) => projection,
+        Err(error) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": error.to_string(), "code": "OPENSPEC_PROJECTION_FAILED"})),
+            )
+                .into_response());
+        }
+    };
+    app.db
+        .save_openspec_projection(&record.id, &projection)
+        .await
+        .map_err(api_error)?;
+    app.db
+        .save_planning_artifact(
+            &record.id,
+            "OPENSPEC",
+            revision,
+            &serde_json::to_string(&artifacts)
+                .map_err(|_| api_error(Error::Invalid("OpenSpec encoding")))?,
+        )
+        .await
+        .map_err(api_error)?;
+    Ok(())
+}
+
+async fn try_freeze_approved_plan(
+    app: &App,
+    request_id: &str,
+    context: &AgenticTriageContext,
+) -> Result<(), Error> {
+    use factory_native::planning::WorkflowState;
+    let review = match app.db.latest_plan_review(request_id).await {
+        Ok(review) => review,
+        Err(Error::NotFound) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !matches!(review.status.as_str(), "AUTO_APPROVED" | "OWNER_APPROVED") {
+        return Ok(());
+    }
+    if !planning_readiness(app, request_id, review.plan_revision, context)
+        .await?
+        .ready()
+    {
+        return Ok(());
+    }
+    let Some(run) = app.db.workflow_run_for_request(request_id).await? else {
+        return Ok(());
+    };
+    if run.state == WorkflowState::PlanReview {
+        app.db
+            .transition_workflow(
+                &run.id,
+                WorkflowState::PlanReview,
+                WorkflowState::Frozen,
+                "plan review approved and required artifacts complete",
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParticipantPlanReadiness {
+    required: bool,
+    present: bool,
+    ready: bool,
+    reviewer_count: u32,
+    required_reviewer_count: usize,
+    reviewer_roles: Vec<factory_native::planning::ReviewerRole>,
+    required_roles: Vec<factory_native::planning::ReviewerRole>,
+    missing_roles: Vec<factory_native::planning::ReviewerRole>,
+    unexpected_roles: Vec<factory_native::planning::ReviewerRole>,
+    missing_assignments: Vec<factory_native::planning::ReviewerRole>,
+    graph_stale: bool,
+    problems: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanningReadiness {
+    lane: &'static str,
+    missing_artifacts: Vec<&'static str>,
+    participant_plan: ParticipantPlanReadiness,
+    review_status: Option<String>,
+    review_approved: bool,
+    materials_ready: bool,
+}
+
+impl PlanningReadiness {
+    fn ready(&self) -> bool {
+        self.materials_ready && self.review_approved
+    }
+
+    /// The first fail-closed reason a plan cannot be approved or started.
+    fn conflict(&self) -> Option<PlanningReadinessConflict> {
+        if !self.missing_artifacts.is_empty() {
+            Some(PlanningReadinessConflict {
+                code: "PLAN_ARTIFACTS_REQUIRED",
+                message: "required planning artifacts are missing; compile the plan and complete the plan review before approval",
+            })
+        } else if self.participant_plan.required && !self.participant_plan.ready {
+            Some(PlanningReadinessConflict {
+                code: "PARTICIPANT_PLAN_REQUIRED",
+                message: "a recorded participant plan matching the frozen reviewer plan is required before approval",
+            })
+        } else if !self.review_approved {
+            Some(PlanningReadinessConflict {
+                code: "PLAN_REVIEW_REQUIRED",
+                message: "the latest plan review is not approved; complete the owner decision in the Director before approval",
+            })
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlanningReadinessConflict {
+    code: &'static str,
+    message: &'static str,
+}
+
+impl PlanningReadinessConflict {
+    fn into_error(self) -> Error {
+        Error::IntakeConflict {
+            code: self.code,
+            message: self.message.into(),
+        }
+    }
+}
+
+struct ParticipantPlanSource<'a> {
+    reviewer_count: u32,
+    graph_sha256: Option<&'a str>,
+    plan_json: &'a str,
+}
+
+fn readiness_problem(problems: &mut Vec<String>, message: impl Into<String>) {
+    let message = message.into();
+    if !problems.contains(&message) {
+        problems.push(message);
+    }
+}
+
+/// Compare a recorded participant plan with the frozen reviewer plan that the
+/// lane and assurance require. A missing assignment, a stale WorkGraph binding
+/// or any extra role fails closed: the Gate must never infer reviewer authority
+/// from an incomplete plan.
+fn assess_participant_plan(
+    route: factory_native::agentic::ChangeRoute,
+    assurance: factory_native::agentic::Assurance,
+    reviewer_plan: &factory_native::planning::ReviewerPlan,
+    source: Option<ParticipantPlanSource<'_>>,
+    work_graph_sha256: Option<&str>,
+) -> ParticipantPlanReadiness {
+    use factory_native::agentic::ChangeRoute;
+    use factory_native::planning::ReviewerRole;
+    let required = route != ChangeRoute::NoAgent;
+    let required_roles = reviewer_plan.required.clone();
+    let mut readiness = ParticipantPlanReadiness {
+        required,
+        present: false,
+        ready: false,
+        reviewer_count: 0,
+        required_reviewer_count: required_roles.len(),
+        reviewer_roles: Vec::new(),
+        required_roles: required_roles.clone(),
+        missing_roles: Vec::new(),
+        unexpected_roles: Vec::new(),
+        missing_assignments: Vec::new(),
+        graph_stale: false,
+        problems: Vec::new(),
+    };
+    if !required {
+        readiness.ready = true;
+        return readiness;
+    }
+    if let Err(error) = reviewer_plan.validate() {
+        readiness_problem(
+            &mut readiness.problems,
+            format!("the frozen reviewer plan is invalid: {error}"),
+        );
+        return readiness;
+    }
+    let required_set = required_roles
+        .iter()
+        .copied()
+        .collect::<BTreeSet<ReviewerRole>>();
+    let Some(source) = source else {
+        readiness.missing_roles = required_roles.clone();
+        readiness.missing_assignments = required_roles.clone();
+        readiness_problem(
+            &mut readiness.problems,
+            "the participant plan is not recorded",
+        );
+        return readiness;
+    };
+    readiness.present = true;
+    let plan =
+        match serde_json::from_str::<factory_native::agentic::ParticipantPlan>(source.plan_json) {
+            Ok(plan) => plan,
+            Err(_) => {
+                readiness_problem(
+                    &mut readiness.problems,
+                    "the stored participant plan is not decodable",
+                );
+                return readiness;
+            }
+        };
+    readiness.reviewer_count = source.reviewer_count;
+    readiness.reviewer_roles = plan.reviewer_roles.clone();
+    if plan.route != route {
+        readiness_problem(
+            &mut readiness.problems,
+            "the participant plan route does not match the frozen route",
+        );
+    }
+    if plan.assurance != assurance {
+        readiness_problem(
+            &mut readiness.problems,
+            "the participant plan assurance does not match the frozen assurance",
+        );
+    }
+    if plan.reviewer_count != source.reviewer_count {
+        readiness_problem(
+            &mut readiness.problems,
+            "the stored reviewer count does not match the participant plan",
+        );
+    }
+    if usize::try_from(plan.reviewer_count).ok() != Some(required_roles.len()) {
+        readiness_problem(
+            &mut readiness.problems,
+            format!(
+                "the participant plan requires {} reviewer(s); the frozen plan requires {}",
+                plan.reviewer_count,
+                required_roles.len()
+            ),
+        );
+    }
+    let mut declared_roles = BTreeSet::new();
+    for role in &plan.reviewer_roles {
+        if !declared_roles.insert(*role) {
+            readiness_problem(
+                &mut readiness.problems,
+                format!(
+                    "the participant plan repeats reviewer role {}",
+                    role.as_str()
+                ),
+            );
+        }
+    }
+    readiness.missing_roles = required_set.difference(&declared_roles).copied().collect();
+    let mut unexpected_roles = declared_roles
+        .difference(&required_set)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut assigned_roles = BTreeSet::new();
+    let mut principals = BTreeSet::new();
+    for assignment in &plan.reviewer_assignments {
+        if assignment.principal_id.trim().is_empty() {
+            readiness_problem(
+                &mut readiness.problems,
+                format!(
+                    "reviewer role {} has an empty principal",
+                    assignment.role.as_str()
+                ),
+            );
+            continue;
+        }
+        if !required_set.contains(&assignment.role) {
+            unexpected_roles.insert(assignment.role);
+        }
+        if !assigned_roles.insert(assignment.role) {
+            readiness_problem(
+                &mut readiness.problems,
+                format!(
+                    "reviewer role {} has more than one assignment",
+                    assignment.role.as_str()
+                ),
+            );
+        }
+        if !principals.insert(assignment.principal_id.as_str()) {
+            readiness_problem(
+                &mut readiness.problems,
+                "participant plan reviewer principals are not independent",
+            );
+        }
+    }
+    readiness.unexpected_roles = unexpected_roles.into_iter().collect();
+    readiness.missing_assignments = required_set.difference(&assigned_roles).copied().collect();
+    if plan.reviewer_assignments.len() != required_roles.len() {
+        readiness_problem(
+            &mut readiness.problems,
+            "the participant plan does not bind exactly one assignment per required reviewer role",
+        );
+    }
+    if assigned_roles != required_set {
+        readiness_problem(
+            &mut readiness.problems,
+            "the participant plan reviewer assignments do not cover the frozen reviewer roles",
+        );
+    }
+    if declared_roles != required_set {
+        readiness_problem(
+            &mut readiness.problems,
+            "the participant plan reviewer roles do not match the frozen reviewer roles",
+        );
+    }
+    match plan
+        .assignments
+        .iter()
+        .find(|assignment| assignment.role == "Reviewer")
+    {
+        Some(assignment) if assignment.count == plan.reviewer_count => {}
+        Some(_) => readiness_problem(
+            &mut readiness.problems,
+            "the participant Reviewer assignment count does not match the reviewer count",
+        ),
+        None => readiness_problem(
+            &mut readiness.problems,
+            "the participant plan has no Reviewer assignment",
+        ),
+    }
+    match (source.graph_sha256, work_graph_sha256) {
+        (Some(stored), Some(current)) if stored == current => {}
+        (_, None) => {
+            readiness.graph_stale = true;
+            readiness_problem(
+                &mut readiness.problems,
+                "the participant plan cannot bind a missing WorkGraph",
+            );
+        }
+        _ => {
+            readiness.graph_stale = true;
+            readiness_problem(
+                &mut readiness.problems,
+                "the participant plan is bound to a different WorkGraph",
+            );
+        }
+    }
+    readiness.ready = readiness.problems.is_empty()
+        && readiness.missing_roles.is_empty()
+        && readiness.unexpected_roles.is_empty()
+        && readiness.missing_assignments.is_empty();
+    readiness
+}
+
+async fn latest_planning_revision(app: &App, request_id: &str) -> Result<u32, Error> {
+    let review_revision = match app.db.latest_plan_review(request_id).await {
+        Ok(review) => Some(review.plan_revision),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    let artifact_revision = match app.db.latest_planning_artifact(request_id, "PLAN").await {
+        Ok(artifact) => Some(artifact.revision),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    Ok(review_revision
+        .into_iter()
+        .chain(artifact_revision)
+        .max()
+        .unwrap_or(1))
+}
+
+async fn planning_readiness(
+    app: &App,
+    request_id: &str,
+    revision: u32,
+    context: &AgenticTriageContext,
+) -> Result<PlanningReadiness, Error> {
+    use factory_native::agentic::ChangeRoute;
+    use factory_native::planning::PlanningLane;
+    let assurance = context.assurance();
+    if context.triage.route == ChangeRoute::NoAgent {
+        let reviewer_plan =
+            factory_native::planning::route::required_reviewers(context.planning_lane, assurance);
+        return Ok(PlanningReadiness {
+            lane: planning_lane_code(context.planning_lane),
+            missing_artifacts: Vec::new(),
+            participant_plan: assess_participant_plan(
+                ChangeRoute::NoAgent,
+                assurance,
+                &reviewer_plan,
+                None,
+                None,
+            ),
+            review_status: None,
+            review_approved: true,
+            materials_ready: true,
+        });
+    }
+    let mut missing = Vec::new();
+    let plan_artifact = match app.db.planning_artifact(request_id, "PLAN", revision).await {
+        Ok(artifact) => Some(artifact),
+        Err(Error::NotFound) => {
+            missing.push("PLAN");
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    let lane = match plan_artifact.as_ref().and_then(frozen_planning_lane) {
+        Some(frozen) if planning_lane_rank(frozen) > planning_lane_rank(context.planning_lane) => {
+            frozen
+        }
+        _ => context.planning_lane,
+    };
+    let reviewer_plan = factory_native::planning::route::required_reviewers(lane, assurance);
+    let lane_code = planning_lane_code(lane);
+    for kind in ["STACK", "ARCHITECTURE", "DOCUMENTATION", "SKILL", "DOD"] {
+        match app.db.planning_artifact(request_id, kind, revision).await {
+            Ok(_) => {}
+            Err(Error::NotFound) => missing.push(kind),
+            Err(error) => return Err(error),
+        }
+    }
+    let work_graph_sha256 = match app.db.agentic_work_graph(request_id).await {
+        Ok(graph) => Some(graph.graph_sha256),
+        Err(Error::NotFound) => {
+            missing.push("WORKGRAPH");
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    if lane == PlanningLane::FormalSpec {
+        let has_spec = match app.db.agentic_spec(request_id).await {
+            Ok(spec) => spec.state == "FROZEN",
+            Err(Error::NotFound) => false,
+            Err(error) => return Err(error),
+        };
+        if !has_spec {
+            missing.push("SPEC");
+        }
+        match app.db.latest_openspec_projection(request_id).await {
+            Ok(_) => {}
+            Err(Error::NotFound) => missing.push("OPENSPEC"),
+            Err(error) => return Err(error),
+        }
+    }
+    let participant_record = match app.db.agentic_participant_plan(request_id).await {
+        Ok(record) => Some(record),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    let mut participant_plan = assess_participant_plan(
+        context.triage.route,
+        assurance,
+        &reviewer_plan,
+        participant_record
+            .as_ref()
+            .map(|record| ParticipantPlanSource {
+                reviewer_count: record.reviewer_count,
+                graph_sha256: record.graph_sha256.as_deref(),
+                plan_json: &record.plan_json,
+            }),
+        work_graph_sha256.as_deref(),
+    );
+    if let Some(artifact) = plan_artifact {
+        let frozen_reviewer_plan =
+            serde_json::from_str::<serde_json::Value>(&artifact.content_json)
+                .ok()
+                .and_then(|bundle| bundle.get("reviewerPlan").cloned())
+                .map(serde_json::from_value::<factory_native::planning::ReviewerPlan>);
+        match frozen_reviewer_plan {
+            Some(Ok(frozen)) if frozen.required == reviewer_plan.required => {}
+            Some(Ok(_)) => readiness_problem(
+                &mut participant_plan.problems,
+                "the frozen reviewer plan does not match the lane and assurance",
+            ),
+            Some(Err(_)) | None => readiness_problem(
+                &mut participant_plan.problems,
+                "the frozen PLAN does not declare a valid reviewer plan",
+            ),
+        }
+    }
+    if !participant_plan.problems.is_empty() {
+        participant_plan.ready = false;
+    }
+    let review = match app.db.latest_plan_review(request_id).await {
+        Ok(review) => Some(review),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    let review_status = review.as_ref().map(|review| review.status.clone());
+    let review_approved = review.as_ref().is_some_and(|review| {
+        review.plan_revision == revision
+            && matches!(review.status.as_str(), "AUTO_APPROVED" | "OWNER_APPROVED")
+    });
+    let materials_ready = missing.is_empty() && participant_plan.ready;
+    Ok(PlanningReadiness {
+        lane: lane_code,
+        missing_artifacts: missing,
+        participant_plan,
+        review_status,
+        review_approved,
+        materials_ready,
+    })
+}
+
+fn planning_readiness_conflict(readiness: &PlanningReadiness) -> Option<Response> {
+    let conflict = readiness.conflict()?;
+    Some(
+        (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": conflict.message,
+                "code": conflict.code,
+                "missingArtifacts": readiness.missing_artifacts,
+                "participantPlan": readiness.participant_plan,
+                "reviewStatus": readiness.review_status,
+                "reviewApproved": readiness.review_approved,
+                "ready": false,
+            })),
+        )
+            .into_response(),
+    )
+}
+
+async fn ensure_planning_ready(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<PlanningReadiness, Response> {
+    let context = agentic_triage_context(app, record)
+        .await
+        .map_err(api_error)?;
+    let revision = latest_planning_revision(app, &record.id)
+        .await
+        .map_err(api_error)?;
+    let readiness = planning_readiness(app, &record.id, revision, &context)
+        .await
+        .map_err(api_error)?;
+    if let Some(response) = planning_readiness_conflict(&readiness) {
+        return Err(response);
+    }
+    environment_ready_for_request(app, record).await?;
+    Ok(readiness)
+}
+
+/// Typed, non-HTTP form of the readiness boundary for internal Core starts.
+async fn ensure_planning_ready_or_error(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<(), Error> {
+    let context = agentic_triage_context(app, record).await?;
+    let revision = latest_planning_revision(app, &record.id).await?;
+    let readiness = planning_readiness(app, &record.id, revision, &context).await?;
+    if let Some(conflict) = readiness.conflict() {
+        return Err(conflict.into_error());
+    }
+    let action = app.db.action(&record.action_id).await?;
+    match app.db.latest_environment_plan(&record.id).await {
+        Ok(plan) => {
+            if plan.status == "BLOCKED" || !plan.plan.blockers.is_empty() {
+                let blocker = plan.plan.blockers.first();
+                return Err(Error::IntakeConflict {
+                    code: blocker
+                        .map(|blocker| blocker.code.as_str())
+                        .unwrap_or("ENVIRONMENT_PLAN_REQUIRED"),
+                    message: blocker
+                        .map(|blocker| blocker.message.clone())
+                        .unwrap_or_else(|| {
+                            "the environment plan is blocked before execution".into()
+                        }),
+                });
+            }
+            if plan.status != "FROZEN"
+                && app
+                    .db
+                    .environment_spec_for_request(&record.id)
+                    .await
+                    .is_err()
+            {
+                return Err(Error::IntakeConflict {
+                    code: "ENVIRONMENT_PLAN_REQUIRED",
+                    message: "the environment plan is not frozen; a Lead decision and Core freeze are required".into(),
+                });
+            }
+        }
+        Err(Error::NotFound) => {
+            factory_native::db::validate_environment_requirement(&action.spec)?;
+        }
+        Err(error) => return Err(error),
+    }
+    factory_native::db::validate_environment_requirement(&action.spec)?;
+    Ok(())
+}
+
+/// The legacy Lead start/approve routes must not bypass the planning boundary
+/// for a unified intake request. A standalone Lead request keeps its existing
+/// behavior; an intake-backed Lead is held to the same readiness as its intake
+/// approval endpoint.
+async fn ensure_lead_planning_ready(app: &App, lead_request_id: &str) -> Result<(), Response> {
+    match app.db.intake_request_for_lead(lead_request_id).await {
+        Ok(record) => ensure_planning_ready(app, &record).await.map(|_| ()),
+        Err(Error::NotFound) => Ok(()),
+        Err(error) => Err(api_error(error)),
+    }
+}
+
+struct LoadedOpenSpecProjection {
+    record: factory_native::db::IntakeRequestRecord,
+    projection: factory_native::db::OpenSpecProjectionRecord,
+    planning_projection: factory_native::planning::OpenSpecProjection,
+    model: factory_native::openspec::OpenSpecReadModel,
+}
+
+async fn load_agentic_openspec(app: &App, id: &str) -> Result<LoadedOpenSpecProjection, Response> {
+    let record = app.db.intake_request(id).await.map_err(api_error)?;
+    let projection = match app.db.latest_openspec_projection(&record.id).await {
+        Ok(projection) => projection,
+        Err(Error::NotFound) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": "no OpenSpec projection exists for this request",
+                    "code": "OPENSPEC_NOT_FOUND",
+                })),
+            )
+                .into_response());
+        }
+        Err(error) => return Err(api_error(error)),
+    };
+    let artifact = match app
+        .db
+        .planning_artifact(&record.id, "OPENSPEC", projection.revision)
+        .await
+    {
+        Ok(artifact) => artifact,
+        Err(Error::NotFound) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "the durable projection has no matching rendered artifact",
+                    "code": "OPENSPEC_ARTIFACT_MISSING",
+                })),
+            )
+                .into_response());
+        }
+        Err(error) => return Err(api_error(error)),
+    };
+    let artifacts = match factory_native::openspec::parse_stored_artifact(
+        &artifact.content_json,
+        &artifact.content_sha256,
+    ) {
+        Ok(artifacts) => artifacts,
+        Err(error) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "OPENSPEC_ARTIFACT_INVALID",
+                })),
+            )
+                .into_response());
+        }
+    };
+    let planning_projection = factory_native::planning::OpenSpecProjection {
+        change_id: projection.change_id.clone(),
+        revision: projection.revision,
+        proposal_sha256: projection.proposal_sha256.clone(),
+        specs_sha256: projection.specs_sha256.clone(),
+        design_sha256: projection.design_sha256.clone(),
+        tasks_sha256: projection.tasks_sha256.clone(),
+        validated: projection.validated,
+        archived: projection.archived,
+    };
+    let model = match factory_native::openspec::read_model(
+        &record.id,
+        &planning_projection,
+        &artifact.content_sha256,
+        &artifacts,
+    ) {
+        Ok(model) => model,
+        Err(error) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "OPENSPEC_PROJECTION_STALE",
+                })),
+            )
+                .into_response());
+        }
+    };
+    Ok(LoadedOpenSpecProjection {
+        record,
+        projection,
+        planning_projection,
+        model,
+    })
+}
+
+async fn get_agentic_openspec(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if id.is_empty() || id.chars().count() > 200 || id.chars().any(char::is_control) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "request id is required, bounded and control-free",
+                "code": "REQUEST_ID_INVALID",
+            })),
+        )
+            .into_response();
+    }
+    match load_agentic_openspec(&app, &id).await {
+        Ok(loaded) => Json(loaded.model).into_response(),
+        Err(response) => response,
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct OpenSpecArchiveInput {
+    change_id: String,
+    revision: u32,
+    artifact_content_sha256: String,
+}
+
+async fn archive_agentic_openspec(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<OpenSpecArchiveInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if id.is_empty() || id.chars().count() > 200 || id.chars().any(char::is_control) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "request id is required, bounded and control-free",
+                "code": "REQUEST_ID_INVALID",
+            })),
+        )
+            .into_response();
+    }
+    let loaded = match load_agentic_openspec(&app, &id).await {
+        Ok(loaded) => loaded,
+        Err(response) => return response,
+    };
+    if input.change_id != loaded.model.change_id
+        || input.revision != loaded.model.revision
+        || input.artifact_content_sha256 != loaded.model.artifact_content_sha256
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the archive request does not bind the latest validated projection",
+                "code": "OPENSPEC_ARCHIVE_STALE",
+            })),
+        )
+            .into_response();
+    }
+    if loaded.projection.archived {
+        return match factory_native::openspec::archive_outcome(&loaded.model, true) {
+            Ok(outcome) => Json(outcome).into_response(),
+            Err(error) => (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "OPENSPEC_ARCHIVE_IMMUTABLE",
+                })),
+            )
+                .into_response(),
+        };
+    }
+    let transition = match app
+        .db
+        .archive_openspec_projection(&loaded.record.id, &loaded.planning_projection)
+        .await
+    {
+        Ok(transition) => transition,
+        Err(Error::Conflict(message)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": message,
+                    "code": "OPENSPEC_ARCHIVE_CONFLICT",
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => return api_error(error),
+    };
+    if !transition.record.archived {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the durable projection did not enter the archive state",
+                "code": "OPENSPEC_ARCHIVE_CONFLICT",
+            })),
+        )
+            .into_response();
+    }
+    match factory_native::openspec::archive_outcome(&loaded.model, transition.already_archived) {
+        Ok(outcome) => Json(outcome).into_response(),
+        Err(error) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": error.to_string(),
+                "code": "OPENSPEC_ARCHIVE_IMMUTABLE",
+            })),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_agentic_planning(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    let artifacts = match app.db.planning_artifacts(&record.id).await {
+        Ok(artifacts) => artifacts,
+        Err(error) => return api_error(error),
+    };
+    let review = match app.db.latest_plan_review(&record.id).await {
+        Ok(review) => Some(review),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let workflow = match app.db.workflow_run_for_request(&record.id).await {
+        Ok(workflow) => workflow,
+        Err(error) => return api_error(error),
+    };
+    let revision = match latest_planning_revision(&app, &record.id).await {
+        Ok(revision) => revision,
+        Err(error) => return api_error(error),
+    };
+    let readiness = match planning_readiness(&app, &record.id, revision, &context).await {
+        Ok(readiness) => readiness,
+        Err(error) => return api_error(error),
+    };
+    Json(json!({
+        "lane": readiness.lane,
+        "signals": context.planning_signals,
+        "artifacts": artifacts,
+        "review": review,
+        "workflow": workflow,
+        "missingArtifacts": readiness.missing_artifacts,
+        "participantPlan": readiness.participant_plan,
+        "reviewStatus": readiness.review_status,
+        "reviewApproved": readiness.review_approved,
+        "materialsReady": readiness.materials_ready,
+        "ready": readiness.ready(),
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct AgenticPlanReviewInput {
+    plan_revision: u32,
+    plan_sha256: String,
+    decision: String,
+    rationale: String,
+}
+
+async fn review_agentic_plan(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AgenticPlanReviewInput>,
+) -> Response {
+    use factory_native::planning::WorkflowState;
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    let plan = match app
+        .db
+        .planning_artifact(&record.id, "PLAN", input.plan_revision)
+        .await
+    {
+        Ok(plan) => plan,
+        Err(error) => return api_error(error),
+    };
+    if plan.content_sha256 != input.plan_sha256 {
+        return planning_conflict(
+            "PLAN_REVIEW_STALE",
+            "the plan review does not bind the current plan hash",
+        );
+    }
+    if input.rationale.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "a plan review requires a rationale", "code": "RATIONALE_REQUIRED"})),
+        )
+            .into_response();
+    }
+    let (status, target) = match input.decision.as_str() {
+        "APPROVE" => ("OWNER_APPROVED", Some(WorkflowState::Frozen)),
+        "CHANGES_REQUESTED" => ("CHANGES_REQUESTED", Some(WorkflowState::Replanning)),
+        "REJECT" => ("REJECTED", Some(WorkflowState::Blocked)),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "decision must be APPROVE, CHANGES_REQUESTED or REJECT", "code": "PLAN_REVIEW_DECISION_INVALID"})),
+            )
+                .into_response();
+        }
+    };
+    if status == "OWNER_APPROVED" {
+        let readiness =
+            match planning_readiness(&app, &record.id, input.plan_revision, &context).await {
+                Ok(readiness) => readiness,
+                Err(error) => return api_error(error),
+            };
+        if !readiness.materials_ready {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "the plan is not ready for approval",
+                    "code": "PLAN_NOT_READY",
+                    "missingArtifacts": readiness.missing_artifacts,
+                    "participantPlan": readiness.participant_plan,
+                    "reviewStatus": readiness.review_status,
+                    "ready": false,
+                })),
+            )
+                .into_response();
+        }
+    }
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    let review = match app
+        .db
+        .save_plan_review(factory_native::db::NewPlanReview {
+            request_id: &record.id,
+            plan_revision: input.plan_revision,
+            plan_sha256: &input.plan_sha256,
+            status,
+            principal_id: &principal,
+            rationale: &input.rationale,
+            points: 0,
+        })
+        .await
+    {
+        Ok(review) => review,
+        Err(error) => return api_error(error),
+    };
+    if status == "OWNER_APPROVED" {
+        // An Owner plan review is not a Lead environment decision. It may only
+        // trigger the frozen Lead model; the model's own decision is recorded.
+        match run_lead_environment_review(
+            &app,
+            &record,
+            Some((&input.plan_sha256, input.plan_revision)),
+        )
+        .await
+        {
+            Ok(_) => {}
+            Err(response) => return response,
+        }
+    }
+    if let Some(target) = target {
+        match app.db.workflow_run_for_request(&record.id).await {
+            Ok(Some(run)) if run.state == WorkflowState::PlanReview => {
+                if let Err(error) = app
+                    .db
+                    .transition_workflow(
+                        &run.id,
+                        WorkflowState::PlanReview,
+                        target,
+                        "authenticated plan review",
+                    )
+                    .await
+                {
+                    return api_error(error);
+                }
+            }
+            Ok(_) => {}
+            Err(error) => return api_error(error),
+        }
+    }
+    let workflow = app
+        .db
+        .workflow_run_for_request(&record.id)
+        .await
+        .ok()
+        .flatten();
+    Json(json!({"review": review, "workflow": workflow})).into_response()
+}
+
+async fn get_agentic_environment(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    match environment_projection_for_request(&app, &record).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct EnvironmentPlanReviewInput {
+    plan_sha256: String,
+    plan_revision: u32,
+}
+
+async fn review_agentic_environment(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<EnvironmentPlanReviewInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let _ = session;
+    match run_lead_environment_review(
+        &app,
+        &record,
+        Some((&input.plan_sha256, input.plan_revision)),
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err(response) => return response,
+    }
+    match environment_projection_for_request(&app, &record).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct RecompileInput {
+    rationale: String,
+}
+
+fn recompile_rationale(input: &RecompileInput) -> Result<String, Box<Response>> {
+    let rationale = input.rationale.trim();
+    if rationale.chars().count() < 8
+        || rationale.chars().count() > 2_000
+        || rationale.chars().any(char::is_control)
+    {
+        return Err(Box::new(agentic_conflict(
+            "RECOMPILE_RATIONALE_REQUIRED",
+            "an explicit operator rationale of 8-2000 characters is required",
+        )));
+    }
+    Ok(rationale.to_owned())
+}
+
+/// A recompile replaces planning/environment revisions only while execution is
+/// unbound. An active Campaign, an authored specification or a rejected plan
+/// review is an owner/execution decision and is never silently replaced.
+async fn recompile_bound_conflict(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<Option<Response>, Box<Response>> {
+    let campaign_bound = record.campaign_id.is_some()
+        || app
+            .db
+            .campaigns()
+            .await
+            .map_err(api_error)?
+            .iter()
+            .any(|campaign| campaign.action_id == record.action_id);
+    if campaign_bound {
+        return Ok(Some(agentic_conflict(
+            "RECOMPILE_EXECUTION_BOUND",
+            "a Campaign is already bound to this request; a recompile cannot replace an executing environment or plan",
+        )));
+    }
+    match app.db.agentic_spec(&record.id).await {
+        Ok(spec) if spec.state == "FROZEN" => {
+            return Ok(Some(agentic_conflict(
+                "RECOMPILE_SPEC_BOUND",
+                "a frozen authored specification already binds this plan; a material change requires a new request or spec revision",
+            )));
+        }
+        Ok(_) => {}
+        Err(Error::NotFound) => {}
+        Err(error) => return Err(Box::new(api_error(error))),
+    }
+    match app.db.latest_plan_review(&record.id).await {
+        Ok(review) if matches!(review.status.as_str(), "REJECTED" | "CHANGES_REQUESTED") => {
+            return Ok(Some(agentic_conflict(
+                "RECOMPILE_REVIEW_BLOCKED",
+                "the latest plan review was rejected or requested changes; a recompile cannot replace that owner decision",
+            )));
+        }
+        Ok(_) => {}
+        Err(Error::NotFound) => {}
+        Err(error) => return Err(Box::new(api_error(error))),
+    }
+    Ok(None)
+}
+
+async fn stored_stack_environment_proposal(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Option<factory_native::planning::environment::EnvironmentProposal> {
+    let artifact = app
+        .db
+        .latest_planning_artifact(&record.id, "PLAN")
+        .await
+        .ok()?;
+    let value: Value = serde_json::from_str(&artifact.content_json).ok()?;
+    serde_json::from_value(value.get("environmentProposal")?.clone()).ok()
+}
+
+async fn recompile_agentic_environment(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<RecompileInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    if let Some(response) = match recompile_bound_conflict(&app, &record).await {
+        Ok(response) => response,
+        Err(response) => return *response,
+    } {
+        return response;
+    }
+    let rationale = match recompile_rationale(&input) {
+        Ok(rationale) => rationale,
+        Err(response) => return *response,
+    };
+    let config = match app.db.project_config(&record.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let previous = app.db.latest_environment_plan(&record.id).await.ok();
+    let previous_status = previous
+        .as_ref()
+        .map(|plan| plan.status.clone())
+        .unwrap_or_else(|| "MISSING".into());
+    let previous_revision = previous.as_ref().map(|plan| plan.revision).unwrap_or(0);
+    let previous_spec_sha256 = app
+        .db
+        .environment_spec_for_request(&record.id)
+        .await
+        .ok()
+        .map(|spec| spec.spec_sha256);
+    let revision = previous_revision.saturating_add(1).max(1);
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    let risk_class = format!("{:?}", context.risk);
+    let proposal = stored_stack_environment_proposal(&app, &record).await;
+    let plan = match compile_environment_for_request(
+        &app,
+        &record,
+        &config,
+        revision,
+        &risk_class,
+        proposal,
+    )
+    .await
+    {
+        Ok(plan) => plan,
+        Err(response) => return response,
+    };
+    let (actor, _) = authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let detail = json!({
+        "actor": actor,
+        "rationale": rationale,
+        "previousStatus": previous_status,
+        "previousRevision": previous_revision,
+        "previousSpecSha256": previous_spec_sha256,
+        "newRevision": plan.revision,
+        "newStatus": serde_json::to_value(plan.status).unwrap_or(Value::Null),
+    })
+    .to_string();
+    if let Err(error) = app
+        .db
+        .record_event_once(
+            &format!("request:{}", record.id),
+            "environment.plan.recompiled",
+            &detail,
+        )
+        .await
+    {
+        return api_error(error);
+    }
+    match environment_projection_for_request(&app, &record).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn recompile_agentic_plan(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<RecompileInput>,
+) -> Response {
+    use factory_native::agentic::{ValidatedWorkGraph, WorkGraphModel, validate_work_graph};
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    if let Some(response) = match recompile_bound_conflict(&app, &record).await {
+        Ok(response) => response,
+        Err(response) => return *response,
+    } {
+        return response;
+    }
+    let rationale = match recompile_rationale(&input) {
+        Ok(rationale) => rationale,
+        Err(response) => return *response,
+    };
+    let config = match app.db.project_config(&record.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let graph_record = match app.db.agentic_work_graph(&record.id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let stored_graph = match serde_json::from_str::<ValidatedWorkGraph>(&graph_record.graph_json) {
+        Ok(graph) => graph,
+        Err(_) => {
+            return agentic_conflict(
+                "PLAN_RECOMPILE_GRAPH_INVALID",
+                "the stored WorkGraph is not decodable; the plan cannot be recompiled deterministically",
+            );
+        }
+    };
+    let model = WorkGraphModel {
+        units: stored_graph.units.clone(),
+        assumptions: stored_graph.assumptions.clone(),
+        risks: stored_graph.risks.clone(),
+    };
+    let graph = match validate_work_graph(&model, &config.allowed_paths) {
+        Ok(graph) => graph,
+        Err(_) => {
+            return agentic_conflict(
+                "PLAN_RECOMPILE_GRAPH_INVALID",
+                "the stored WorkGraph does not validate against the current Project scope",
+            );
+        }
+    };
+    let stored_order =
+        match serde_json::from_str::<Vec<String>>(&graph_record.topological_order_json) {
+            Ok(order) => order,
+            Err(_) => {
+                return agentic_conflict(
+                    "PLAN_RECOMPILE_GRAPH_INVALID",
+                    "the stored WorkGraph order is not decodable",
+                );
+            }
+        };
+    if graph.graph_sha256 != graph_record.graph_sha256
+        || graph.graph_sha256 != stored_graph.graph_sha256
+        || graph.topological_order != stored_graph.topological_order
+        || graph.topological_order != stored_order
+    {
+        return agentic_conflict(
+            "PLAN_RECOMPILE_GRAPH_INVALID",
+            "the stored WorkGraph digest or order does not match its validated content",
+        );
+    }
+    let previous_plan = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
+        Ok(plan) => plan,
+        Err(Error::NotFound) => {
+            return agentic_conflict(
+                "PLAN_RECOMPILE_PLAN_MISSING",
+                "there is no recorded plan revision to recompile",
+            );
+        }
+        Err(error) => return api_error(error),
+    };
+    let previous_stack_artifact = match app
+        .db
+        .planning_artifact(&record.id, "STACK", previous_plan.revision)
+        .await
+    {
+        Ok(artifact) => artifact,
+        Err(Error::NotFound) => {
+            return agentic_conflict(
+                "PLAN_RECOMPILE_STACK_MISSING",
+                "the previous plan has no STACK artifact to compare against",
+            );
+        }
+        Err(error) => return api_error(error),
+    };
+    let previous_stack = match serde_json::from_str::<factory_native::planning::StackDecision>(
+        &previous_stack_artifact.content_json,
+    ) {
+        Ok(stack) => stack,
+        Err(_) => {
+            return agentic_conflict(
+                "PLAN_RECOMPILE_STACK_MISSING",
+                "the previous STACK artifact is not decodable",
+            );
+        }
+    };
+    let previous_environment = app.db.latest_environment_plan(&record.id).await.ok();
+    let previous_environment_status = previous_environment
+        .as_ref()
+        .map(|plan| plan.status.clone())
+        .unwrap_or_else(|| "MISSING".into());
+    let previous_environment_revision = previous_environment
+        .as_ref()
+        .map(|plan| plan.revision)
+        .unwrap_or(0);
+    let previous_spec_sha256 = app
+        .db
+        .environment_spec_for_request(&record.id)
+        .await
+        .ok()
+        .map(|spec| spec.spec_sha256);
+    let next_environment_revision = previous_environment_revision
+        .saturating_add(1)
+        .max(previous_plan.revision.saturating_add(1));
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    let precompiled_stack = match compile_stack_decision(
+        &app,
+        &record,
+        context.planning_lane,
+        &context.stack,
+        &config,
+        false,
+    )
+    .await
+    {
+        Ok(stack) => stack,
+        Err(PlanningCompileFailure::Conflict(conflict)) => {
+            return planning_compile_conflict_response(conflict, &[]);
+        }
+        Err(PlanningCompileFailure::Internal(error)) => return api_error(error),
+    };
+    let mut previous_capabilities = previous_stack.required_capabilities.clone();
+    previous_capabilities.sort();
+    let mut next_capabilities = precompiled_stack.decision.required_capabilities.clone();
+    next_capabilities.sort();
+    if precompiled_stack.decision.selected != previous_stack.selected
+        || next_capabilities != previous_capabilities
+    {
+        return agentic_conflict(
+            "PLAN_RECOMPILE_STACK_CHANGE_REQUIRES_OWNER",
+            format!(
+                "the recompiled stack changed from {} to {}; a stack change requires an explicit owner decision",
+                previous_stack.selected, precompiled_stack.decision.selected
+            ),
+        );
+    }
+    let planning = match persist_planning_plan(
+        &app,
+        &record,
+        &context,
+        &graph,
+        Some(next_environment_revision),
+        Some(precompiled_stack),
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    if planning.get("code").is_some() {
+        return (StatusCode::CONFLICT, Json(planning)).into_response();
+    }
+    let plan = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
+        Ok(plan) => plan,
+        Err(error) => return api_error(error),
+    };
+    let review = match app.db.latest_plan_review(&record.id).await {
+        Ok(review) => Some(review),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let artifacts = match app.db.planning_artifacts(&record.id).await {
+        Ok(artifacts) => artifacts,
+        Err(error) => return api_error(error),
+    };
+    let environment = match environment_projection_for_request(&app, &record).await {
+        Ok(environment) => environment,
+        Err(error) => return api_error(error),
+    };
+    let (actor, _) = authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let detail = json!({
+        "actor": actor,
+        "rationale": rationale,
+        "previousPlanRevision": previous_plan.revision,
+        "newPlanRevision": plan.revision,
+        "previousEnvironmentStatus": previous_environment_status,
+        "previousEnvironmentRevision": previous_environment_revision,
+        "previousSpecSha256": previous_spec_sha256,
+        "newEnvironmentStatus": environment["status"],
+        "newEnvironmentRevision": environment["planRevision"],
+    })
+    .to_string();
+    if let Err(error) = app
+        .db
+        .record_event_once(
+            &format!("request:{}", record.id),
+            "plan.recompiled",
+            &detail,
+        )
+        .await
+    {
+        return api_error(error);
+    }
+    Json(json!({
+        "plan": plan,
+        "graph": graph_record,
+        "review": review,
+        "artifacts": artifacts,
+        "environment": environment,
+        "recompiled": true,
+        "previousRevision": previous_plan.revision,
+        "revision": plan.revision,
+    }))
+    .into_response()
+}
+
+async fn get_agentic_findings(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    match app.db.finding_dispositions(&record.id).await {
+        Ok(findings) => Json(json!({"findings": findings})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+/// Exact owner-decision matter and selected option that authorize a finding
+/// refutation. A generic APPROVED decision for another purpose must never close
+/// a reviewer finding.
+const FINDING_REFUTATION_MATTER: &str = "FINDING_REFUTATION";
+const FINDING_REFUTATION_APPROVE_OPTION: &str = "APPROVE_REFUTATION";
+
+fn owner_decision_allows_refutation(
+    decision: &factory_native::db::AgenticOwnerDecisionRecord,
+    principal: &str,
+    request_id: &str,
+    project_id: &str,
+) -> bool {
+    let scoped = decision.request_id.as_deref() == Some(request_id)
+        || (decision.request_id.is_none() && decision.project_id == project_id);
+    decision.status == "APPROVED"
+        && decision.resolved_by.as_deref() == Some(principal)
+        && decision.matter == FINDING_REFUTATION_MATTER
+        && decision.selected_option.as_deref() == Some(FINDING_REFUTATION_APPROVE_OPTION)
+        && decision
+            .options
+            .iter()
+            .any(|option| option == FINDING_REFUTATION_APPROVE_OPTION)
+        && scoped
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct AgenticFindingDispositionInput {
+    status: String,
+    #[serde(default)]
+    evidence_refs: Vec<String>,
+    #[serde(default)]
+    owner_decision: Option<String>,
+}
+
+async fn resolve_agentic_finding(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath((id, finding_id)): AxumPath<(String, String)>,
+    Json(input): Json<AgenticFindingDispositionInput>,
+) -> Response {
+    use factory_native::planning::{FindingDisposition, FindingStatus};
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let existing = match app.db.finding_disposition(&record.id, &finding_id).await {
+        Ok(existing) => existing,
+        Err(error) => return api_error(error),
+    };
+    let route = match factory_native::planning::findings::parse_route_code(&existing.route) {
+        Some(route) => route,
+        None => {
+            return api_error(Error::Invalid("stored finding route is invalid"));
+        }
+    };
+    let status = match input.status.as_str() {
+        "RESOLVED" => FindingStatus::Resolved,
+        "REFUTED" => FindingStatus::Refuted,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "status must be RESOLVED or REFUTED", "code": "FINDING_STATUS_INVALID"})),
+            )
+                .into_response();
+        }
+    };
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    if status == FindingStatus::Refuted {
+        let decision_id = match input.owner_decision.as_deref() {
+            Some(value) if !value.trim().is_empty() => value,
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "a refutation requires an owner decision reference", "code": "OWNER_DECISION_REQUIRED"})),
+                )
+                    .into_response();
+            }
+        };
+        let decision = match app.db.agentic_owner_decision(decision_id).await {
+            Ok(decision) => decision,
+            Err(Error::NotFound) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "the owner decision reference does not exist", "code": "OWNER_DECISION_INVALID"})),
+                )
+                    .into_response();
+            }
+            Err(error) => return api_error(error),
+        };
+        // A refutation is permitted only by the authenticated owner's approved
+        // decision. The owner-decision schema records APPROVED/DENIED; it never
+        // records a separate RESOLVED status, so acceptance must bind APPROVED.
+        if !owner_decision_allows_refutation(&decision, &principal, &record.id, &record.project_id)
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "the owner decision is not an approved decision by this owner for this request", "code": "OWNER_DECISION_INVALID"})),
+            )
+                .into_response();
+        }
+    }
+    let disposition = FindingDisposition {
+        request_id: record.id.clone(),
+        finding_id,
+        route,
+        status,
+        candidate_id: existing.candidate_id.clone().unwrap_or_default(),
+        reviewer_principal: existing.reviewer_principal.clone(),
+        resolved_by: if status == FindingStatus::Resolved {
+            principal.clone()
+        } else {
+            existing.resolved_by.clone()
+        },
+        evidence_refs: input.evidence_refs,
+        owner_principal: (status == FindingStatus::Refuted).then_some(principal),
+        owner_decision: input.owner_decision,
+    };
+    if let Err(error) = disposition.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error, "code": "FINDING_DISPOSITION_INVALID"})),
+        )
+            .into_response();
+    }
+    match app.db.save_finding_disposition(&disposition).await {
+        Ok(saved) => {
+            if let Some(candidate_id) = saved
+                .candidate_id
+                .as_deref()
+                .filter(|candidate_id| !candidate_id.is_empty())
+            {
+                match app.db.gate_for_candidate(candidate_id).await {
+                    Ok(Some(_)) => {
+                        if let Err(error) = app.db.reevaluate_gate_for_candidate(candidate_id).await
+                        {
+                            return api_error(error);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => return api_error(error),
+                }
+            }
+            Json(saved).into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+struct ParticipantPlanFailure {
+    code: &'static str,
+    message: String,
+}
+
 async fn deterministic_participant_plan(
     app: &App,
     record: &factory_native::db::IntakeRequestRecord,
     context: &AgenticTriageContext,
     graph: &factory_native::agentic::ValidatedWorkGraph,
-) -> Option<factory_native::agentic::ParticipantPlan> {
+) -> Result<factory_native::agentic::ParticipantPlan, ParticipantPlanFailure> {
     let profile = app
         .db
         .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
         .await
-        .ok()?;
-    let content = profile.content.v2()?;
+        .map_err(|_| ParticipantPlanFailure {
+            code: "PROFILE_NOT_EXECUTABLE",
+            message: "the frozen execution profile is not executable".into(),
+        })?;
+    let content = profile.content.v2().ok_or(ParticipantPlanFailure {
+        code: "PROFILE_NOT_EXECUTABLE",
+        message: "the frozen execution profile has no executable v2 content".into(),
+    })?;
+    let reviewer_plan = factory_native::planning::route::required_reviewers(
+        context.planning_lane,
+        context.assurance(),
+    );
+    let reviewer_assignments = app
+        .reviewer_identities
+        .assignments_for_plan(
+            &reviewer_plan,
+            &content.roles.semantic_reviewer.provider,
+            &content.roles.semantic_reviewer.model,
+        )
+        .map_err(|message| ParticipantPlanFailure {
+            code: "REVIEWER_INDEPENDENCE_REQUIRED",
+            message,
+        })?;
     let mut plan = factory_native::agentic::participant_plan_for_graph(
         context.triage.route,
         context.assurance(),
@@ -10693,23 +15814,20 @@ async fn deterministic_participant_plan(
         &content.roles.implementer.model,
         "",
     );
-    // The current Compose topology authenticates one reviewer identity/token.
-    // Do not require a second receipt that no reviewer can submit. Multi-
-    // reviewer aggregation remains implemented and tested for a deployment
-    // that provisions independent reviewer identities.
-    if plan.reviewer_count > 1 {
-        plan.reviewer_count = 1;
-        for assignment in &mut plan.assignments {
-            if assignment.role == "Reviewer" {
-                assignment.count = 1;
-            }
+    plan.reviewer_count = u32::try_from(reviewer_assignments.len()).unwrap_or(u32::MAX);
+    plan.reviewer_roles = reviewer_plan.required.clone();
+    plan.reviewer_assignments = reviewer_assignments;
+    for assignment in &mut plan.assignments {
+        if assignment.role == "Reviewer" {
+            assignment.count = plan.reviewer_count;
         }
-        plan.reasons.push(
-            "Only one independent reviewer identity is configured; the plan uses one reviewer."
-                .into(),
-        );
     }
-    Some(plan)
+    plan.reasons.push(format!(
+        "{} required reviewer roles are staffed by {} distinct authenticated reviewer identities; provider and model equality is not a rejection criterion.",
+        plan.reviewer_roles.len(),
+        plan.reviewer_count
+    ));
+    Ok(plan)
 }
 
 async fn get_agentic_participants(
@@ -10762,24 +15880,26 @@ async fn record_agentic_participants(
         Err(error) => return api_error(error),
     };
     let plan = match deterministic_participant_plan(&app, &record, &context, &graph).await {
-        Some(plan) => plan,
-        None => {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": "the frozen execution profile is not executable",
-                    "code": "PROFILE_NOT_EXECUTABLE",
-                })),
-            )
-                .into_response();
-        }
+        Ok(plan) => plan,
+        Err(failure) => return agentic_conflict(failure.code, &failure.message),
     };
     match app
         .db
         .save_agentic_participant_plan(&record.id, Some(&graph.graph_sha256), &plan)
         .await
     {
-        Ok(record) => Json(json!({"plan": record, "compiled": plan})).into_response(),
+        Ok(record) => {
+            if let Err(error) = try_freeze_approved_plan(&app, &record.request_id, &context).await {
+                return api_error(error);
+            }
+            let workflow = app
+                .db
+                .workflow_run_for_request(&record.request_id)
+                .await
+                .ok()
+                .flatten();
+            Json(json!({"plan": record, "compiled": plan, "workflow": workflow})).into_response()
+        }
         Err(error) => api_error(error),
     }
 }
@@ -10796,15 +15916,23 @@ async fn get_agentic_spec(
         Ok(record) => record,
         Err(error) => return api_error(error),
     };
-    let frozen = app
-        .db
-        .agentic_spec(&record.id)
-        .await
-        .ok()
-        .filter(|spec| spec.state == "FROZEN");
-    let draft = app.db.agentic_spec_draft(&record.id).await.ok();
-    let graph = app.db.agentic_work_graph(&record.id).await.ok();
-    let publication = app
+    let frozen = match app.db.agentic_spec(&record.id).await {
+        Ok(spec) if spec.state == "FROZEN" => Some(spec),
+        Ok(_) => None,
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let draft = match app.db.agentic_spec_draft(&record.id).await {
+        Ok(draft) => Some(draft),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let graph = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph) => Some(graph),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let publication = match app
         .db
         .agentic_spec_publication(
             frozen
@@ -10813,13 +15941,16 @@ async fn get_agentic_spec(
                 .unwrap_or_default(),
         )
         .await
-        .ok();
+    {
+        Ok(publication) => Some(publication),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
     let issues = match &frozen {
-        Some(spec) => app
-            .db
-            .agentic_spec_issues(&spec.id)
-            .await
-            .unwrap_or_default(),
+        Some(spec) => match app.db.agentic_spec_issues(&spec.id).await {
+            Ok(issues) => issues,
+            Err(error) => return api_error(error),
+        },
         None => Vec::new(),
     };
     let github_bound = app
@@ -10847,6 +15978,40 @@ async fn get_agentic_spec(
         "githubBound": github_bound,
     }))
     .into_response()
+}
+
+fn validate_spec_unit_mapping(
+    frozen: &factory_native::agentic::FrozenSpec,
+    graph: &factory_native::agentic::ValidatedWorkGraph,
+) -> Result<(), String> {
+    let unit_ids = graph
+        .units
+        .iter()
+        .map(|unit| unit.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for requirement in &frozen.requirements {
+        if requirement.work_unit_id.is_empty()
+            || !unit_ids.contains(requirement.work_unit_id.as_str())
+        {
+            return Err(format!(
+                "requirement {} must bind an exact WorkGraph unit id",
+                requirement.id
+            ));
+        }
+    }
+    for unit in &graph.units {
+        if !frozen
+            .requirements
+            .iter()
+            .any(|requirement| requirement.work_unit_id == unit.id)
+        {
+            return Err(format!(
+                "WorkGraph unit {} is not covered by any requirement",
+                unit.id
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn author_agentic_spec(
@@ -10888,7 +16053,11 @@ async fn author_agentic_spec(
         Ok(graph) => graph,
         Err(response) => return *response,
     };
-    let current = app.db.agentic_spec(&record.id).await.ok();
+    let current = match app.db.agentic_spec(&record.id).await {
+        Ok(spec) => Some(spec),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
     let (revision, has_frozen) = match &current {
         Some(spec) if spec.state == "FROZEN" => (spec.revision + 1, true),
         Some(spec) => (spec.revision, false),
@@ -10898,7 +16067,7 @@ async fn author_agentic_spec(
     let schema = factory_native::model_output::spec_draft_schema();
     let schema_sha256 = factory_native::model_output::spec_draft_schema_sha256();
     let system_prompt = format!(
-        "You are the bounded Software Factory Spec Manager. Return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. You are read-only: you cannot use tools, write files, grant authority, approve work or change a frozen specification. Author observable formal requirements for a FORMAL_SPEC request. Every requirement must state an observable behavior and carry at least one acceptance case and at least one negative case. Acceptance and negative cases must be concrete and testable, not implementation instructions. Do not invent scope outside the objective and WorkGraph. Requirements are numbered deterministically by Core after you return; assertion and check identities are also compiled by Core.
+        "You are the bounded Software Factory Spec Manager. Return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. You are read-only: you cannot use tools, write files, grant authority, approve work or change a frozen specification. Author observable formal requirements for a FORMAL_SPEC request. Every requirement must state an observable behavior and carry at least one acceptance case and at least one negative case. Acceptance and negative cases must be concrete and testable, not implementation instructions. Do not invent scope outside the objective and WorkGraph. Every requirement MUST set workUnitId to the exact id of the WorkGraph unit that implements it; cover every WorkGraph unit with at least one requirement and never invent a unit id. Requirements are numbered deterministically by Core after you return; assertion and check identities are also compiled by Core.
 
 JSON Schema:
 {schema}"
@@ -10940,7 +16109,7 @@ JSON Schema:
         "agentic_spec_manager",
         &system_prompt,
         &user_prompt,
-        6_144,
+        AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS,
     )
     .await
     {
@@ -10960,7 +16129,17 @@ JSON Schema:
                 .into_response();
         }
     };
-    if let Err(error) = factory_native::agentic::compile_spec(&draft, revision) {
+    let frozen = match factory_native::agentic::compile_spec(&draft, revision) {
+        Ok(frozen) => frozen,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error, "code": "AGENTIC_SPEC_INVALID"})),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = validate_spec_unit_mapping(&frozen, &graph) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": error, "code": "AGENTIC_SPEC_INVALID"})),
@@ -10997,6 +16176,12 @@ JSON Schema:
     {
         Ok(spec) => {
             let preview = factory_native::agentic::compile_spec(&draft, spec.revision).ok();
+            if let Some(preview) = preview.as_ref()
+                && let Err(response) =
+                    persist_openspec_projection(&app, &record, preview, &graph).await
+            {
+                return response;
+            }
             Json(json!({
                 "spec": spec,
                 "preview": preview,
@@ -11076,6 +16261,16 @@ async fn freeze_agentic_spec(
                 .into_response();
         }
     };
+    // The freeze path recompiles the stored draft, including legacy drafts
+    // that predate the explicit mapping. Reapply the same membership and
+    // coverage checks so an unmapped draft can never be frozen.
+    if let Err(error) = validate_spec_unit_mapping(&frozen, &graph) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error, "code": "AGENTIC_SPEC_INVALID"})),
+        )
+            .into_response();
+    }
     if frozen.spec_sha256 != input.expected_spec_sha256 {
         return agentic_conflict(
             "SPEC_REVISION_CHANGED",
@@ -11083,7 +16278,22 @@ async fn freeze_agentic_spec(
         );
     }
     match app.db.freeze_agentic_spec(&draft.id, &frozen, &graph).await {
-        Ok(spec) => Json(json!({"spec": spec, "frozen": frozen})).into_response(),
+        Ok(spec) => {
+            let context = match agentic_triage_context(&app, &record).await {
+                Ok(context) => context,
+                Err(error) => return api_error(error),
+            };
+            if let Err(error) = try_freeze_approved_plan(&app, &record.id, &context).await {
+                return api_error(error);
+            }
+            let workflow = app
+                .db
+                .workflow_run_for_request(&record.id)
+                .await
+                .ok()
+                .flatten();
+            Json(json!({"spec": spec, "frozen": frozen, "workflow": workflow})).into_response()
+        }
         Err(error) => api_error(error),
     }
 }
@@ -11691,6 +16901,28 @@ async fn agentic_skills(
     }
 }
 
+async fn skill_refresh_status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    match factory_native::planning::skill_refresh::status(&app.db, &now).await {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn run_skill_refresh_pass(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    match factory_native::planning::skill_refresh::run_now(&app.db, &now).await {
+        Ok(report) => Json(json!({"report": report})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 async fn adopt_agentic_skill(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -12285,7 +17517,7 @@ async fn assess_agentic_request(
     let schema = factory_native::model_output::agentic_triage_schema();
     let schema_sha256 = factory_native::model_output::agentic_triage_schema_sha256();
     let system_prompt = format!(
-        "You are the bounded Software Factory Semantic Assessor. Return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. You are read-only: you cannot use tools, write files, grant authority, choose tools or accept work. Determine the request kind, the recommended route, the assurance recommendation, the technology StackProfile, concrete file scope, risk signals, expected work units, knowledge/skill needs and explicit unknowns. Use deterministic evidence where supplied; do not invent a technology or a file. If a value is unknown, leave it empty or record it in unknowns. The StackProfile is advisory; Core applies deterministic route and assurance floors. The request kind must be INFORMATIONAL, AUDIT, CHANGE or REPAIR. Routes are NO_AGENT, DIRECT, DELEGATED, FORMAL_SPEC or REPAIR. Assurance is NONE, STANDARD, ELEVATED or CRITICAL.\n\nJSON Schema:\n{schema}"
+        "You are the bounded Software Factory Semantic Assessor. Return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. You are read-only: you cannot use tools, write files, grant authority, choose tools or accept work. Determine the request kind, the recommended route, the assurance recommendation, the technology StackProfile, concrete file scope, risk signals, expected work units, knowledge/skill needs and explicit unknowns. Use deterministic evidence where supplied. For an existing project, do not invent a technology or a file that is not evidenced. For a greenfield CHANGE whose deterministicStack is empty, you must propose a concrete StackProfile that fits the objective (languages, frameworks, runtimes, package managers, build tools and test frameworks) as an untrusted recommendation; Core validates it but does not select a language for the project. If no responsible selection is possible, leave the stack empty and record the exact missing decision in unknowns so Core asks the Owner instead. If a non-stack value is unknown, leave it empty or record it in unknowns. The StackProfile is advisory; Core applies deterministic route, assurance and stack-selection floors. The request kind must be INFORMATIONAL, AUDIT, CHANGE or REPAIR. Routes are NO_AGENT, DIRECT, DELEGATED, FORMAL_SPEC or REPAIR. Assurance is NONE, STANDARD, ELEVATED or CRITICAL.\n\nJSON Schema:\n{schema}"
     );
     let user_prompt = serde_json::json!({
         "objective": record.objective,
@@ -12318,22 +17550,21 @@ async fn assess_agentic_request(
     })
     .to_string();
     let principal_id = grant.principal_id.clone();
-    let result = match gateway
-        .call(
-            &app.db,
-            factory_native::model_gateway::ModelCallRequest {
-                role: factory_native::db::ModelCallRole::Lead,
-                principal_id: &principal_id,
-                project_id: &record.project_id,
-                objective_id: &record.lead_request_id,
-                scope_id: &record.delegation_id,
-                purpose: "agentic_triage",
-                system_prompt: &system_prompt,
-                user_prompt: &user_prompt,
-                max_output_tokens: 4_096,
-            },
-        )
-        .await
+    let result = match call_lead_model_with_truncation_retry(
+        &gateway,
+        &app.db,
+        &LeadModelCall {
+            principal_id: &principal_id,
+            project_id: &record.project_id,
+            objective_id: &record.lead_request_id,
+            scope_id: &record.delegation_id,
+            purpose: "agentic_triage",
+            system_prompt: &system_prompt,
+            user_prompt: &user_prompt,
+            max_output_tokens: AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS,
+        },
+    )
+    .await
     {
         Ok(result) => result,
         Err(factory_native::model_gateway::ModelGatewayError::Database(error)) => {
@@ -12356,6 +17587,9 @@ async fn assess_agentic_request(
                     .into_response(),
                 other => api_error(other),
             };
+        }
+        Err(error @ factory_native::model_gateway::ModelGatewayError::Truncated(_)) => {
+            return agentic_model_error(error);
         }
         Err(factory_native::model_gateway::ModelGatewayError::Invalid(message)) => {
             return (
@@ -12550,6 +17784,36 @@ async fn agentic_request_detail(
     }
 }
 
+#[derive(Deserialize, Default)]
+struct TraceQuery {
+    limit: Option<usize>,
+}
+
+async fn agentic_request_trace(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<TraceQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    #[cfg(feature = "test-support")]
+    if let Some(response) = wave12_support::trace_intercept(&id).await {
+        return response;
+    }
+    if let Err(error) = app.db.intake_request(&id).await {
+        return api_error(error);
+    }
+    let limit = query
+        .limit
+        .unwrap_or(factory_native::trace::TRACE_EVENT_DEFAULT);
+    match app.db.workflow_trace(&id, limit).await {
+        Ok(view) => Json(view).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 fn internal_operator_headers(app: &App) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -12561,6 +17825,10 @@ fn internal_operator_headers(app: &App) -> HeaderMap {
     headers
 }
 
+/// Record the request-scoped subscription funding admission required by the
+/// assessment/model calls. This is funding evidence only: it never authorizes a
+/// Campaign start, and every start still passes the planning-readiness guard
+/// plus the frozen policy, scope and exact-binding checks.
 async fn ensure_autopilot_subscription_admission(app: &Arc<App>, id: &str) -> Result<(), Error> {
     if app
         .db
@@ -12611,6 +17879,7 @@ async fn autonomous_start_intake(app: &Arc<App>, id: &str) -> Result<(), Error> 
     if context.lead.campaign_id.is_some() {
         return Ok(());
     }
+    ensure_planning_ready_or_error(app, &context.intake).await?;
     let global_reserved = factory_native::db::RESERVED_MATTERS
         .iter()
         .map(|matter| (*matter).to_string())
@@ -12822,6 +18091,9 @@ async fn agentic_scheduler_loop(app: Arc<App>, scheduler: Arc<AgenticScheduler>)
         let scheduler_for_task = Arc::clone(&scheduler);
         tokio::spawn(async move {
             let _permit = permit;
+            // STARTING is scheduler/operation telemetry, not Campaign authority.
+            // A Campaign is created only inside the frozen start transaction
+            // after readiness, policy, scope and exact-binding checks.
             let _ = app_for_task
                 .db
                 .set_agentic_operation_status(&item.request_id, "STARTING")
@@ -12873,6 +18145,9 @@ async fn run_autopilot_inner(app: &Arc<App>, id: &str) -> Result<(), Error> {
                     .into(),
         });
     }
+    // The subscription admission is funding evidence for assessment/provider
+    // calls. It never authorizes a Campaign start; that requires the frozen
+    // readiness guard and the exact start transaction below.
     ensure_autopilot_subscription_admission(app, id).await?;
     let response = assess_intake_request(
         State(Arc::clone(app)),
@@ -12892,6 +18167,9 @@ async fn run_autopilot_inner(app: &Arc<App>, id: &str) -> Result<(), Error> {
         let _ = app.db.set_agentic_operation_status(id, "EXECUTING").await;
         return Ok(());
     }
+    // Re-check immediately before the start call so an incomplete plan becomes
+    // a truthful autopilot blocker instead of a doomed Campaign.
+    ensure_planning_ready_or_error(app, &record).await?;
     autonomous_start_intake(app, id).await?;
     let _ = app.db.set_agentic_operation_status(id, "EXECUTING").await;
     Ok(())
@@ -12958,15 +18236,21 @@ async fn create_intake_request(
     }
     let (principal_id, _) =
         authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let selected_issues = match input.issue_selection() {
+        Ok(selection) => selection,
+        Err(error) => return api_error(error),
+    };
     match app
         .db
-        .create_intake_request(
+        .create_intake_request_with_environment(
             &input.project_id,
             &input.objective,
             input.execution_profile_id.as_deref(),
             input.mode,
             &input.idempotency_key,
             &principal_id,
+            &selected_issues,
+            input.environment_constraints.as_ref(),
         )
         .await
     {
@@ -13263,6 +18547,10 @@ async fn assess_intake_request(
     if let Err(error) = app.db.begin_lead_assessment(&lead.id).await {
         return api_error(error);
     }
+    let greenfield = agentic_stack_for_project(&app, &record.project_id)
+        .await
+        .languages
+        .is_empty();
     let (assessment, proposal) = match factory_native::lead_model::assess(
         &gateway,
         &app.db,
@@ -13274,6 +18562,7 @@ async fn assess_intake_request(
             objective: &lead.objective,
             grant: &grant,
             now: chrono::Utc::now(),
+            greenfield,
         },
     )
     .await
@@ -13617,6 +18906,9 @@ async fn approve_intake_request(
         Ok(binding) => binding,
         Err(error) => return api_error(error),
     };
+    if let Err(response) = ensure_planning_ready(&app, &context.intake).await {
+        return response;
+    }
     let billable = context.mechanism == "MODEL";
     let production = !cfg!(any(test, feature = "test-support"));
     let subscription_admission_id = match input.subscription_admission_id.clone() {
@@ -13733,27 +19025,40 @@ async fn message_intake_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
     Json(input): Json<IntakeMessageRequest>,
 ) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let (message, created) = match app
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let outcome = match app
         .db
-        .append_intake_message(&id, &input.body, &input.idempotency_key)
+        .append_intake_message_or_start_follow_up(
+            &id,
+            &input.body,
+            &input.idempotency_key,
+            &principal_id,
+        )
         .await
     {
         Ok(result) => result,
         Err(error) => return api_error(error),
     };
-    let _ = message;
+    if outcome.created
+        && let Some(follow_up) = outcome.follow_up.as_ref()
+        && follow_up.mode == factory_native::intake::IntakeMode::Autonomous
+    {
+        enqueue_autopilot(&app, &follow_up.id).await;
+    }
     let record = match app.db.intake_request(&id).await {
         Ok(record) => record,
         Err(error) => return api_error(error),
     };
     match intake_request_value(&app, &record, true).await {
         Ok(value) => (
-            if created {
+            if outcome.created {
                 StatusCode::CREATED
             } else {
                 StatusCode::OK
@@ -13854,6 +19159,36 @@ async fn authorize_campaign(
 ) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let campaign = match app.db.campaign(&id).await {
+        Ok(campaign) => campaign,
+        Err(error) => return api_error(error),
+    };
+    let action_spec = match app.db.action(&campaign.action_id).await {
+        Ok(action) => action.spec,
+        Err(error) => return api_error(error),
+    };
+    if action_spec.environment_spec_sha256.is_none() || !action_spec.environment_required {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the Campaign ActionSpec has no frozen environment plan/spec; Core refuses to authorize execution rather than selecting a language image.",
+                "code": "ENVIRONMENT_PLAN_REQUIRED",
+            })),
+        )
+            .into_response();
+    }
+    if let Err(error) = factory_native::db::validate_environment_requirement(&action_spec) {
+        return api_error(error);
+    }
+    match app.db.intake_request_for_campaign(&id).await {
+        Ok(record) => {
+            if let Err(response) = ensure_planning_ready(&app, &record).await {
+                return response;
+            }
+        }
+        Err(Error::NotFound) => {}
+        Err(error) => return api_error(error),
     }
     let authorization = match input.execution_mode.as_str() {
         "FIXTURE" => {
@@ -14001,7 +19336,17 @@ async fn quality_gate(
     }
     match app.db.gate_for_candidate(&id).await {
         Ok(Some(gate)) => {
+            let candidate = match app.db.candidate(&id).await {
+                Ok(candidate) => candidate,
+                Err(error) => return api_error(error),
+            };
             let mut body = serde_json::to_value(&gate).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(object) = body.as_object_mut() {
+                object.insert(
+                    "final_source".into(),
+                    serde_json::to_value(candidate.final_source).unwrap_or(serde_json::Value::Null),
+                );
+            }
             if let Some(repair) = app
                 .db
                 .repair_authorization_for_candidate(&id)
@@ -14022,18 +19367,35 @@ async fn quality_gate(
     }
 }
 
-fn quality_role(app: &App, headers: &HeaderMap) -> Option<QualityRole> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AuthenticatedQuality {
+    role: QualityRole,
+    principal_id: String,
+    reviewer_role: Option<factory_native::planning::ReviewerRole>,
+}
+
+fn quality_identity(app: &App, headers: &HeaderMap) -> Option<AuthenticatedQuality> {
     let token = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))?;
     if constant_time_eq(token.as_bytes(), app.verifier_token.as_bytes()) {
-        Some(QualityRole::Verifier)
-    } else if constant_time_eq(token.as_bytes(), app.reviewer_token.as_bytes()) {
-        Some(QualityRole::Reviewer)
-    } else {
-        None
+        return Some(AuthenticatedQuality {
+            role: QualityRole::Verifier,
+            principal_id: app.verifier_principal.clone(),
+            reviewer_role: None,
+        });
     }
+    let identity = app.reviewer_identities.authenticate(token)?;
+    Some(AuthenticatedQuality {
+        role: QualityRole::Reviewer,
+        principal_id: identity.principal_id().to_owned(),
+        reviewer_role: Some(identity.role()),
+    })
+}
+
+fn quality_role(app: &App, headers: &HeaderMap) -> Option<QualityRole> {
+    quality_identity(app, headers).map(|identity| identity.role)
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -14387,6 +19749,264 @@ mod tests {
     use axum::http::HeaderValue;
     use serde_json::Value;
 
+    #[test]
+    fn stack_selection_prompt_states_the_rationale_bound() {
+        let schema = factory_native::model_output::stack_selection_schema();
+        let prompt = stack_selection_system_prompt(&serde_json::to_string(&schema).unwrap());
+        assert!(prompt.contains("Rationale is required"));
+        assert!(prompt.contains("single sentence"));
+        assert!(prompt.contains("at most 500 characters"));
+        assert_eq!(
+            schema["properties"]["rationale"]["maxLength"],
+            serde_json::json!(500)
+        );
+        assert_eq!(
+            schema["properties"]["rationale"]["minLength"],
+            serde_json::json!(1)
+        );
+    }
+
+    fn test_reviewer_identities() -> factory_native::reviewer_identity::ReviewerIdentitySet {
+        factory_native::reviewer_identity::ReviewerIdentitySet::from_material(vec![
+            (
+                "reviewer-functional-process".into(),
+                factory_native::planning::ReviewerRole::Functional,
+                "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            ),
+            (
+                "reviewer-architecture-process".into(),
+                factory_native::planning::ReviewerRole::Architecture,
+                "reviewer-token-cccccccccccccccccccccccc".into(),
+            ),
+            (
+                "reviewer-code-quality-process".into(),
+                factory_native::planning::ReviewerRole::CodeQuality,
+                "reviewer-token-dddddddddddddddddddddddd".into(),
+            ),
+            (
+                "reviewer-security-process".into(),
+                factory_native::planning::ReviewerRole::Security,
+                "reviewer-token-eeeeeeeeeeeeeeeeeeeeeeee".into(),
+            ),
+            (
+                "reviewer-testing-process".into(),
+                factory_native::planning::ReviewerRole::Testing,
+                "reviewer-token-ffffffffffffffffffffffff".into(),
+            ),
+            (
+                "reviewer-operability-process".into(),
+                factory_native::planning::ReviewerRole::Operability,
+                "reviewer-token-111111111111111111111111".into(),
+            ),
+        ])
+        .unwrap()
+    }
+
+    fn owner_decision(
+        status: &str,
+        resolved_by: Option<&str>,
+        request_id: Option<&str>,
+        project_id: &str,
+    ) -> factory_native::db::AgenticOwnerDecisionRecord {
+        factory_native::db::AgenticOwnerDecisionRecord {
+            id: "decision".into(),
+            project_id: project_id.into(),
+            request_id: request_id.map(str::to_owned),
+            campaign_id: None,
+            matter: "FINDING_REFUTATION".into(),
+            risk: factory_native::lead::RiskClass::R1,
+            status: status.into(),
+            options: vec!["APPROVE_REFUTATION".into()],
+            evidence: serde_json::json!([]),
+            recommendation: "Refute the finding.".into(),
+            deadline: "2099-01-01T00:00:00Z".into(),
+            selected_option: Some("APPROVE_REFUTATION".into()),
+            rationale: Some("The owner approved the refutation.".into()),
+            resolved_by: resolved_by.map(str::to_owned),
+            created_at: "2026-11-09T00:00:00Z".into(),
+            updated_at: "2026-11-09T00:00:00Z".into(),
+            resolved_at: Some("2026-11-09T00:00:00Z".into()),
+        }
+    }
+
+    #[test]
+    fn truncation_retry_doubles_once_and_never_exceeds_the_ceiling() {
+        assert_eq!(agentic_truncation_retry_output_tokens(16_384), Some(32_768));
+        assert_eq!(agentic_truncation_retry_output_tokens(24_000), Some(32_768));
+        assert_eq!(agentic_truncation_retry_output_tokens(32_768), None);
+        assert_eq!(agentic_truncation_retry_output_tokens(0), None);
+        assert_eq!(
+            bounded_agentic_model_error(&"x".repeat(1_000))
+                .chars()
+                .count(),
+            480
+        );
+    }
+
+    #[test]
+    fn planner_repair_is_bounded_and_each_attempt_prompt_is_distinct() {
+        assert_eq!(AGENTIC_PLAN_MAX_ATTEMPTS, 3);
+        let second = planner_repair_instruction(2, "a Core graph error");
+        let third = planner_repair_instruction(3, "a Core graph error");
+        assert_ne!(second, third);
+        assert!(
+            second.contains("The previous WorkGraph was rejected by Core: a Core graph error.")
+        );
+        assert!(second.contains(
+            "If independent units share a write path, add a dependency between them or merge them into one unit."
+        ));
+        assert!(second.contains("Do not change the objective, allowed paths or scope."));
+    }
+
+    #[test]
+    fn participant_plan_readiness_requires_the_full_frozen_reviewer_set() {
+        use factory_native::agentic::{Assurance, ChangeRoute, StackProfile};
+        use factory_native::planning::{PlanningLane, ReviewerPlan, ReviewerRole};
+        use factory_native::review_roles::ReviewerIdentityAssignment;
+
+        let reviewer_plan = ReviewerPlan::for_lane(PlanningLane::FormalSpec, true);
+        assert_eq!(reviewer_plan.required.len(), 6);
+        let assignments = reviewer_plan
+            .required
+            .iter()
+            .enumerate()
+            .map(|(index, role)| ReviewerIdentityAssignment {
+                role: *role,
+                principal_id: format!("reviewer-{index}"),
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+            })
+            .collect::<Vec<_>>();
+        let mut plan = factory_native::agentic::participant_plan(
+            ChangeRoute::FormalSpec,
+            Assurance::Elevated,
+            1,
+            &StackProfile::default(),
+        );
+        plan.reviewer_count = 6;
+        plan.reviewer_roles = reviewer_plan.required.clone();
+        plan.reviewer_assignments = assignments.clone();
+        let plan_json = serde_json::to_string(&plan).unwrap();
+        let readiness = assess_participant_plan(
+            ChangeRoute::FormalSpec,
+            Assurance::Elevated,
+            &reviewer_plan,
+            Some(ParticipantPlanSource {
+                reviewer_count: 6,
+                graph_sha256: Some("graph-sha"),
+                plan_json: &plan_json,
+            }),
+            Some("graph-sha"),
+        );
+        assert!(readiness.ready, "{:?}", readiness.problems);
+        assert_eq!(readiness.required_reviewer_count, 6);
+
+        plan.reviewer_count = 5;
+        plan.reviewer_roles = ReviewerPlan::for_lane(PlanningLane::FormalSpec, false)
+            .required
+            .clone();
+        plan.reviewer_assignments = assignments.into_iter().take(5).collect();
+        if let Some(reviewer) = plan
+            .assignments
+            .iter_mut()
+            .find(|assignment| assignment.role == "Reviewer")
+        {
+            reviewer.count = 5;
+        }
+        let plan_json = serde_json::to_string(&plan).unwrap();
+        let readiness = assess_participant_plan(
+            ChangeRoute::FormalSpec,
+            Assurance::Elevated,
+            &reviewer_plan,
+            Some(ParticipantPlanSource {
+                reviewer_count: 5,
+                graph_sha256: Some("graph-sha"),
+                plan_json: &plan_json,
+            }),
+            Some("graph-sha"),
+        );
+        assert!(!readiness.ready);
+        assert!(readiness.missing_roles.contains(&ReviewerRole::Operability));
+        assert!(
+            readiness
+                .missing_assignments
+                .contains(&ReviewerRole::Operability)
+        );
+    }
+
+    #[test]
+    fn refutation_requires_the_authenticated_owners_approved_decision() {
+        let request = "11111111-1111-4111-8111-111111111111";
+        let project = "project-wp10";
+        assert!(owner_decision_allows_refutation(
+            &owner_decision("APPROVED", Some("device:owner"), Some(request), project),
+            "device:owner",
+            request,
+            project,
+        ));
+        assert!(owner_decision_allows_refutation(
+            &owner_decision("APPROVED", Some("device:owner"), None, project),
+            "device:owner",
+            request,
+            project,
+        ));
+        // The owner-decision schema never stores RESOLVED; accepting only
+        // APPROVED fixes the previously unreachable refutation path.
+        assert!(!owner_decision_allows_refutation(
+            &owner_decision("RESOLVED", Some("device:owner"), Some(request), project),
+            "device:owner",
+            request,
+            project,
+        ));
+        assert!(!owner_decision_allows_refutation(
+            &owner_decision("APPROVED", Some("device:other"), Some(request), project),
+            "device:owner",
+            request,
+            project,
+        ));
+        assert!(!owner_decision_allows_refutation(
+            &owner_decision("APPROVED", Some("device:owner"), None, "other-project"),
+            "device:owner",
+            request,
+            project,
+        ));
+
+        // An approval for an unrelated matter must not close a finding.
+        let mut unrelated_matter =
+            owner_decision("APPROVED", Some("device:owner"), Some(request), project);
+        unrelated_matter.matter = "DEPLOYMENT".into();
+        assert!(!owner_decision_allows_refutation(
+            &unrelated_matter,
+            "device:owner",
+            request,
+            project,
+        ));
+
+        // The selected option must be the exact refutation option, not merely
+        // another approved option on the same decision.
+        let mut unrelated_option =
+            owner_decision("APPROVED", Some("device:owner"), Some(request), project);
+        unrelated_option.selected_option = Some("APPROVE_DEPLOYMENT".into());
+        assert!(!owner_decision_allows_refutation(
+            &unrelated_option,
+            "device:owner",
+            request,
+            project,
+        ));
+
+        // A row that claims the option was selected without listing it in the
+        // resolved option set is not a trustworthy owner decision.
+        let mut missing_option =
+            owner_decision("APPROVED", Some("device:owner"), Some(request), project);
+        missing_option.options.clear();
+        assert!(!owner_decision_allows_refutation(
+            &missing_option,
+            "device:owner",
+            request,
+            project,
+        ));
+    }
+
     #[tokio::test]
     async fn subscription_funding_readiness_is_authenticated_and_never_claims_verification() {
         use tower::ServiceExt;
@@ -14455,6 +20075,134 @@ mod tests {
             .unwrap();
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
 
+        app.db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn openspec_projection_route_requires_operator_authorization_and_bounds() {
+        use tower::ServiceExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-openspec-projection-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&path).await;
+        for router in [api_router(app.clone()), office_api_router(app.clone())] {
+            let unauthenticated = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri("/agentic/requests/missing/openspec")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+            let missing = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri("/agentic/requests/missing/openspec")
+                        .header("authorization", "Bearer operator-token")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+            let oversized = format!("/agentic/requests/{}/openspec", "a".repeat(201));
+            let bounded = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri(oversized)
+                        .header("authorization", "Bearer operator-token")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(bounded.status(), StatusCode::BAD_REQUEST);
+            let body: Value = serde_json::from_slice(
+                &axum::body::to_bytes(bounded.into_body(), 4096)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(body["code"], "REQUEST_ID_INVALID");
+
+            let archive_body = serde_json::to_vec(&json!({
+                "changeId": "missing",
+                "revision": 1,
+                "artifactContentSha256": "a".repeat(64),
+            }))
+            .unwrap();
+            let archive_unauthenticated = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/agentic/requests/missing/openspec/archive")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(archive_body.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(archive_unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+            let archive_missing = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/agentic/requests/missing/openspec/archive")
+                        .header("content-type", "application/json")
+                        .header("authorization", "Bearer operator-token")
+                        .body(axum::body::Body::from(archive_body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(archive_missing.status(), StatusCode::NOT_FOUND);
+
+            let archive_oversized =
+                format!("/agentic/requests/{}/openspec/archive", "a".repeat(201));
+            let archive_bounded = router
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(archive_oversized)
+                        .header("content-type", "application/json")
+                        .header("authorization", "Bearer operator-token")
+                        .body(axum::body::Body::from(
+                            serde_json::to_vec(&json!({
+                                "changeId": "missing",
+                                "revision": 1,
+                                "artifactContentSha256": "a".repeat(64),
+                            }))
+                            .unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(archive_bounded.status(), StatusCode::BAD_REQUEST);
+            let body: Value = serde_json::from_slice(
+                &axum::body::to_bytes(archive_bounded.into_body(), 4096)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(body["code"], "REQUEST_ID_INVALID");
+        }
         app.db.close().await;
         let _ = std::fs::remove_file(path);
     }
@@ -14683,6 +20431,11 @@ mod tests {
         assert!(request_host_allowed(&headers, &trusted));
         assert!(origin_allowed("http://127.0.0.1:8893", &headers, &trusted));
         assert!(!origin_allowed("http://127.0.0.1:9999", &headers, &trusted));
+
+        headers.insert(header::HOST, HeaderValue::from_static("core-control:8765"));
+        assert!(request_host_allowed(&headers, &trusted));
+        headers.insert(header::HOST, HeaderValue::from_static("core:8765"));
+        assert!(!request_host_allowed(&headers, &trusted));
     }
 
     #[tokio::test]
@@ -14703,9 +20456,8 @@ mod tests {
             operator_token: "operator".into(),
             worker_bootstrap_token: "bootstrap".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -14721,6 +20473,9 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            environment_builder: std::sync::RwLock::new(
+                factory_native::planning::environment::unavailable_environment_builder(),
+            ),
             autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         };
         let mut headers = HeaderMap::new();
@@ -14802,9 +20557,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -14820,6 +20574,9 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            environment_builder: std::sync::RwLock::new(
+                factory_native::planning::environment::unavailable_environment_builder(),
+            ),
             autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
@@ -15017,9 +20774,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -15035,6 +20791,9 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            environment_builder: std::sync::RwLock::new(
+                factory_native::planning::environment::unavailable_environment_builder(),
+            ),
             autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
@@ -15211,9 +20970,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -15229,6 +20987,9 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            environment_builder: std::sync::RwLock::new(
+                factory_native::planning::environment::unavailable_environment_builder(),
+            ),
             autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(Arc::clone(&app));
@@ -15378,6 +21139,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn quality_receipt_rejects_caller_selected_principal_or_role() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-receipt-identity-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&path).await;
+        let router = build_router(app);
+        let body = |principal: &str, role: &str| {
+            serde_json::json!({
+                "candidate_id": "candidate-1",
+                "receipt_id": "reviewer-receipt-identity-test",
+                "principal_id": principal,
+                "reviewerRole": role,
+                "actionSpecSha256": "a".repeat(64),
+                "commitSha": "b".repeat(40),
+                "treeSha": "c".repeat(40),
+                "result": "PASS",
+                "evidence": "EXECUTED",
+                "findings": [],
+            })
+            .to_string()
+        };
+        let wrong_principal = axum::http::Request::builder()
+            .method("POST")
+            .uri("/quality/receipts")
+            .header("content-type", "application/json")
+            .header(
+                "authorization",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .body(axum::body::Body::from(body(
+                "caller-chosen-principal",
+                "FUNCTIONAL",
+            )))
+            .unwrap();
+        let response = router.clone().oneshot(wrong_principal).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let wrong_role = axum::http::Request::builder()
+            .method("POST")
+            .uri("/quality/receipts")
+            .header("content-type", "application/json")
+            .header(
+                "authorization",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .body(axum::body::Body::from(body(
+                "reviewer-functional-process",
+                "SECURITY",
+            )))
+            .unwrap();
+        let response = router.oneshot(wrong_role).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn quality_routes_reject_missing_or_cross_role_credentials() {
         use tower::ServiceExt;
         let path = std::env::temp_dir().join(format!(
@@ -15389,9 +21207,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -15407,6 +21224,9 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            environment_builder: std::sync::RwLock::new(
+                factory_native::planning::environment::unavailable_environment_builder(),
+            ),
             autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
@@ -15454,22 +21274,30 @@ mod tests {
         path: &Path,
         master_key: Option<factory_native::provider_secrets::ProviderSecretKey>,
     ) -> Arc<App> {
+        test_app_with_master_key_and_options(path, master_key, false, None).await
+    }
+
+    async fn test_app_with_master_key_and_options(
+        path: &Path,
+        master_key: Option<factory_native::provider_secrets::ProviderSecretKey>,
+        lead_autonomous_start: bool,
+        projects_root: Option<PathBuf>,
+    ) -> Arc<App> {
         Arc::new(App {
             db: Database::open(path).await.unwrap(),
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
-            lead_autonomous_start: false,
+            lead_autonomous_start,
             model_gateway: None,
             master_key,
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
-            projects_root: None,
+            projects_root,
             allow_insecure_git: false,
             setup: Mutex::new(SetupState {
                 failures: 0,
@@ -15477,6 +21305,9 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            environment_builder: std::sync::RwLock::new(
+                factory_native::planning::environment::unavailable_environment_builder(),
+            ),
             autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         })
     }
@@ -15508,9 +21339,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -15526,6 +21356,9 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            environment_builder: std::sync::RwLock::new(
+                factory_native::planning::environment::unavailable_environment_builder(),
+            ),
             autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app.clone());
@@ -15953,6 +21786,7 @@ mod tests {
             "/core-api/lead/requests/missing",
             "/core-api/intake/requests",
             "/core-api/intake/requests/missing",
+            "/core-api/agentic/requests/missing/trace",
             "/core-api/candidates",
             "/core-api/workers",
         ];
@@ -16673,6 +22507,8 @@ mod tests {
                 "{}".to_string(),
             ),
             ("GET", "/agentic/skills", "{}".to_string()),
+            ("GET", "/agentic/skills/refresh", "{}".to_string()),
+            ("POST", "/agentic/skills/refresh", "{}".to_string()),
             (
                 "POST",
                 "/agentic/skills/skill/uses",
@@ -16709,6 +22545,43 @@ mod tests {
             );
         }
         let request = axum::http::Request::builder()
+            .uri("/agentic/skills/refresh")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let status: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(status["intervalSeconds"], 86_400);
+        assert!(status["packs"].as_array().unwrap().len() <= 256);
+        assert!(status["due"].as_u64().unwrap() <= 256);
+        assert!(status["blocked"].as_u64().unwrap() <= 256);
+        assert!(status["projectsChecked"].as_u64().unwrap() <= 64);
+        assert_eq!(status["projectsSkipped"], 0);
+        assert_eq!(status["projectsChecked"], status["projectTotal"]);
+
+        let request = axum::http::Request::builder()
+            .uri("/agentic/skills/refresh")
+            .method("POST")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let report: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(report["report"]["checked"].as_u64().unwrap() <= 256);
+        assert!(report["report"]["projectsChecked"].as_u64().unwrap() <= 64);
+        assert_eq!(report["report"]["projectsSkipped"], 0);
+        assert!(report["report"]["refreshed"].as_array().unwrap().len() <= 256);
+        assert!(report["report"]["blocked"].as_array().unwrap().len() <= 256);
+
+        let request = axum::http::Request::builder()
             .uri("/agentic/requests/missing/spec/freeze")
             .method("POST")
             .header("authorization", "Bearer operator-token")
@@ -16735,9 +22608,8 @@ mod tests {
             operator_token: "operator".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -16753,6 +22625,9 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            environment_builder: std::sync::RwLock::new(
+                factory_native::planning::environment::unavailable_environment_builder(),
+            ),
             autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         };
         let mut headers = HeaderMap::new();
@@ -16789,9 +22664,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -16807,6 +22681,9 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            environment_builder: std::sync::RwLock::new(
+                factory_native::planning::environment::unavailable_environment_builder(),
+            ),
             autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(Arc::clone(&app));
@@ -16907,6 +22784,153 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn model_call_resolution_endpoint_is_owner_only_reasoned_and_audited() {
+        use tower::ServiceExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-model-call-resolution-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&path).await;
+        let pool = sqlx_sqlite::SqlitePool::connect_with(
+            sqlx_sqlite::SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(false),
+        )
+        .await
+        .unwrap();
+        let now = chrono::Utc::now();
+        sqlx::query::query(
+            "INSERT INTO model_call_reservations
+             (reservation_id,role,principal_id,project_id,objective_id,scope_id,
+              provider,model,purpose,request_sha256,max_input_tokens,
+              max_output_tokens,max_total_tokens,max_cost_micros,input_tokens,
+              output_tokens,total_tokens,cost_micros,usage_known,response_text,
+              state,error,expires_at_ms,created_at,updated_at,ledger_reservation_id,
+              dispatched_at_ms,provider_request_id)
+             VALUES ('model-call-http','EVALUATION','evaluator','project-http',
+                     'objective-http','scope-http','opencode-go',
+                     'deepseek-v4.1-flash','evaluation',?1,100,100,200,200,0,0,0,
+                     0,0,NULL,'AMBIGUOUS','unresolved',?2,?3,?3,NULL,NULL,NULL)",
+        )
+        .bind("a".repeat(64))
+        .bind(now.timestamp_millis() + 60_000)
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let router = build_router(Arc::clone(&app));
+        async fn resolve(
+            router: &axum::Router,
+            authorization: Option<&str>,
+            reason: &str,
+        ) -> axum::response::Response {
+            let mut request = axum::http::Request::builder()
+                .method("POST")
+                .uri("/model/calls/model-call-http/resolve")
+                .header("content-type", "application/json");
+            if let Some(authorization) = authorization {
+                request = request.header("authorization", format!("Bearer {authorization}"));
+            }
+            router
+                .clone()
+                .oneshot(
+                    request
+                        .body(axum::body::Body::from(
+                            serde_json::json!({
+                                "actor": "operator",
+                                "reason": reason,
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+
+        assert_eq!(
+            resolve(&router, None, "owner reason").await.status(),
+            StatusCode::UNAUTHORIZED,
+            "an unauthenticated caller must not resolve a model reservation"
+        );
+        assert_eq!(
+            resolve(
+                &router,
+                Some("bootstrap-bootstrap-bootstrap-1234"),
+                "owner reason"
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED,
+            "a non-owner role token must not resolve a model reservation"
+        );
+        assert_eq!(
+            resolve(&router, Some("operator-token"), "  ")
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "a blank reason must be refused"
+        );
+        let (count, bound) = app.db.unresolved_model_call_budget().await.unwrap();
+        assert_eq!((count, bound), (1, 200));
+        assert!(
+            !app.db
+                .events()
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "model.call_resolved"),
+            "a refused request must not release the budget or emit an audit event"
+        );
+
+        assert_eq!(
+            resolve(
+                &router,
+                Some("operator-token"),
+                "provider aborted before usage"
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(app.db.unresolved_model_call_budget().await.unwrap(), (0, 0));
+        let records = app.db.model_calls(10).await.unwrap();
+        let record = records
+            .iter()
+            .find(|record| record.reservation_id == "model-call-http")
+            .expect("model call record");
+        assert_eq!(record.state, "RELEASED");
+        assert!(record.error.contains("operator"));
+        let audit = app
+            .db
+            .events()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|event| {
+                event.kind == "model.call_resolved"
+                    && event.subject_id == "objective-http"
+                    && event.detail.contains("model-call-http")
+            })
+            .expect("model call resolution audit event");
+        assert!(audit.detail.contains("actor=operator"));
+        assert!(audit.detail.contains("provider aborted before usage"));
+        assert_eq!(
+            resolve(&router, Some("operator-token"), "again")
+                .await
+                .status(),
+            StatusCode::CONFLICT
+        );
+
+        drop(router);
+        app.db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn project_files_api_browses_registered_repository_with_bounds() {
         use tower::ServiceExt;
 
@@ -16951,9 +22975,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -16969,6 +22992,9 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            environment_builder: std::sync::RwLock::new(
+                factory_native::planning::environment::unavailable_environment_builder(),
+            ),
             autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
@@ -17138,6 +23164,7 @@ mod tests {
                 factory_native::db::ActionSpecInput {
                     allowed_paths: &[],
                     checks: &[],
+                    dependency_plan: None,
                 },
             )
             .await
@@ -17188,9 +23215,8 @@ mod tests {
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -17206,6 +23232,9 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            environment_builder: std::sync::RwLock::new(
+                factory_native::planning::environment::unavailable_environment_builder(),
+            ),
             autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app);
@@ -17777,6 +23806,8 @@ mod tests {
                 command: vec!["cargo".into(), "fmt".into(), "--check".into()],
                 expect_exit: 0,
                 timeout_secs: 60,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "build".into(),
@@ -17785,6 +23816,8 @@ mod tests {
                 command: vec!["cargo".into(), "build".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "test".into(),
@@ -17793,6 +23826,8 @@ mod tests {
                 command: vec!["cargo".into(), "test".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "functional".into(),
@@ -17801,6 +23836,8 @@ mod tests {
                 command: vec!["cargo".into(), "run".into()],
                 expect_exit: 0,
                 timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
             SpecCheck {
                 id: "negative".into(),
@@ -17809,6 +23846,8 @@ mod tests {
                 command: vec!["cargo".into(), "run".into(), "--bad".into()],
                 expect_exit: 1,
                 timeout_secs: 60,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             },
         ]
     }
@@ -17835,6 +23874,7 @@ mod tests {
 
     async fn create_ready_approval_lead(
         db: &Database,
+        path: &std::path::Path,
         project_id: &str,
         config_hash: &str,
         grant: &factory_native::lead::StandingDelegationV2,
@@ -17852,10 +23892,24 @@ mod tests {
                 factory_native::db::ActionSpecInput {
                     allowed_paths: &allowed,
                     checks: &checks,
+                    dependency_plan: None,
                 },
             )
             .await
             .unwrap();
+        let config = db.project_config(project_id).await.unwrap();
+        seed_core_test_environment(
+            db,
+            path,
+            &action.id,
+            project_id,
+            &config.base_commit,
+            "R0",
+            None,
+        )
+        .await
+        .unwrap();
+        let action = db.action(&action.id).await.unwrap();
         let (request, _) = db
             .create_lead_request(
                 project_id,
@@ -18018,20 +24072,31 @@ mod tests {
         db.create_standing_delegation_v2(&grant, "approval-grant-key")
             .await
             .unwrap();
-        let (request_id, expected) =
-            create_ready_approval_lead(&db, &project.id, &config.config_hash, &grant, "first")
-                .await;
-        let (withdrawn_request, _) =
-            create_ready_approval_lead(&db, &project.id, &config.config_hash, &grant, "second")
-                .await;
+        let (request_id, expected) = create_ready_approval_lead(
+            &db,
+            &path,
+            &project.id,
+            &config.config_hash,
+            &grant,
+            "first",
+        )
+        .await;
+        let (withdrawn_request, _) = create_ready_approval_lead(
+            &db,
+            &path,
+            &project.id,
+            &config.config_hash,
+            &grant,
+            "second",
+        )
+        .await;
         let app = Arc::new(App {
             db,
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             verifier_principal: "verifier-process".into(),
-            reviewer_principal: "reviewer-process".into(),
+            reviewer_identities: test_reviewer_identities(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
@@ -18047,6 +24112,9 @@ mod tests {
             }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
+            environment_builder: std::sync::RwLock::new(
+                factory_native::planning::environment::unavailable_environment_builder(),
+            ),
             autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         });
         let router = build_router(app.clone());
@@ -18441,6 +24509,209 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    #[derive(Clone)]
+    struct CoreTestEnvironmentBinding {
+        plan_id: String,
+        spec_id: String,
+        builder_image: String,
+        builder_image_digest: String,
+    }
+
+    fn core_test_environment_binding(action_id: &str) -> CoreTestEnvironmentBinding {
+        CoreTestEnvironmentBinding {
+            plan_id: format!("test-plan-{action_id}"),
+            spec_id: format!("test-spec-{action_id}"),
+            builder_image: "fixture/environment-builder".into(),
+            builder_image_digest: format!("sha256:{}", "a".repeat(64)),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn seed_core_test_environment(
+        db: &Database,
+        path: &std::path::Path,
+        action_id: &str,
+        project_id: &str,
+        base_commit: &str,
+        risk_class: &str,
+        request_id: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use factory_native::planning::environment::{
+            ENVIRONMENT_POLICY_REVISION, ENVIRONMENT_SCHEMA_VERSION, EnvironmentBuildReceipt,
+            EnvironmentBuilderDescriptor, EnvironmentBuilderStatus, EnvironmentFile,
+            EnvironmentFileOrigin, EnvironmentNixPolicy, EnvironmentPlan, EnvironmentPlanSource,
+            EnvironmentPlanStatus, EnvironmentSpec, EnvironmentSpecStatus, ExistingEnvironmentKind,
+            LicenseInventory, NetworkPolicy, ProjectConventions, ResourceLimits,
+            SandboxAttestation, SandboxPolicy, sha256_hex,
+        };
+        if db.action(action_id).await.is_err()
+            || db.environment_spec_for_action(action_id).await.is_ok()
+        {
+            return Ok(());
+        }
+        let binding = core_test_environment_binding(action_id);
+        let mut conventions = ProjectConventions {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            project_id: project_id.into(),
+            base_commit: base_commit.into(),
+            conventions_sha256: String::new(),
+            scanned_at: chrono::Utc::now().to_rfc3339(),
+            files: Vec::new(),
+            commands: Vec::new(),
+            conflicts: Vec::new(),
+            truncated: false,
+            skipped_entries: 0,
+            provenance: "test-fixture".into(),
+            existing_environment: ExistingEnvironmentKind::None,
+        };
+        conventions.conventions_sha256 = conventions.compute_sha256();
+        let mut inventory = LicenseInventory::default();
+        inventory.refresh_hashes(&binding.plan_id);
+        let builder = EnvironmentBuilderDescriptor {
+            image: binding.builder_image.clone(),
+            digest: binding.builder_image_digest.clone(),
+            platform: "x86_64-linux".into(),
+            policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+            default_nixpkgs: "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
+            status: EnvironmentBuilderStatus::Ready,
+        };
+        let mut plan = EnvironmentPlan {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            plan_id: binding.plan_id.clone(),
+            project_id: project_id.into(),
+            request_id: request_id.unwrap_or(action_id).into(),
+            action_id: action_id.into(),
+            campaign_id: None,
+            base_commit: base_commit.into(),
+            conventions_sha256: conventions.conventions_sha256.clone(),
+            conventions,
+            risk_class: risk_class.into(),
+            status: EnvironmentPlanStatus::Frozen,
+            revision: 1,
+            source: EnvironmentPlanSource::ProjectCommitted,
+            toolchains: Vec::new(),
+            packages: Vec::new(),
+            services: Vec::new(),
+            commands: Default::default(),
+            browsers: Vec::new(),
+            files: vec![EnvironmentFile {
+                path: "flake.lock".into(),
+                sha256: "a".repeat(64),
+                origin: EnvironmentFileOrigin::Project,
+                content: None,
+            }],
+            nix: EnvironmentNixPolicy {
+                nixpkgs: "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
+                inputs: Vec::new(),
+                allow_unfree: false,
+                sandbox: SandboxPolicy::default(),
+            },
+            resources: ResourceLimits::default(),
+            network: NetworkPolicy::default(),
+            license_inventory: inventory,
+            license_inventory_sha256: String::new(),
+            builder,
+            resolution: None,
+            lead_review: None,
+            blockers: Vec::new(),
+            commands_rationale: "test fixture".into(),
+            plan_sha256: String::new(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        plan.license_inventory_sha256 = plan.license_inventory.inventory_sha256.clone();
+        plan.refresh_hash();
+        db.save_environment_plan(&plan).await?;
+        // Insert a test review row directly; it is fixture provenance, not a
+        // production Lead model decision.
+        use sqlx::connection::Connection as SqlxConnection;
+        use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection};
+        let options = SqliteConnectOptions::new().filename(path);
+        let mut connection = SqliteConnection::connect_with(&options).await?;
+        let review_id = format!("test-review-{action_id}");
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO environment_plan_reviews
+             (id,request_id,action_id,plan_id,plan_sha256,plan_revision,risk_class,
+              reviewer_role,principal_id,recorded_by,decision,rationale,
+              constraints_json,evidence_json,model_call_json,decided_at,created_at)
+             VALUES (?1,?2,?3,?4,?5,1,?6,'LEAD',?7,'test-fixture','APPROVED',
+                     'fixture review','[]','[]',?8,?9,?9)",
+        )
+        .bind(&review_id)
+        .bind(request_id)
+        .bind(action_id)
+        .bind(&plan.plan_id)
+        .bind(&plan.plan_sha256)
+        .bind(risk_class)
+        .bind(format!("lead:test-{action_id}"))
+        .bind(r#"{"mechanism":"MODEL","provider":"fixture","model":"fixture","reservationId":"test-reservation","requestSha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","inputTokens":0,"outputTokens":0,"totalTokens":0,"costMicros":0,"usageKnown":false}"#)
+        .bind(&now)
+        .execute(&mut connection)
+        .await?;
+        drop(connection);
+        let mut spec = EnvironmentSpec {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            spec_id: binding.spec_id,
+            spec_sha256: String::new(),
+            project_id: project_id.into(),
+            request_id: request_id.unwrap_or(action_id).into(),
+            action_id: action_id.into(),
+            campaign_id: None,
+            base_commit: base_commit.into(),
+            plan_id: plan.plan_id.clone(),
+            plan_sha256: plan.plan_sha256.clone(),
+            conventions_sha256: plan.conventions_sha256.clone(),
+            review_id,
+            platform: "x86_64-linux".into(),
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            flake_lock_sha256: "a".repeat(64),
+            devenv_lock_sha256: String::new(),
+            license_inventory_sha256: plan.license_inventory.inventory_sha256.clone(),
+            sbom_sha256: plan.license_inventory.sbom_sha256.clone(),
+            builder_image: plan.builder.image.clone(),
+            builder_image_digest: plan.builder.digest.clone(),
+            resource_policy: plan.resources,
+            network_policy: plan.network.clone(),
+            status: EnvironmentSpecStatus::Frozen,
+            frozen_at: now.clone(),
+        };
+        spec.spec_sha256 = spec.compute_sha256();
+        db.save_environment_spec(&spec).await?;
+        let receipt = EnvironmentBuildReceipt {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            receipt_id: format!("test-receipt-{action_id}"),
+            spec_sha256: spec.spec_sha256.clone(),
+            platform: spec.platform.clone(),
+            builder_image: spec.builder_image.clone(),
+            builder_image_digest: spec.builder_image_digest.clone(),
+            builder_policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+            status: EnvironmentBuilderStatus::Succeeded,
+            store_path: "/nix/store/test".into(),
+            output_sha256: "b".repeat(64),
+            sbom_sha256: spec.sbom_sha256.clone(),
+            log_ref: "test-fixture".into(),
+            sandbox_attestation: SandboxAttestation {
+                non_root: true,
+                no_secrets: true,
+                no_host_network: true,
+                no_host_socket: true,
+                no_host_mount: true,
+                sandbox: true,
+                impure: false,
+                bounded_resources: true,
+            },
+            blockers: Vec::new(),
+            duration_ms: 0,
+            created_at: now,
+        };
+        db.save_environment_build_receipt(&receipt).await?;
+        db.set_action_environment_binding(action_id, &plan, &spec)
+            .await?;
+        let _ = sha256_hex(b"");
+        Ok(())
+    }
+
     mod intake_api {
         use super::*;
         use factory_native::db::{NewProjectConfig, ProviderSettingsWrite};
@@ -18510,6 +24781,8 @@ mod tests {
                     command: vec!["cargo".into(), "build".into()],
                     expect_exit: 0,
                     timeout_secs: 120,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
                 SpecCheck {
                     id: "test".into(),
@@ -18518,6 +24791,8 @@ mod tests {
                     command: vec!["cargo".into(), "test".into()],
                     expect_exit: 0,
                     timeout_secs: 120,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
                 SpecCheck {
                     id: "functional".into(),
@@ -18526,6 +24801,8 @@ mod tests {
                     command: vec!["cargo".into(), "test".into(), "intake".into()],
                     expect_exit: 0,
                     timeout_secs: 120,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
                 SpecCheck {
                     id: "negative".into(),
@@ -18534,6 +24811,8 @@ mod tests {
                     command: vec!["cargo".into(), "test".into(), "--bad".into()],
                     expect_exit: 1,
                     timeout_secs: 60,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
             ]
         }
@@ -18558,7 +24837,17 @@ mod tests {
                 );
             }
             std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
-            for arguments in [vec!["add", "seed.txt"], vec!["commit", "-qm", "seed"]] {
+            std::fs::write(
+                repository.join("devenv.nix"),
+                "{ pkgs, ... }: { packages = [ ]; }\n",
+            )
+            .unwrap();
+            std::fs::write(
+                repository.join("devenv.lock"),
+                "{\"nodes\":{\"nixpkgs\":{\"locked\":{\"owner\":\"NixOS\",\"repo\":\"nixpkgs\",\"rev\":\"1111111111111111111111111111111111111111\"}}}}\n",
+            )
+            .unwrap();
+            for arguments in [vec!["add", "--all"], vec!["commit", "-qm", "seed"]] {
                 assert!(
                     std::process::Command::new("git")
                         .arg("-C")
@@ -18598,12 +24887,35 @@ mod tests {
             opencode_base_url: &str,
             profile_content: factory_native::execution_profile::ExecutionProfileContent,
         ) -> Fixture {
+            setup_with_projects_root(
+                master_key,
+                opencode_go_base_url,
+                opencode_base_url,
+                profile_content,
+                None,
+            )
+            .await
+        }
+
+        async fn setup_with_projects_root(
+            master_key: Option<&factory_native::provider_secrets::ProviderSecretKey>,
+            opencode_go_base_url: &str,
+            opencode_base_url: &str,
+            profile_content: factory_native::execution_profile::ExecutionProfileContent,
+            projects_root: Option<PathBuf>,
+        ) -> Fixture {
             let path = std::env::temp_dir().join(format!(
                 "factory-core-intake-{}.sqlite",
                 uuid::Uuid::new_v4()
             ));
             let repository = git_repository();
-            let app = test_app_with_master_key(&path, master_key.cloned()).await;
+            let app = test_app_with_master_key_and_options(
+                &path,
+                master_key.cloned(),
+                false,
+                projects_root,
+            )
+            .await;
             let project = app
                 .db
                 .register_project(&repository, "intake-project-key")
@@ -18764,6 +25076,66 @@ mod tests {
             .await
         }
 
+        async fn enable_policy_for_project(
+            fixture: &Fixture,
+            project_id: &str,
+            project_config_hash: &str,
+            key: &str,
+        ) -> (StatusCode, Value) {
+            send(
+                &fixture.router,
+                "POST",
+                &format!("/projects/{project_id}/execution-policy"),
+                Some(json!({
+                    "execution_profile_id": fixture.profile.id,
+                    "expected_revision": fixture.profile.revision,
+                    "expected_revision_hash": fixture.profile.content_hash,
+                    "project_config_hash": project_config_hash,
+                    "acknowledge": true,
+                    "idempotency_key": key,
+                })),
+            )
+            .await
+        }
+
+        async fn enable_autonomous_policy(
+            fixture: &Fixture,
+        ) -> (
+            StatusCode,
+            Value,
+            factory_native::db::ExecutionProfileRecord,
+        ) {
+            let mut content = profile_content();
+            content.name = "Autonomous R0".into();
+            content.auto_start = AutoStartPolicy {
+                enabled: true,
+                risk_classes: vec![factory_native::lead::RiskClass::R0],
+            };
+            let profile = fixture
+                .app
+                .db
+                .create_execution_profile(&content, "owner")
+                .await
+                .unwrap();
+            let result = send(
+                &fixture.router,
+                "POST",
+                &format!("/projects/{}/execution-policy", fixture.project_id),
+                Some(json!({
+                    "execution_profile_id": profile.id,
+                    "expected_revision": profile.revision,
+                    "expected_revision_hash": profile.content_hash,
+                    "project_config_hash": fixture.config.config_hash,
+                    "autonomous": true,
+                    "subscription_confirmed": true,
+                    "acknowledge": true,
+                    "idempotency_key": "autonomous-policy-api-key",
+                })),
+            )
+            .await;
+            (result.0, result.1, profile)
+        }
+
         async fn create_intake(fixture: &Fixture, key: &str) -> (StatusCode, Value) {
             create_intake_with_amount(fixture, key, None).await
         }
@@ -18790,6 +25162,24 @@ mod tests {
             fixture: &Fixture,
             intake_id: &str,
             mechanism: &str,
+        ) -> factory_native::db::IntakeApprovalContext {
+            fixture_plan_with_seed(fixture, intake_id, mechanism, true).await
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn fixture_plan_unseeded(
+            fixture: &Fixture,
+            intake_id: &str,
+            mechanism: &str,
+        ) -> factory_native::db::IntakeApprovalContext {
+            fixture_plan_with_seed(fixture, intake_id, mechanism, false).await
+        }
+
+        async fn fixture_plan_with_seed(
+            fixture: &Fixture,
+            intake_id: &str,
+            mechanism: &str,
+            seed_environment: bool,
         ) -> factory_native::db::IntakeApprovalContext {
             let request = fixture.app.db.intake_request(intake_id).await.unwrap();
             let lead = fixture
@@ -18832,6 +25222,15 @@ mod tests {
                 model: grant.route.model.clone(),
                 allowed_paths: config.allowed_paths.clone(),
                 checks: checks(),
+                dependency_plan: None,
+                dependencies_required: false,
+                environment_plan_id: None,
+                environment_plan_sha256: None,
+                environment_spec_id: None,
+                environment_spec_sha256: None,
+                environment_builder_image: None,
+                environment_builder_image_digest: None,
+                environment_required: false,
             };
             let (assessment, proposal) = factory_native::lead::fixture_lead_assessment(
                 &lead.id,
@@ -18870,6 +25269,19 @@ mod tests {
                 .freeze_lead_plan_to_ready(&lead.id, "api-fixture-f")
                 .await
                 .unwrap();
+            if seed_environment {
+                seed_core_test_environment(
+                    &fixture.app.db,
+                    &fixture.path,
+                    &lead.action_id,
+                    &lead.project_id,
+                    &config.base_commit,
+                    "R0",
+                    Some(&request.id),
+                )
+                .await
+                .unwrap();
+            }
             fixture
                 .app
                 .db
@@ -18878,6 +25290,337 @@ mod tests {
                 .unwrap()
         }
 
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum ParticipantSeed {
+            None,
+            Matching,
+            Partial,
+        }
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum PlanReviewSeed {
+            AutoApproved,
+            OwnerApproved,
+            Pending,
+            ChangesRequested,
+            Rejected,
+        }
+
+        async fn seed_complete_planning(
+            fixture: &Fixture,
+            intake_id: &str,
+            participant: ParticipantSeed,
+        ) -> factory_native::agentic::ValidatedWorkGraph {
+            seed_complete_planning_with_review(
+                fixture,
+                intake_id,
+                participant,
+                PlanReviewSeed::AutoApproved,
+            )
+            .await
+        }
+
+        async fn seed_complete_planning_with_review(
+            fixture: &Fixture,
+            intake_id: &str,
+            participant: ParticipantSeed,
+            review_seed: PlanReviewSeed,
+        ) -> factory_native::agentic::ValidatedWorkGraph {
+            let request = fixture.app.db.intake_request(intake_id).await.unwrap();
+            if fixture
+                .app
+                .db
+                .environment_spec_for_action(&request.action_id)
+                .await
+                .is_err()
+            {
+                let config = fixture
+                    .app
+                    .db
+                    .project_config(&request.project_id)
+                    .await
+                    .unwrap();
+                seed_core_test_environment(
+                    &fixture.app.db,
+                    &fixture.path,
+                    &request.action_id,
+                    &request.project_id,
+                    &config.base_commit,
+                    "R0",
+                    Some(&request.id),
+                )
+                .await
+                .unwrap();
+            }
+            let digest = "a".repeat(64);
+            let graph = match fixture.app.db.agentic_work_graph(&request.id).await {
+                Ok(record) => serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
+                    &record.graph_json,
+                )
+                .unwrap(),
+                Err(Error::NotFound) => {
+                    let config = fixture
+                        .app
+                        .db
+                        .project_config(&request.project_id)
+                        .await
+                        .unwrap();
+                    let graph = factory_native::agentic::validate_work_graph(
+                        &factory_native::agentic::WorkGraphModel {
+                            units: vec![factory_native::agentic::PlannedWorkUnit {
+                                id: "endpoint".into(),
+                                title: "Implement the endpoint".into(),
+                                objective: "Add the bounded endpoint.".into(),
+                                depends_on: Vec::new(),
+                                paths: vec!["src/api.rs".into()],
+                                acceptance: vec!["The endpoint returns a bounded response.".into()],
+                            }],
+                            assumptions: Vec::new(),
+                            risks: Vec::new(),
+                        },
+                        &config.allowed_paths,
+                    )
+                    .unwrap();
+                    fixture
+                        .app
+                        .db
+                        .save_agentic_work_graph(&factory_native::db::NewAgenticWorkGraph {
+                            request_id: &request.id,
+                            graph: &graph,
+                            provider: "fixture",
+                            model: "fixture",
+                            schema_sha256: &digest,
+                            request_sha256: &digest,
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            total_tokens: 0,
+                            cost_micros: 0,
+                            usage_known: false,
+                        })
+                        .await
+                        .unwrap();
+                    graph
+                }
+                Err(error) => panic!("work graph lookup failed: {error}"),
+            };
+            let assurance = factory_native::agentic::Assurance::None;
+            let reviewers = factory_native::planning::route::required_reviewers(
+                factory_native::planning::PlanningLane::FormalSpec,
+                assurance,
+            );
+            let plan_bundle = json!({
+                "schemaVersion": factory_native::planning::SCHEMA_VERSION,
+                "lane": "FORMAL_SPEC",
+                "planRevision": 1,
+                "graphSha256": graph.graph_sha256,
+                "requiredArtifacts": ["SPEC", "STACK", "ARCHITECTURE", "DOCUMENTATION", "SKILL", "PLAN", "DOD", "OPENSPEC"],
+                "reviewerPlan": reviewers,
+            });
+            let plan_record = fixture
+                .app
+                .db
+                .save_planning_artifact(&request.id, "PLAN", 1, &plan_bundle.to_string())
+                .await
+                .unwrap();
+            let stack_decision = factory_native::planning::StackDecision {
+                schema_version: factory_native::planning::SCHEMA_VERSION,
+                source: factory_native::planning::StackSource::Existing,
+                constraints: Vec::new(),
+                options: vec![factory_native::planning::StackOption {
+                    id: "existing".into(),
+                    summary: "Existing fixture stack.".into(),
+                    fit: 3,
+                    security: 3,
+                    maintainability: 3,
+                    operability: 3,
+                    time_to_value: 3,
+                    exit_cost: 3,
+                    pros: Vec::new(),
+                    cons: Vec::new(),
+                    evidence_refs: vec!["seed.txt".into()],
+                }],
+                selected: "existing".into(),
+                reason: "Preserve the fixture stack.".into(),
+                confidence: "high".into(),
+                required_capabilities: Vec::new(),
+                dependency_plan: factory_native::planning::DependencyPlan::default(),
+                stack_change: false,
+                autonomy_points: 0,
+                owner_approval: None,
+                adr_path: "docs/architecture/decisions/ADR-0001-existing-stack.md".into(),
+            };
+            fixture
+                .app
+                .db
+                .save_planning_artifact(
+                    &request.id,
+                    "STACK",
+                    1,
+                    &serde_json::to_string(&stack_decision).unwrap(),
+                )
+                .await
+                .unwrap();
+            for kind in ["ARCHITECTURE", "DOCUMENTATION", "SKILL", "DOD", "OPENSPEC"] {
+                fixture
+                    .app
+                    .db
+                    .save_planning_artifact(&request.id, kind, 1, "{}")
+                    .await
+                    .unwrap();
+            }
+            let (status, principal, rationale) = match review_seed {
+                PlanReviewSeed::AutoApproved => (
+                    "AUTO_APPROVED",
+                    "core:auto-plan-review",
+                    "The deterministic auto-approval policy accepted the plan.",
+                ),
+                PlanReviewSeed::Pending => (
+                    "PENDING",
+                    "core:planning",
+                    "The plan requires an authenticated owner decision.",
+                ),
+                PlanReviewSeed::OwnerApproved => (
+                    "OWNER_APPROVED",
+                    "operator",
+                    "The owner approved the exact plan revision.",
+                ),
+                PlanReviewSeed::ChangesRequested => (
+                    "CHANGES_REQUESTED",
+                    "operator",
+                    "The owner requested changes to the plan.",
+                ),
+                PlanReviewSeed::Rejected => {
+                    ("REJECTED", "operator", "The owner rejected the plan.")
+                }
+            };
+            fixture
+                .app
+                .db
+                .save_plan_review(factory_native::db::NewPlanReview {
+                    request_id: &request.id,
+                    plan_revision: 1,
+                    plan_sha256: &plan_record.content_sha256,
+                    status,
+                    principal_id: principal,
+                    rationale,
+                    points: 0,
+                })
+                .await
+                .unwrap();
+            let draft = factory_native::agentic::SpecDraftModel {
+                summary: "The endpoint is bounded.".into(),
+                requirements: vec![factory_native::agentic::SpecRequirementDraft {
+                    statement: "The system SHALL return a bounded response.".into(),
+                    work_unit_id: "unit-1".into(),
+                    acceptance: vec!["A valid request returns a bounded response.".into()],
+                    negative: vec!["An invalid request returns a typed error.".into()],
+                }],
+                assumptions: Vec::new(),
+                risks: Vec::new(),
+            };
+            let draft_json = serde_json::to_string(&draft).unwrap();
+            let spec_record = fixture
+                .app
+                .db
+                .save_agentic_spec_draft(&factory_native::db::NewAgenticSpecDraft {
+                    request_id: &request.id,
+                    draft_json: &draft_json,
+                    graph_sha256: Some(&graph.graph_sha256),
+                    provider: "fixture",
+                    model: "fixture",
+                    schema_sha256: &digest,
+                    request_sha256: &digest,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    cost_micros: 0,
+                    usage_known: false,
+                })
+                .await
+                .unwrap();
+            let frozen =
+                factory_native::agentic::compile_spec(&draft, spec_record.revision).unwrap();
+            fixture
+                .app
+                .db
+                .freeze_agentic_spec(&spec_record.id, &frozen, &graph)
+                .await
+                .unwrap();
+            let projection = factory_native::planning::OpenSpecProjection {
+                change_id: "request-plan-readiness".into(),
+                revision: 1,
+                proposal_sha256: "1".repeat(64),
+                specs_sha256: "2".repeat(64),
+                design_sha256: "3".repeat(64),
+                tasks_sha256: "4".repeat(64),
+                validated: true,
+                archived: false,
+            };
+            fixture
+                .app
+                .db
+                .save_openspec_projection(&request.id, &projection)
+                .await
+                .unwrap();
+            if participant != ParticipantSeed::None {
+                let profile = fixture
+                    .app
+                    .db
+                    .execution_profile_revision(&request.profile_id, &request.profile_revision_id)
+                    .await
+                    .unwrap();
+                let content = profile.content.v2().unwrap();
+                let seeded_reviewers = if participant == ParticipantSeed::Partial {
+                    factory_native::planning::ReviewerPlan {
+                        roles: vec![factory_native::planning::ReviewerRole::Functional],
+                        required: vec![factory_native::planning::ReviewerRole::Functional],
+                        independent_principals: true,
+                    }
+                } else {
+                    reviewers.clone()
+                };
+                let assignments = fixture
+                    .app
+                    .reviewer_identities
+                    .assignments_for_plan(
+                        &seeded_reviewers,
+                        &content.roles.semantic_reviewer.provider,
+                        &content.roles.semantic_reviewer.model,
+                    )
+                    .unwrap();
+                let mut participant_plan = factory_native::agentic::participant_plan_for_graph(
+                    factory_native::agentic::ChangeRoute::FormalSpec,
+                    assurance,
+                    &graph,
+                    &factory_native::agentic::StackProfile::default(),
+                    &content.roles.implementer.provider,
+                    &content.roles.implementer.model,
+                    "",
+                );
+                participant_plan.reviewer_count =
+                    u32::try_from(assignments.len()).unwrap_or(u32::MAX);
+                participant_plan.reviewer_roles = seeded_reviewers.required.clone();
+                participant_plan.reviewer_assignments = assignments;
+                for assignment in &mut participant_plan.assignments {
+                    if assignment.role == "Reviewer" {
+                        assignment.count = participant_plan.reviewer_count;
+                    }
+                }
+                fixture
+                    .app
+                    .db
+                    .save_agentic_participant_plan(
+                        &request.id,
+                        Some(&graph.graph_sha256),
+                        &participant_plan,
+                    )
+                    .await
+                    .unwrap();
+            }
+            graph
+        }
+
+        #[cfg(feature = "test-support")]
         fn master_key() -> factory_native::provider_secrets::ProviderSecretKey {
             use std::io::Write;
             let path = std::env::temp_dir().join(format!(
@@ -18898,6 +25641,1019 @@ mod tests {
             key
         }
 
+        #[cfg(feature = "test-support")]
+        fn structured_lead_master_key() -> factory_native::provider_secrets::ProviderSecretKey {
+            use std::io::Write;
+            let path = std::env::temp_dir().join(format!(
+                "factory-core-planner-master-key-{}.txt",
+                uuid::Uuid::new_v4()
+            ));
+            let mut file = std::fs::File::create(&path).unwrap();
+            file.write_all("44".repeat(32).as_bytes()).unwrap();
+            drop(file);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            let key =
+                factory_native::provider_secrets::ProviderSecretKey::from_file(&path).unwrap();
+            let _ = std::fs::remove_file(path);
+            key
+        }
+
+        #[cfg(feature = "test-support")]
+        #[derive(Clone)]
+        enum StructuredLeadUpstreamReply {
+            Content(String),
+            Truncate,
+        }
+
+        #[cfg(feature = "test-support")]
+        #[derive(Clone)]
+        enum StructuredLeadUpstreamBehavior {
+            TruncateThen(String),
+            Sequence(Vec<StructuredLeadUpstreamReply>),
+            AlwaysTruncate,
+            EmptyStop,
+            Reject,
+        }
+
+        #[cfg(feature = "test-support")]
+        #[derive(Clone)]
+        struct StructuredLeadUpstreamState {
+            behavior: StructuredLeadUpstreamBehavior,
+            calls: Arc<Mutex<Vec<Value>>>,
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn structured_lead_upstream(
+            behavior: StructuredLeadUpstreamBehavior,
+        ) -> (String, Arc<Mutex<Vec<Value>>>) {
+            use axum::{Router, routing::post};
+            async fn chat(
+                axum::extract::State(state): axum::extract::State<StructuredLeadUpstreamState>,
+                axum::Json(body): axum::Json<Value>,
+            ) -> Response {
+                let call = {
+                    let mut calls = state.calls.lock().unwrap();
+                    calls.push(body);
+                    calls.len()
+                };
+                let truncation = || {
+                    axum::Json(json!({
+                        "choices": [{
+                            "message": {
+                                "content": "",
+                                "reasoning_content": "reasoning budget exhausted",
+                                "role": "assistant"
+                            },
+                            "finish_reason": "length"
+                        }],
+                        "usage": {"prompt_tokens": 12, "completion_tokens": 16384, "total_tokens": 16396}
+                    }))
+                    .into_response()
+                };
+                let content_reply = |content: &str| {
+                    axum::Json(json!({
+                        "choices": [{
+                            "message": {"content": content},
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
+                    }))
+                    .into_response()
+                };
+                match &state.behavior {
+                    StructuredLeadUpstreamBehavior::TruncateThen(content) => {
+                        if call == 1 {
+                            truncation()
+                        } else {
+                            content_reply(content)
+                        }
+                    }
+                    StructuredLeadUpstreamBehavior::Sequence(replies) => {
+                        match replies.get(call - 1) {
+                            Some(StructuredLeadUpstreamReply::Content(content)) => {
+                                content_reply(content)
+                            }
+                            Some(StructuredLeadUpstreamReply::Truncate) => truncation(),
+                            None => (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                axum::Json(json!({
+                                    "error": "unexpected model call beyond the test sequence"
+                                })),
+                            )
+                                .into_response(),
+                        }
+                    }
+                    StructuredLeadUpstreamBehavior::AlwaysTruncate => truncation(),
+                    StructuredLeadUpstreamBehavior::EmptyStop => axum::Json(json!({
+                        "choices": [{
+                            "message": {"content": ""},
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
+                    }))
+                    .into_response(),
+                    StructuredLeadUpstreamBehavior::Reject => (
+                        StatusCode::BAD_REQUEST,
+                        axum::Json(json!({"error": "invalid request"})),
+                    )
+                        .into_response(),
+                }
+            }
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let app = Router::new()
+                .route("/chat/completions", post(chat))
+                .with_state(StructuredLeadUpstreamState {
+                    behavior,
+                    calls: calls.clone(),
+                });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            (url, calls)
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn structured_lead_fixture(
+            behavior: StructuredLeadUpstreamBehavior,
+            key: &str,
+        ) -> (Fixture, Arc<Mutex<Vec<Value>>>) {
+            structured_lead_fixture_with_assessment(behavior, key, true).await
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn structured_lead_fixture_with_assessment(
+            behavior: StructuredLeadUpstreamBehavior,
+            key: &str,
+            assess: bool,
+        ) -> (Fixture, Arc<Mutex<Vec<Value>>>) {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let master_key = structured_lead_master_key();
+            let (url, calls) = structured_lead_upstream(behavior).await;
+            // Projects root makes deterministic stack detection read the
+            // fixture repository instead of treating it as greenfield.
+            let fixture = setup_with_projects_root(
+                Some(&master_key),
+                &url,
+                &url,
+                profile_content(),
+                Some(std::env::temp_dir()),
+            )
+            .await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let settings = fixture
+                .app
+                .db
+                .provider_settings("opencode-go")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_provider_settings(
+                    &ProviderSettingsWrite {
+                        provider: "opencode-go".into(),
+                        kind: "opencode".into(),
+                        model: "deepseek-v4.1-flash".into(),
+                        base_url: url.clone(),
+                        auth_mode: settings.auth_mode,
+                        credential_ciphertext: settings.credential_ciphertext,
+                        credential_nonce: settings.credential_nonce,
+                        credential_fingerprint: settings.credential_fingerprint,
+                        enabled: true,
+                        is_default: true,
+                        max_turns: settings.max_turns,
+                        max_input_tokens: 100_000,
+                        max_output_tokens: 100_000,
+                        max_cost_micros: settings.max_cost_micros,
+                        input_micros_per_million: settings.input_micros_per_million,
+                        output_micros_per_million: settings.output_micros_per_million,
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            // A manifest keeps deterministic planning on the existing-stack
+            // path instead of requiring a greenfield Stack selection.
+            std::fs::write(
+                fixture.repository.join("Cargo.toml"),
+                "[package]\nname = \"planner-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            )
+            .unwrap();
+            std::fs::create_dir_all(fixture.repository.join("src")).unwrap();
+            std::fs::write(
+                fixture.repository.join("src/lib.rs"),
+                "pub fn structured_lead_fixture() {}\n",
+            )
+            .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake_with_amount(&fixture, key, Some(5_000_000)).await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            for scope in [&intake_id, &request.lead_request_id] {
+                fixture
+                    .app
+                    .db
+                    .admit_test_subscription_dispatch(scope)
+                    .await
+                    .unwrap();
+            }
+            if assess {
+                fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            }
+            (fixture, calls)
+        }
+
+        #[cfg(feature = "test-support")]
+        fn planner_model_content() -> String {
+            serde_json::to_string(&factory_native::agentic::WorkGraphModel {
+                units: vec![factory_native::agentic::PlannedWorkUnit {
+                    id: "endpoint".into(),
+                    title: "Implement the bounded endpoint".into(),
+                    objective: "Add the bounded endpoint.".into(),
+                    depends_on: Vec::new(),
+                    paths: vec!["src/api.rs".into()],
+                    acceptance: vec!["The endpoint returns a bounded response.".into()],
+                }],
+                assumptions: Vec::new(),
+                risks: Vec::new(),
+            })
+            .unwrap()
+        }
+
+        #[cfg(feature = "test-support")]
+        fn planner_shared_path_model_content() -> String {
+            serde_json::to_string(&factory_native::agentic::WorkGraphModel {
+                units: vec![
+                    factory_native::agentic::PlannedWorkUnit {
+                        id: "comment-commands".into(),
+                        title: "Implement comment commands".into(),
+                        objective: "Add comment commands.".into(),
+                        depends_on: Vec::new(),
+                        paths: vec!["src/lib.rs".into()],
+                        acceptance: vec!["Comment commands are available.".into()],
+                    },
+                    factory_native::agentic::PlannedWorkUnit {
+                        id: "profile-commands".into(),
+                        title: "Implement profile commands".into(),
+                        objective: "Add profile commands.".into(),
+                        depends_on: Vec::new(),
+                        paths: vec!["src/lib.rs".into()],
+                        acceptance: vec!["Profile commands are available.".into()],
+                    },
+                ],
+                assumptions: Vec::new(),
+                risks: Vec::new(),
+            })
+            .unwrap()
+        }
+
+        #[cfg(feature = "test-support")]
+        fn triage_model_content() -> String {
+            use factory_native::agentic::{
+                AgenticTriageModel, Assurance, ChangeRoute, RequestKind, StackProfile,
+            };
+            serde_json::to_string(&AgenticTriageModel {
+                request_kind: RequestKind::Change,
+                route: ChangeRoute::Delegated,
+                assurance: Assurance::Standard,
+                stack: StackProfile {
+                    languages: vec!["rust".into()],
+                    package_managers: vec!["cargo".into()],
+                    build_tools: vec!["cargo".into()],
+                    evidence_refs: vec!["Cargo.toml".into()],
+                    confidence: "high".into(),
+                    ..StackProfile::default()
+                },
+                files: vec!["src/api.rs".into()],
+                domains: Vec::new(),
+                risk: "low".into(),
+                expected_work_units: Some(1),
+                ambiguous: false,
+                architecture_uncertainty: false,
+                cross_module: false,
+                public_contract: false,
+                data_or_schema: false,
+                security_boundary: false,
+                skill_needs: Vec::new(),
+                unknowns: Vec::new(),
+            })
+            .unwrap()
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn structured_lead_records(
+            fixture: &Fixture,
+        ) -> Vec<factory_native::db::ModelCallRecord> {
+            let request = fixture
+                .app
+                .db
+                .intake_request(&fixture_intake_id(fixture).await)
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .lead_model_calls(&request.lead_request_id)
+                .await
+                .unwrap()
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn fixture_intake_id(fixture: &Fixture) -> String {
+            fixture
+                .app
+                .db
+                .intake_requests()
+                .await
+                .unwrap()
+                .into_iter()
+                .next()
+                .unwrap()
+                .id
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_blocks_without_assessment_then_compiles_after_it() {
+            let (fixture, calls) = structured_lead_fixture_with_assessment(
+                StructuredLeadUpstreamBehavior::Sequence(vec![
+                    StructuredLeadUpstreamReply::Content(planner_model_content()),
+                ]),
+                "planner-requires-assessment",
+                false,
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+
+            let (status, detail) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{detail}");
+            assert_eq!(detail["assessmentReady"], false);
+            assert_eq!(detail["leadPlanReady"], false);
+            assert_eq!(detail["actionSpecReady"], false);
+
+            let (status, refused) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+            assert_eq!(refused["code"], "ASSESSMENT_REQUIRED");
+            assert_eq!(refused["action"], "Run assessment");
+            assert_eq!(refused["assessmentReady"], false);
+            assert_eq!(refused["leadPlanReady"], false);
+            assert_eq!(refused["actionSpecReady"], false);
+            let missing = refused["missingPrerequisites"].as_array().unwrap();
+            assert!(missing.contains(&json!("LEAD_ASSESSMENT")), "{missing:?}");
+            assert!(missing.contains(&json!("FROZEN_LEAD_PLAN")), "{missing:?}");
+            assert!(missing.contains(&json!("ACTION_SPEC")), "{missing:?}");
+            assert!(
+                calls.lock().unwrap().is_empty(),
+                "the Planner model must not be called before the Lead assessment"
+            );
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .lead_model_calls(&request.lead_request_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(matches!(
+                fixture.app.db.agentic_work_graph(&intake_id).await,
+                Err(Error::NotFound)
+            ));
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+
+            fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            let (status, detail) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{detail}");
+            assert_eq!(detail["assessmentReady"], true);
+            assert_eq!(detail["leadPlanReady"], true);
+            assert_eq!(detail["actionSpecReady"], true);
+
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{planned}");
+            assert!(planned["graph"]["graphSha256"].is_string(), "{planned}");
+            assert_eq!(calls.lock().unwrap().len(), 1, "one Planner call");
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|artifact| artifact.kind == "PLAN")
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_retries_one_truncation_with_a_larger_bound() {
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::TruncateThen(planner_model_content()),
+                "planner-retry",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{planned}");
+            assert!(
+                planned["graph"]["graphSha256"].is_string(),
+                "planner response: {planned}"
+            );
+            assert_eq!(planned["planning"]["code"], Value::Null);
+
+            {
+                let calls = calls.lock().unwrap();
+                assert_eq!(calls.len(), 2, "exactly one truncation retry");
+                assert_eq!(calls[0]["max_tokens"], json!(16_384));
+                assert_eq!(calls[1]["max_tokens"], json!(32_768));
+            }
+
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 2);
+            let first = records
+                .iter()
+                .find(|record| record.state == "UNKNOWN")
+                .expect("first truncated attempt stays UNKNOWN");
+            let second = records
+                .iter()
+                .find(|record| record.state == "SETTLED")
+                .expect("retry settles");
+            assert_eq!(first.purpose, "agentic_planner");
+            assert_eq!(second.purpose, "agentic_planner");
+            assert_ne!(first.reservation_id, second.reservation_id);
+            assert_ne!(first.request_sha256, second.request_sha256);
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .agentic_work_graph(&intake_id)
+                    .await
+                    .unwrap()
+                    .graph_sha256,
+                planned["graph"]["graphSha256"].as_str().unwrap()
+            );
+            let artifacts = fixture.app.db.planning_artifacts(&intake_id).await.unwrap();
+            assert!(
+                artifacts.iter().any(|artifact| artifact.kind == "PLAN"),
+                "a successful second attempt persists the plan: {artifacts:?}"
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_double_truncation_returns_a_typed_bounded_error_without_artifacts() {
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::AlwaysTruncate,
+                "planner-double-truncation",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{planned}");
+            assert_eq!(planned["code"], "AGENTIC_MODEL_OUTPUT_TRUNCATED");
+            let message = planned["error"].as_str().unwrap();
+            assert!(message.contains("output token budget"), "{message}");
+            assert!(message.chars().count() <= 480, "{message}");
+
+            assert_eq!(calls.lock().unwrap().len(), 2, "at most one retry");
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 2);
+            assert!(records.iter().all(|record| record.state == "UNKNOWN"));
+            assert!(matches!(
+                fixture.app.db.agentic_work_graph(&intake_id).await,
+                Err(Error::NotFound)
+            ));
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_repairs_a_shared_path_graph_once_and_saves_the_corrected_graph() {
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::Sequence(vec![
+                    StructuredLeadUpstreamReply::Content(planner_shared_path_model_content()),
+                    StructuredLeadUpstreamReply::Content(planner_model_content()),
+                ]),
+                "planner-graph-repair",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{planned}");
+            assert_eq!(planned["planning"]["code"], Value::Null);
+            assert!(planned["graph"]["graphSha256"].is_string(), "{planned}");
+
+            let core_error =
+                "independent work units comment-commands and profile-commands share a write path";
+            {
+                let calls = calls.lock().unwrap();
+                assert_eq!(calls.len(), 2, "one invalid graph and one bounded repair");
+                assert_eq!(calls[0]["max_tokens"], json!(16_384));
+                assert_eq!(calls[1]["max_tokens"], json!(16_384));
+                let first_prompt = calls[0]["messages"][1]["content"].as_str().unwrap();
+                let repair_prompt = calls[1]["messages"][1]["content"].as_str().unwrap();
+                assert!(!first_prompt.contains("rejected by Core"));
+                assert!(
+                    repair_prompt.contains(&format!(
+                        "The previous WorkGraph was rejected by Core: {core_error}."
+                    )),
+                    "{repair_prompt}"
+                );
+                assert!(repair_prompt.contains(
+                    "If independent units share a write path, add a dependency between them or merge them into one unit."
+                ));
+                assert!(
+                    repair_prompt.contains("Do not change the objective, allowed paths or scope.")
+                );
+                assert_eq!(
+                    calls[0]["messages"][0], calls[1]["messages"][0],
+                    "the repair keeps the same system prompt and schema"
+                );
+            }
+
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 2);
+            assert!(records.iter().all(|record| record.state == "SETTLED"));
+            assert_ne!(records[0].reservation_id, records[1].reservation_id);
+            assert_ne!(records[0].request_sha256, records[1].request_sha256);
+
+            let graph_record = fixture.app.db.agentic_work_graph(&intake_id).await.unwrap();
+            let successful = records
+                .iter()
+                .find(|record| record.request_sha256 == graph_record.request_sha256)
+                .expect("the saved graph must identify the successful attempt");
+            assert_eq!(graph_record.planner_provider, successful.provider);
+            assert_eq!(graph_record.planner_model, successful.model);
+            assert_eq!(graph_record.input_tokens, successful.input_tokens);
+            assert_eq!(graph_record.output_tokens, successful.output_tokens);
+            assert_eq!(graph_record.total_tokens, successful.total_tokens);
+            assert_eq!(graph_record.usage_known, successful.usage_known);
+            assert_eq!(
+                planned["provider"].as_str(),
+                Some(successful.provider.as_str())
+            );
+            assert_eq!(planned["model"].as_str(), Some(successful.model.as_str()));
+            assert_eq!(
+                graph_record.graph_sha256,
+                planned["graph"]["graphSha256"].as_str().unwrap()
+            );
+
+            let saved = serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
+                &graph_record.graph_json,
+            )
+            .unwrap();
+            assert_eq!(saved.units.len(), 1);
+            assert_eq!(saved.units[0].id, "endpoint");
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|artifact| artifact.kind == "PLAN"),
+                "the successful repair persists the planning artifacts"
+            );
+            assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_stops_after_two_repairs_without_persisting_an_invalid_graph() {
+            let invalid = planner_shared_path_model_content();
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::Sequence(vec![
+                    StructuredLeadUpstreamReply::Content(invalid.clone()),
+                    StructuredLeadUpstreamReply::Content(invalid.clone()),
+                    StructuredLeadUpstreamReply::Content(invalid),
+                ]),
+                "planner-graph-repair-exhausted",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{planned}");
+            assert_eq!(planned["code"], "AGENTIC_PLAN_INVALID");
+            let message = planned["error"].as_str().unwrap();
+            assert!(
+                message.contains(
+                    "independent work units comment-commands and profile-commands share a write path"
+                ),
+                "{message}"
+            );
+            assert!(message.chars().count() <= 480, "{message}");
+            assert_eq!(
+                calls.lock().unwrap().len(),
+                3,
+                "the initial attempt plus two repairs is the bound"
+            );
+
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 3);
+            assert!(records.iter().all(|record| record.state == "SETTLED"));
+            let reservations = records
+                .iter()
+                .map(|record| record.reservation_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let digests = records
+                .iter()
+                .map(|record| record.request_sha256.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(reservations.len(), 3, "every repair owns a reservation");
+            assert_eq!(digests.len(), 3, "every repair owns a request digest");
+            assert!(matches!(
+                fixture.app.db.agentic_work_graph(&intake_id).await,
+                Err(Error::NotFound)
+            ));
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_repairs_decode_invalid_output_once() {
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::Sequence(vec![
+                    StructuredLeadUpstreamReply::Content("not json".into()),
+                    StructuredLeadUpstreamReply::Content(planner_model_content()),
+                ]),
+                "planner-decode-repair",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{planned}");
+            assert_eq!(planned["planning"]["code"], Value::Null);
+
+            {
+                let calls = calls.lock().unwrap();
+                assert_eq!(calls.len(), 2, "one decode failure and one repair");
+                let repair_prompt = calls[1]["messages"][1]["content"].as_str().unwrap();
+                assert!(
+                    repair_prompt.contains(
+                        "The previous WorkGraph was rejected by Core: model output is not valid JSON"
+                    ),
+                    "{repair_prompt}"
+                );
+            }
+
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 2);
+            assert!(records.iter().all(|record| record.state == "SETTLED"));
+            assert_ne!(records[0].reservation_id, records[1].reservation_id);
+            assert_ne!(records[0].request_sha256, records[1].request_sha256);
+            let graph_record = fixture.app.db.agentic_work_graph(&intake_id).await.unwrap();
+            assert!(records.iter().any(|record| {
+                record.request_sha256 == graph_record.request_sha256 && record.state == "SETTLED"
+            }));
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|artifact| artifact.kind == "PLAN")
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_truncation_retry_and_graph_repair_share_a_bounded_attempt_budget() {
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::Sequence(vec![
+                    StructuredLeadUpstreamReply::Truncate,
+                    StructuredLeadUpstreamReply::Content(planner_shared_path_model_content()),
+                    StructuredLeadUpstreamReply::Content(planner_model_content()),
+                ]),
+                "planner-truncation-and-graph-repair",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{planned}");
+            assert_eq!(planned["planning"]["code"], Value::Null);
+
+            {
+                let calls = calls.lock().unwrap();
+                assert_eq!(calls.len(), 3, "one truncation retry plus one graph repair");
+                assert_eq!(calls[0]["max_tokens"], json!(16_384));
+                assert_eq!(calls[1]["max_tokens"], json!(32_768));
+                assert_eq!(calls[2]["max_tokens"], json!(16_384));
+                assert_eq!(
+                    calls[0]["messages"][1]["content"], calls[1]["messages"][1]["content"],
+                    "the truncation retry reuses the same prompt"
+                );
+                let repair_prompt = calls[2]["messages"][1]["content"].as_str().unwrap();
+                assert!(
+                    repair_prompt.contains(
+                        "The previous WorkGraph was rejected by Core: independent work units comment-commands and profile-commands share a write path."
+                    ),
+                    "{repair_prompt}"
+                );
+            }
+
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 3);
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| record.state == "UNKNOWN")
+                    .count(),
+                1,
+                "only the truncated attempt stays unknown"
+            );
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| record.state == "SETTLED")
+                    .count(),
+                2
+            );
+            let graph_record = fixture.app.db.agentic_work_graph(&intake_id).await.unwrap();
+            assert!(records.iter().any(|record| {
+                record.request_sha256 == graph_record.request_sha256 && record.state == "SETTLED"
+            }));
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|artifact| artifact.kind == "PLAN")
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_does_not_retry_empty_content_without_length() {
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::EmptyStop,
+                "planner-empty-stop",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{planned}");
+            assert_eq!(calls.lock().unwrap().len(), 1, "no retry");
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].state, "UNKNOWN");
+            assert!(matches!(
+                fixture.app.db.agentic_work_graph(&intake_id).await,
+                Err(Error::NotFound)
+            ));
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn planner_does_not_retry_http_failures() {
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::Reject,
+                "planner-http-reject",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, planned) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{planned}");
+            assert_eq!(planned["code"], "AGENTIC_MODEL_FAILED");
+            assert_eq!(calls.lock().unwrap().len(), 1, "no retry");
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].state, "AMBIGUOUS");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn triage_retries_one_truncation_with_a_larger_bound() {
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::TruncateThen(triage_model_content()),
+                "triage-retry",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, assessed) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/assess"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{assessed}");
+            assert_eq!(assessed["assessment"]["requestKind"], "CHANGE");
+
+            {
+                let calls = calls.lock().unwrap();
+                assert_eq!(calls.len(), 2, "exactly one truncation retry");
+                assert_eq!(calls[0]["max_tokens"], json!(16_384));
+                assert_eq!(calls[1]["max_tokens"], json!(32_768));
+            }
+
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 2);
+            let first = records
+                .iter()
+                .find(|record| record.state == "UNKNOWN")
+                .expect("first truncated attempt stays UNKNOWN");
+            let second = records
+                .iter()
+                .find(|record| record.state == "SETTLED")
+                .expect("retry settles");
+            assert_eq!(first.purpose, "agentic_triage");
+            assert_eq!(second.purpose, "agentic_triage");
+            assert_ne!(first.reservation_id, second.reservation_id);
+            assert_ne!(first.request_sha256, second.request_sha256);
+            assert!(
+                fixture.app.db.agentic_assessment(&intake_id).await.is_ok(),
+                "the successful retry persists the triage assessment"
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn triage_double_truncation_returns_the_typed_error_without_an_assessment() {
+            let (fixture, calls) = structured_lead_fixture(
+                StructuredLeadUpstreamBehavior::AlwaysTruncate,
+                "triage-double-truncation",
+            )
+            .await;
+            let intake_id = fixture_intake_id(&fixture).await;
+            let (status, assessed) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/assess"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{assessed}");
+            assert_eq!(assessed["code"], "AGENTIC_MODEL_OUTPUT_TRUNCATED");
+            assert_eq!(calls.lock().unwrap().len(), 2, "at most one retry");
+            let records = structured_lead_records(&fixture).await;
+            assert_eq!(records.len(), 2);
+            assert!(records.iter().all(|record| record.state == "UNKNOWN"));
+            assert!(matches!(
+                fixture.app.db.agentic_assessment(&intake_id).await,
+                Err(Error::NotFound)
+            ));
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
         async fn chat_upstream() -> (String, Arc<Mutex<usize>>) {
             use axum::{Router, routing::post};
             let hits = Arc::new(Mutex::new(0));
@@ -18920,6 +26676,7 @@ mod tests {
             (url, hits)
         }
 
+        #[cfg(feature = "test-support")]
         async fn chat_upstream_with_content(
             content: Arc<Mutex<String>>,
         ) -> (String, Arc<Mutex<usize>>) {
@@ -19045,6 +26802,7 @@ mod tests {
                     .unwrap();
             }
             let context = fixture_plan(&fixture, &intake_id, "MODEL").await;
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
             let (status, approved) = send(
                 &fixture.router,
                 "POST",
@@ -19296,6 +27054,16 @@ mod tests {
                 model: grant.route.model.clone(),
                 allowed_paths: config.allowed_paths.clone(),
                 checks: checks(),
+                dependency_plan: None,
+                dependencies_required: false,
+                environment_plan_id: None,
+                environment_plan_sha256: None,
+                environment_spec_sha256: None,
+                environment_builder_image: None,
+                environment_builder_image_digest: None,
+                environment_required: false,
+
+                environment_spec_id: None,
             };
             let (assessment, _) = factory_native::lead::fixture_lead_assessment(
                 &lead.id,
@@ -19335,6 +27103,7 @@ mod tests {
             );
 
             let plan_hash = assessed["plan"]["plan_hash"].as_str().unwrap().to_owned();
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
             let (status, changed) = send(
                 &fixture.router,
                 "POST",
@@ -19666,6 +27435,191 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn intake_message_requires_operator_authentication() {
+            let fixture = setup().await;
+            let body = Some(json!({
+                "body": "Continue this thread.",
+                "idempotency_key": "message-auth-1",
+            }));
+            let (status, _) = send_as(
+                &fixture.router,
+                "POST",
+                "/intake/requests/missing/message",
+                "wrong-token",
+                body.clone(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            let (status, missing) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests/missing/message",
+                body,
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn request_trace_is_operator_only_bounded_and_redacted() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) =
+                create_intake_with_amount(&fixture, "request-api-trace", Some(5_000_000)).await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+
+            let (status, empty) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/trace"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{empty}");
+            assert!(empty["run"].is_null());
+            assert!(empty["trace"].is_null());
+            assert_eq!(empty["events"].as_array().unwrap().len(), 0);
+
+            let run_id = fixture
+                .app
+                .db
+                .ensure_workflow_run(&intake_id, None, "")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .transition_workflow(
+                    &run_id,
+                    factory_native::planning::WorkflowState::Submitted,
+                    factory_native::planning::WorkflowState::Assessing,
+                    "token=super-secret-token-value",
+                )
+                .await
+                .unwrap();
+            let step = fixture
+                .app
+                .db
+                .begin_step(&run_id, "unit.execute", "")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .finish_step(
+                    &step.id,
+                    factory_native::planning::WorkflowStepStatus::Succeeded,
+                    "",
+                    "raw prompt body",
+                )
+                .await
+                .unwrap();
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query(
+                "INSERT INTO events(subject_id,kind,detail,recorded_at)
+                 VALUES (?1,'run.created',?2,?3)",
+            )
+            .bind(&run_id)
+            .bind(
+                r#"{"state":"raw prompt or token","status":"raw prompt or token","stepId":"sk-proj-abcdefghijklmnop","prompt sk-proj-sensitive":"sensitive-key-value"}"#,
+            )
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+
+            let (status, trace) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/trace"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{trace}");
+            assert_eq!(trace["run"]["state"], "ASSESSING");
+            assert_eq!(trace["events"].as_array().unwrap().len(), 5);
+            assert_eq!(trace["stepLimit"], 500);
+            assert_eq!(trace["stepsTruncated"], false);
+            assert_eq!(trace["steps"][0]["status"], "SUCCEEDED");
+            assert_eq!(trace["steps"][0]["stepId"], step.id);
+            let serialized = trace.to_string();
+            assert!(!serialized.contains("super-secret-token-value"));
+            assert!(!serialized.contains("raw prompt body"));
+            assert!(!serialized.contains("raw prompt or token"));
+            assert!(!serialized.contains("sk-proj"));
+            assert!(!serialized.contains("sensitive-key-value"));
+            assert!(!serialized.contains("prompt sk-proj-sensitive"));
+            assert!(trace["events"].as_array().unwrap().iter().any(|event| {
+                event["payload"]["state"]
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("sha256:"))
+            }));
+            assert!(
+                trace["alerts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|alert| alert["kind"] == "NON_TERMINAL_STATE")
+            );
+            assert!(
+                trace["alerts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|alert| alert["kind"] == "MALFORMED_EVENT")
+            );
+
+            let (status, bounded) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/trace?limit=1"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{bounded}");
+            assert_eq!(bounded["truncated"], true);
+            assert_eq!(bounded["eventLimit"], 1);
+            assert_eq!(bounded["events"].as_array().unwrap().len(), 1);
+
+            let (status, _) = send_as(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/trace"),
+                "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            let (status, _) = send(
+                &fixture.router,
+                "GET",
+                "/agentic/requests/missing/trace",
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
         async fn intake_assessment_uses_the_frozen_profile_revision_after_a_newer_head() {
             let fixture = setup().await;
             let (status, _) = enable_policy(&fixture).await;
@@ -19725,6 +27679,7 @@ mod tests {
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let intake_id = created["id"].as_str().unwrap().to_owned();
             let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
             let plan_hash = context.plan.plan_hash.clone();
             let profile_revision = context.context.profile_revision;
             let profile_hash = context.context.profile_hash.clone();
@@ -19756,6 +27711,49 @@ mod tests {
                 "no Gate outcome may be invented before a Gate exists"
             );
             let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            let (reviewer_count, roles_json, assignments_json): (i64, String, String) =
+                sqlx::query_as::query_as(
+                    "SELECT reviewer_count,required_roles_json,required_assignments_json
+                     FROM campaign_review_requirements WHERE campaign_id=?1",
+                )
+                .bind(&campaign_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+            assert_eq!(reviewer_count, 5);
+            assert_eq!(
+                serde_json::from_str::<Vec<String>>(&roles_json).unwrap(),
+                vec![
+                    "FUNCTIONAL",
+                    "ARCHITECTURE",
+                    "CODE_QUALITY",
+                    "SECURITY",
+                    "TESTING"
+                ]
+            );
+            let assignments = serde_json::from_str::<
+                Vec<factory_native::review_roles::ReviewerIdentityAssignment>,
+            >(&assignments_json)
+            .unwrap();
+            assert_eq!(assignments.len(), 5);
+            assert_eq!(
+                assignments
+                    .iter()
+                    .map(|assignment| assignment.role)
+                    .collect::<BTreeSet<_>>()
+                    .len(),
+                5
+            );
             let evidence = fixture
                 .app
                 .db
@@ -19846,6 +27844,1186 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn intake_approval_rejects_missing_planning_artifacts() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-missing-plan").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+
+            let (status, detail) = send(
+                &fixture.router,
+                "GET",
+                &format!("/intake/requests/{intake_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{detail}");
+            assert_eq!(detail["planning"]["ready"], false);
+            assert_eq!(detail["planning"]["lane"], "FORMAL_SPEC");
+            let missing = detail["planning"]["missingArtifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
+            for artifact in ["PLAN", "WORKGRAPH", "SPEC", "OPENSPEC"] {
+                assert!(missing.contains(&artifact), "{artifact}: {missing:?}");
+            }
+            assert_eq!(detail["planning"]["participantPlan"]["required"], true);
+            assert_eq!(detail["planning"]["participantPlan"]["present"], false);
+
+            let (status, rejected) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": context.plan.plan_hash,
+                    "rationale": "Reviewed the frozen plan.",
+                    "idempotency_key": "approve-missing-plan",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{rejected}");
+            assert_eq!(rejected["code"], "PLAN_ARTIFACTS_REQUIRED");
+            let rejected_missing = rejected["missingArtifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
+            assert!(rejected_missing.contains(&"PLAN"));
+            assert_eq!(rejected["participantPlan"]["required"], true);
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            assert!(record.campaign_id.is_none());
+            let lead = fixture
+                .app
+                .db
+                .lead_request(&record.lead_request_id)
+                .await
+                .unwrap();
+            assert!(lead.campaign_id.is_none());
+            assert!(
+                fixture.app.db.campaigns().await.unwrap().is_empty(),
+                "a rejected approval must not create or authorize a Campaign"
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn intake_approval_rejects_an_incomplete_participant_plan() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-participants").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::None).await;
+
+            let (status, rejected) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": context.plan.plan_hash,
+                    "rationale": "Reviewed the frozen plan.",
+                    "idempotency_key": "approve-missing-participants",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{rejected}");
+            assert_eq!(rejected["code"], "PARTICIPANT_PLAN_REQUIRED");
+            assert_eq!(rejected["missingArtifacts"], json!([]));
+            assert_eq!(rejected["participantPlan"]["required"], true);
+            assert_eq!(rejected["participantPlan"]["present"], false);
+            assert_eq!(rejected["participantPlan"]["requiredReviewerCount"], 5);
+            assert_eq!(
+                rejected["participantPlan"]["requiredRoles"],
+                json!([
+                    "FUNCTIONAL",
+                    "ARCHITECTURE",
+                    "CODE_QUALITY",
+                    "SECURITY",
+                    "TESTING"
+                ])
+            );
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            assert!(record.campaign_id.is_none());
+
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Partial).await;
+            let (status, incomplete) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": context.plan.plan_hash,
+                    "rationale": "Reviewed the frozen plan.",
+                    "idempotency_key": "approve-incomplete-participants",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{incomplete}");
+            assert_eq!(incomplete["code"], "PARTICIPANT_PLAN_REQUIRED");
+            assert_eq!(incomplete["participantPlan"]["present"], true);
+            assert_eq!(incomplete["participantPlan"]["ready"], false);
+            assert_eq!(incomplete["participantPlan"]["reviewerCount"], 1);
+            assert_eq!(
+                incomplete["participantPlan"]["missingRoles"],
+                json!(["ARCHITECTURE", "CODE_QUALITY", "SECURITY", "TESTING"])
+            );
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            assert!(record.campaign_id.is_none());
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn intake_approval_requires_an_approved_plan_review() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-review-pending").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            seed_complete_planning_with_review(
+                &fixture,
+                &intake_id,
+                ParticipantSeed::Matching,
+                PlanReviewSeed::Pending,
+            )
+            .await;
+
+            let (status, rejected) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": context.plan.plan_hash,
+                    "rationale": "Reviewed the frozen plan.",
+                    "idempotency_key": "approve-review-pending",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{rejected}");
+            assert_eq!(rejected["code"], "PLAN_REVIEW_REQUIRED");
+            assert_eq!(rejected["reviewStatus"], "PENDING");
+            assert_eq!(rejected["reviewApproved"], false);
+            assert_eq!(rejected["missingArtifacts"], json!([]));
+            assert_eq!(rejected["participantPlan"]["ready"], true);
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            assert!(record.campaign_id.is_none());
+            assert!(
+                fixture.app.db.campaigns().await.unwrap().is_empty(),
+                "a pending plan review must not create or authorize a Campaign"
+            );
+            let (status, decisions) = send(&fixture.router, "GET", "/office/decisions", None).await;
+            assert_eq!(status, StatusCode::OK, "{decisions}");
+            let item = decisions["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["kind"] == "intake.plan-approval")
+                .expect("intake approval item");
+            assert_eq!(item["blocked_reason"], "PLAN_REVIEW_REQUIRED");
+            assert!(
+                item["actions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|action| action["kind"] != "approve_intake_plan"),
+                "the Decision Inbox must not offer approval while the plan review is pending"
+            );
+
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query(
+                "UPDATE plan_reviews
+                 SET status='OWNER_APPROVED',principal_id='operator',
+                     rationale='Owner approved the exact plan revision.'
+                 WHERE request_id=?1",
+            )
+            .bind(&intake_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+
+            let (status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": context.plan.plan_hash,
+                    "rationale": "Owner approved the exact plan revision.",
+                    "idempotency_key": "approve-review-owner",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            assert_eq!(approved["state"], "EXECUTING");
+            assert_eq!(approved["planning"]["reviewStatus"], "OWNER_APPROVED");
+            assert_eq!(approved["planning"]["reviewApproved"], true);
+            assert_eq!(approved["planning"]["ready"], true);
+            assert!(approved["campaignId"].is_string());
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn autonomous_start_requires_planning_readiness_and_starts_when_ready() {
+            let fixture = setup().await;
+            let (status, policy, profile) = enable_autonomous_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED, "{policy}");
+            let (record, created) = fixture
+                .app
+                .db
+                .create_intake_request(
+                    &fixture.project_id,
+                    "Implement a bounded intake endpoint.",
+                    Some(&profile.id),
+                    factory_native::intake::IntakeMode::Autonomous,
+                    "request-api-autopilot-readiness",
+                    "operator-token",
+                    &[],
+                )
+                .await
+                .unwrap();
+            assert!(created);
+            let intake_id = record.id;
+            fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            let app = test_app_with_master_key_and_options(&fixture.path, None, true, None).await;
+
+            let error = autonomous_start_intake(&app, &intake_id)
+                .await
+                .expect_err("an incomplete plan must not start");
+            assert!(
+                matches!(
+                    error,
+                    Error::IntakeConflict {
+                        code: "PLAN_ARTIFACTS_REQUIRED",
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            assert!(record.campaign_id.is_none());
+            assert!(
+                fixture.app.db.campaigns().await.unwrap().is_empty(),
+                "a rejected autonomous start must not create a Campaign"
+            );
+
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
+            autonomous_start_intake(&app, &intake_id)
+                .await
+                .expect("a ready auto-approved plan must start");
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let campaign_id = record.campaign_id.expect("autonomous Campaign");
+            let campaign = fixture.app.db.campaign(&campaign_id).await.unwrap();
+            assert_eq!(campaign.status, "AUTHORIZED");
+            autonomous_start_intake(&app, &intake_id)
+                .await
+                .expect("an already-started request is an idempotent replay");
+            assert_eq!(fixture.app.db.campaigns().await.unwrap().len(), 1);
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn latest_planning_revision_propagates_database_errors() {
+            let fixture = setup().await;
+            fixture.app.db.close().await;
+            let result = latest_planning_revision(&fixture.app, "missing-request").await;
+            assert!(
+                result.is_err(),
+                "a database failure must not be treated as absence: {result:?}"
+            );
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn compile_plan_requires_the_lead_assessment_before_model_access() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) =
+                create_intake(&fixture, "request-api-assessment-required").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+
+            let (status, refused) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+            assert_eq!(refused["code"], "ASSESSMENT_REQUIRED");
+            assert_eq!(refused["action"], "Run assessment");
+            assert_eq!(refused["assessmentReady"], false);
+            assert_eq!(refused["leadPlanReady"], false);
+            assert_eq!(refused["actionSpecReady"], false);
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .lead_model_calls(&request.lead_request_id)
+                    .await
+                    .unwrap()
+                    .is_empty(),
+                "a missing Lead assessment must not reserve or dispatch a model call"
+            );
+            assert!(matches!(
+                fixture.app.db.agentic_work_graph(&intake_id).await,
+                Err(Error::NotFound)
+            ));
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifacts(&intake_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn compile_plan_guard_precedes_the_existing_plan_and_repair_path() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) =
+                create_intake(&fixture, "request-api-stored-plan-assessment").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
+            let plan_before = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query("DELETE FROM planning_artifacts WHERE request_id=?1 AND kind='DOD'")
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+
+            let (status, refused) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+            assert_eq!(refused["code"], "ASSESSMENT_REQUIRED");
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .lead_model_calls(&request.lead_request_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            let plan_after_refusal = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            assert_eq!(plan_after_refusal.revision, plan_before.revision);
+            assert_eq!(
+                plan_after_refusal.content_sha256,
+                plan_before.content_sha256
+            );
+            assert!(matches!(
+                fixture.app.db.planning_artifact(&intake_id, "DOD", 1).await,
+                Err(Error::NotFound)
+            ));
+
+            fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            let (status, repaired) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{repaired}");
+            assert_eq!(repaired["repaired"], true);
+            assert_eq!(repaired["missingArtifacts"], json!([]));
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .planning_artifact(&intake_id, "DOD", 1)
+                    .await
+                    .is_ok()
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn compile_plan_guard_keeps_no_agent_requests_out_of_planning() {
+            use factory_native::lead::{Complexity, EffortEstimate, EffortStatus, Intent};
+            let fixture = setup_with_projects_root(
+                None,
+                "https://provider.example/v1",
+                "https://provider.example/v1",
+                profile_content(),
+                Some(std::env::temp_dir()),
+            )
+            .await;
+            std::fs::write(
+                fixture.repository.join("README.md"),
+                "# No-agent planning fixture\n",
+            )
+            .unwrap();
+            std::fs::write(
+                fixture.repository.join("AGENTS.md"),
+                "# No-agent planning fixture\n",
+            )
+            .unwrap();
+            std::fs::write(
+                fixture.repository.join("Cargo.toml"),
+                "[package]\nname = \"no-agent-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            )
+            .unwrap();
+            std::fs::create_dir_all(fixture.repository.join("src")).unwrap();
+            std::fs::write(
+                fixture.repository.join("src/lib.rs"),
+                "pub fn no_agent_fixture() {}\n",
+            )
+            .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) =
+                create_intake(&fixture, "request-api-no-agent-stored-plan").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .begin_lead_assessment(&request.lead_request_id)
+                .await
+                .unwrap();
+            let assessment = factory_native::lead::LeadAssessment {
+                schema_revision: 1,
+                project_id: request.project_id.clone(),
+                action_id: request.action_id.clone(),
+                request_id: request.lead_request_id.clone(),
+                evidence_refs: vec!["repository-files".into()],
+                intent: Intent::Informational,
+                complexity: Complexity::Small,
+                effort_estimate: EffortEstimate {
+                    status: EffortStatus::NotRequested,
+                    unit: String::new(),
+                    min_person_hours: 0,
+                    max_person_hours: 0,
+                    assumptions: Vec::new(),
+                    unknown_reason: String::new(),
+                },
+                knowledge_gaps: Vec::new(),
+                change_impact: Vec::new(),
+                validation_needs: Vec::new(),
+                assumptions: Vec::new(),
+                uncertainty: Vec::new(),
+                suggested_next_action:
+                    "No execution plan is required for this informational request.".into(),
+                proposal: None,
+            };
+            let input = AssessmentInput {
+                project_id: request.project_id.clone(),
+                action_id: request.action_id.clone(),
+                request_id: request.lead_request_id.clone(),
+                objective: request.objective.clone(),
+                allowed_evidence_refs: std::collections::BTreeSet::from(
+                    ["repository-files".into()],
+                ),
+            };
+            fixture
+                .app
+                .db
+                .record_lead_assessment(
+                    &request.lead_request_id,
+                    "FIXTURE",
+                    &assessment,
+                    &input,
+                    "no-agent-assessment",
+                )
+                .await
+                .unwrap();
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query("DELETE FROM planning_artifacts WHERE request_id=?1 AND kind='DOD'")
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+
+            let (status, refused) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+            assert_eq!(refused["code"], "PLANNER_NOT_APPLICABLE");
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .lead_model_calls(&request.lead_request_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(matches!(
+                fixture.app.db.planning_artifact(&intake_id, "DOD", 1).await,
+                Err(Error::NotFound)
+            ));
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn compile_plan_repairs_a_partial_artifact_set() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-repair-plan").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
+            let plan_before = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            let review_before = fixture.app.db.latest_plan_review(&intake_id).await.unwrap();
+            std::fs::write(
+                fixture.repository.join("package.json"),
+                "{\"name\":\"fixture\",\"version\":\"1.0.0\",\"private\":true}\n",
+            )
+            .unwrap();
+            let app = test_app_with_master_key_and_options(
+                &fixture.path,
+                None,
+                false,
+                Some(fixture.repository.parent().unwrap().to_path_buf()),
+            )
+            .await;
+            let router = build_router(app.clone());
+
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query(
+                "DELETE FROM planning_artifacts
+                 WHERE request_id=?1 AND kind IN ('STACK','DOD')",
+            )
+            .bind(&intake_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+
+            let (status, detail) = send(
+                &router,
+                "GET",
+                &format!("/intake/requests/{intake_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{detail}");
+            assert_eq!(detail["planning"]["ready"], false);
+            let missing = detail["planning"]["missingArtifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
+            assert!(missing.contains(&"STACK"), "{missing:?}");
+            assert!(missing.contains(&"DOD"), "{missing:?}");
+
+            let (status, repaired) = send(
+                &router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{repaired}");
+            assert_eq!(repaired["repaired"], true);
+            assert_eq!(repaired["alreadyPlanned"], true);
+            assert!(repaired["graph"].is_object());
+            assert_eq!(repaired["missingArtifacts"], json!([]));
+            assert_eq!(repaired["reviewStatus"], "AUTO_APPROVED");
+            assert_eq!(repaired["ready"], true);
+            let plan_after = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            let review_after = fixture.app.db.latest_plan_review(&intake_id).await.unwrap();
+            assert_eq!(plan_after.revision, plan_before.revision);
+            assert_eq!(plan_after.content_sha256, plan_before.content_sha256);
+            assert_eq!(review_after.id, review_before.id);
+            assert_eq!(review_after.status, review_before.status);
+            assert_eq!(review_after.plan_sha256, review_before.plan_sha256);
+            assert_eq!(
+                fixture.app.db.plan_reviews(&intake_id).await.unwrap().len(),
+                1,
+                "repair must not append a replacement review"
+            );
+
+            let (status, detail) = send(
+                &router,
+                "GET",
+                &format!("/intake/requests/{intake_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{detail}");
+            assert_eq!(detail["planning"]["ready"], true);
+            assert_eq!(detail["planning"]["missingArtifacts"], json!([]));
+
+            let (status, approved) = send(
+                &router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": context.plan.plan_hash,
+                    "rationale": "Repaired plan reviewed.",
+                    "idempotency_key": "approve-repaired-plan",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            assert_eq!(approved["state"], "EXECUTING");
+            assert!(approved["campaignId"].is_string());
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn compile_plan_repair_preserves_the_existing_review() {
+            for (seed, expected_status, label) in [
+                (PlanReviewSeed::Pending, "PENDING", "pending"),
+                (PlanReviewSeed::OwnerApproved, "OWNER_APPROVED", "owner"),
+            ] {
+                let fixture = setup().await;
+                let (status, _) = enable_policy(&fixture).await;
+                assert_eq!(status, StatusCode::CREATED);
+                let (status, created) =
+                    create_intake(&fixture, &format!("request-api-preserve-{label}")).await;
+                assert_eq!(status, StatusCode::CREATED, "{created}");
+                let intake_id = created["id"].as_str().unwrap().to_owned();
+                let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+                seed_complete_planning_with_review(
+                    &fixture,
+                    &intake_id,
+                    ParticipantSeed::Matching,
+                    seed,
+                )
+                .await;
+                let plan_before = fixture
+                    .app
+                    .db
+                    .latest_planning_artifact(&intake_id, "PLAN")
+                    .await
+                    .unwrap();
+                let review_before = fixture.app.db.latest_plan_review(&intake_id).await.unwrap();
+                let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect_with(
+                        sqlx_sqlite::SqliteConnectOptions::new()
+                            .filename(&fixture.path)
+                            .create_if_missing(false),
+                    )
+                    .await
+                    .unwrap();
+                sqlx::query::query(
+                    "DELETE FROM planning_artifacts WHERE request_id=?1 AND kind='DOD'",
+                )
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+                pool.close().await;
+
+                let (status, repaired) = send(
+                    &fixture.router,
+                    "POST",
+                    &format!("/agentic/requests/{intake_id}/plan"),
+                    None,
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK, "{repaired}");
+                assert_eq!(repaired["repaired"], true);
+                assert_eq!(repaired["missingArtifacts"], json!([]));
+                assert_eq!(repaired["reviewStatus"], expected_status);
+                let plan_after = fixture
+                    .app
+                    .db
+                    .latest_planning_artifact(&intake_id, "PLAN")
+                    .await
+                    .unwrap();
+                let review_after = fixture.app.db.latest_plan_review(&intake_id).await.unwrap();
+                assert_eq!(plan_after.revision, plan_before.revision);
+                assert_eq!(plan_after.content_sha256, plan_before.content_sha256);
+                assert_eq!(review_after.id, review_before.id);
+                assert_eq!(review_after.status, review_before.status);
+                assert_eq!(review_after.plan_revision, review_before.plan_revision);
+                assert_eq!(review_after.plan_sha256, review_before.plan_sha256);
+                assert_eq!(review_after.reviewed_at, review_before.reviewed_at);
+                assert_eq!(
+                    fixture.app.db.plan_reviews(&intake_id).await.unwrap().len(),
+                    1,
+                    "repair must preserve exactly the existing review"
+                );
+
+                if expected_status == "PENDING" {
+                    assert_eq!(repaired["materialsReady"], true);
+                    assert_eq!(repaired["reviewApproved"], false);
+                    assert_eq!(repaired["ready"], false);
+                    let (status, blocked) = send(
+                        &fixture.router,
+                        "POST",
+                        &format!("/intake/requests/{intake_id}/approve"),
+                        Some(json!({
+                            "expected_plan_hash": context.plan.plan_hash,
+                            "rationale": "Pending review cannot start.",
+                            "idempotency_key": format!("approve-pending-{label}"),
+                        })),
+                    )
+                    .await;
+                    assert_eq!(status, StatusCode::CONFLICT, "{blocked}");
+                    assert_eq!(blocked["code"], "PLAN_REVIEW_REQUIRED");
+                    assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+                } else {
+                    assert_eq!(repaired["ready"], true);
+                    let (status, approved) = send(
+                        &fixture.router,
+                        "POST",
+                        &format!("/intake/requests/{intake_id}/approve"),
+                        Some(json!({
+                            "expected_plan_hash": context.plan.plan_hash,
+                            "rationale": "Owner-approved repaired plan.",
+                            "idempotency_key": format!("approve-owner-{label}"),
+                        })),
+                    )
+                    .await;
+                    assert_eq!(status, StatusCode::CREATED, "{approved}");
+                    assert_eq!(approved["state"], "EXECUTING");
+                    assert!(approved["campaignId"].is_string());
+                }
+
+                fixture.app.db.close().await;
+                let _ = std::fs::remove_file(fixture.path);
+                let _ = std::fs::remove_dir_all(fixture.repository);
+            }
+        }
+
+        #[tokio::test]
+        async fn compile_plan_refuses_to_auto_approve_a_rejected_review() {
+            for (seed, expected_status, label) in [
+                (
+                    PlanReviewSeed::ChangesRequested,
+                    "CHANGES_REQUESTED",
+                    "changes-requested",
+                ),
+                (PlanReviewSeed::Rejected, "REJECTED", "rejected"),
+            ] {
+                let fixture = setup().await;
+                let (status, _) = enable_policy(&fixture).await;
+                assert_eq!(status, StatusCode::CREATED);
+                let (status, created) =
+                    create_intake(&fixture, &format!("request-api-rejected-{label}")).await;
+                assert_eq!(status, StatusCode::CREATED, "{created}");
+                let intake_id = created["id"].as_str().unwrap().to_owned();
+                let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+                seed_complete_planning_with_review(
+                    &fixture,
+                    &intake_id,
+                    ParticipantSeed::Matching,
+                    seed,
+                )
+                .await;
+                let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect_with(
+                        sqlx_sqlite::SqliteConnectOptions::new()
+                            .filename(&fixture.path)
+                            .create_if_missing(false),
+                    )
+                    .await
+                    .unwrap();
+                sqlx::query::query(
+                    "DELETE FROM planning_artifacts WHERE request_id=?1 AND kind='DOD'",
+                )
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+                pool.close().await;
+
+                let (status, refused) = send(
+                    &fixture.router,
+                    "POST",
+                    &format!("/agentic/requests/{intake_id}/plan"),
+                    None,
+                )
+                .await;
+                assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+                assert_eq!(refused["code"], "PLAN_REVIEW_REJECTED");
+                assert_eq!(refused["reviewStatus"], expected_status);
+                assert_eq!(
+                    fixture
+                        .app
+                        .db
+                        .latest_planning_artifact(&intake_id, "PLAN")
+                        .await
+                        .unwrap()
+                        .revision,
+                    1,
+                    "a rejected review must not be repaired into a new revision"
+                );
+                assert_eq!(
+                    fixture
+                        .app
+                        .db
+                        .latest_plan_review(&intake_id)
+                        .await
+                        .unwrap()
+                        .status,
+                    expected_status
+                );
+
+                let (status, blocked) = send(
+                    &fixture.router,
+                    "POST",
+                    &format!("/intake/requests/{intake_id}/approve"),
+                    Some(json!({
+                        "expected_plan_hash": context.plan.plan_hash,
+                        "rationale": "Rejected plan must not start.",
+                        "idempotency_key": format!("approve-rejected-{label}"),
+                    })),
+                )
+                .await;
+                assert_eq!(status, StatusCode::CONFLICT, "{blocked}");
+                let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+                assert!(record.campaign_id.is_none());
+                assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+                assert!(
+                    fixture
+                        .app
+                        .db
+                        .lead_start_evidence(&context.lead.id)
+                        .await
+                        .unwrap()
+                        .is_none(),
+                    "a rejected plan must not record start approval evidence"
+                );
+
+                fixture.app.db.close().await;
+                let _ = std::fs::remove_file(fixture.path);
+                let _ = std::fs::remove_dir_all(fixture.repository);
+            }
+        }
+
+        #[tokio::test]
+        async fn compile_plan_rejects_a_tampered_work_graph() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-tampered-graph").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
+
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query("DELETE FROM planning_artifacts WHERE request_id=?1 AND kind='DOD'")
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let (graph_json,): (String,) = sqlx::query_as::query_as(
+                "SELECT graph_json FROM agentic_work_graphs WHERE request_id=?1",
+            )
+            .bind(&intake_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let mut tampered: Value = serde_json::from_str(&graph_json).unwrap();
+            tampered["units"][0]["title"] = json!("Tampered after validation");
+            sqlx::query::query("UPDATE agentic_work_graphs SET graph_json=?1 WHERE request_id=?2")
+                .bind(tampered.to_string())
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+
+            let (status, refused) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+            assert_eq!(refused["code"], "WORK_GRAPH_REQUIRED");
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .latest_planning_artifact(&intake_id, "PLAN")
+                    .await
+                    .unwrap()
+                    .revision,
+                1
+            );
+            assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn autopilot_readiness_failure_creates_no_campaign_or_approval() {
+            use factory_native::db::ScopeAdmissionWrite;
+            use factory_native::execution_policy::{
+                OwnerBillingAssumption, OwnerControlledExtraUsage,
+            };
+            use factory_native::subscription_admission::{TestModelRole, TestRouteBinding};
+
+            let fixture = setup().await;
+            let (status, policy, profile) = enable_autonomous_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED, "{policy}");
+            let (record, created) = fixture
+                .app
+                .db
+                .create_intake_request(
+                    &fixture.project_id,
+                    "Implement a bounded intake endpoint.",
+                    Some(&profile.id),
+                    factory_native::intake::IntakeMode::Autonomous,
+                    "request-api-autopilot-side-effects",
+                    "operator-token",
+                    &[],
+                )
+                .await
+                .unwrap();
+            assert!(created);
+            let intake_id = record.id.clone();
+            fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            fixture
+                .app
+                .db
+                .create_subscription_scope_admission(&ScopeAdmissionWrite {
+                    intake_request_id: intake_id.clone(),
+                    lead_request_id: record.lead_request_id.clone(),
+                    test_profile_id: "opencode-go-subscription".into(),
+                    execution_profile_id: record.profile_id.clone(),
+                    provider: "opencode-go".into(),
+                    model: "deepseek-v4.1-flash".into(),
+                    settings_revision: "funding-only-test".into(),
+                    profile_revision_id: record.profile_revision_id.clone(),
+                    profile_hash: record.profile_hash.clone(),
+                    assumption: OwnerBillingAssumption {
+                        assumption_id: "autopilot-funding-only".into(),
+                        confirmed_by: "Product Owner".into(),
+                        confirmed_at_ms: now_ms - 1_000,
+                        valid_until_ms: now_ms + 60_000,
+                        extra_usage: OwnerControlledExtraUsage::Disabled,
+                        statement:
+                            "Owner confirmed Extra Usage is disabled for this funding-only test admission."
+                                .into(),
+                    },
+                    routes: vec![
+                        TestRouteBinding {
+                            role: TestModelRole::Lead,
+                            provider: "opencode-go".into(),
+                            model: "deepseek-v4.1-flash".into(),
+                            settings_revision: "funding-only-test".into(),
+                            transport: "OPENCODE_GO_SUBSCRIPTION".into(),
+                        },
+                        TestRouteBinding {
+                            role: TestModelRole::Implementer,
+                            provider: "opencode-go".into(),
+                            model: "deepseek-v4.1-flash".into(),
+                            settings_revision: "funding-only-test".into(),
+                            transport: "OPENCODE_GO_SUBSCRIPTION".into(),
+                        },
+                    ],
+                    idempotency_key: "autopilot-funding-only-admission".into(),
+                })
+                .await
+                .expect("funding-only admission");
+            let app = test_app_with_master_key_and_options(&fixture.path, None, true, None).await;
+            app.db
+                .set_agentic_operation_status(&intake_id, "STARTING")
+                .await
+                .unwrap();
+
+            let error = run_autopilot_inner(&app, &intake_id)
+                .await
+                .expect_err("incomplete planning must block the autopilot start");
+            assert!(
+                matches!(
+                    error,
+                    Error::IntakeConflict {
+                        code: "PLAN_ARTIFACTS_REQUIRED",
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+            // STARTING is scheduler telemetry, not Campaign authority.
+            assert!(
+                app.db.campaigns().await.unwrap().is_empty(),
+                "the autopilot must not create a Campaign before readiness"
+            );
+            let record = app.db.intake_request(&intake_id).await.unwrap();
+            assert!(record.campaign_id.is_none());
+            let lead = app.db.lead_request(&record.lead_request_id).await.unwrap();
+            assert!(lead.campaign_id.is_none());
+            assert!(
+                app.db
+                    .lead_start_evidence(&lead.id)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "an incomplete autopilot must not record start approval evidence"
+            );
+            assert!(
+                app.db
+                    .active_subscription_admission_for_request(&intake_id)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "the subscription admission is funding evidence created before assessment"
+            );
+            let value = intake_request_value(&app, &record, false).await.unwrap();
+            assert_ne!(value["state"], "EXECUTING");
+
+            fail_autopilot(&app, &intake_id, &error).await;
+            app.db
+                .set_agentic_operation_status(&intake_id, "BLOCKED")
+                .await
+                .unwrap();
+            let blocked = app.db.lead_request(&lead.id).await.unwrap();
+            assert_eq!(
+                blocked.state,
+                factory_native::lead::LeadRequestState::Blocked
+            );
+            assert!(
+                blocked
+                    .failure_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("PLAN_ARTIFACTS_REQUIRED")),
+                "{:?}",
+                blocked.failure_reason
+            );
+            assert_eq!(
+                app.db
+                    .agentic_operation_for_request(&intake_id)
+                    .await
+                    .unwrap()
+                    .status,
+                "BLOCKED"
+            );
+            assert!(app.db.campaigns().await.unwrap().is_empty());
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
         async fn intake_detail_projects_campaign_status_and_latest_gate_outcome() {
             let fixture = setup().await;
             let (status, _) = enable_policy(&fixture).await;
@@ -19854,6 +29032,7 @@ mod tests {
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let intake_id = created["id"].as_str().unwrap().to_owned();
             let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
             let (status, approved) = send(
                 &fixture.router,
                 "POST",
@@ -19934,6 +29113,239 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn disposition_resolution_reevaluates_the_gate_only_when_authorized() {
+            use tower::ServiceExt;
+
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-reeval").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
+            let (status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": context.plan.plan_hash,
+                    "rationale": "Reviewed the frozen plan and budget.",
+                    "idempotency_key": "approve-disposition-reeval",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            let tasks = fixture.app.db.campaign_tasks(&campaign_id).await.unwrap();
+            let attempt_id = tasks[0].attempt_id.clone().expect("Lead Attempt");
+            let candidate_id = "candidate-disposition-reeval".to_owned();
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            let (spec_sha256,): (String,) = sqlx::query_as::query_as(
+                "SELECT spec_sha256 FROM attempt_specs WHERE attempt_id=?1",
+            )
+            .bind(&attempt_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            // This test isolates the Gate re-evaluation path; use one legacy
+            // roleless reviewer requirement instead of the participant plan.
+            sqlx::query::query("DELETE FROM agentic_participant_plans WHERE request_id=?1")
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query::query(
+                "UPDATE campaign_review_requirements
+                 SET reviewer_count=1, required_roles_json='[]', required_assignments_json='[]'
+                 WHERE campaign_id=?1",
+            )
+            .bind(&campaign_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query::query(
+                "INSERT INTO candidates
+                 (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+                 VALUES (?1,?2,?3,?4,?5,'worker-reeval',?6)",
+            )
+            .bind(&candidate_id)
+            .bind(&attempt_id)
+            .bind(&spec_sha256)
+            .bind("a".repeat(40))
+            .bind("b".repeat(40))
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+            for (receipt_id, role, principal, findings) in [
+                (
+                    "verifier-disposition-reeval",
+                    "verifier",
+                    "verifier-1",
+                    "[]".to_string(),
+                ),
+                (
+                    "reviewer-disposition-reeval",
+                    "reviewer",
+                    "reviewer-1",
+                    json!([{
+                        "id": "warning-reeval",
+                        "severity": "warning",
+                        "category": "functional",
+                        "message": "the exported file is not closed deterministically",
+                        "points": 2,
+                        "rationale": "the candidate diff shows a missing close path",
+                        "evidenceRefs": ["src/export.rs:42"]
+                    }])
+                    .to_string(),
+                ),
+            ] {
+                sqlx::query::query(
+                    "INSERT INTO quality_receipts
+                     (receipt_id,candidate_id,role,principal_id,reviewer_role,action_spec_sha256,
+                      commit_sha,tree_sha,result,evidence,findings_json,mechanism,model_provider,
+                      model_name,model_reservation_id,model_request_sha256,input_tokens,
+                      output_tokens,total_tokens,cost_micros,usage_known,received_at)
+                     VALUES (?1,?2,?3,?4,'',?5,?6,?7,'PASS','EXECUTED',?8,'DETERMINISTIC',
+                             '','','','',0,0,0,0,0,?9)",
+                )
+                .bind(receipt_id)
+                .bind(&candidate_id)
+                .bind(role)
+                .bind(principal)
+                .bind(&spec_sha256)
+                .bind("a".repeat(40))
+                .bind("b".repeat(40))
+                .bind(findings)
+                .bind(&now)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            sqlx::query::query(
+                "INSERT INTO finding_dispositions
+                 (id,request_id,candidate_id,finding_id,route,status,reviewer_principal,
+                  resolved_by,evidence_refs_json,owner_decision,created_at,updated_at)
+                 VALUES ('disposition-warning-reeval',?1,?2,'warning-reeval','REPAIRER','OPEN',
+                         'reviewer-1','','[]',NULL,?3,?3)",
+            )
+            .bind(&intake_id)
+            .bind(&candidate_id)
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query::query(
+                "INSERT INTO gate_decisions(candidate_id,outcome,reasons_json,decided_at)
+                 VALUES (?1,'REPAIR_REQUIRED','[\"1 reviewer finding(s) remain open\"]',?2)",
+            )
+            .bind(&candidate_id)
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let path = format!("/agentic/requests/{intake_id}/findings/warning-reeval/disposition");
+            let body = json!({
+                "status": "RESOLVED",
+                "evidenceRefs": ["test:warning_fixed"],
+            });
+            let unauthorized = fixture
+                .router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(&path)
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+            let disposition = fixture
+                .app
+                .db
+                .finding_disposition(&intake_id, "warning-reeval")
+                .await
+                .unwrap();
+            assert_eq!(disposition.status, "OPEN");
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .gate_for_candidate(&candidate_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .outcome,
+                factory_native::quality::GateOutcome::RepairRequired
+            );
+            let revisions_before: i64 = sqlx::query_scalar::query_scalar(
+                "SELECT COUNT(*) FROM gate_decision_revisions WHERE candidate_id=?1",
+            )
+            .bind(&candidate_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(revisions_before, 0);
+
+            let (status, resolved) = send(&fixture.router, "POST", &path, Some(body.clone())).await;
+            assert_eq!(status, StatusCode::OK, "{resolved}");
+            assert_eq!(resolved["status"], "RESOLVED");
+            let revised_gate = fixture
+                .app
+                .db
+                .gate_for_candidate(&candidate_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                revised_gate.outcome,
+                factory_native::quality::GateOutcome::Accepted,
+                "{:?}",
+                revised_gate.reasons
+            );
+            let (status, replay) = send(&fixture.router, "POST", &path, Some(body)).await;
+            assert_eq!(status, StatusCode::OK, "{replay}");
+            assert_eq!(replay["status"], "RESOLVED");
+            let revisions_after: i64 = sqlx::query_scalar::query_scalar(
+                "SELECT COUNT(*) FROM gate_decision_revisions WHERE candidate_id=?1",
+            )
+            .bind(&candidate_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(revisions_after, 1);
+            let (candidate_count, receipt_count): (i64, i64) = sqlx::query_as::query_as(
+                "SELECT (SELECT COUNT(*) FROM candidates WHERE id=?1),
+                        (SELECT COUNT(*) FROM quality_receipts WHERE candidate_id=?1)",
+            )
+            .bind(&candidate_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(candidate_count, 1);
+            assert_eq!(receipt_count, 2);
+
+            pool.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
         async fn decisions_project_an_exact_intake_action_and_reject_a_stale_profile_guard() {
             let fixture = setup().await;
             let (status, _) = enable_policy(&fixture).await;
@@ -19942,6 +29354,7 @@ mod tests {
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let intake_id = created["id"].as_str().unwrap().to_owned();
             let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
+            seed_complete_planning(&fixture, &intake_id, ParticipantSeed::Matching).await;
             let plan_hash = context.plan.plan_hash.clone();
             let profile_revision_id = context.context.profile_revision_id.clone();
             let profile_hash = context.context.profile_hash.clone();
@@ -20203,6 +29616,2480 @@ mod tests {
             let _ = std::fs::remove_dir_all(fixture.repository);
         }
 
+        #[tokio::test]
+        async fn issue_keys_freeze_links_and_retry_route_is_operator_only() {
+            use factory_native::github::{GitHubIssue, GitHubLabel};
+
+            let fixture = setup().await;
+            let (status, policy) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED, "{policy}");
+
+            let mut body = json!({
+                "project_id": fixture.project_id,
+                "objective": "Deliver issue 5.",
+                "execution_profile_id": fixture.profile.id,
+                "mode": "REVIEW_PLAN",
+                "idempotency_key": "issue-links-api-foreign",
+                "issue_keys": [{"owner": "other", "repo": "widgets", "number": 5}],
+            });
+            let (status, error) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{error}");
+            assert_eq!(error["code"], "ISSUE_REPOSITORY_NOT_BOUND");
+
+            fixture
+                .app
+                .db
+                .bind_project_github(
+                    &fixture.project_id,
+                    factory_native::db::NewProjectGitHubBinding {
+                        owner: "acme",
+                        repo: "widgets",
+                        default_branch: "main",
+                        repository_github_id: Some(42),
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_github_connection(
+                    &factory_native::provider_secrets::EncryptedCredential {
+                        ciphertext: "ciphertext".into(),
+                        nonce: "nonce".into(),
+                        fingerprint: "fingerprint".into(),
+                    },
+                    "octo",
+                    &[],
+                    false,
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            let issue = GitHubIssue {
+                number: 5,
+                github_id: 55,
+                title: "Bounded issue".into(),
+                body: "Do a bounded task.".into(),
+                body_truncated: false,
+                state: "open".into(),
+                state_reason: None,
+                labels: vec![GitHubLabel {
+                    name: "factory:r0".into(),
+                    color: None,
+                }],
+                author: Some("octo".into()),
+                author_id: Some(7),
+                author_association: Some("MEMBER".into()),
+                html_url: "https://github.com/acme/widgets/issues/5".into(),
+                comments: 0,
+                created_at: "2026-10-01T00:00:00Z".into(),
+                updated_at: "2026-10-02T00:00:00Z".into(),
+                closed_at: None,
+            };
+            fixture
+                .app
+                .db
+                .record_github_sync_result(factory_native::db::GitHubSyncResultWrite {
+                    project_id: &fixture.project_id,
+                    repo_full_name: "acme/widgets",
+                    issues: std::slice::from_ref(&issue),
+                    page_etags: &[],
+                    etag: None,
+                    truncated: false,
+                    connection_revision: 1,
+                })
+                .await
+                .unwrap();
+
+            body["idempotency_key"] = json!("issue-links-api-duplicate");
+            body["issue_keys"] = json!([
+                {"owner": "acme", "repo": "widgets", "number": 5},
+                {"owner": "acme", "repo": "widgets", "number": 5}
+            ]);
+            let (status, error) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{error}");
+            assert_eq!(error["code"], "ISSUE_DUPLICATE");
+
+            body["idempotency_key"] = json!("issue-links-api-valid");
+            body["issue_keys"] = json!([{"owner": "acme", "repo": "widgets", "number": 5}]);
+            let (status, created) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            assert_eq!(created["linked_issues"][0]["issueNumber"], 5);
+            assert_eq!(created["linked_issues"][0]["role"], "PRIMARY");
+            assert_eq!(created["linked_issues"][0]["state"], "READY");
+            let request_id = created["id"].as_str().unwrap().to_owned();
+            let (status, detail) = send(
+                &fixture.router,
+                "GET",
+                &format!("/intake/requests/{request_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                detail["linked_issues"][0]["repositoryFullName"],
+                "acme/widgets"
+            );
+
+            let mut closed_issue = issue.clone();
+            closed_issue.state = "closed".into();
+            closed_issue.state_reason = Some("completed".into());
+            closed_issue.closed_at = Some("2026-10-03T00:00:00Z".into());
+            closed_issue.updated_at = "2026-10-03T00:00:00Z".into();
+            fixture
+                .app
+                .db
+                .record_github_sync_result(factory_native::db::GitHubSyncResultWrite {
+                    project_id: &fixture.project_id,
+                    repo_full_name: "acme/widgets",
+                    issues: std::slice::from_ref(&closed_issue),
+                    page_etags: &[],
+                    etag: None,
+                    truncated: false,
+                    connection_revision: 1,
+                })
+                .await
+                .unwrap();
+            body["idempotency_key"] = json!("issue-links-api-closed");
+            let (status, error) =
+                send(&fixture.router, "POST", "/intake/requests", Some(body)).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{error}");
+            assert_eq!(error["code"], "ISSUE_CLOSED");
+
+            let retry_uri = "/issue-links/link-1/delivery/event-1/retry";
+            let response = fixture
+                .router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(retry_uri)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let (status, _) = send(&fixture.router, "POST", retry_uri, None).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            let links = fixture
+                .app
+                .db
+                .issue_links_for_request(&request_id)
+                .await
+                .unwrap();
+            assert_eq!(links.len(), 1);
+            assert_eq!(links[0].github_issue_id, Some(55));
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[derive(Clone)]
+        struct StackSelectionUpstreamState {
+            content: Arc<Mutex<String>>,
+            hits: Arc<Mutex<usize>>,
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn stack_selection_upstream(
+            content: Arc<Mutex<String>>,
+        ) -> (String, Arc<Mutex<usize>>) {
+            use axum::{Router, routing::post};
+            let hits = Arc::new(Mutex::new(0));
+            let state = StackSelectionUpstreamState {
+                content,
+                hits: hits.clone(),
+            };
+            async fn chat(
+                axum::extract::State(state): axum::extract::State<StackSelectionUpstreamState>,
+            ) -> axum::Json<Value> {
+                *state.hits.lock().unwrap() += 1;
+                axum::Json(json!({
+                    "choices": [{"message": {"content": state.content.lock().unwrap().clone()}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
+                }))
+            }
+            let app = Router::new()
+                .route("/chat/completions", post(chat))
+                .with_state(state);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            (url, hits)
+        }
+
+        #[cfg(feature = "test-support")]
+        fn empty_git_repository() -> (PathBuf, String) {
+            let repository = std::env::temp_dir().join(format!(
+                "factory-core-greenfield-repo-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir(&repository).unwrap();
+            for arguments in [
+                vec!["init", "-q"],
+                vec!["config", "user.name", "Fixture"],
+                vec!["config", "user.email", "fixture@example.invalid"],
+            ] {
+                assert!(
+                    std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&repository)
+                        .args(arguments)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            std::fs::write(repository.join("README.md"), "# Calculator\n").unwrap();
+            for arguments in [vec!["add", "--all"], vec!["commit", "-qm", "empty"]] {
+                assert!(
+                    std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&repository)
+                        .args(arguments)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            let base = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            (
+                repository,
+                String::from_utf8_lossy(&base.stdout).trim().to_owned(),
+            )
+        }
+
+        #[cfg(feature = "test-support")]
+        fn stack_selection_content(
+            option_id: &str,
+            language: &str,
+            framework: &str,
+            environment: Option<Value>,
+        ) -> String {
+            serde_json::to_string(&json!({
+                "optionId": option_id,
+                "language": language,
+                "framework": framework,
+                "rationale": "The bounded planner selects a deterministic option for this objective.",
+                "environmentProposal": environment,
+            }))
+            .unwrap()
+        }
+
+        #[cfg(feature = "test-support")]
+        fn calculator_environment_proposal() -> Value {
+            json!({
+                "nixpkgs": "github:NixOS/nixpkgs/2222222222222222222222222222222222222222",
+                "toolchains": [{
+                    "id": "rust",
+                    "version": "1.90.0",
+                    "source": "lead-proposal",
+                    "evidence": ["planner-stack-selection"]
+                }],
+                "packages": [{
+                    "name": "cargo",
+                    "version": "1.90.0",
+                    "license": "MIT",
+                    "source": "nixpkgs",
+                    "attr": "cargo",
+                    "sha256": "",
+                    "unfree": false,
+                    "attribution": "Cargo is MIT licensed."
+                }, {
+                    "name": "axum",
+                    "version": "0.8",
+                    "license": "MIT",
+                    "source": "nixpkgs",
+                    "attr": "axum",
+                    "sha256": "",
+                    "unfree": false,
+                    "attribution": "axum is MIT licensed."
+                }],
+                "commands": {
+                    "test": {
+                        "argv": ["cargo", "test"],
+                        "cwd": ".",
+                        "timeoutSecs": 300,
+                        "expectExit": 0
+                    }
+                }
+            })
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn create_calculator_intake(fixture: &Fixture, key: &str) -> String {
+            let (status, intake) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(json!({
+                    "project_id": fixture.project_id,
+                    "objective": "Build a calculator application. You choose the stack.",
+                    "execution_profile_id": fixture.profile.id,
+                    "mode": "REVIEW_PLAN",
+                    "idempotency_key": key,
+                    "authorized_micros": 1_000_000
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            intake["id"].as_str().unwrap().to_string()
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn project_config_with_capabilities(
+            fixture: &Fixture,
+            capabilities: Vec<factory_native::lead::Capability>,
+        ) -> factory_native::lead::ProjectConfig {
+            let config = fixture
+                .app
+                .db
+                .project_config(&fixture.project_id)
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .update_project_config(
+                    &fixture.project_id,
+                    &NewProjectConfig {
+                        expected_revision: config.revision,
+                        allowed_paths: config.allowed_paths,
+                        capabilities,
+                        quality_profile: config.quality_profile,
+                        active: true,
+                    },
+                )
+                .await
+                .unwrap()
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn greenfield_calculator_selects_and_uses_a_model_stack_without_operator_input() {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let content = Arc::new(Mutex::new(stack_selection_content(
+                "rust-service",
+                "rust",
+                "axum",
+                Some(calculator_environment_proposal()),
+            )));
+            let (url, hits) = stack_selection_upstream(content).await;
+            let key = environment_master_key();
+            let fixture = setup_with(Some(&key), &url, &url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let intake_id = create_calculator_intake(&fixture, "calculator-stack-selection").await;
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            let config = project_config_with_capabilities(
+                &fixture,
+                vec![
+                    factory_native::lead::Capability::RepositoryEdit,
+                    factory_native::lead::Capability::GenericToolchain,
+                ],
+            )
+            .await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&record.lead_request_id)
+                .await
+                .unwrap();
+            let compiled = compile_stack_decision(
+                &fixture.app,
+                &record,
+                factory_native::planning::PlanningLane::FormalSpec,
+                &factory_native::agentic::StackProfile::default(),
+                &config,
+                true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                compiled.decision.source,
+                factory_native::planning::StackSource::Model
+            );
+            assert_eq!(compiled.decision.selected, "rust-service");
+            assert!(compiled.decision.options.len() >= 2);
+            assert!(
+                compiled
+                    .decision
+                    .required_capabilities
+                    .iter()
+                    .any(|value| value == "rust")
+            );
+            assert!(compiled.environment_proposal.is_some());
+            assert_eq!(*hits.lock().unwrap(), 1);
+
+            // The selected stack must drive the other planning artifacts, not
+            // the empty triage profile.
+            let graph = factory_native::agentic::ValidatedWorkGraph {
+                units: vec![factory_native::agentic::PlannedWorkUnit {
+                    id: "calculator".into(),
+                    title: "Calculator".into(),
+                    objective: "Implement the calculator.".into(),
+                    depends_on: Vec::new(),
+                    paths: vec!["src".into()],
+                    acceptance: vec!["The calculator adds two numbers.".into()],
+                }],
+                assumptions: Vec::new(),
+                risks: Vec::new(),
+                topological_order: vec!["calculator".into()],
+                graph_sha256: "a".repeat(64),
+            };
+            let architecture = factory_native::planning::architecture::build_architecture_plan(
+                &record.objective,
+                &graph,
+                &compiled.stack_profile,
+            );
+            architecture.validate().unwrap();
+            assert!(
+                architecture.stack.iter().any(|value| value == "rust"),
+                "{architecture:?}"
+            );
+            let skill_plan = factory_native::planning::skills::build_skill_plan(
+                &compiled.stack_profile,
+                &[],
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .unwrap();
+            assert!(skill_plan.needs.iter().any(|value| value == "rust"));
+            let reviewer_plan = factory_native::planning::ReviewerPlan::for_lane(
+                factory_native::planning::PlanningLane::FormalSpec,
+                true,
+            );
+            let dod = factory_native::planning::dod::build_definition_of_done(
+                factory_native::planning::PlanningLane::FormalSpec,
+                &compiled.stack_profile,
+                factory_native::planning::DocumentationPlan::default(),
+                reviewer_plan,
+            );
+            dod.validate().unwrap();
+            assert!(
+                dod.project_checks
+                    .iter()
+                    .any(|check| check.id == "rust-test"),
+                "{dod:?}"
+            );
+
+            // The selected stack's proposal is the environment fallback when
+            // the recorded Lead plan has none. A generated greenfield plan is
+            // resolved by the builder port and remains CORE_VALIDATED until the
+            // Lead environment review approves it.
+            let (repository, base) = empty_git_repository();
+            let mut greenfield = config.clone();
+            greenfield.repository = repository.to_string_lossy().into_owned();
+            greenfield.base_commit = base;
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FakeEnvironmentBuilder));
+            let plan = compile_environment_for_request(
+                &fixture.app,
+                &record,
+                &greenfield,
+                1,
+                "R0",
+                compiled.environment_proposal.clone(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                plan.status,
+                factory_native::planning::environment::EnvironmentPlanStatus::CoreValidated
+            );
+            assert!(
+                plan.toolchains
+                    .iter()
+                    .any(|toolchain| { toolchain.id == "rust" && toolchain.version == "1.90.0" })
+            );
+            assert!(
+                plan.packages
+                    .iter()
+                    .any(|package| package.name == "cargo" && package.license == "MIT")
+            );
+            assert!(plan.files.iter().any(|file| file.path == "flake.nix"));
+            assert_eq!(
+                plan.require_lead_approval().unwrap_err().code,
+                factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentLeadApprovalRequired
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+            let _ = std::fs::remove_dir_all(repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn invalid_model_stack_selection_fails_closed() {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let content = Arc::new(Mutex::new(stack_selection_content(
+                "go-service",
+                "go",
+                "gin",
+                Some(calculator_environment_proposal()),
+            )));
+            let (url, _hits) = stack_selection_upstream(content).await;
+            let key = environment_master_key();
+            let fixture = setup_with(Some(&key), &url, &url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let intake_id = create_calculator_intake(&fixture, "invalid-stack-selection").await;
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            let config = project_config_with_capabilities(
+                &fixture,
+                vec![
+                    factory_native::lead::Capability::RepositoryEdit,
+                    factory_native::lead::Capability::GenericToolchain,
+                ],
+            )
+            .await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&record.lead_request_id)
+                .await
+                .unwrap();
+            let failure = compile_stack_decision(
+                &fixture.app,
+                &record,
+                factory_native::planning::PlanningLane::FormalSpec,
+                &factory_native::agentic::StackProfile::default(),
+                &config,
+                true,
+            )
+            .await
+            .unwrap_err();
+            match failure {
+                PlanningCompileFailure::Conflict(conflict) => {
+                    assert_eq!(conflict.code, "STACK_SELECTION_INVALID");
+                    assert!(conflict.options.is_some());
+                }
+                PlanningCompileFailure::Internal(error) => {
+                    panic!("unexpected internal error: {error:?}")
+                }
+            }
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn missing_environment_proposal_is_a_typed_stack_conflict() {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let content = Arc::new(Mutex::new(stack_selection_content(
+                "python-service",
+                "python",
+                "fastapi",
+                None,
+            )));
+            let (url, _hits) = stack_selection_upstream(content).await;
+            let key = environment_master_key();
+            let fixture = setup_with(Some(&key), &url, &url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let intake_id =
+                create_calculator_intake(&fixture, "missing-environment-proposal").await;
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            let config = project_config_with_capabilities(
+                &fixture,
+                vec![
+                    factory_native::lead::Capability::RepositoryEdit,
+                    factory_native::lead::Capability::GenericToolchain,
+                ],
+            )
+            .await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&record.lead_request_id)
+                .await
+                .unwrap();
+            let failure = compile_stack_decision(
+                &fixture.app,
+                &record,
+                factory_native::planning::PlanningLane::FormalSpec,
+                &factory_native::agentic::StackProfile::default(),
+                &config,
+                true,
+            )
+            .await
+            .unwrap_err();
+            match failure {
+                PlanningCompileFailure::Conflict(conflict) => {
+                    assert_eq!(conflict.code, "STACK_ENVIRONMENT_REQUIRED");
+                    assert!(conflict.options.is_some());
+                }
+                PlanningCompileFailure::Internal(error) => {
+                    panic!("unexpected internal error: {error:?}")
+                }
+            }
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn stack_selection_model_failure_is_typed() {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let content = Arc::new(Mutex::new("not a stack selection".to_string()));
+            let (url, _hits) = stack_selection_upstream(content).await;
+            let key = environment_master_key();
+            let fixture = setup_with(Some(&key), &url, &url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let intake_id =
+                create_calculator_intake(&fixture, "stack-selection-model-failure").await;
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            let config = project_config_with_capabilities(
+                &fixture,
+                vec![
+                    factory_native::lead::Capability::RepositoryEdit,
+                    factory_native::lead::Capability::GenericToolchain,
+                ],
+            )
+            .await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&record.lead_request_id)
+                .await
+                .unwrap();
+            let failure = compile_stack_decision(
+                &fixture.app,
+                &record,
+                factory_native::planning::PlanningLane::FormalSpec,
+                &factory_native::agentic::StackProfile::default(),
+                &config,
+                true,
+            )
+            .await
+            .unwrap_err();
+            match failure {
+                PlanningCompileFailure::Conflict(conflict) => {
+                    assert_eq!(conflict.code, "STACK_SELECTION_MODEL_FAILED");
+                }
+                PlanningCompileFailure::Internal(error) => {
+                    panic!("unexpected internal error: {error:?}")
+                }
+            }
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[derive(Clone)]
+        struct EnvironmentReviewUpstreamState {
+            content: Arc<Mutex<String>>,
+            hits: Arc<Mutex<usize>>,
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn environment_review_upstream(
+            content: Arc<Mutex<String>>,
+        ) -> (String, Arc<Mutex<usize>>) {
+            use axum::{Router, routing::post};
+            let hits = Arc::new(Mutex::new(0));
+            let state = EnvironmentReviewUpstreamState {
+                content,
+                hits: hits.clone(),
+            };
+            async fn chat(
+                axum::extract::State(state): axum::extract::State<EnvironmentReviewUpstreamState>,
+            ) -> axum::Json<Value> {
+                *state.hits.lock().unwrap() += 1;
+                axum::Json(json!({
+                    "choices": [{"message": {"content": state.content.lock().unwrap().clone()}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
+                }))
+            }
+            let app = Router::new()
+                .route("/chat/completions", post(chat))
+                .with_state(state);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            (url, hits)
+        }
+
+        #[cfg(feature = "test-support")]
+        fn environment_master_key() -> factory_native::provider_secrets::ProviderSecretKey {
+            use std::io::Write;
+            let path = std::env::temp_dir().join(format!(
+                "factory-core-environment-master-key-{}.txt",
+                uuid::Uuid::new_v4()
+            ));
+            let mut file = std::fs::File::create(&path).unwrap();
+            file.write_all("55".repeat(32).as_bytes()).unwrap();
+            drop(file);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            let key =
+                factory_native::provider_secrets::ProviderSecretKey::from_file(&path).unwrap();
+            let _ = std::fs::remove_file(path);
+            key
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn lead_model_is_the_environment_approver_and_operator_cannot_forge() {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let content = Arc::new(Mutex::new(String::new()));
+            let (url, hits) = environment_review_upstream(content.clone()).await;
+            let key = environment_master_key();
+            let fixture = setup_with(Some(&key), &url, &url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let (status, intake) =
+                create_intake_with_amount(&fixture, "environment-model-request", Some(1_000_000))
+                    .await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&record.lead_request_id)
+                .await
+                .unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            let plan =
+                compile_environment_for_request(&fixture.app, &record, &config, 1, "R0", None)
+                    .await
+                    .unwrap();
+            let forged = fixture
+                .router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(format!("/agentic/requests/{intake_id}/environment/review"))
+                        .header("authorization", "Bearer operator-token")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            json!({
+                                "planSha256": plan.plan_sha256,
+                                "planRevision": 1,
+                                "decision": "APPROVE",
+                                "rationale": "The operator tries to approve directly.",
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                forged.status().is_client_error(),
+                "operator-supplied decisions must be rejected: {}",
+                forged.status()
+            );
+            let (status, projection) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/environment"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{projection}");
+            assert_eq!(projection["status"], "CORE_VALIDATED");
+            assert!(projection["leadApproval"].is_null());
+            *content.lock().unwrap() = serde_json::to_string(&json!({
+                "schemaVersion": 1,
+                "requestId": record.id,
+                "actionId": record.action_id,
+                "planSha256": plan.plan_sha256,
+                "planRevision": 1,
+                "riskClass": "R0",
+                "decision": "APPROVE",
+                "rationale": "The committed devenv plan is exact, licensed and has no blocker.",
+                "constraints": [],
+            }))
+            .unwrap();
+            let (status, reviewed) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/environment/review"),
+                Some(json!({
+                    "planSha256": plan.plan_sha256,
+                    "planRevision": 1,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{reviewed}");
+            assert_eq!(reviewed["status"], "FROZEN", "{reviewed}");
+            assert_eq!(reviewed["leadApproval"]["decision"], "APPROVED");
+            assert_eq!(
+                reviewed["leadApproval"]["principalId"],
+                format!("lead:{}", record.lead_request_id)
+            );
+            assert_eq!(
+                reviewed["leadApproval"]["modelCall"]["provider"],
+                "opencode-go"
+            );
+            assert_eq!(reviewed["leadApproval"]["modelCall"]["mechanism"], "MODEL");
+            assert!(
+                reviewed["leadApproval"]["modelCall"]["reservationId"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+            assert_eq!(*hits.lock().unwrap(), 1);
+            let first_review = reviewed["leadApproval"]["reviewId"].clone();
+            let (status, replayed) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/environment/review"),
+                Some(json!({
+                    "planSha256": plan.plan_sha256,
+                    "planRevision": 1,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{replayed}");
+            assert_eq!(replayed["leadApproval"]["reviewId"], first_review);
+            assert_eq!(*hits.lock().unwrap(), 1);
+
+            let (status, stale) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/environment/review"),
+                Some(json!({
+                    "planSha256": "f".repeat(64),
+                    "planRevision": 1,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+            assert_eq!(stale["code"], "ENVIRONMENT_HASH_MISMATCH");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        struct FakeEnvironmentBuilder;
+
+        impl factory_native::planning::environment::EnvironmentBuilder for FakeEnvironmentBuilder {
+            fn descriptor(
+                &self,
+            ) -> factory_native::planning::environment::EnvironmentBuilderDescriptor {
+                use factory_native::planning::environment::{
+                    ENVIRONMENT_POLICY_REVISION, EnvironmentBuilderDescriptor,
+                    EnvironmentBuilderStatus,
+                };
+                EnvironmentBuilderDescriptor {
+                    image: "factory/environment-builder".into(),
+                    digest: format!("sha256:{}", "a".repeat(64)),
+                    platform: "x86_64-linux".into(),
+                    policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                    default_nixpkgs:
+                        "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
+                    status: EnvironmentBuilderStatus::Ready,
+                }
+            }
+
+            fn resolve<'a>(
+                &'a self,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _workspace: Option<&'a std::path::Path>,
+            ) -> factory_native::planning::environment::EnvironmentResolutionFuture<'a>
+            {
+                Box::pin(async move {
+                    use factory_native::planning::environment::{
+                        ClosureLicense, ENVIRONMENT_SCHEMA_VERSION, EnvironmentFile,
+                        EnvironmentFileOrigin, EnvironmentResolution, VerifiedPackage,
+                    };
+                    let content = "{\"nodes\":{\"nixpkgs\":{\"locked\":{\"owner\":\"NixOS\",\"repo\":\"nixpkgs\",\"rev\":\"2222222222222222222222222222222222222222\"}}}}"
+                        .to_string();
+                    let packages = plan
+                        .packages
+                        .iter()
+                        .map(|package| {
+                            let attr = if package.attr.trim().is_empty() {
+                                package.name.trim().to_owned()
+                            } else {
+                                package.attr.trim().to_owned()
+                            };
+                            VerifiedPackage {
+                                name: package.name.clone(),
+                                attr: attr.clone(),
+                                store_path: format!(
+                                    "/nix/store/{}-{}",
+                                    "c".repeat(32),
+                                    package.name
+                                ),
+                                version: package.version.clone(),
+                                version_constraint: package.version.clone(),
+                                license: package.license.clone(),
+                                unfree: package.unfree,
+                            }
+                        })
+                        .collect();
+                    Ok(EnvironmentResolution {
+                        schema_version: ENVIRONMENT_SCHEMA_VERSION,
+                        plan_sha256: plan.plan_sha256.clone(),
+                        files: vec![EnvironmentFile {
+                            path: "flake.lock".into(),
+                            sha256: factory_native::planning::environment::sha256_hex(
+                                content.as_bytes(),
+                            ),
+                            origin: EnvironmentFileOrigin::Generated,
+                            content: Some(content),
+                        }],
+                        nix_version: "2.28.3".into(),
+                        devenv_version: "1.11.2".into(),
+                        packages,
+                        closure_licenses: vec![ClosureLicense {
+                            path: format!("/nix/store/{}-bash-5.2", "b".repeat(32)),
+                            name: "bash".into(),
+                            version: "5.2".into(),
+                            license: "GPL-3.0-or-later".into(),
+                            unfree: false,
+                        }],
+                    })
+                })
+            }
+
+            fn build<'a>(
+                &'a self,
+                spec: &'a factory_native::planning::environment::EnvironmentSpec,
+                _plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _workspace: Option<&'a std::path::Path>,
+            ) -> factory_native::planning::environment::EnvironmentBuilderFuture<'a> {
+                Box::pin(async move {
+                    use factory_native::planning::environment::{
+                        ENVIRONMENT_POLICY_REVISION, ENVIRONMENT_SCHEMA_VERSION,
+                        EnvironmentBuildReceipt, EnvironmentBuilderStatus, SandboxAttestation,
+                    };
+                    Ok(EnvironmentBuildReceipt {
+                        schema_version: ENVIRONMENT_SCHEMA_VERSION,
+                        receipt_id: "fake-receipt".into(),
+                        spec_sha256: spec.spec_sha256.clone(),
+                        platform: spec.platform.clone(),
+                        builder_image: spec.builder_image.clone(),
+                        builder_image_digest: spec.builder_image_digest.clone(),
+                        builder_policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                        status: EnvironmentBuilderStatus::Succeeded,
+                        store_path: "/nix/store/fake".into(),
+                        output_sha256: "b".repeat(64),
+                        sbom_sha256: spec.sbom_sha256.clone(),
+                        log_ref: "evidence/fake.log".into(),
+                        sandbox_attestation: SandboxAttestation {
+                            non_root: true,
+                            no_secrets: true,
+                            no_host_network: true,
+                            no_host_socket: true,
+                            no_host_mount: true,
+                            sandbox: true,
+                            impure: false,
+                            bounded_resources: true,
+                        },
+                        blockers: Vec::new(),
+                        duration_ms: 1,
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                    })
+                })
+            }
+        }
+
+        #[cfg(feature = "test-support")]
+        struct FailingEnvironmentBuilder;
+
+        #[cfg(feature = "test-support")]
+        impl factory_native::planning::environment::EnvironmentBuilder for FailingEnvironmentBuilder {
+            fn descriptor(
+                &self,
+            ) -> factory_native::planning::environment::EnvironmentBuilderDescriptor {
+                use factory_native::planning::environment::{
+                    ENVIRONMENT_POLICY_REVISION, EnvironmentBuilderDescriptor,
+                    EnvironmentBuilderStatus,
+                };
+                EnvironmentBuilderDescriptor {
+                    image: "factory/environment-builder".into(),
+                    digest: format!("sha256:{}", "a".repeat(64)),
+                    platform: "x86_64-linux".into(),
+                    policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                    default_nixpkgs:
+                        "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
+                    status: EnvironmentBuilderStatus::Ready,
+                }
+            }
+
+            fn resolve<'a>(
+                &'a self,
+                _plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _workspace: Option<&'a std::path::Path>,
+            ) -> factory_native::planning::environment::EnvironmentResolutionFuture<'a>
+            {
+                Box::pin(async {
+                    Err(factory_native::planning::environment::EnvironmentError::new(
+                        factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPinMissing,
+                        "the fixture builder is blocked before the fix",
+                    ))
+                })
+            }
+
+            fn build<'a>(
+                &'a self,
+                _spec: &'a factory_native::planning::environment::EnvironmentSpec,
+                _plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _workspace: Option<&'a std::path::Path>,
+            ) -> factory_native::planning::environment::EnvironmentBuilderFuture<'a> {
+                Box::pin(async {
+                    Err(factory_native::planning::environment::EnvironmentError::new(
+                        factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentBuildFailed,
+                        "the fixture builder cannot build",
+                    ))
+                })
+            }
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn bind_test_campaign(db_path: &std::path::Path, request_id: &str) {
+            use sqlx::connection::Connection as _;
+            use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection};
+            let options = SqliteConnectOptions::new().filename(db_path);
+            let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+            sqlx::query::query(
+                "INSERT OR IGNORE INTO campaigns(id,action_id,status,created_at)
+                 SELECT 'test-bound-campaign',action_id,'BLOCKED_AUTHORIZATION',?2
+                 FROM intake_requests WHERE id=?1",
+            )
+            .bind(request_id)
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(&mut connection)
+            .await
+            .unwrap();
+            sqlx::query::query(
+                "UPDATE intake_requests SET campaign_id='test-bound-campaign' WHERE id=?1",
+            )
+            .bind(request_id)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        }
+
+        #[cfg(feature = "test-support")]
+        fn python_calculator_environment_proposal() -> Value {
+            json!({
+                "nixpkgs": "github:NixOS/nixpkgs/2222222222222222222222222222222222222222",
+                "toolchains": [{
+                    "id": "python",
+                    "version": "3.12.7",
+                    "source": "stack-selection",
+                    "evidence": ["selected python-service"]
+                }],
+                "packages": [
+                    {
+                        "name": "fastapi",
+                        "version": "0.115",
+                        "license": "MIT",
+                        "source": "nixpkgs",
+                        "attr": "python312Packages.fastapi",
+                        "sha256": "",
+                        "unfree": false,
+                        "attribution": "FastAPI is MIT licensed."
+                    },
+                    {
+                        "name": "pytest",
+                        "version": "8",
+                        "license": "MIT",
+                        "source": "nixpkgs",
+                        "attr": "python312Packages.pytest",
+                        "sha256": "",
+                        "unfree": false,
+                        "attribution": "pytest is MIT licensed."
+                    }
+                ],
+                "commands": {
+                    "test": {
+                        "argv": ["python3", "-m", "pytest"],
+                        "cwd": ".",
+                        "timeoutSecs": 300,
+                        "expectExit": 0
+                    }
+                }
+            })
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn environment_recompile_creates_a_new_immutable_revision() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let (repository, base) = empty_git_repository();
+            let project = fixture
+                .app
+                .db
+                .register_project(&repository, "environment-recompile-project")
+                .await
+                .unwrap();
+            let config = fixture
+                .app
+                .db
+                .update_project_config(
+                    &project.id,
+                    &NewProjectConfig {
+                        expected_revision: 1,
+                        allowed_paths: vec!["src".into()],
+                        capabilities: vec![factory_native::lead::Capability::RepositoryEdit],
+                        quality_profile: factory_native::lead::QualityProfile::Generic,
+                        active: true,
+                    },
+                )
+                .await
+                .unwrap();
+            let (policy_status, _) = enable_policy_for_project(
+                &fixture,
+                &project.id,
+                &config.config_hash,
+                "environment-recompile-policy",
+            )
+            .await;
+            assert!(
+                matches!(policy_status, StatusCode::CREATED | StatusCode::OK),
+                "{policy_status}"
+            );
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FailingEnvironmentBuilder));
+            let (status, intake) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(json!({
+                    "project_id": project.id,
+                    "objective": "Add a Node.js utility.",
+                    "execution_profile_id": fixture.profile.id,
+                    "mode": "REVIEW_PLAN",
+                    "idempotency_key": "environment-recompile-request",
+                    "environment_constraints": {
+                        "packages": [{
+                            "name": "nodejs",
+                            "version": "22",
+                            "license": "MIT",
+                            "source": "nixpkgs",
+                            "attr": "nodejs_22",
+                            "sha256": "",
+                            "unfree": false,
+                            "attribution": "Node.js is MIT licensed."
+                        }]
+                    }
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            assert_eq!(config.base_commit, base);
+            let blocked =
+                compile_environment_for_request(&fixture.app, &record, &config, 1, "R0", None)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                blocked.status,
+                factory_native::planning::environment::EnvironmentPlanStatus::Blocked
+            );
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FakeEnvironmentBuilder));
+            let (status, projection) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/environment/recompile"),
+                Some(json!({"rationale": "The builder now resolves the package."})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{projection}");
+            assert_eq!(projection["status"], "CORE_VALIDATED", "{projection}");
+            assert_eq!(projection["planRevision"], 2);
+            assert!(
+                projection["plan"]["packages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|package| package["name"] == "nodejs")
+            );
+            let old = fixture
+                .app
+                .db
+                .environment_plan(&intake_id, 1)
+                .await
+                .unwrap();
+            assert_eq!(old.status, "BLOCKED");
+            assert_ne!(old.plan.plan_sha256, projection["planSha256"]);
+            let events = fixture.app.db.events().await.unwrap();
+            let audit = events
+                .iter()
+                .find(|event| event.kind == "environment.plan.recompiled")
+                .expect("recompile audit event");
+            assert!(audit.detail.contains("\"previousRevision\":1"));
+            assert!(audit.detail.contains("\"newRevision\":2"));
+            assert!(
+                audit
+                    .detail
+                    .contains("The builder now resolves the package.")
+            );
+
+            let unauthorized = fixture
+                .router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(format!(
+                            "/agentic/requests/{intake_id}/environment/recompile"
+                        ))
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            json!({"rationale": "Unauthorized recompile attempt."}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+            bind_test_campaign(&fixture.path, &intake_id).await;
+            let (status, conflict) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/environment/recompile"),
+                Some(json!({"rationale": "Try to replace a bound environment."})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+            assert_eq!(conflict["code"], "RECOMPILE_EXECUTION_BOUND");
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .latest_environment_plan(&intake_id)
+                    .await
+                    .unwrap()
+                    .revision,
+                2
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+            let _ = std::fs::remove_dir_all(repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn environment_recompile_still_blocked_returns_the_new_blocked_revision() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let (repository, _base) = empty_git_repository();
+            let project = fixture
+                .app
+                .db
+                .register_project(&repository, "environment-recompile-blocked-project")
+                .await
+                .unwrap();
+            let config = fixture
+                .app
+                .db
+                .update_project_config(
+                    &project.id,
+                    &NewProjectConfig {
+                        expected_revision: 1,
+                        allowed_paths: vec!["src".into()],
+                        capabilities: vec![factory_native::lead::Capability::RepositoryEdit],
+                        quality_profile: factory_native::lead::QualityProfile::Generic,
+                        active: true,
+                    },
+                )
+                .await
+                .unwrap();
+            let (policy_status, _) = enable_policy_for_project(
+                &fixture,
+                &project.id,
+                &config.config_hash,
+                "environment-recompile-blocked-policy",
+            )
+            .await;
+            assert!(matches!(
+                policy_status,
+                StatusCode::CREATED | StatusCode::OK
+            ));
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FailingEnvironmentBuilder));
+            let (status, intake) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(json!({
+                    "project_id": project.id,
+                    "objective": "Add a Node.js utility.",
+                    "execution_profile_id": fixture.profile.id,
+                    "mode": "REVIEW_PLAN",
+                    "idempotency_key": "environment-recompile-blocked-request",
+                    "environment_constraints": {
+                        "packages": [{
+                            "name": "nodejs",
+                            "version": "22",
+                            "license": "MIT",
+                            "source": "nixpkgs",
+                            "attr": "nodejs_22",
+                            "sha256": "",
+                            "unfree": false,
+                            "attribution": "Node.js is MIT licensed."
+                        }]
+                    }
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            let first =
+                compile_environment_for_request(&fixture.app, &record, &config, 1, "R0", None)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                first.status,
+                factory_native::planning::environment::EnvironmentPlanStatus::Blocked
+            );
+            let (status, projection) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/environment/recompile"),
+                Some(json!({"rationale": "Retry while the builder is still unavailable."})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{projection}");
+            assert_eq!(projection["status"], "BLOCKED", "{projection}");
+            assert_eq!(projection["planRevision"], 2);
+            assert!(!projection["blockers"].as_array().unwrap().is_empty());
+            let old = fixture
+                .app
+                .db
+                .environment_plan(&intake_id, 1)
+                .await
+                .unwrap();
+            assert_eq!(old.status, "BLOCKED");
+            assert_ne!(old.plan.plan_sha256, projection["planSha256"]);
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+            let _ = std::fs::remove_dir_all(repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn plan_recompile_replaces_an_empty_frozen_environment_before_execution() {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let content = Arc::new(Mutex::new(stack_selection_content(
+                "python-service",
+                "python",
+                "fastapi",
+                Some(python_calculator_environment_proposal()),
+            )));
+            let (url, _hits) = stack_selection_upstream(content).await;
+            let key = environment_master_key();
+            let fixture = setup_with(Some(&key), &url, &url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let (repository, base) = empty_git_repository();
+            let project = fixture
+                .app
+                .db
+                .register_project(&repository, "plan-recompile-project")
+                .await
+                .unwrap();
+            let config = fixture
+                .app
+                .db
+                .update_project_config(
+                    &project.id,
+                    &NewProjectConfig {
+                        expected_revision: 1,
+                        allowed_paths: vec!["src".into()],
+                        capabilities: vec![
+                            factory_native::lead::Capability::RepositoryEdit,
+                            factory_native::lead::Capability::GenericToolchain,
+                        ],
+                        quality_profile: factory_native::lead::QualityProfile::Generic,
+                        active: true,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(config.base_commit, base);
+            let (policy_status, _) = enable_policy_for_project(
+                &fixture,
+                &project.id,
+                &config.config_hash,
+                "plan-recompile-policy",
+            )
+            .await;
+            assert!(
+                matches!(policy_status, StatusCode::CREATED | StatusCode::OK),
+                "{policy_status}"
+            );
+            let (status, intake) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(json!({
+                    "project_id": project.id,
+                    "objective": "Build a calculator application. You choose the stack.",
+                    "execution_profile_id": fixture.profile.id,
+                    "mode": "REVIEW_PLAN",
+                    "idempotency_key": "plan-recompile-request",
+                    "authorized_micros": 1_000_000
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&record.lead_request_id)
+                .await
+                .unwrap();
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FakeEnvironmentBuilder));
+            let graph = factory_native::agentic::validate_work_graph(
+                &factory_native::agentic::WorkGraphModel {
+                    units: vec![factory_native::agentic::PlannedWorkUnit {
+                        id: "calculator".into(),
+                        title: "Calculator".into(),
+                        objective: "Implement the calculator.".into(),
+                        depends_on: Vec::new(),
+                        paths: vec!["src".into()],
+                        acceptance: vec!["The calculator adds two numbers.".into()],
+                    }],
+                    assumptions: Vec::new(),
+                    risks: Vec::new(),
+                },
+                &config.allowed_paths,
+            )
+            .unwrap();
+            let digest = "a".repeat(64);
+            fixture
+                .app
+                .db
+                .save_agentic_work_graph(&factory_native::db::NewAgenticWorkGraph {
+                    request_id: &intake_id,
+                    graph: &graph,
+                    provider: "fixture",
+                    model: "fixture",
+                    schema_sha256: &digest,
+                    request_sha256: &digest,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    cost_micros: 0,
+                    usage_known: false,
+                })
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_planning_artifact(
+                    &intake_id,
+                    "PLAN",
+                    1,
+                    &json!({
+                        "schemaVersion": factory_native::planning::SCHEMA_VERSION,
+                        "planRevision": 1,
+                        "environmentProposal": null
+                    })
+                    .to_string(),
+                )
+                .await
+                .unwrap();
+            let stack_options = factory_native::planning::stack::selection_options(
+                "Build a calculator application. You choose the stack.",
+            );
+            let selected_python = stack_options
+                .iter()
+                .find(|option| option.id == "python-service")
+                .unwrap()
+                .clone();
+            let previous_stack = factory_native::planning::stack::build_model_stack_decision(
+                factory_native::planning::PlanningLane::FormalSpec,
+                &factory_native::agentic::StackProfile::default(),
+                &selected_python,
+                &stack_options,
+                "Build a calculator application. You choose the stack.",
+            )
+            .unwrap();
+            fixture
+                .app
+                .db
+                .save_planning_artifact(
+                    &intake_id,
+                    "STACK",
+                    1,
+                    &serde_json::to_string(&previous_stack).unwrap(),
+                )
+                .await
+                .unwrap();
+            seed_core_test_environment(
+                &fixture.app.db,
+                &fixture.path,
+                &record.action_id,
+                &record.project_id,
+                &config.base_commit,
+                "R0",
+                Some(&intake_id),
+            )
+            .await
+            .unwrap();
+            let previous = fixture
+                .app
+                .db
+                .latest_environment_plan(&intake_id)
+                .await
+                .unwrap();
+            assert_eq!(previous.status, "FROZEN");
+            assert_eq!(previous.revision, 1);
+            let previous_hash = previous.plan.plan_sha256.clone();
+            let (status, recompiled) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan/recompile"),
+                Some(json!({
+                    "rationale": "The empty frozen environment cannot run the selected Python stack."
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{recompiled}");
+            assert_eq!(recompiled["revision"], 2);
+            assert_eq!(recompiled["environment"]["planRevision"], 2);
+            assert!(
+                recompiled["environment"]["plan"]["toolchains"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|toolchain| toolchain["id"] == "python"),
+                "{recompiled}"
+            );
+            assert!(
+                recompiled["environment"]["plan"]["packages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|package| package["name"] == "fastapi")
+            );
+            let old = fixture
+                .app
+                .db
+                .environment_plan(&intake_id, 1)
+                .await
+                .unwrap();
+            assert_eq!(old.status, "FROZEN");
+            assert_eq!(old.plan.plan_sha256, previous_hash);
+            let events = fixture.app.db.events().await.unwrap();
+            let audit = events
+                .iter()
+                .find(|event| event.kind == "plan.recompiled")
+                .expect("plan recompile audit event");
+            assert!(audit.detail.contains("\"previousPlanRevision\":1"));
+            assert!(audit.detail.contains("\"newPlanRevision\":2"));
+            assert!(
+                audit
+                    .detail
+                    .contains("\"previousEnvironmentStatus\":\"FROZEN\"")
+            );
+
+            bind_test_campaign(&fixture.path, &intake_id).await;
+            let (status, conflict) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan/recompile"),
+                Some(json!({"rationale": "Try to replace a bound plan."})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+            assert_eq!(conflict["code"], "RECOMPILE_EXECUTION_BOUND");
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .latest_planning_artifact(&intake_id, "PLAN")
+                    .await
+                    .unwrap()
+                    .revision,
+                2
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+            let _ = std::fs::remove_dir_all(repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn setup_plan_recompile_conflict_case(
+            model_content: String,
+        ) -> (Fixture, String, PathBuf) {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let content = Arc::new(Mutex::new(model_content));
+            let (url, _hits) = stack_selection_upstream(content).await;
+            let key = environment_master_key();
+            let fixture = setup_with(Some(&key), &url, &url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let (repository, base) = empty_git_repository();
+            let project = fixture
+                .app
+                .db
+                .register_project(&repository, "plan-recompile-conflict-project")
+                .await
+                .unwrap();
+            let config = fixture
+                .app
+                .db
+                .update_project_config(
+                    &project.id,
+                    &NewProjectConfig {
+                        expected_revision: 1,
+                        allowed_paths: vec!["src".into()],
+                        capabilities: vec![
+                            factory_native::lead::Capability::RepositoryEdit,
+                            factory_native::lead::Capability::GenericToolchain,
+                        ],
+                        quality_profile: factory_native::lead::QualityProfile::Generic,
+                        active: true,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(config.base_commit, base);
+            let (policy_status, _) = enable_policy_for_project(
+                &fixture,
+                &project.id,
+                &config.config_hash,
+                "plan-recompile-conflict-policy",
+            )
+            .await;
+            assert!(matches!(
+                policy_status,
+                StatusCode::CREATED | StatusCode::OK
+            ));
+            let (status, intake) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(json!({
+                    "project_id": project.id,
+                    "objective": "Build a calculator application. You choose the stack.",
+                    "execution_profile_id": fixture.profile.id,
+                    "mode": "REVIEW_PLAN",
+                    "idempotency_key": "plan-recompile-conflict-request",
+                    "authorized_micros": 1_000_000
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&record.lead_request_id)
+                .await
+                .unwrap();
+            let graph = factory_native::agentic::validate_work_graph(
+                &factory_native::agentic::WorkGraphModel {
+                    units: vec![factory_native::agentic::PlannedWorkUnit {
+                        id: "calculator".into(),
+                        title: "Calculator".into(),
+                        objective: "Implement the calculator.".into(),
+                        depends_on: Vec::new(),
+                        paths: vec!["src".into()],
+                        acceptance: vec!["The calculator adds two numbers.".into()],
+                    }],
+                    assumptions: Vec::new(),
+                    risks: Vec::new(),
+                },
+                &config.allowed_paths,
+            )
+            .unwrap();
+            let digest = "a".repeat(64);
+            fixture
+                .app
+                .db
+                .save_agentic_work_graph(&factory_native::db::NewAgenticWorkGraph {
+                    request_id: &intake_id,
+                    graph: &graph,
+                    provider: "fixture",
+                    model: "fixture",
+                    schema_sha256: &digest,
+                    request_sha256: &digest,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    cost_micros: 0,
+                    usage_known: false,
+                })
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_planning_artifact(
+                    &intake_id,
+                    "PLAN",
+                    1,
+                    &json!({
+                        "schemaVersion": factory_native::planning::SCHEMA_VERSION,
+                        "planRevision": 1,
+                        "environmentProposal": null
+                    })
+                    .to_string(),
+                )
+                .await
+                .unwrap();
+            let stack_options = factory_native::planning::stack::selection_options(
+                "Build a calculator application. You choose the stack.",
+            );
+            let selected_python = stack_options
+                .iter()
+                .find(|option| option.id == "python-service")
+                .unwrap()
+                .clone();
+            let previous_stack = factory_native::planning::stack::build_model_stack_decision(
+                factory_native::planning::PlanningLane::FormalSpec,
+                &factory_native::agentic::StackProfile::default(),
+                &selected_python,
+                &stack_options,
+                "Build a calculator application. You choose the stack.",
+            )
+            .unwrap();
+            fixture
+                .app
+                .db
+                .save_planning_artifact(
+                    &intake_id,
+                    "STACK",
+                    1,
+                    &serde_json::to_string(&previous_stack).unwrap(),
+                )
+                .await
+                .unwrap();
+            (fixture, intake_id, repository)
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn plan_recompile_rejects_a_missing_environment_proposal() {
+            let (fixture, intake_id, repository) = setup_plan_recompile_conflict_case(
+                stack_selection_content("python-service", "python", "fastapi", None),
+            )
+            .await;
+            let (status, conflict) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan/recompile"),
+                Some(json!({"rationale": "Retry without a concrete environment proposal."})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+            assert_eq!(conflict["code"], "STACK_ENVIRONMENT_REQUIRED");
+            assert!(conflict.get("recompiled").is_none());
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .latest_planning_artifact(&intake_id, "PLAN")
+                    .await
+                    .unwrap()
+                    .revision,
+                1
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+            let _ = std::fs::remove_dir_all(repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn plan_recompile_rejects_a_silent_stack_change() {
+            let (fixture, intake_id, repository) =
+                setup_plan_recompile_conflict_case(stack_selection_content(
+                    "rust-service",
+                    "rust",
+                    "axum",
+                    Some(calculator_environment_proposal()),
+                ))
+                .await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let planning = factory_native::planning::DependencyPlan {
+                strategy: factory_native::planning::DependencyStrategy::VendorCache,
+                items: Vec::new(),
+                cache_ref: "vendor".into(),
+                sbom_ref: "artifacts/sbom.json".into(),
+                owner_approval: None,
+            };
+            let dependency_plan = factory_native::dependencies::from_frozen_planning(
+                &planning,
+                factory_native::dependencies::DependencyKind::Rust,
+                None,
+                "vendor",
+                "artifacts/sbom.json",
+            )
+            .unwrap()
+            .expect("vendor dependency plan");
+            fixture
+                .app
+                .db
+                .set_action_dependency_plan(&record.action_id, Some(&dependency_plan), true)
+                .await
+                .unwrap();
+            let before = fixture.app.db.action(&record.action_id).await.unwrap().spec;
+            let (status, conflict) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan/recompile"),
+                Some(json!({"rationale": "Try to change the stack silently."})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+            assert_eq!(
+                conflict["code"],
+                "PLAN_RECOMPILE_STACK_CHANGE_REQUIRES_OWNER"
+            );
+            assert!(conflict.get("recompiled").is_none());
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .latest_planning_artifact(&intake_id, "PLAN")
+                    .await
+                    .unwrap()
+                    .revision,
+                1
+            );
+            let after = fixture.app.db.action(&record.action_id).await.unwrap().spec;
+            assert_eq!(after.dependency_plan, before.dependency_plan);
+            assert_eq!(after.dependencies_required, before.dependencies_required);
+            assert!(after.dependencies_required);
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+            let _ = std::fs::remove_dir_all(repository);
+        }
+
+        #[tokio::test]
+        async fn generated_environment_is_resolved_by_the_builder_before_freeze() {
+            use factory_native::planning::environment::{
+                CompileEnvironmentInput, EnvironmentFileOrigin, EnvironmentLeadReviewModel,
+                EnvironmentLeadReviewModelDecision, EnvironmentPlanSource, EnvironmentRequirements,
+                EnvironmentReviewModelCall, ExplicitEnvironmentConstraints, FreezeEnvironmentInput,
+                LeadReviewDecision, PackageRequirement, RecordLeadReviewInput,
+                ToolchainRequirement, compile_environment_plan, freeze_environment_spec,
+                record_lead_review,
+            };
+            let fixture = setup().await;
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FakeEnvironmentBuilder));
+            let conventions = factory_native::planning::environment::ProjectConventions {
+                schema_version: factory_native::planning::environment::ENVIRONMENT_SCHEMA_VERSION,
+                project_id: fixture.project_id.clone(),
+                base_commit: fixture.config.base_commit.clone(),
+                conventions_sha256: String::new(),
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+                files: Vec::new(),
+                commands: Vec::new(),
+                conflicts: Vec::new(),
+                truncated: false,
+                skipped_entries: 0,
+                provenance: "test".into(),
+                existing_environment:
+                    factory_native::planning::environment::ExistingEnvironmentKind::None,
+            };
+            let mut conventions = conventions;
+            conventions.conventions_sha256 = conventions.compute_sha256();
+            let requirements = EnvironmentRequirements {
+                explicit_constraints: ExplicitEnvironmentConstraints {
+                    toolchains: vec![ToolchainRequirement {
+                        id: "rust".into(),
+                        version: "1.90.0".into(),
+                        source: "owner".into(),
+                        evidence: Vec::new(),
+                    }],
+                    nixpkgs: Some(
+                        "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
+                    ),
+                    packages: vec![PackageRequirement {
+                        name: "ripgrep".into(),
+                        version: "14.1.1".into(),
+                        license: "MIT".into(),
+                        source: "nixpkgs".into(),
+                        attr: "ripgrep".into(),
+                        sha256: "c".repeat(64),
+                        unfree: false,
+                        attribution: "MIT ripgrep".into(),
+                    }],
+                    ..ExplicitEnvironmentConstraints::default()
+                },
+                ..EnvironmentRequirements::default()
+            };
+            let plan = compile_environment_plan(CompileEnvironmentInput {
+                plan_id: "generated-plan".into(),
+                project_id: &fixture.project_id,
+                request_id: "request-generated",
+                action_id: "action-generated",
+                campaign_id: None,
+                revision: 1,
+                risk_class: "R0",
+                conventions: &conventions,
+                requirements: &requirements,
+                builder: fixture.app.environment_builder().descriptor(),
+                now: chrono::Utc::now(),
+            })
+            .unwrap();
+            assert_eq!(plan.source, EnvironmentPlanSource::Generated);
+            let resolved = resolve_generated_environment(&fixture.app, &plan, None)
+                .await
+                .unwrap();
+            assert!(
+                resolved.files.iter().any(|file| file.path == "flake.lock"
+                    && file.origin == EnvironmentFileOrigin::Generated)
+            );
+            assert!(resolved.resolution.is_some());
+            let mut resolved = resolved;
+            let model_review = EnvironmentLeadReviewModel {
+                schema_version: 1,
+                request_id: "request-generated".into(),
+                action_id: "action-generated".into(),
+                plan_sha256: resolved.plan_sha256.clone(),
+                plan_revision: 1,
+                risk_class: "R0".into(),
+                decision: EnvironmentLeadReviewModelDecision::Approve,
+                rationale: "The fake builder resolved the generated environment exactly.".into(),
+                constraints: Vec::new(),
+            };
+            model_review
+                .validate_for(&resolved, chrono::Utc::now())
+                .unwrap();
+            let review = record_lead_review(
+                &mut resolved,
+                RecordLeadReviewInput {
+                    review_id: "review-generated".into(),
+                    principal_id: "lead:request-generated",
+                    recorded_by: "core:lead-environment-review",
+                    decision: LeadReviewDecision::Approved,
+                    rationale: &model_review.rationale,
+                    constraints: Vec::new(),
+                    evidence_refs: Vec::new(),
+                    model_call: EnvironmentReviewModelCall {
+                        mechanism: "MODEL".into(),
+                        provider: "opencode-go".into(),
+                        model: "deepseek-v4.1-flash".into(),
+                        reservation_id: "reservation-generated".into(),
+                        request_sha256: "d".repeat(64),
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        total_tokens: 2,
+                        cost_micros: 1,
+                        usage_known: true,
+                    },
+                    now: chrono::Utc::now(),
+                },
+            )
+            .unwrap();
+            let spec = freeze_environment_spec(
+                &resolved,
+                &review,
+                FreezeEnvironmentInput {
+                    spec_id: "spec-generated".into(),
+                    nix_version: "2.28.3",
+                    devenv_version: "1.11.2",
+                    now: chrono::Utc::now(),
+                },
+            )
+            .unwrap();
+            assert!(!spec.flake_lock_sha256.is_empty());
+            assert_eq!(spec.builder_image, "factory/environment-builder");
+            assert!(!spec.builder_image_digest.is_empty());
+            let receipt = build_environment_before_freeze(&fixture.app, &resolved, &spec, None)
+                .await
+                .unwrap()
+                .expect("the fake builder must produce a receipt");
+            assert_eq!(receipt.spec_sha256, spec.spec_sha256);
+            receipt.validate_for(&spec).unwrap();
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn environment_plan_is_compiled_reviewed_and_bound_before_execution() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let (status, intake) = create_intake(&fixture, "environment-request-1").await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            let (status, missing) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/environment"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{missing}");
+            assert_eq!(missing["status"], "MISSING");
+            assert!(missing["plan"].is_null());
+            assert!(
+                missing["blockers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|blocker| blocker["code"] == "ENVIRONMENT_PLAN_REQUIRED")
+            );
+
+            let plan = match compile_environment_for_request(
+                &fixture.app,
+                &record,
+                &config,
+                1,
+                "R0",
+                None,
+            )
+            .await
+            {
+                Ok(plan) => plan,
+                Err(response) => {
+                    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                        .await
+                        .unwrap();
+                    panic!(
+                        "environment compile failed: {}",
+                        String::from_utf8_lossy(&bytes)
+                    );
+                }
+            };
+            assert_eq!(
+                plan.status,
+                factory_native::planning::environment::EnvironmentPlanStatus::CoreValidated
+            );
+            assert_eq!(
+                plan.conventions.existing_environment,
+                factory_native::planning::environment::ExistingEnvironmentKind::Devenv
+            );
+            let (status, projection) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/environment"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{projection}");
+            assert_eq!(projection["status"], "CORE_VALIDATED");
+            assert!(
+                projection["blockers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|blocker| blocker["code"] == "ENVIRONMENT_PLAN_REQUIRED")
+            );
+
+            let review_response = fixture
+                .router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(format!("/agentic/requests/{intake_id}/environment/review"))
+                        .header("authorization", "Bearer operator-token")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            json!({
+                                "planSha256": plan.plan_sha256,
+                                "planRevision": 1,
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                !review_response.status().is_success(),
+                "without a Lead model and inference authorization the review must not freeze: {}",
+                review_response.status()
+            );
+            let (status, still_pending) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/environment"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{still_pending}");
+            assert_eq!(still_pending["status"], "CORE_VALIDATED");
+            assert!(still_pending["leadApproval"].is_null());
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .environment_plan_reviews(&intake_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+
+            let (status, stale) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/environment/review"),
+                Some(json!({
+                    "planSha256": "f".repeat(64),
+                    "planRevision": 1,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(stale["code"], "ENVIRONMENT_HASH_MISMATCH");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn environment_compile_preserves_typed_license_blocker() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let (status, intake) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(json!({
+                    "project_id": fixture.project_id,
+                    "objective": "Use a package with an unknown licence.",
+                    "execution_profile_id": fixture.profile.id,
+                    "mode": "REVIEW_PLAN",
+                    "idempotency_key": "environment-license-blocker",
+                    "environment_constraints": {
+                        "packages": [{
+                            "name": "mystery",
+                            "version": "1.0.0",
+                            "license": "Unknown",
+                            "source": "nixpkgs",
+                            "attr": "mystery",
+                            "sha256": "c".repeat(64),
+                            "unfree": false,
+                            "attribution": ""
+                        }]
+                    }
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            let plan =
+                compile_environment_for_request(&fixture.app, &record, &config, 1, "R0", None)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                plan.status,
+                factory_native::planning::environment::EnvironmentPlanStatus::Blocked
+            );
+            assert!(plan.blockers.iter().any(|blocker| {
+                blocker.code
+                    == factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentLicenseBlocked
+            }));
+            let (status, projection) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/environment"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{projection}");
+            assert!(
+                projection["blockers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|blocker| blocker["code"] == "ENVIRONMENT_LICENSE_BLOCKED")
+            );
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn owner_plan_approval_does_not_record_a_lead_environment_review() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let (status, intake) = create_intake(&fixture, "environment-owner-only").await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let _ = seed_complete_planning(&fixture, &intake_id, ParticipantSeed::None).await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            let plan =
+                compile_environment_for_request(&fixture.app, &record, &config, 1, "R0", None)
+                    .await
+                    .unwrap();
+            let plan_artifact = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            let (status, response) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan-review"),
+                Some(json!({
+                    "planRevision": plan_artifact.revision,
+                    "planSha256": plan_artifact.content_sha256,
+                    "decision": "APPROVE",
+                    "rationale": "The Owner approves the overall plan.",
+                })),
+            )
+            .await;
+            assert!(
+                !status.is_success(),
+                "Owner approval must not synthesize or bypass the Lead environment model decision: {response}"
+            );
+            let (status, projection) = send(
+                &fixture.router,
+                "GET",
+                &format!("/agentic/requests/{intake_id}/environment"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{projection}");
+            assert_eq!(projection["status"], "CORE_VALIDATED");
+            assert!(projection["leadApproval"].is_null());
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .environment_plan_reviews(&intake_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(plan.plan_sha256, projection["planSha256"]);
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn campaign_authorization_refuses_a_required_environment_without_a_plan() {
+            use sqlx::connection::Connection as SqlxConnection;
+            use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection};
+
+            let fixture = setup().await;
+            let (status, action) = send(
+                &fixture.router,
+                "POST",
+                "/actions",
+                Some(json!({
+                    "project_id": fixture.project_id,
+                    "objective": "Implement the bounded endpoint.",
+                    "provider": "opencode-go",
+                    "model": "deepseek-v4.1-flash",
+                    "idempotency_key": "environment-missing-action",
+                    "allowed_paths": ["src"],
+                    "checks": [],
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{action}");
+            let action_id = action["id"].as_str().unwrap().to_string();
+            let db_action = fixture.app.db.action(&action_id).await.unwrap();
+
+            let options = SqliteConnectOptions::new().filename(&fixture.path);
+            let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+            let mut spec = db_action.spec.clone();
+            spec.environment_required = true;
+            let spec_json = serde_json::to_string(&spec).unwrap();
+            let spec_sha = factory_native::planning::environment::sha256_hex(spec_json.as_bytes());
+            sqlx::query::query(
+                "UPDATE action_specs SET spec_json=?1,spec_sha256=?2 WHERE action_id=?3",
+            )
+            .bind(&spec_json)
+            .bind(&spec_sha)
+            .bind(&action_id)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+            drop(connection);
+
+            let (status, campaign) = send(
+                &fixture.router,
+                "POST",
+                "/campaigns",
+                Some(json!({
+                    "action_id": action_id,
+                    "idempotency_key": "environment-missing-campaign",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{campaign}");
+            let campaign_id = campaign["id"].as_str().unwrap().to_string();
+            let (status, refusal) = send(
+                &fixture.router,
+                "POST",
+                &format!("/campaigns/{campaign_id}/authorize"),
+                Some(json!({
+                    "authorization_id": "environment-missing-auth",
+                    "risk_class": "R0",
+                    "execution_mode": "FIXTURE",
+                    "actor": "operator",
+                    "rationale": "Bind the exact environment before dispatch.",
+                    "authorized_paths": ["src"],
+                    "operations": operations(),
+                    "progress": progress(),
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
+            assert_eq!(refusal["code"], "ENVIRONMENT_PLAN_REQUIRED", "{refusal}");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
         #[test]
         fn operation_grants_outlive_the_maximum_bounded_execution() {
             let maximum_execution_ms =
@@ -20211,6 +32098,49 @@ mod tests {
                 WORKSPACE_OPERATION_GRANT_MILLIS >= maximum_execution_ms + 60_000,
                 "a valid command must never outlive its operation grant"
             );
+        }
+
+        #[test]
+        fn issue_delivery_retry_is_not_success_when_failures_remain() {
+            use factory_native::issues::{IssueDeliveryFailure, IssueDeliveryOutcome};
+
+            let outcome = |retryable| IssueDeliveryOutcome {
+                campaign_id: "campaign-1".into(),
+                candidate_id: "candidate-1".into(),
+                attempted: 1,
+                applied: 0,
+                partial: 0,
+                failed: 1,
+                failures: vec![IssueDeliveryFailure {
+                    kind: "GITHUB_UPSTREAM".into(),
+                    detail: "GitHub is unreachable".into(),
+                    retryable,
+                }],
+                links: Vec::new(),
+            };
+            let (status, body) = issue_delivery_retry_result(None, outcome(true));
+            assert_eq!(status, StatusCode::BAD_GATEWAY);
+            assert_eq!(body["kind"], "DELIVERY_RETRY_FAILED");
+            assert_eq!(body["retryable"], true);
+            assert_eq!(body["failures"][0]["kind"], "GITHUB_UPSTREAM");
+
+            let (status, body) = issue_delivery_retry_result(None, outcome(false));
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(body["kind"], "DELIVERY_RETRY_BLOCKED");
+
+            let clean = IssueDeliveryOutcome {
+                campaign_id: "campaign-1".into(),
+                candidate_id: "candidate-1".into(),
+                attempted: 1,
+                applied: 1,
+                partial: 0,
+                failed: 0,
+                failures: Vec::new(),
+                links: Vec::new(),
+            };
+            let (status, body) = issue_delivery_retry_result(None, clean);
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["delivery"]["applied"], 1);
         }
 
         #[test]
@@ -20239,6 +32169,52 @@ mod tests {
             let (status, body) = merge_gate_denial(None).expect("missing gate must be denied");
             assert_eq!(status, StatusCode::CONFLICT);
             assert_eq!(body["kind"], "GATE_NOT_ACCEPTED");
+        }
+    }
+
+    #[tokio::test]
+    async fn delivery_routes_require_the_operator_credential() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-delivery-routes-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let router = build_router(test_app(&path).await);
+        let routes = [
+            ("GET", "/projects/missing/delivery-policy", "{}".to_string()),
+            (
+                "PUT",
+                "/projects/missing/delivery-policy",
+                r#"{"enabled":true,"r1_enabled":false,"merge_method":"squash","required_checks":["ci"],"post_merge_check_id":"post-merge","post_merge_timeout_secs":900}"#.to_string(),
+            ),
+            (
+                "GET",
+                "/campaigns/missing/candidates/missing/delivery",
+                "{}".to_string(),
+            ),
+            (
+                "POST",
+                "/campaigns/missing/candidates/missing/delivery",
+                r#"{"operation":"MERGE","manual_confirmed":false}"#.to_string(),
+            ),
+            (
+                "POST",
+                "/delivery/incidents/missing/revert",
+                r#"{"revert_pr_number":1,"revert_merge_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rationale":"test"}"#.to_string(),
+            ),
+        ];
+        for (method, uri, body) in routes {
+            let request = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body))
+                .unwrap();
+            assert_eq!(
+                router.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} must require the operator credential"
+            );
         }
     }
 }

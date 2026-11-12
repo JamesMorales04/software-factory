@@ -130,7 +130,7 @@ impl Database {
                     lr.state AS lead_state,
                     lw.request_id AS withdrawn_request,
                     c.status AS campaign_status,
-                    (SELECT gd.outcome FROM gate_decisions gd
+                    (SELECT gd.outcome FROM gate_decisions_current gd
                      JOIN candidates ca ON ca.id=gd.candidate_id
                      JOIN attempts a ON a.id=ca.attempt_id
                      JOIN runs r ON r.id=a.run_id

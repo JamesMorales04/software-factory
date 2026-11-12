@@ -52,6 +52,7 @@ const detail: CampaignDetailData = {
       tree_sha: "d".repeat(40),
       implementer_id: "implementer-1",
       created_at: "2026-11-06T09:45:00Z",
+      final_source: "MODEL_FINAL",
     },
   ],
   events: [
@@ -128,6 +129,9 @@ describe("CampaignPulse", () => {
     expect(screen.getByText("Accepted")).toBeDefined();
     expect(screen.getByText("Changes requested")).toBeDefined();
     expect(screen.getByText("Passed")).toBeDefined();
+    const leadRow = screen.getByText("Coordinating tasks").closest("li");
+    expect(leadRow).not.toBeNull();
+    expect(within(leadRow as HTMLElement).getByText("Completed")).toBeDefined();
 
     const activity = screen.getByRole("list", { name: "Recent activity" });
     const entries = within(activity).getAllByRole("listitem");

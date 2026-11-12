@@ -51,15 +51,27 @@ not reachable.
    the canonical mapping, an approval containing Blocking/Critical findings,
    and a passing receipt with a Blocking/Critical finding. Historical receipts
    decode with defaulted points/rationale for display but fail closed for
-   autonomous repair.
+   autonomous repair. Informational findings on a passing, executed review are
+   non-blocking observations: they stay visible and retain a durable
+   disposition but do not block acceptance.
 
-4. **Repair authorization is deterministic.** Core computes the finding score,
-   requires reviewer independence from the implementer and verifier, requires
-   executed non-passing review evidence, applies the frozen `AutonomyPolicy`
-   point and cycle budgets by risk class, and records an append-only
-   `AUTHORIZED`, `DENIED` or `HUMAN_REQUIRED` decision. Any Critical finding,
-   R2/R3 risk, unknown risk, disabled policy or exhausted budget is a human
-   stop. Model output never grants repair or delivery authority.
+4. **Repair authorization is deterministic.** Core filters only the
+   PASS/EXECUTED informational observations, computes the finding score from
+   all remaining actionable findings, requires reviewer independence from the
+   implementer and verifier, requires executed non-passing review evidence,
+   applies the frozen `AutonomyPolicy` point and cycle budgets by risk class,
+   and records an append-only `AUTHORIZED`, `DENIED` or `HUMAN_REQUIRED`
+   decision. An info-only PASS review never creates a repair authorization;
+   Info on a non-passing receipt remains actionable exactly as before. Any
+   Critical finding, R2/R3 risk, unknown risk, disabled policy or exhausted
+   budget is a human stop. Model output never grants repair or delivery
+   authority.
+
+   A closed finding disposition does not mutate the initial decision. Core may
+   deterministically re-evaluate the same immutable receipts and append one
+   Gate revision when the outcome or reasons change. Re-evaluation is
+   idempotent, accepts no new evidence and keeps the same risk, budget and
+   critical-finding policy.
 
 5. **Autonomy is default-off and hash-preserving.** `AutonomyPolicy` is an
    optional field of `ProgressPolicy`; a disabled policy is omitted from

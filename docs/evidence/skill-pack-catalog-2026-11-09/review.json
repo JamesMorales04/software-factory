@@ -1,0 +1,876 @@
+{
+  "schemaVersion": 2,
+  "implementationCommit": "e771dcbe92295333a7c7e2b626792c760f46845f",
+  "migrations": [
+    "0067_skill_refresh_cursor.sql",
+    "0068_skill_pack_content_review.sql"
+  ],
+  "legacyCompatibility": "SkillPack::from_persisted_json maps legacy lastVerifiedAt to source_checked_at with SOURCE_AVAILABILITY_ONLY and empty content review",
+  "sourceCheckedAt": "2026-11-09T00:00:00Z",
+  "contentReviewedAt": "2026-11-09T00:00:00Z",
+  "reviewWindowDays": 90,
+  "sourceCheckMethod": "HTTP GET availability check for every cited official source URL on 2026-11-09; redirects followed. This is not content freshness.",
+  "contentReviewMethod": "Packs listed with contentReview were reviewed against the named official source section headings on 2026-11-09. Packs without contentReview remain source-availability-only and blocking.",
+  "packs": {
+    "actix-web": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://actix.rs/docs/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "angular": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://angular.dev/overview",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "axum": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.rs/axum/latest/axum/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "Routing, handlers, extractors and error handling in the axum crate documentation.",
+        "sections": [
+          "https://docs.rs/axum/latest/axum/ :: Routing",
+          "https://docs.rs/axum/latest/axum/ :: Handlers",
+          "https://docs.rs/axum/latest/axum/ :: Extractors",
+          "https://docs.rs/axum/latest/axum/ :: Error handling"
+        ]
+      }
+    },
+    "bun": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://bun.sh/docs",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "bundler": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://bundler.io/docs.html",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "cargo": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://doc.rust-lang.org/cargo/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "Cargo lockfile and dependency specification guidance.",
+        "sections": [
+          "https://doc.rust-lang.org/cargo/guide/cargo-toml-vs-cargo-lock.html :: Cargo.toml vs Cargo.lock",
+          "https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html :: Specifying Dependencies"
+        ]
+      }
+    },
+    "clap": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.rs/clap/latest/clap/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "composer": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://getcomposer.org/doc/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "container": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.podman.io/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://podman-desktop.io/docs/compose",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "csharp": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://learn.microsoft.com/en-us/dotnet/csharp/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "deno": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.deno.com/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "diesel": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://diesel.rs/guides/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "django": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.djangoproject.com/en/stable/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "Django security topics and project documentation scope.",
+        "sections": [
+          "https://docs.djangoproject.com/en/stable/topics/security/ :: Security in Django",
+          "https://docs.djangoproject.com/en/stable/topics/security/ :: Always sanitize user input",
+          "https://docs.djangoproject.com/en/stable/topics/security/ :: Cross-site request forgery (CSRF) protection"
+        ]
+      }
+    },
+    "docker": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.docker.com/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://docs.docker.com/engine/security/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "docker-compose": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.docker.com/compose/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://docs.docker.com/reference/cli/docker/compose/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "dotnet": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://learn.microsoft.com/en-us/dotnet/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "electron": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://www.electronjs.org/docs/latest/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "fastapi": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://fastapi.tiangolo.com/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "FastAPI tutorial, response models, security and error-handling guidance.",
+        "sections": [
+          "https://fastapi.tiangolo.com/tutorial/ :: Tutorial - User Guide",
+          "https://fastapi.tiangolo.com/tutorial/response-model/ :: Response Model",
+          "https://fastapi.tiangolo.com/tutorial/security/ :: Security",
+          "https://fastapi.tiangolo.com/tutorial/handling-errors/ :: Handling Errors"
+        ]
+      }
+    },
+    "flask": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://flask.palletsprojects.com/en/stable/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "Flask security considerations and user guide scope.",
+        "sections": [
+          "https://flask.palletsprojects.com/en/stable/web-security/ :: Security Considerations",
+          "https://flask.palletsprojects.com/en/stable/web-security/ :: Cross-Site Scripting (XSS)",
+          "https://flask.palletsprojects.com/en/stable/web-security/ :: Cross-Site Request Forgery (CSRF)"
+        ]
+      }
+    },
+    "github-actions": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.github.com/en/actions",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "go": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://go.dev/doc/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "gradle": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.gradle.org/current/userguide/userguide.html",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "hyper": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://hyper.rs/guides/1/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "java": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.oracle.com/en/java/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://dev.java/learn/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "jest": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://jestjs.io/docs/getting-started",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "kotlin": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://kotlinlang.org/docs/home.html",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "kubernetes": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://kubernetes.io/docs/home/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "laravel": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://laravel.com/docs",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "maven": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://maven.apache.org/guides/index.html",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "migrations": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://www.sqlite.org/lang_altertable.html",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "mysql": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://dev.mysql.com/doc/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "next": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://nextjs.org/docs",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "node": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://nodejs.org/docs/latest/api/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "npm": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.npmjs.com/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "npm package-lock semantics and deterministic install guidance.",
+        "sections": [
+          "https://docs.npmjs.com/cli/v10/configuring-npm/package-lock-json :: package-lock.json",
+          "https://docs.npmjs.com/cli/v10/configuring-npm/package-lock-json :: Description"
+        ]
+      }
+    },
+    "nuget": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://learn.microsoft.com/en-us/nuget/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "php": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://www.php.net/docs.php",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "pip": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://pip.pypa.io/en/stable/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://packaging.python.org/en/latest/tutorials/installing-packages/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "pip requirements files and packaging installation guidance.",
+        "sections": [
+          "https://pip.pypa.io/en/stable/user_guide/#requirements-files :: Requirements Files",
+          "https://packaging.python.org/en/latest/tutorials/installing-packages/ :: Installing Packages",
+          "https://packaging.python.org/en/latest/tutorials/installing-packages/ :: Requirements files"
+        ]
+      }
+    },
+    "playwright": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://playwright.dev/docs/intro",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "pnpm": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://pnpm.io/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "podman": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.podman.io/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://podman-desktop.io/docs/compose",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "podman-compose": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.podman.io/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://podman-desktop.io/docs/compose",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "postgresql": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://www.postgresql.org/docs/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "pytest": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.pytest.org/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "pytest getting-started and test execution guidance.",
+        "sections": [
+          "https://docs.pytest.org/en/stable/getting-started.html :: Get Started",
+          "https://docs.pytest.org/en/stable/getting-started.html :: Run multiple tests"
+        ]
+      }
+    },
+    "python": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.python.org/3/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "Python language tutorial and documentation scope.",
+        "sections": [
+          "https://docs.python.org/3/ :: Python 3.15.2 documentation",
+          "https://docs.python.org/3/tutorial/index.html :: The Python Tutorial"
+        ]
+      }
+    },
+    "rails": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://guides.rubyonrails.org/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "react": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://react.dev/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "React component design, purity and state guidance.",
+        "sections": [
+          "https://react.dev/learn/thinking-in-react :: Thinking in React",
+          "https://react.dev/learn/keeping-components-pure :: Keeping Components Pure"
+        ]
+      }
+    },
+    "redis": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://redis.io/docs/latest/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "reqwest": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.rs/reqwest/latest/reqwest/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "rocket": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://rocket.rs/guide/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "ruby": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.ruby-lang.org/en/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://www.ruby-lang.org/en/documentation/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "ruff": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.astral.sh/ruff/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "Ruff linter command and rule-selection guidance.",
+        "sections": [
+          "https://docs.astral.sh/ruff/linter/ :: The Ruff Linter",
+          "https://docs.astral.sh/ruff/linter/ :: Rule selection"
+        ]
+      }
+    },
+    "rust": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://doc.rust-lang.org/book/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://doc.rust-lang.org/cargo/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://rust-lang.github.io/rust-clippy/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "Ownership, error handling and Cargo lockfile guidance for the curated Rust practices.",
+        "sections": [
+          "https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html :: Understanding Ownership",
+          "https://doc.rust-lang.org/book/ch09-00-error-handling.html :: Error Handling",
+          "https://doc.rust-lang.org/cargo/guide/cargo-toml-vs-cargo-lock.html :: Cargo.toml vs Cargo.lock"
+        ]
+      }
+    },
+    "serde": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://serde.rs/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "sqlite": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://www.sqlite.org/docs.html",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "sqlx": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.rs/sqlx/latest/sqlx/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "SQLx crate and query-macro requirements for database access and migrations.",
+        "sections": [
+          "https://docs.rs/sqlx/latest/sqlx/ :: Crate sqlx",
+          "https://docs.rs/sqlx/latest/sqlx/macro.query.html :: Requirements"
+        ]
+      }
+    },
+    "svelte": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://svelte.dev/docs",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "swift": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://www.swift.org/documentation/",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://developer.apple.com/documentation/swift",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "tauri": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://v2.tauri.app/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "terraform": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://developer.hashicorp.com/terraform/docs",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "tokio": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://tokio.rs/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "Tokio runtime, task and blocking-work guidance.",
+        "sections": [
+          "https://docs.rs/tokio/latest/tokio/ :: A Tour of Tokio",
+          "https://docs.rs/tokio/latest/tokio/ :: Working With Tasks",
+          "https://docs.rs/tokio/latest/tokio/ :: CPU-bound tasks and blocking code"
+        ]
+      }
+    },
+    "tonic": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.rs/tonic/latest/tonic/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "tracing": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.rs/tracing/latest/tracing/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "typescript": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://www.typescriptlang.org/docs/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "TypeScript handbook basics and compiler behavior.",
+        "sections": [
+          "https://www.typescriptlang.org/docs/handbook/2/basic-types.html :: The Basics"
+        ]
+      }
+    },
+    "uv": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://docs.astral.sh/uv/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "vite": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://vite.dev/guide/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "Vite production build guidance.",
+        "sections": [
+          "https://vite.dev/guide/build.html :: Building for Production"
+        ]
+      }
+    },
+    "vitest": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://vitest.dev/guide/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "vue": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://vuejs.org/guide/",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    },
+    "yarn": {
+      "sourceCheckedAt": "2026-11-09T00:00:00Z",
+      "sources": [
+        {
+          "url": "https://yarnpkg.com/getting-started",
+          "httpStatus": 200
+        }
+      ],
+      "contentReview": null
+    }
+  },
+  "legacyUpgradeRule": "source-only persisted row upgrades to a content-reviewed builtin only when builtin is fresh, content differs, and builtin.content_reviewed_at >= persisted.source_checked_at"
+}

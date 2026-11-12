@@ -544,6 +544,136 @@ pub(super) async fn authorize_campaign_in_tx(
     let (_, spec_json) = spec.ok_or(Error::Conflict("campaign action has no frozen spec"))?;
     let action_spec: ActionSpec = serde_json::from_str(&spec_json)
         .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+    super::validate_dependency_requirement(&action_spec)?;
+    super::validate_environment_requirement(&action_spec)?;
+    if action_spec.environment_required {
+        use crate::planning::environment::{
+            EnvironmentPlan, EnvironmentPlanStatus, EnvironmentSpec, EnvironmentSpecStatus,
+        };
+        let plan_sha256 = action_spec
+            .environment_plan_sha256
+            .as_deref()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the campaign has no frozen environment plan hash".into(),
+            })?;
+        let spec_sha256 = action_spec
+            .environment_spec_sha256
+            .as_deref()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the campaign has no frozen environment spec hash".into(),
+            })?;
+        let spec_id =
+            action_spec
+                .environment_spec_id
+                .as_deref()
+                .ok_or_else(|| Error::IntakeConflict {
+                    code: "ENVIRONMENT_PLAN_REQUIRED",
+                    message: "the campaign has no frozen environment spec id".into(),
+                })?;
+        let stored: Option<(String, Option<String>, String, String, String)> =
+            sqlx::query_as::query_as(
+                "SELECT content_json,request_id,action_id,project_id,plan_sha256
+                 FROM environment_specs
+                 WHERE spec_sha256=?1 AND action_id=?2 AND project_id=?3 AND status='FROZEN'",
+            )
+            .bind(spec_sha256)
+            .bind(&action_id)
+            .bind(&project_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+        if let Some((spec_json, request_id, spec_action_id, spec_project_id, spec_plan_sha256)) =
+            stored
+        {
+            let spec: EnvironmentSpec = serde_json::from_str(&spec_json)
+                .map_err(|_| Error::Invalid("stored EnvironmentSpec encoding"))?;
+            spec.validate().map_err(|error| Error::IntakeConflict {
+                code: error.code_str(),
+                message: error.message,
+            })?;
+            if spec.status != EnvironmentSpecStatus::Frozen
+                || spec.action_id != spec_action_id
+                || spec.project_id != spec_project_id
+                || spec.plan_sha256 != spec_plan_sha256
+                || spec_plan_sha256 != plan_sha256
+                || spec.spec_id != spec_id
+            {
+                return Err(Error::IntakeConflict {
+                    code: "ENVIRONMENT_HASH_MISMATCH",
+                    message:
+                        "the frozen environment spec does not bind this Campaign action/project/plan"
+                            .into(),
+                });
+            }
+            let plan_json: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT content_json FROM environment_plans
+                 WHERE plan_sha256=?1 AND status='FROZEN'",
+            )
+            .bind(plan_sha256)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            let Some((plan_json,)) = plan_json else {
+                return Err(Error::IntakeConflict {
+                    code: "ENVIRONMENT_PLAN_REQUIRED",
+                    message: "the Campaign environment plan is missing or not frozen".into(),
+                });
+            };
+            let plan: EnvironmentPlan = serde_json::from_str(&plan_json)
+                .map_err(|_| Error::Invalid("stored EnvironmentPlan encoding"))?;
+            if plan.status != EnvironmentPlanStatus::Frozen
+                || plan.action_id != action_id
+                || plan.project_id != project_id
+                || plan.plan_sha256 != plan_sha256
+                || plan.risk_class != input.risk_class
+            {
+                return Err(Error::IntakeConflict {
+                    code: "ENVIRONMENT_HASH_MISMATCH",
+                    message:
+                        "the Campaign environment plan does not match its ActionSpec or risk binding"
+                            .into(),
+                });
+            }
+            super::environment::bind_campaign_environment_in_tx(
+                transaction,
+                campaign_id,
+                request_id.as_deref(),
+                &action_id,
+                &spec,
+            )
+            .await?;
+        } else {
+            #[cfg(any(test, feature = "test-support"))]
+            super::environment::bind_test_campaign_environment_in_tx(
+                transaction,
+                campaign_id,
+                &action_id,
+                plan_sha256,
+                spec_id,
+                spec_sha256,
+                action_spec
+                    .environment_builder_image
+                    .as_deref()
+                    .unwrap_or_default(),
+                action_spec
+                    .environment_builder_image_digest
+                    .as_deref()
+                    .unwrap_or_default(),
+            )
+            .await?;
+            #[cfg(not(any(test, feature = "test-support")))]
+            return Err(Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the ActionSpec environment spec is missing or not frozen; Campaign authorization fails closed"
+                    .into(),
+            });
+        }
+    }
+    if fixture && (action_spec.dependencies_required || action_spec.dependency_plan.is_some()) {
+        return Err(Error::Forbidden(
+            "FIXTURE execution cannot satisfy a frozen dependency plan; no candidate is authorized. Use TRUSTED_LOCAL_PROVIDER or remove the dependency plan".into(),
+        ));
+    }
     if action_spec.allowed_paths.is_empty() {
         return Err(Error::Forbidden(
             "campaign action has no frozen allowed-path scope".into(),
@@ -993,7 +1123,19 @@ mod tests {
                 command: vec!["cargo".into(), "test".into()],
                 expect_exit: 0,
                 timeout_secs: 60,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             }],
+            dependency_plan: None,
+            dependencies_required: false,
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
+
+            environment_spec_id: None,
         };
         let _action = db
             .create_action_with_spec(
@@ -1005,10 +1147,12 @@ mod tests {
                 ActionSpecInput {
                     allowed_paths: &spec.allowed_paths,
                     checks: &spec.checks,
+                    dependency_plan: None,
                 },
             )
             .await
             .unwrap();
+        db.bind_test_action_environment(&_action.id).await.unwrap();
         let mut grant = StandingDelegationV2 {
             id: "grant".into(),
             principal_id: "owner".into(),
@@ -1060,6 +1204,19 @@ mod tests {
         }
     }
 
+    fn fixture_authorization() -> NewCampaignAuthorization {
+        let mut authorization = authorization();
+        authorization.authorization_id = "auth-fixture".into();
+        authorization.execution_mode = "FIXTURE".into();
+        authorization.provider.clear();
+        authorization.model.clear();
+        authorization.provider_mode.clear();
+        authorization.delegation_id.clear();
+        authorization.allowed_tools.clear();
+        authorization.monetary_envelope_id = NO_BILLABLE_ENVELOPE.into();
+        authorization
+    }
+
     fn subscription_policy() -> ExecutionPolicyV3 {
         let binding = crate::execution_policy::SubscriptionBinding {
             route: crate::execution_policy::SubscriptionRoute::OpenCodeGo,
@@ -1094,6 +1251,97 @@ mod tests {
             progress: progress(),
             operations: operations(),
         }
+    }
+
+    #[tokio::test]
+    async fn authorization_refuses_a_dependency_requirement_without_a_plan() {
+        let (path, db, _grant) = fixture().await;
+        let (action_id, spec_json): (String, String) =
+            sqlx::query_as::query_as("SELECT action_id,spec_json FROM action_specs LIMIT 1")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        let mut spec: ActionSpec = serde_json::from_str(&spec_json).unwrap();
+        spec.dependencies_required = true;
+        spec.dependency_plan = None;
+        let spec_json = serde_json::to_string(&spec).unwrap();
+        let spec_sha256 = crate::device_session::sha256_hex(&spec_json);
+        sqlx::query::query(
+            "UPDATE action_specs SET spec_json=?1,spec_sha256=?2 WHERE action_id=?3",
+        )
+        .bind(&spec_json)
+        .bind(&spec_sha256)
+        .bind(&action_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let campaign = db
+            .create_campaign(&action_id, "dependency-required-campaign")
+            .await
+            .unwrap();
+        let error = db
+            .authorize_campaign(&campaign.id, &authorization())
+            .await
+            .expect_err("authorization must refuse a missing dependency plan");
+        assert!(error.to_string().contains("dependency"), "error: {error}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn fixture_authorization_refuses_a_valid_frozen_dependency_plan() {
+        let (path, db, _grant) = fixture().await;
+        let (action_id, spec_json): (String, String) =
+            sqlx::query_as::query_as("SELECT action_id,spec_json FROM action_specs LIMIT 1")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        let mut spec: ActionSpec = serde_json::from_str(&spec_json).unwrap();
+        let planning = crate::planning::DependencyPlan {
+            strategy: crate::planning::DependencyStrategy::BrokeredFetch,
+            items: Vec::new(),
+            cache_ref: "vendor".into(),
+            sbom_ref: "artifacts/sbom.json".into(),
+            owner_approval: None,
+        };
+        let plan = crate::dependencies::from_frozen_planning(
+            &planning,
+            crate::dependencies::DependencyKind::Rust,
+            Some(&"a".repeat(64)),
+            "vendor",
+            "artifacts/sbom.json",
+        )
+        .unwrap()
+        .expect("brokered plan");
+        spec.dependencies_required = true;
+        spec.dependency_plan = Some(plan);
+        let spec_json = serde_json::to_string(&spec).unwrap();
+        let spec_sha256 = crate::device_session::sha256_hex(&spec_json);
+        sqlx::query::query(
+            "UPDATE action_specs SET spec_json=?1,spec_sha256=?2 WHERE action_id=?3",
+        )
+        .bind(&spec_json)
+        .bind(&spec_sha256)
+        .bind(&action_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let campaign = db
+            .create_campaign(&action_id, "fixture-dependency-campaign")
+            .await
+            .unwrap();
+        let error = db
+            .authorize_campaign(&campaign.id, &fixture_authorization())
+            .await
+            .expect_err("FIXTURE must not authorize a dependency plan it cannot satisfy");
+        assert!(
+            error
+                .to_string()
+                .contains("FIXTURE execution cannot satisfy"),
+            "error: {error}"
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
@@ -1488,7 +1736,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn production_authorization_round_trips_to_a_worker_assignment() {
+    async fn production_authorization_binds_environment_but_test_fixture_has_no_build_evidence() {
         let (path, db, _grant) = fixture().await;
         let action_id: (String,) = sqlx::query_as::query_as("SELECT id FROM actions LIMIT 1")
             .fetch_one(&db.pool)
@@ -1527,17 +1775,9 @@ mod tests {
             .claim_assignment("assignment-worker", Utc::now().timestamp_millis(), 30_000)
             .await
             .unwrap()
-            .expect("V2 assignment");
-        assert_eq!(assignment.campaign_id, campaign.id);
-        assert_eq!(assignment.work_item_id, campaign.id);
-        let policy = assignment
-            .execution_policy
-            .as_ref()
-            .and_then(crate::execution_policy::FrozenExecutionPolicy::v2)
-            .expect("V2 policy");
-        assert_eq!(policy, record.policy.as_ref().unwrap());
-        assert_eq!(policy.operations, operations());
-        assert_eq!(policy.progress, progress());
+            .expect("fixture assignment");
+        assert!(assignment.environment.is_some());
+        assert!(assignment.environment_execution.is_none());
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

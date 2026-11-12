@@ -1,5 +1,6 @@
 import type {
   Candidate,
+  CandidateFinalSource,
   Gate,
   QualityReceipt,
   QualityRole,
@@ -7,6 +8,7 @@ import type {
 } from "../../coreApi";
 import { formatCostMicros, formatTimestamp, shortId } from "../../format";
 import { useI18n } from "../../i18n";
+import { Badge } from "../ui/Badge";
 import { StatusBadge } from "./StatusBadge";
 
 export function ReceiptEvidenceTable({
@@ -189,9 +191,11 @@ export function ReviewFindings({ receipts }: { receipts: QualityReceipt[] }) {
 export function QualityGatePanel({
   gate,
   candidateId,
+  finalSource,
 }: {
   gate: Gate | null;
   candidateId: string;
+  finalSource?: CandidateFinalSource | null;
 }) {
   const { t } = useI18n();
   if (!gate) {
@@ -202,6 +206,11 @@ export function QualityGatePanel({
       </div>
     );
   }
+  const repairAuthorization =
+    gate.outcome === "REPAIR_REQUIRED" || gate.outcome === "HUMAN_REQUIRED"
+      ? gate.repair_authorization
+      : null;
+  const source = gate.final_source ?? finalSource ?? null;
   return (
     <div data-testid="quality-gate">
       <p>
@@ -212,6 +221,12 @@ export function QualityGatePanel({
           })}
         </span>
       </p>
+      {source && (
+        <p>
+          <span className="muted">{t("evidence.gate.finalSource")} </span>
+          <CandidateFinalSourceBadge source={source} />
+        </p>
+      )}
       {gate.reviewerReceiptIds && gate.reviewerReceiptIds.length > 0 && (
         <p className="muted">
           {t("evidence.gate.reviewers", {
@@ -228,20 +243,51 @@ export function QualityGatePanel({
           ))}
         </ul>
       )}
-      {gate.repair_authorization && (
+      {repairAuthorization && (
         <div className="ui-callout ui-callout--attention" role="status">
           <strong>{t("evidence.repair.title")}</strong>{" "}
-          <StatusBadge status={gate.repair_authorization.decision} />{" "}
+          <StatusBadge status={repairAuthorization.decision} />{" "}
           <span className="muted">
             {t("evidence.repair.detail", {
-              points: gate.repair_authorization.total_points,
-              cycle: gate.repair_authorization.cycle_index,
-              reason: gate.repair_authorization.reason,
+              points: repairAuthorization.total_points,
+              cycle: repairAuthorization.cycle_index,
+              reason: repairAuthorization.reason,
             })}
           </span>
         </div>
       )}
     </div>
+  );
+}
+
+export function CandidateFinalSourceBadge({
+  source,
+}: {
+  source: CandidateFinalSource;
+}) {
+  const { t } = useI18n();
+  const salvage = source === "STAGNATION_SALVAGE";
+  return (
+    <span
+      className="candidate-final-source"
+      data-testid="candidate-final-source"
+      data-final-source={source}
+    >
+      <Badge tone={salvage ? "attention" : "neutral"}>
+        {t(
+          salvage
+            ? "evidence.finalSource.salvage"
+            : "evidence.finalSource.model",
+        )}
+      </Badge>{" "}
+      <span className="muted">
+        {t(
+          salvage
+            ? "evidence.finalSource.salvageDetail"
+            : "evidence.finalSource.modelDetail",
+        )}
+      </span>
+    </span>
   );
 }
 
@@ -268,6 +314,10 @@ export function CandidateIdentity({ candidate }: { candidate: Candidate }) {
       <dt>{t("evidence.identity.implementer")}</dt>
       <dd>
         <code>{candidate.implementer_id}</code>
+      </dd>
+      <dt>{t("evidence.identity.finalSource")}</dt>
+      <dd>
+        <CandidateFinalSourceBadge source={candidate.final_source} />
       </dd>
       <dt>{t("evidence.identity.recorded")}</dt>
       <dd>{formatTimestamp(candidate.created_at)}</dd>

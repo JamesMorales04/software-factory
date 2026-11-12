@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
-import { Input } from "../components/ui/Field";
+import { Input, Select, Textarea } from "../components/ui/Field";
 import {
   EmptyState,
   ErrorState,
@@ -12,6 +12,7 @@ import {
 } from "../components/ui/Surface";
 import {
   type AgenticAssurance,
+  type AgenticPlanningProjection,
   type AgenticPortfolioEntry,
   type AgenticRequestDetail,
   type AgenticRoute,
@@ -23,6 +24,7 @@ import {
 } from "../coreApi";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
+import { EnvironmentPanel } from "./EnvironmentPanel";
 import { KnowledgePanel } from "./KnowledgePanel";
 import "./director.css";
 import "./specs.css";
@@ -59,6 +61,26 @@ function assuranceTone(assurance: AgenticAssurance) {
   }
 }
 
+function reviewerReceiptTone(result: string) {
+  if (result === "PASS") return "success" as const;
+  if (result === "FAIL" || result === "CHANGES_REQUESTED") {
+    return "danger" as const;
+  }
+  return "attention" as const;
+}
+
+export function reviewerAssignmentsMatch(
+  detail: AgenticRequestDetail,
+): boolean {
+  const roles = detail.participants.reviewerRoles ?? [];
+  const assignments = detail.participants.reviewerAssignments ?? [];
+  if (roles.length === 0) return assignments.length === 0;
+  return (
+    assignments.length === roles.length &&
+    roles.every((role) => assignments.some((entry) => entry.role === role))
+  );
+}
+
 export function Director() {
   const { t, formatDate } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -73,6 +95,9 @@ export function Director() {
   const [triageBusy, setTriageBusy] = useState(false);
   const [triageError, setTriageError] = useState<string | null>(null);
   const [triageNotice, setTriageNotice] = useState<string | null>(null);
+  const [assessmentBusy, setAssessmentBusy] = useState(false);
+  const [assessmentError, setAssessmentError] = useState<string | null>(null);
+  const [assessmentNotice, setAssessmentNotice] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
   const [scheduler, setScheduler] = useState<{
     capacity: number;
@@ -94,6 +119,19 @@ export function Director() {
   const [specBusy, setSpecBusy] = useState<string | null>(null);
   const [specError, setSpecError] = useState<string | null>(null);
   const [specNotice, setSpecNotice] = useState<string | null>(null);
+  const [planning, setPlanning] = useState<AgenticPlanningProjection | null>(
+    null,
+  );
+  const [planningError, setPlanningError] = useState<string | null>(null);
+  const [planningNotice, setPlanningNotice] = useState<string | null>(null);
+  const [reviewBusy, setReviewBusy] = useState<string | null>(null);
+  const [reviewRationale, setReviewRationale] = useState("");
+  const [findingId, setFindingId] = useState("");
+  const [findingEvidence, setFindingEvidence] = useState("");
+  const [findingOwnerDecision, setFindingOwnerDecision] = useState("");
+  const [findingBusy, setFindingBusy] = useState<string | null>(null);
+  const [findingError, setFindingError] = useState<string | null>(null);
+  const [findingNotice, setFindingNotice] = useState<string | null>(null);
 
   const loadPortfolio = useCallback(async () => {
     try {
@@ -138,12 +176,38 @@ export function Director() {
     (portfolio !== null && portfolio.length > 0 ? portfolio[0].id : "");
 
   useEffect(() => {
+    // Action-scoped notices belong to the request that produced them. Keeping
+    // them across a selection change showed a success message from one request
+    // on another request's panel.
+    if (activeId === "") return;
+    setPriorityNotice(null);
+    setPriorityError(null);
+    setPlanNotice(null);
+    setPlanError(null);
+    setSpecNotice(null);
+    setSpecError(null);
+    setPlanningNotice(null);
+    setPlanningError(null);
+    setReviewRationale("");
+    setFindingId("");
+    setFindingEvidence("");
+    setFindingOwnerDecision("");
+    setFindingNotice(null);
+    setFindingError(null);
+    setTriageNotice(null);
+    setTriageError(null);
+    setAssessmentNotice(null);
+    setAssessmentError(null);
+  }, [activeId]);
+
+  useEffect(() => {
     if (!activeId) {
       setDetail(null);
       setDetailError(null);
       return;
     }
     let active = true;
+    setDetail(null);
     setDetailLoading(true);
     setDetailError(null);
     coreApi
@@ -171,15 +235,20 @@ export function Director() {
     if (!activeId) {
       setPlan(null);
       setSpec(null);
+      setPlanning(null);
       return;
     }
     let active = true;
+    setPlan(null);
+    setSpec(null);
+    setPlanning(null);
     setPlanError(null);
     setSpecError(null);
     Promise.allSettled([
       coreApi.getAgenticPlan(activeId),
       coreApi.getAgenticSpec(activeId),
-    ]).then(([planResult, specResult]) => {
+      coreApi.getAgenticPlanning(activeId),
+    ]).then(([planResult, specResult, planningResult]) => {
       if (!active) return;
       if (planResult.status === "fulfilled") {
         setPlan(planResult.value.graph);
@@ -192,6 +261,15 @@ export function Director() {
       } else {
         setSpec(null);
         setSpecError(errorText(specResult.reason, t("director.spec.error")));
+      }
+      if (planningResult.status === "fulfilled") {
+        setPlanning(planningResult.value);
+        setPlanningError(null);
+      } else {
+        setPlanning(null);
+        setPlanningError(
+          errorText(planningResult.reason, t("director.planning.error")),
+        );
       }
     });
     return () => {
@@ -213,6 +291,22 @@ export function Director() {
       setTriageError(errorText(cause, t("director.triage.error")));
     } finally {
       setTriageBusy(false);
+    }
+  }
+
+  async function runLeadAssessment() {
+    if (!activeId) return;
+    setAssessmentBusy(true);
+    setAssessmentError(null);
+    setAssessmentNotice(null);
+    try {
+      await coreApi.assessIntakeRequest(activeId);
+      setDetail(await coreApi.getAgenticRequest(activeId));
+      setAssessmentNotice(t("director.plan.assessmentSuccess"));
+    } catch (cause) {
+      setAssessmentError(errorText(cause, t("director.plan.assessmentError")));
+    } finally {
+      setAssessmentBusy(false);
     }
   }
 
@@ -307,6 +401,83 @@ export function Director() {
       setSpecError(errorText(cause, t("director.spec.freezeError")));
     } finally {
       setSpecBusy(null);
+    }
+  }
+
+  async function reviewPlan(
+    decision: "APPROVE" | "CHANGES_REQUESTED" | "REJECT",
+  ) {
+    if (!activeId || !planning?.review) return;
+    if (reviewRationale.trim() === "") {
+      setPlanningError(t("director.planning.rationaleRequired"));
+      return;
+    }
+    setReviewBusy(decision);
+    setPlanningError(null);
+    setPlanningNotice(null);
+    try {
+      await coreApi.reviewAgenticPlan(activeId, {
+        planRevision: planning.review.planRevision,
+        planSha256: planning.review.planSha256,
+        decision,
+        rationale: reviewRationale.trim(),
+      });
+      setPlanning(await coreApi.getAgenticPlanning(activeId));
+      setDetail(await coreApi.getAgenticRequest(activeId));
+      setReviewRationale("");
+      setPlanningNotice(t("director.planning.reviewSuccess"));
+    } catch (cause) {
+      setPlanningError(errorText(cause, t("director.planning.reviewError")));
+    } finally {
+      setReviewBusy(null);
+    }
+  }
+
+  async function disposeFinding(status: "RESOLVED" | "REFUTED") {
+    if (!activeId || !findingId) return;
+    const evidenceRefs = findingEvidence
+      .split(/[\n,]/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (evidenceRefs.length === 0) {
+      setFindingError(t("director.findings.evidenceRequired"));
+      return;
+    }
+    if (status === "REFUTED" && findingOwnerDecision.trim() === "") {
+      setFindingError(t("director.findings.ownerDecisionRequired"));
+      return;
+    }
+    setFindingBusy(status);
+    setFindingError(null);
+    setFindingNotice(null);
+    try {
+      await coreApi.resolveAgenticFinding(activeId, findingId, {
+        status,
+        evidenceRefs,
+        ownerDecision:
+          status === "REFUTED" ? findingOwnerDecision.trim() : undefined,
+      });
+      setDetail(await coreApi.getAgenticRequest(activeId));
+      setFindingId("");
+      setFindingEvidence("");
+      setFindingOwnerDecision("");
+      setFindingNotice(t("director.findings.success"));
+    } catch (cause) {
+      setFindingError(errorText(cause, t("director.findings.error")));
+    } finally {
+      setFindingBusy(null);
+    }
+  }
+
+  function artifact<T>(kind: string): T | null {
+    const record = planning?.artifacts.find(
+      (candidate) => candidate.kind === kind,
+    );
+    if (!record) return null;
+    try {
+      return JSON.parse(record.contentJson) as T;
+    } catch {
+      return null;
     }
   }
 
@@ -673,7 +844,92 @@ export function Director() {
                           <dt>{t("director.participants.reviewers")}</dt>
                           <dd>{detail.participants.reviewerCount}</dd>
                         </div>
+                        <div>
+                          <dt>
+                            {t(
+                              "director.participants.independentReceiptsLabel",
+                            )}
+                          </dt>
+                          <dd>
+                            {detail.reviewerEvidence
+                              ?.independentReviewerCount ?? 0}
+                          </dd>
+                        </div>
                       </dl>
+                      <div className="director-reviewers">
+                        <h3>{t("director.participants.requiredRoles")}</h3>
+                        {!reviewerAssignmentsMatch(detail) && (
+                          <p
+                            className="ui-callout ui-callout--danger"
+                            role="alert"
+                          >
+                            {t("director.participants.planMismatch")}
+                          </p>
+                        )}
+                        {detail.participants.reviewerRoles.length > 0 ? (
+                          <ul>
+                            {detail.participants.reviewerRoles.map((role) => {
+                              const assignment =
+                                detail.participants.reviewerAssignments.find(
+                                  (candidate) => candidate.role === role,
+                                );
+                              const receipt =
+                                detail.reviewerEvidence?.receipts.find(
+                                  (candidate) => candidate.role === role,
+                                );
+                              return (
+                                <li key={role}>
+                                  <Badge tone="info">
+                                    {t(`director.reviewerRole.${role}`)}
+                                  </Badge>{" "}
+                                  <code>
+                                    {assignment?.principalId ??
+                                      t("director.participants.unassigned")}
+                                  </code>{" "}
+                                  {receipt ? (
+                                    <>
+                                      <Badge
+                                        tone={reviewerReceiptTone(
+                                          receipt.result,
+                                        )}
+                                      >
+                                        {t(
+                                          "director.participants.receiptStatus",
+                                          {
+                                            result: receipt.result,
+                                            evidence: receipt.evidence,
+                                          },
+                                        )}
+                                      </Badge>{" "}
+                                      <span className="muted">
+                                        {receipt.principalId}
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <Badge tone="attention">
+                                      {t(
+                                        "director.participants.receiptMissing",
+                                      )}
+                                    </Badge>
+                                  )}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        ) : (
+                          <p className="muted">
+                            {t("director.participants.noRoles")}
+                          </p>
+                        )}
+                        <p className="muted">
+                          {t("director.participants.independentReceipts", {
+                            count:
+                              detail.reviewerEvidence
+                                ?.independentReviewerCount ?? 0,
+                            required: detail.participants.reviewerCount,
+                          })}
+                        </p>
+                      </div>
                       {detail.participants.unitAssignments.length > 0 && (
                         <div className="director-unit-routing">
                           <h3>{t("director.participants.unitRouting")}</h3>
@@ -711,6 +967,46 @@ export function Director() {
                   ) : (
                     <p className="muted">{t("director.plan.empty")}</p>
                   )}
+                  {assessmentError && (
+                    <p className="ui-callout ui-callout--danger" role="alert">
+                      {assessmentError}
+                    </p>
+                  )}
+                  {assessmentNotice && (
+                    <p className="notice" role="status">
+                      {assessmentNotice}
+                    </p>
+                  )}
+                  {detail.triage.route !== "NO_AGENT" &&
+                    (!detail.assessmentReady ||
+                      !detail.leadPlanReady ||
+                      !detail.actionSpecReady) && (
+                      <div
+                        className="ui-callout ui-callout--attention"
+                        role="status"
+                      >
+                        <p>
+                          {!detail.assessmentReady
+                            ? t("director.plan.assessmentRequired")
+                            : !detail.leadPlanReady
+                              ? t("director.plan.leadPlanRequired")
+                              : t("director.plan.actionSpecRequired")}
+                        </p>
+                        {(!detail.assessmentReady || !detail.leadPlanReady) && (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            busy={assessmentBusy}
+                            disabled={assessmentBusy}
+                            onClick={() => void runLeadAssessment()}
+                          >
+                            {assessmentBusy
+                              ? t("director.plan.assessing")
+                              : t("director.plan.runAssessment")}
+                          </Button>
+                        )}
+                      </div>
+                    )}
                   <div className="director-priority">
                     <Button
                       variant="secondary"
@@ -718,6 +1014,9 @@ export function Director() {
                       busy={planBusy}
                       disabled={
                         planBusy ||
+                        !detail.assessmentReady ||
+                        !detail.leadPlanReady ||
+                        !detail.actionSpecReady ||
                         detail.triage.route === "NO_AGENT" ||
                         Boolean(spec?.frozen || spec?.draft)
                       }
@@ -741,6 +1040,390 @@ export function Director() {
                   </div>
                   {Boolean(spec?.frozen || spec?.draft) && (
                     <p className="muted">{t("director.plan.frozen")}</p>
+                  )}
+                </Panel>
+
+                <Panel>
+                  <div className="section-heading">
+                    <h2>{t("director.planning.title")}</h2>
+                    {planning?.review && (
+                      <Badge
+                        tone={
+                          planning.review.status === "PENDING"
+                            ? "attention"
+                            : planning.review.status === "REJECTED" ||
+                                planning.review.status === "CHANGES_REQUESTED"
+                              ? "danger"
+                              : "success"
+                        }
+                      >
+                        {planning.review.status}
+                      </Badge>
+                    )}
+                  </div>
+                  {planningError && (
+                    <p className="ui-callout ui-callout--danger" role="alert">
+                      {planningError}
+                    </p>
+                  )}
+                  {planningNotice && (
+                    <p className="notice" role="status">
+                      {planningNotice}
+                    </p>
+                  )}
+                  {!planning ? (
+                    <p className="muted">{t("director.planning.empty")}</p>
+                  ) : (
+                    <>
+                      <dl className="director-facts">
+                        <div>
+                          <dt>{t("director.planning.lane")}</dt>
+                          <dd>{planning.lane}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.workflow")}</dt>
+                          <dd>{planning.workflow?.state ?? "—"}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.revision")}</dt>
+                          <dd>{planning.review?.planRevision ?? "—"}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.hash")}</dt>
+                          <dd>
+                            <code title={planning.review?.planSha256}>
+                              {planning.review
+                                ? shortId(planning.review.planSha256, 16)
+                                : "—"}
+                            </code>
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.principal")}</dt>
+                          <dd>{planning.review?.principalId ?? "—"}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.points")}</dt>
+                          <dd>{planning.review?.points ?? 0}</dd>
+                        </div>
+                      </dl>
+                      {planning.missingArtifacts.length > 0 && (
+                        <p className="ui-callout ui-callout--attention">
+                          {t("director.planning.missing", {
+                            values: planning.missingArtifacts.join(", "),
+                          })}
+                        </p>
+                      )}
+                      {planning.participantPlan.required &&
+                        !planning.participantPlan.ready && (
+                          <div
+                            className="ui-callout ui-callout--attention"
+                            role="status"
+                          >
+                            <p>
+                              <strong>
+                                {t(
+                                  "director.planning.participantIncompleteTitle",
+                                )}
+                              </strong>{" "}
+                              {planning.participantPlan.present
+                                ? t("director.planning.participantIncomplete", {
+                                    values:
+                                      [
+                                        ...planning.participantPlan
+                                          .missingRoles,
+                                        ...planning.participantPlan
+                                          .unexpectedRoles,
+                                        ...planning.participantPlan
+                                          .missingAssignments,
+                                      ].join(", ") ||
+                                      t(
+                                        "director.planning.participantAssignments",
+                                      ),
+                                  })
+                                : t("director.planning.participantMissing")}
+                            </p>
+                            {planning.participantPlan.present &&
+                              planning.participantPlan.problems.length > 0 && (
+                                <ul className="muted">
+                                  {planning.participantPlan.problems.map(
+                                    (problem) => (
+                                      <li key={problem}>{problem}</li>
+                                    ),
+                                  )}
+                                </ul>
+                              )}
+                          </div>
+                        )}
+                      {!planning.reviewApproved && (
+                        <p
+                          className={`ui-callout ${
+                            planning.reviewStatus === "PENDING"
+                              ? "ui-callout--info"
+                              : "ui-callout--attention"
+                          }`}
+                          role="status"
+                        >
+                          {planning.reviewStatus === "PENDING"
+                            ? t("director.planning.reviewPending")
+                            : t("director.planning.reviewNotApproved", {
+                                status: planning.reviewStatus ?? "—",
+                              })}
+                        </p>
+                      )}
+                      {planning.review && (
+                        <p className="muted">
+                          {t("director.planning.rationale", {
+                            value: planning.review.rationale,
+                          })}
+                        </p>
+                      )}
+                      {planning.review?.status === "PENDING" && (
+                        <div className="director-planning-review">
+                          <Textarea
+                            label={t("director.planning.reviewRationale")}
+                            value={reviewRationale}
+                            onChange={(event) =>
+                              setReviewRationale(event.target.value)
+                            }
+                            disabled={reviewBusy !== null}
+                          />
+                          <div className="director-priority">
+                            <Button
+                              size="sm"
+                              busy={reviewBusy === "APPROVE"}
+                              disabled={
+                                reviewBusy !== null || !planning.materialsReady
+                              }
+                              onClick={() => void reviewPlan("APPROVE")}
+                            >
+                              {t("director.planning.approve")}
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              busy={reviewBusy === "CHANGES_REQUESTED"}
+                              disabled={reviewBusy !== null}
+                              onClick={() =>
+                                void reviewPlan("CHANGES_REQUESTED")
+                              }
+                            >
+                              {t("director.planning.requestChanges")}
+                            </Button>
+                            <Button
+                              variant="danger"
+                              size="sm"
+                              busy={reviewBusy === "REJECT"}
+                              disabled={reviewBusy !== null}
+                              onClick={() => void reviewPlan("REJECT")}
+                            >
+                              {t("director.planning.reject")}
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                      <dl className="director-facts director-facts--wide">
+                        <div>
+                          <dt>{t("director.planning.stack")}</dt>
+                          <dd>
+                            {artifact<{
+                              selected: string;
+                              source: string;
+                              requiredCapabilities: string[];
+                            }>("STACK")?.selected ?? "—"}{" "}
+                            ·{" "}
+                            {artifact<{ source: string }>("STACK")?.source ??
+                              "—"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.architecture")}</dt>
+                          <dd>
+                            {artifact<{ components: string[] }>("ARCHITECTURE")
+                              ?.components.length ?? 0}{" "}
+                            {t("director.planning.components")}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.documentation")}</dt>
+                          <dd>
+                            {artifact<{ required: unknown[] }>("DOCUMENTATION")
+                              ?.required.length ?? 0}{" "}
+                            {t("director.planning.requiredDocs")}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.skills")}</dt>
+                          <dd>
+                            {artifact<{ needs: string[] }>("SKILL")?.needs.join(
+                              ", ",
+                            ) ?? "—"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.dod")}</dt>
+                          <dd>
+                            {artifact<{ projectChecks: unknown[] }>("DOD")
+                              ?.projectChecks.length ?? 0}{" "}
+                            {t("director.planning.checks")}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>{t("director.planning.openspec")}</dt>
+                          <dd>
+                            {artifact<{ changeId: string; revision: number }>(
+                              "OPENSPEC",
+                            )?.changeId ?? "—"}
+                          </dd>
+                        </div>
+                      </dl>
+                    </>
+                  )}
+                </Panel>
+
+                <EnvironmentPanel
+                  environment={detail.environment ?? null}
+                  requestId={activeId}
+                  executionBound={Boolean(detail.lead.campaignId)}
+                  authoredSpecBound={Boolean(spec?.frozen)}
+                  onEnvironmentUpdated={(next) =>
+                    setDetail((current) =>
+                      current ? { ...current, environment: next } : current,
+                    )
+                  }
+                  onPlanRecompiled={() => {
+                    void coreApi
+                      .getAgenticRequest(activeId)
+                      .then((next) => setDetail(next));
+                  }}
+                />
+
+                <Panel>
+                  <div className="section-heading">
+                    <h2>{t("director.findings.title")}</h2>
+                    <Badge
+                      tone={
+                        detail.findings.some(
+                          (finding) => finding.status === "OPEN",
+                        )
+                          ? "attention"
+                          : "success"
+                      }
+                    >
+                      {t("director.findings.open", {
+                        count: detail.findings.filter(
+                          (finding) => finding.status === "OPEN",
+                        ).length,
+                      })}
+                    </Badge>
+                  </div>
+                  {findingError && (
+                    <p className="ui-callout ui-callout--danger" role="alert">
+                      {findingError}
+                    </p>
+                  )}
+                  {findingNotice && (
+                    <p className="notice" role="status">
+                      {findingNotice}
+                    </p>
+                  )}
+                  {detail.findings.length === 0 ? (
+                    <p className="muted">{t("director.findings.empty")}</p>
+                  ) : (
+                    <ul className="director-findings">
+                      {detail.findings.map((finding) => (
+                        <li key={finding.id}>
+                          <div className="director-finding-head">
+                            <code>{finding.findingId}</code>
+                            <Badge
+                              tone={
+                                finding.status === "OPEN"
+                                  ? "attention"
+                                  : "success"
+                              }
+                            >
+                              {finding.status}
+                            </Badge>
+                            <span className="muted">{finding.route}</span>
+                          </div>
+                          <p className="muted">
+                            {t("director.findings.reviewer", {
+                              value: finding.reviewerPrincipal,
+                            })}
+                          </p>
+                          {finding.evidenceRefs.length > 0 && (
+                            <p className="muted">
+                              {t("director.findings.evidence", {
+                                value: finding.evidenceRefs.join(", "),
+                              })}
+                            </p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {detail.findings.some(
+                    (finding) => finding.status === "OPEN",
+                  ) && (
+                    <div className="director-finding-form">
+                      <Select
+                        label={t("director.findings.select")}
+                        value={findingId}
+                        onChange={(event) => setFindingId(event.target.value)}
+                        disabled={findingBusy !== null}
+                      >
+                        <option value="">
+                          {t("director.findings.selectPlaceholder")}
+                        </option>
+                        {detail.findings
+                          .filter((finding) => finding.status === "OPEN")
+                          .map((finding) => (
+                            <option key={finding.id} value={finding.findingId}>
+                              {finding.findingId} · {finding.route}
+                            </option>
+                          ))}
+                      </Select>
+                      <Textarea
+                        label={t("director.findings.evidenceLabel")}
+                        value={findingEvidence}
+                        onChange={(event) =>
+                          setFindingEvidence(event.target.value)
+                        }
+                        disabled={findingBusy !== null}
+                      />
+                      <Input
+                        label={t("director.findings.ownerDecision")}
+                        help={t("director.findings.ownerDecisionHelp")}
+                        value={findingOwnerDecision}
+                        onChange={(event) =>
+                          setFindingOwnerDecision(event.target.value)
+                        }
+                        disabled={findingBusy !== null}
+                      />
+                      <div className="director-priority">
+                        <Button
+                          size="sm"
+                          busy={findingBusy === "RESOLVED"}
+                          disabled={findingBusy !== null || findingId === ""}
+                          onClick={() => void disposeFinding("RESOLVED")}
+                        >
+                          {t("director.findings.resolve")}
+                        </Button>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          busy={findingBusy === "REFUTED"}
+                          disabled={
+                            findingBusy !== null ||
+                            findingId === "" ||
+                            findingOwnerDecision.trim() === ""
+                          }
+                          onClick={() => void disposeFinding("REFUTED")}
+                        >
+                          {t("director.findings.refute")}
+                        </Button>
+                      </div>
+                    </div>
                   )}
                 </Panel>
 
@@ -817,9 +1500,7 @@ export function Director() {
                         </div>
                       )}
                       {!spec?.frozen && !spec?.draft && (
-                        <p className="muted">
-                          {t("director.spec.notRequired")}
-                        </p>
+                        <p className="muted">{t("director.spec.empty")}</p>
                       )}
                       <div className="director-priority">
                         <Button

@@ -31,9 +31,16 @@ use factory_native::provider_egress::{EgressConfig, SharedTurnPolicy, TurnPolicy
 use factory_native::provider_patch::{
     ProviderAction, ProviderUsage, extract_action, extract_action_text, extract_plan, extract_usage,
 };
+use factory_native::provider_reliability::{
+    MAX_STRUCTURED_REPAIRS, SseReconnectPolicy, StructuredOutputError, StructuredOutputRepair,
+    TerminalCompletion, candidate_allowed, decode_structured_output,
+};
 use factory_native::provider_sandbox::{
     ContainerProviderSandbox, ContainerSandboxConfig, ProviderSandbox, ProviderSandboxConfig,
     SandboxTransport,
+};
+use factory_native::provider_stream::{
+    EventStreamConnector, ProviderStreamError, ReconnectWaiter, SystemClock, TerminalDecision,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -81,6 +88,9 @@ struct Assignment {
     attempt_grant: String,
     #[serde(default)]
     skills: Vec<AssignmentSkill>,
+    #[serde(default)]
+    environment_execution:
+        Option<factory_native::planning::environment::EnvironmentExecutionBinding>,
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
@@ -129,7 +139,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let core = validated_loopback_url(
         &env::var("FACTORY_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".into()),
         "FACTORY_CORE_URL",
-        &["core"],
+        &["core-control"],
     )?;
     let supervisor = Supervisor {
         client: reqwest::Client::builder()
@@ -218,6 +228,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .into());
         }
+        if assignment.execution_mode == "FIXTURE"
+            && let Some(reason) = fixture_dependency_blocker(&assignment.action_spec)
+        {
+            return Err(reason.into());
+        }
         let heartbeat_client = client.clone();
         let heartbeat_url = core.join("worker/heartbeat")?;
         let heartbeat_token = session_token.clone();
@@ -257,6 +272,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &supervisor,
             )
             .await
+            .map(FinalizedCandidate::model_final)
         } else if assignment.execution_mode == "TRUSTED_LOCAL_PROVIDER" {
             execute_provider_assignment(
                 &client,
@@ -277,26 +293,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &supervisor,
             )
             .await
+            .map(FinalizedCandidate::model_final)
         };
         heartbeat.abort();
         match execution {
-            Ok(candidate) => {
+            Ok(finalized) => {
                 let endpoint = if assignment.kind == "INTEGRATION" {
                     "worker/integrated_candidate"
                 } else {
                     "worker/candidate"
                 };
+                let mut payload = json!({
+                    "attempt_id": assignment.lease.attempt_id,
+                    "worker_id": worker_id,
+                    "generation": assignment.lease.generation,
+                    "action_spec_sha256": assignment.action_spec_sha256,
+                    "commit_sha": finalized.candidate.commit_sha,
+                    "tree_sha": finalized.candidate.tree_sha
+                });
+                if assignment.kind != "INTEGRATION" {
+                    payload["final_source"] = json!(finalized.final_source);
+                    if let Some(salvage) = &finalized.salvage {
+                        payload["salvage"] = json!(salvage);
+                    }
+                }
                 let response = client
                     .post(core.join(endpoint)?)
                     .bearer_auth(&session_token)
-                    .json(&json!({
-                        "attempt_id": assignment.lease.attempt_id,
-                        "worker_id": worker_id,
-                        "generation": assignment.lease.generation,
-                        "action_spec_sha256": assignment.action_spec_sha256,
-                        "commit_sha": candidate.commit_sha,
-                        "tree_sha": candidate.tree_sha
-                    }))
+                    .json(&payload)
                     .send()
                     .await?;
                 if !response.status().is_success() {
@@ -382,7 +406,8 @@ async fn report_terminal_failure(
             "generation": assignment.lease.generation,
             "receipt_id": Uuid::new_v4().to_string(),
             "result_sha256": sha256_hex(message.as_bytes()),
-            "terminal_status": terminal_status
+            "terminal_status": terminal_status,
+            "reason": message.chars().take(4_096).collect::<String>()
         }))
         .send()
         .await?;
@@ -403,67 +428,33 @@ async fn recover_provider_sessions(
     session_token: &str,
     worker_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let sessions: Vec<serde_json::Value> = client
-        .get(core.join("worker/provider_unresolved")?)
-        .bearer_auth(session_token)
-        .query(&[("worker_id", worker_id)])
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
     let mode = env::var("FACTORY_PROVIDER_SANDBOX").unwrap_or_default();
-    let mut failures = Vec::new();
-    for session in sessions {
-        let session_record_id = session["session_record_id"]
-            .as_str()
-            .ok_or("unresolved provider session has no record id")?
-            .to_owned();
-        let generation = session["generation"]
-            .as_i64()
-            .ok_or("unresolved provider session has no generation")?;
-        let provider_session_id = session["provider_session_id"].as_str().unwrap_or("");
-        let directory = session["provider_directory"].as_str().unwrap_or("");
-        let receipt = match mode.as_str() {
-            "bwrap" => confined_recovery_receipt(directory, provider_session_id),
-            "container" => container_recovery_receipt(directory).await,
-            "unconfined" => unconfined_recovery_receipt(directory, provider_session_id).await,
-            _ => Err("provider sandbox is not configured for recovery".into()),
-        };
-        let receipt = match receipt {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                failures.push(format!("{session_record_id}: {error}"));
-                continue;
+    factory_native::provider_lifecycle::recover_unresolved_provider_sessions(
+        client,
+        core,
+        session_token,
+        worker_id,
+        |session| {
+            let mode = mode.clone();
+            let directory = session.provider_directory.clone();
+            let provider_session_id = session.provider_session_id.clone();
+            async move {
+                match mode.as_str() {
+                    "bwrap" => confined_recovery_receipt(&directory, &provider_session_id)
+                        .map(str::to_owned),
+                    "container" => container_recovery_receipt(&directory)
+                        .await
+                        .map(str::to_owned),
+                    "unconfined" => unconfined_recovery_receipt(&directory, &provider_session_id)
+                        .await
+                        .map(str::to_owned),
+                    _ => Err("provider sandbox is not configured for recovery".into()),
+                }
             }
-        };
-        let response = client
-            .post(core.join("worker/provider_cleanup")?)
-            .bearer_auth(session_token)
-            .json(&json!({
-                "session_record_id": session_record_id,
-                "worker_id": worker_id,
-                "generation": generation,
-                "cleanup_receipt": receipt
-            }))
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            failures.push(format!(
-                "{session_record_id}: cleanup rejected with {}",
-                response.status()
-            ));
-        }
-    }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "unresolved provider cleanup failed: {}",
-            failures.join("; ")
-        )
-        .into())
-    }
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 fn confined_recovery_receipt(
@@ -517,8 +508,12 @@ async fn container_recovery_receipt(directory: &str) -> Result<&'static str, Str
     let url = env::var("FACTORY_RUNTIME_BROKER_URL")
         .map_err(|_| "FACTORY_RUNTIME_BROKER_URL required for container recovery")?;
     let token = factory_native::secrets::required("FACTORY_RUNTIME_BROKER_TOKEN")?;
-    let broker = factory_native::runtime_broker::RuntimeBrokerClient::new(&url, token)
-        .map_err(|error| error.to_string())?;
+    let broker = factory_native::runtime_broker::RuntimeBrokerClient::new(
+        &url,
+        token,
+        factory_native::runtime_broker::ResourceOwner::Provider,
+    )
+    .map_err(|error| error.to_string())?;
     broker
         .remove_container(&container)
         .await
@@ -690,6 +685,27 @@ struct ProviderRun {
     provider_session_id: String,
     turn_id: String,
     usage: ProviderUsage,
+    final_source: factory_native::quality::CandidateFinalSource,
+    salvage: Option<factory_native::db::CandidateSalvageClaim>,
+}
+
+/// The exact Candidate submission plus its durable provenance. The normal
+/// provider final path carries `MODEL_FINAL`; only the deterministic stagnation
+/// helper carries salvage evidence.
+struct FinalizedCandidate {
+    candidate: factory_native::workspace::CandidateRevision,
+    final_source: factory_native::quality::CandidateFinalSource,
+    salvage: Option<factory_native::db::CandidateSalvageClaim>,
+}
+
+impl FinalizedCandidate {
+    fn model_final(candidate: factory_native::workspace::CandidateRevision) -> Self {
+        Self {
+            candidate,
+            final_source: factory_native::quality::CandidateFinalSource::ModelFinal,
+            salvage: None,
+        }
+    }
 }
 
 struct ProviderContext<'a> {
@@ -708,6 +724,169 @@ struct ProviderContext<'a> {
     turn_policy: Option<&'a SharedTurnPolicy>,
     assignment: &'a Assignment,
     supervisor: &'a Supervisor,
+    enforce_check_completion: bool,
+}
+
+/// Per-attempt dependency acquisition state. Acquisition runs at most once,
+/// lazily after provider writes and before the first offline check/finalize.
+#[derive(Default)]
+struct DependencyAcquisitionState {
+    attempted: bool,
+    receipt: Option<factory_native::dependency_service::DependencyAcquireReceipt>,
+}
+
+/// Fixture execution writes a deterministic file, executes it once and returns
+/// a candidate without running the provider dependency/check pipeline. A frozen
+/// dependency plan therefore cannot be satisfied in this mode; fail closed
+/// before workspace allocation or candidate submission.
+fn fixture_dependency_blocker(spec: &ActionSpec) -> Option<&'static str> {
+    (spec.dependencies_required || spec.dependency_plan.is_some()).then_some(
+        "FIXTURE execution cannot satisfy a frozen dependency plan; no candidate was created. Use TRUSTED_LOCAL_PROVIDER or remove the dependency plan",
+    )
+}
+
+fn dependency_acquisition_request(
+    action_spec: &ActionSpec,
+    _directory: &str,
+) -> Result<Option<factory_native::dependency_service::DependencyAcquireRequest>, String> {
+    if action_spec.dependencies_required && action_spec.dependency_plan.is_none() {
+        return Err(
+            "the frozen assignment requires dependency acquisition but no dependency plan was attached"
+                .into(),
+        );
+    }
+    let Some(plan) = action_spec.dependency_plan.as_ref() else {
+        return Ok(None);
+    };
+    plan.validate()
+        .map_err(|error| format!("frozen dependency plan is invalid: {error}"))?;
+    if !plan.acquisition.uses_broker() {
+        return Ok(None);
+    }
+    let fetch = plan
+        .brokered_fetch
+        .as_ref()
+        .ok_or_else(|| "brokered dependency plan has no frozen acquisition contract".to_string())?;
+    Ok(Some(
+        factory_native::dependency_service::DependencyAcquireRequest {
+            workdir: ".".into(),
+            lockfile_path: fetch.lockfile_path.clone(),
+            lockfile_sha256: fetch.lockfile_sha256.clone(),
+            vendor_path: fetch.vendor_path.clone(),
+            registry: fetch.registry.clone(),
+            timeout_secs: 600,
+        },
+    ))
+}
+
+async fn supervisor_acquire_dependencies(
+    context: &ProviderContext<'_>,
+    workspace_id: &str,
+    capability: &str,
+    request: &factory_native::dependency_service::DependencyAcquireRequest,
+) -> Result<factory_native::dependency_service::DependencyAcquireReceipt, Box<dyn std::error::Error>>
+{
+    let digest = request.digest()?;
+    let operation = request_workspace_operation(WorkspaceOperation {
+        client: context.client,
+        core: context.core,
+        session_token: context.session_token,
+        worker_id: context.worker_id,
+        attempt_id: &context.assignment.lease.attempt_id,
+        generation: context.assignment.lease.generation,
+        workspace_id,
+        operation: "dependencies",
+        request_sha256: digest,
+    })
+    .await?;
+    let response = context
+        .supervisor
+        .client
+        .post(
+            context
+                .supervisor
+                .base
+                .join(&format!("v1/workspaces/{workspace_id}/dependencies"))?,
+        )
+        .bearer_auth(capability)
+        .header("x-factory-operation-grant", operation)
+        .json(request)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let body = body.chars().take(1_000).collect::<String>();
+        return Err(format!("Supervisor dependency acquisition failed: {status}: {body}").into());
+    }
+    Ok(response.json().await?)
+}
+
+async fn ensure_dependencies(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    state: &mut DependencyAcquisitionState,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if state.attempted {
+        return Ok(());
+    }
+    state.attempted = true;
+    let request =
+        match dependency_acquisition_request(&context.assignment.action_spec, context.directory) {
+            Ok(request) => request,
+            Err(error) => {
+                return Err(
+                    format!("dependency acquisition blocked the candidate: {error}").into(),
+                );
+            }
+        };
+    let Some(request) = request else {
+        return Ok(());
+    };
+    let receipt = supervisor_acquire_dependencies(
+        context,
+        &handle.workspace_id,
+        &handle.capability,
+        &request,
+    )
+    .await
+    .map_err(|error| format!("dependency acquisition blocked the candidate: {error}"))?;
+    let acquisition = context
+        .assignment
+        .action_spec
+        .dependency_plan
+        .as_ref()
+        .map(|plan| plan.acquisition)
+        .unwrap_or(factory_native::dependencies::DependencyAcquisition::NotRequired);
+    receipt.evidence().validate(acquisition).map_err(|error| {
+        format!("dependency acquisition evidence is invalid; candidate blocked: {error}")
+    })?;
+    if receipt.lockfile_sha256 != request.lockfile_sha256 {
+        return Err(
+            "dependency acquisition receipt does not bind the frozen lockfile; candidate blocked"
+                .into(),
+        );
+    }
+    let summary = serde_json::to_string(&receipt)?;
+    post_tool_event(
+        context,
+        "dependency-acquisition",
+        "dependencies",
+        "RESULT",
+        &bounded_tool_text(&summary),
+    )
+    .await?;
+    state.receipt = Some(receipt);
+    Ok(())
+}
+
+async fn finalize_candidate(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    dependencies: &mut DependencyAcquisitionState,
+) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
+    ensure_dependencies(context, handle, dependencies).await?;
+    supervisor_finalize(context, &handle.workspace_id, &handle.capability).await
 }
 
 async fn execute_provider_assignment(
@@ -717,9 +896,20 @@ async fn execute_provider_assignment(
     worker_id: &str,
     assignment: &Assignment,
     supervisor: &Supervisor,
-) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
+) -> Result<FinalizedCandidate, Box<dyn std::error::Error>> {
     validate_provider_tools(&assignment.allowed_tools)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    if !assignment.action_spec.checks.is_empty()
+        && !assignment
+            .allowed_tools
+            .iter()
+            .any(|tool| tool == "run_command")
+    {
+        return Err(
+            "provider assignment has frozen checks but no run_command permission; refusing a partial candidate"
+                .into(),
+        );
+    }
     assignment
         .execution_policy
         .as_ref()
@@ -885,6 +1075,7 @@ async fn execute_provider_assignment(
         }
     };
     let mut sandbox_clean = true;
+    let enforce_check_completion = !fixture_provider_route();
     let confined = matches!(
         &runtime,
         ProviderRuntime::Http {
@@ -920,6 +1111,7 @@ async fn execute_provider_assignment(
                 turn_policy: egress_turn_policy.as_ref(),
                 assignment,
                 supervisor,
+                enforce_check_completion,
             };
             let result = if assignment.allowed_tools.is_empty() {
                 run_provider_patch(&context).await
@@ -952,6 +1144,7 @@ async fn execute_provider_assignment(
                 turn_policy: egress_turn_policy.as_ref(),
                 assignment,
                 supervisor,
+                enforce_check_completion,
             };
             let result = run_codex_tool_loop(&context, &mut rpc).await;
             sandbox_clean = sandbox.stop().await.is_ok();
@@ -1042,7 +1235,11 @@ async fn execute_provider_assignment(
                 error: String::new(),
             };
             post_provider_terminal(client, core, session_token, &terminal).await?;
-            Ok(run.candidate)
+            Ok(FinalizedCandidate {
+                candidate: run.candidate,
+                final_source: run.final_source,
+                salvage: run.salvage,
+            })
         }
         Err(error) => {
             let tracked_usage = usage_tracker.lock().map(|usage| *usage).unwrap_or_default();
@@ -1669,46 +1866,6 @@ async fn wait_for_opencode_health(
     }
 }
 
-async fn finalize_written_provider_work(
-    context: &ProviderContext<'_>,
-    http: &reqwest::Client,
-    handle: &WorkspaceHandle,
-    session_id: &str,
-    last_message_id: &str,
-    usage: ProviderUsage,
-    error: &str,
-) -> Result<Option<ProviderRun>, Box<dyn std::error::Error>> {
-    if provider_state(context).await? == "CANCEL_REQUESTED" {
-        return Ok(None);
-    }
-    post_tool_event(
-        context,
-        "provider-turn-error",
-        "final",
-        "RESULT",
-        &format!(
-            "provider turn ended with an error after at least one applied write; preserving the applied writes for independent verification: {error}"
-        ),
-    )
-    .await?;
-    factory_native::runtime::delete_opencode_session(
-        http,
-        context.base_url,
-        context.password,
-        context.api_directory,
-        session_id,
-    )
-    .await?;
-    let candidate = supervisor_finalize(context, &handle.workspace_id, &handle.capability).await?;
-    cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
-    Ok(Some(ProviderRun {
-        candidate,
-        provider_session_id: session_id.to_owned(),
-        turn_id: last_message_id.to_owned(),
-        usage,
-    }))
-}
-
 fn operation_limits(context: &ProviderContext<'_>) -> OperationLimits {
     context
         .assignment
@@ -1758,6 +1915,7 @@ struct TurnProgress {
     operation_prefix: String,
     run_identity: String,
     turn: u64,
+    final_nudges: u64,
     sequence: u64,
     evidence: Vec<ProgressEvidence>,
     last_content: std::collections::BTreeMap<String, String>,
@@ -1793,6 +1951,7 @@ impl TurnProgress {
             operation_prefix,
             run_identity,
             turn: 0,
+            final_nudges: 0,
             sequence: initial_sequence,
             evidence: Vec::new(),
             last_content: std::collections::BTreeMap::new(),
@@ -1804,9 +1963,13 @@ impl TurnProgress {
         self.turn += 1;
     }
 
-    /// Monotonic across Worker restarts: epoch milliseconds in the high bits
-    /// and a small in-process counter in the low three digits. A clock that
-    /// moves backwards inside one run is clamped to the last value.
+    /// A deterministic final-specific nudge is proof that the Worker asked the
+    /// model to finish before Core diagnosed stagnation. Salvage requires at
+    /// least one; unrelated structured-output repair prompts do not count.
+    fn observe_final_nudge(&mut self) {
+        self.final_nudges = self.final_nudges.saturating_add(1);
+    }
+
     fn next_sequence(&mut self) -> u64 {
         // Epoch microseconds plus a durable seed from Core's last accepted
         // sequence: later runs and restarts cannot fall below prior evidence.
@@ -1840,6 +2003,12 @@ impl TurnProgress {
             observed_sequence: sequence,
             execution_receipt_id: String::new(),
         });
+    }
+
+    fn content_unchanged(&self, path: &str, content: &str) -> bool {
+        self.last_content
+            .get(path)
+            .is_some_and(|sha| sha == &sha256_hex(content.as_bytes()))
     }
 
     fn candidate_digest(&self) -> String {
@@ -1888,16 +2057,13 @@ impl TurnProgress {
         }
         let checkpoint_id = format!("{}-turn-{}", self.operation_prefix, self.turn);
         let operation_id = checkpoint_id.clone();
-        let outcome_sha256 = sha256_hex(
-            serde_json::to_string(&serde_json::json!({
-                "workItemId": self.work_item_id,
-                "operation": self.operation_prefix,
-                "turn": self.turn,
-                "evidence": self.evidence.iter().map(|item| item.evidence_id.clone()).collect::<Vec<_>>(),
-            }))
-            .ok()?
-            .as_bytes(),
-        );
+        let outcome = serde_json::json!({
+            "workItemId": self.work_item_id,
+            "operation": self.operation_prefix,
+            "turn": self.turn,
+            "evidence": self.evidence.iter().map(|item| item.evidence_id.clone()).collect::<Vec<_>>(),
+        });
+        let outcome_sha256 = sha256_hex(serde_json::to_string(&outcome).ok()?.as_bytes());
         let checkpoint = ProgressCheckpoint {
             checkpoint_id,
             work_item_id: self.work_item_id.clone(),
@@ -2007,14 +2173,11 @@ async fn submit_progress_checkpoint(
         })
 }
 
-/// Persist the final terminal operation before the candidate is reported. The
-/// Quality Gate remains independent; an open progress hold blocks the next
-/// attempt, not the gate for this candidate.
-async fn persist_final_progress_checkpoint(
+async fn persist_progress_checkpoint(
     context: &ProviderContext<'_>,
-    progress: &mut TurnProgress,
+    request: Option<ProgressCheckpointRequest>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(request) = progress.checkpoint_request() {
+    if let Some(request) = request {
         let _ = submit_progress_checkpoint(
             context.client,
             context.core,
@@ -2028,19 +2191,188 @@ async fn persist_final_progress_checkpoint(
     Ok(())
 }
 
+/// Persist the final terminal operation before the candidate is reported. The
+/// Quality Gate remains independent; an open progress hold blocks the next
+/// attempt, not the gate for this candidate.
+async fn persist_final_progress_checkpoint(
+    context: &ProviderContext<'_>,
+    progress: &mut TurnProgress,
+) -> Result<(), Box<dyn std::error::Error>> {
+    persist_progress_checkpoint(context, progress.checkpoint_request()).await
+}
+
+enum ProviderSessionCleanup<'a> {
+    OpenCode {
+        http: &'a reqwest::Client,
+        base_url: &'a str,
+        password: &'a str,
+        api_directory: &'a str,
+        session_id: &'a str,
+    },
+    Codex {
+        rpc: &'a mut JsonRpc<tokio::process::ChildStdout, tokio::process::ChildStdin>,
+        thread_id: &'a str,
+    },
+}
+
+impl ProviderSessionCleanup<'_> {
+    async fn close(self) -> Result<(), Box<dyn std::error::Error>> {
+        match self {
+            Self::OpenCode {
+                http,
+                base_url,
+                password,
+                api_directory,
+                session_id,
+            } => {
+                factory_native::runtime::delete_opencode_session(
+                    http,
+                    base_url,
+                    password,
+                    api_directory,
+                    session_id,
+                )
+                .await?;
+            }
+            Self::Codex { rpc, thread_id } => {
+                let _ = tokio::time::timeout(Duration::from_secs(5), rpc.archive_thread(thread_id))
+                    .await;
+            }
+        }
+        Ok(())
+    }
+}
+
+enum StagnationSalvage {
+    Finalized(Box<ProviderRun>),
+    Halted(WorkerProgressHalt),
+}
+
+/// Deterministically finish an Implementer that Core diagnosed as stagnant
+/// only when it already changed the candidate, the Worker already asked the
+/// model to finalize at least once, and every remaining frozen check passes.
+/// The model loop has already stopped: this submits the same workspace the
+/// normal final path would submit, with the same frozen checks, budgets and
+/// independent Quality Gate. Any other decision, a missing write, a missing
+/// final nudge, an empty diff or a failing check returns the original progress
+/// halt unchanged.
+#[allow(clippy::too_many_arguments)]
+async fn finalize_stagnant_candidate(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    dependencies: &mut DependencyAcquisitionState,
+    progress: &mut TurnProgress,
+    passed_checks: &mut std::collections::BTreeSet<String>,
+    written: bool,
+    halt: WorkerProgressHalt,
+    usage: ProviderUsage,
+    provider_session_id: String,
+    turn_id: String,
+    session: ProviderSessionCleanup<'_>,
+) -> Result<StagnationSalvage, Box<dyn std::error::Error>> {
+    if halt.decision != ContinuationDecision::Diagnose || !written || progress.final_nudges == 0 {
+        return Ok(StagnationSalvage::Halted(halt));
+    }
+    session.close().await?;
+    let candidate = finalize_candidate(context, handle, dependencies).await?;
+    let changed = match factory_native::workspace::changed_paths(
+        std::path::Path::new(&context.assignment.repository),
+        &context.assignment.action_spec.base_commit,
+        &candidate.commit_sha,
+    ) {
+        Ok(changed) if !changed.is_empty() => changed,
+        _ => {
+            cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
+            return Ok(StagnationSalvage::Halted(halt));
+        }
+    };
+    let executions = execute_all_frozen_checks_for_candidate(
+        context,
+        handle,
+        dependencies,
+        progress,
+        passed_checks,
+        &candidate,
+    )
+    .await?;
+    if frozen_check_failure_summary(&executions).is_some() {
+        cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
+        return Ok(StagnationSalvage::Halted(halt));
+    }
+    let executed_checks = executions.len();
+    cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
+    eprintln!(
+        "{}",
+        json!({
+            "event": "worker.stagnation_finalized",
+            "work_item_id": progress.work_item_id,
+            "attempt_id": progress.attempt_id,
+            "decision": "DIAGNOSE",
+            "final_nudges": progress.final_nudges,
+            "executed_checks": executed_checks,
+            "frozen_checks": context.assignment.action_spec.checks.len(),
+            "changed_files": changed.len(),
+            "candidate_commit": candidate.commit_sha.as_str(),
+        })
+    );
+    Ok(StagnationSalvage::Finalized(Box::new(ProviderRun {
+        candidate,
+        provider_session_id,
+        turn_id,
+        usage,
+        final_source: factory_native::quality::CandidateFinalSource::StagnationSalvage,
+        salvage: Some(factory_native::db::CandidateSalvageClaim {
+            work_item_id: progress.work_item_id.clone(),
+        }),
+    })))
+}
+
+type ProviderEventStream = factory_native::provider_stream::BoxEventStream;
+type ProviderWaiter = ReconnectWaiter<factory_native::runtime::OpenCodeEventConnector>;
+
+/// Wait for a provider terminal event with bounded SSE reconnect. A reconnect
+/// reopens the same session stream from the last complete event id; it never
+/// creates a second provider session and never treats an HTTP reconnect as task
+/// success.
+async fn wait_for_provider_terminal(
+    waiter: &mut ProviderWaiter,
+    session_id: &str,
+    cancel_requested: bool,
+) -> Result<factory_native::runtime::OpenCodePromptTerminal, Box<dyn std::error::Error>> {
+    let clock = SystemClock;
+    let terminal = waiter
+        .wait(
+            &clock,
+            |event| match factory_native::runtime::classify_opencode_terminal_event(
+                event,
+                session_id,
+                cancel_requested,
+            ) {
+                Ok(Some(terminal)) => TerminalDecision::Terminal(terminal),
+                Ok(None) => TerminalDecision::Continue,
+                Err(error) => {
+                    TerminalDecision::Fatal(ProviderStreamError::Protocol(error.to_string()))
+                }
+            },
+        )
+        .await?;
+    Ok(terminal)
+}
+
 async fn run_provider_tool_loop(
     context: &ProviderContext<'_>,
 ) -> Result<ProviderRun, Box<dyn std::error::Error>> {
     let directory = context.directory.to_owned();
     let http = factory_native::runtime::opencode_http_client(Duration::ZERO)?;
-    let event_response = factory_native::runtime::open_opencode_event_stream(
-        &http,
+    let mut connector = factory_native::runtime::OpenCodeEventConnector::new(
+        http.clone(),
         context.base_url,
         context.password,
         context.api_directory,
-    )
-    .await?;
-    let mut event_stream = event_response.bytes_stream();
+    )?;
+    let mut event_stream: ProviderEventStream = EventStreamConnector::connect(&mut connector, None)
+        .await
+        .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })?;
     let mut parser = factory_native::sse::SseParser::new(1_048_576);
     let created = factory_native::runtime::create_opencode_session(
         &http,
@@ -2083,6 +2415,8 @@ async fn run_provider_tool_loop(
         &session_id,
     )
     .await?;
+    let mut waiter =
+        ReconnectWaiter::new(connector, SseReconnectPolicy::default()).with_stream(event_stream);
 
     let allocation = WorkspaceAllocation {
         attempt_id: context.assignment.lease.attempt_id.clone(),
@@ -2120,7 +2454,7 @@ async fn run_provider_tool_loop(
         "agent": "plan",
         "tools": opencode_disabled_tools(),
         "parts": [{"type": "text", "text": format!(
-            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. {} You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":<the check timeoutSecs>}}. Use each frozen check's `timeoutSecs`, never a shorter value. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
+            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. {} You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":<the check timeoutSecs>}}. Use each frozen check's `timeoutSecs`, never a shorter value. Check descriptions are general acceptance criteria, not just the literal example command; implement the behavior on every relevant path (for example, every CLI subcommand must reject unknown flags). Before final, re-read the changed code against every check description and the objective, and fix gaps even when the literal check command already passes. Never repeat a write whose content is identical to a previous write; if a frozen check fails, change the file using its exact stderr before writing again. Final is accepted only after every frozen check passes; if you return final with checks still missing, the Worker runs them itself and returns any failure output to you. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
             opencode_first_action_instruction(context.assignment.allowed_tools.as_slice()),
             context.assignment.allowed_tools.join(", "),
             context.assignment.action_spec.allowed_paths.join(", "),
@@ -2131,7 +2465,7 @@ async fn run_provider_tool_loop(
                     .action_spec
                     .checks
                     .iter()
-                    .map(|check| json!({"id": check.id, "command": check.command, "expectExit": check.expect_exit, "timeoutSecs": check.timeout_secs}))
+                    .map(|check| json!({"id": check.id, "description": check.description, "command": check.command, "expectExit": check.expect_exit, "timeoutSecs": check.timeout_secs}))
                     .collect::<Vec<_>>()
             )?,
             adopted_skills,
@@ -2140,8 +2474,11 @@ async fn run_provider_tool_loop(
     });
     let mut usage = ProviderUsage::default();
     let mut written = false;
+    let mut passed_checks = std::collections::BTreeSet::new();
+    let mut dependencies = DependencyAcquisitionState::default();
     let mut last_message_id = String::new();
     let mut call_ids = std::collections::BTreeSet::new();
+    let mut structured_output = StructuredOutputRepair::new(MAX_STRUCTURED_REPAIRS)?;
     let mut progress = TurnProgress::new(context);
     loop {
         if let Some(request) = progress.checkpoint_request() {
@@ -2156,7 +2493,30 @@ async fn run_provider_tool_loop(
             .await?;
             if let Some(halt) = WorkerProgressHalt::from_response(&progress.work_item_id, &response)
             {
-                return Err(Box::new(halt));
+                match finalize_stagnant_candidate(
+                    context,
+                    &handle,
+                    &mut dependencies,
+                    &mut progress,
+                    &mut passed_checks,
+                    written,
+                    halt,
+                    usage,
+                    session_id.clone(),
+                    last_message_id.clone(),
+                    ProviderSessionCleanup::OpenCode {
+                        http: &http,
+                        base_url: context.base_url,
+                        password: context.password,
+                        api_directory: context.api_directory,
+                        session_id: &session_id,
+                    },
+                )
+                .await?
+                {
+                    StagnationSalvage::Finalized(run) => return Ok(*run),
+                    StagnationSalvage::Halted(halt) => return Err(Box::new(halt)),
+                }
             }
         }
         progress.begin_turn();
@@ -2178,52 +2538,17 @@ async fn run_provider_tool_loop(
             if let Some(turn) = &turn {
                 release_provider_turn(context, &turn.reservation_id).await;
             }
-            if written
-                && let Some(run) = finalize_written_provider_work(
-                    context,
-                    &http,
-                    &handle,
-                    &session_id,
-                    &last_message_id,
-                    usage,
-                    &error.to_string(),
-                )
-                .await?
-            {
-                return Ok(run);
-            }
             return Err(error.into());
         }
         // No total model-request deadline. The provider may take as long as
         // it needs; latency and progress are telemetry.
-        let terminal = match factory_native::runtime::wait_for_opencode_prompt_terminal(
-            &mut event_stream,
-            &mut parser,
-            &session_id,
-            false,
-        )
-        .await
-        {
+        let terminal = match wait_for_provider_terminal(&mut waiter, &session_id, false).await {
             Ok(terminal) => terminal,
             Err(error) => {
                 if let Some(turn) = &turn {
                     release_provider_turn(context, &turn.reservation_id).await;
                 }
-                if written
-                    && let Some(run) = finalize_written_provider_work(
-                        context,
-                        &http,
-                        &handle,
-                        &session_id,
-                        &last_message_id,
-                        usage,
-                        &error.to_string(),
-                    )
-                    .await?
-                {
-                    return Ok(run);
-                }
-                return Err(error.into());
+                return Err(error);
             }
         };
         let message = match &terminal {
@@ -2244,20 +2569,6 @@ async fn run_provider_tool_loop(
                     if let Some(turn) = &turn {
                         release_provider_turn(context, &turn.reservation_id).await;
                     }
-                    if written
-                        && let Some(run) = finalize_written_provider_work(
-                            context,
-                            &http,
-                            &handle,
-                            &session_id,
-                            &last_message_id,
-                            usage,
-                            &error.to_string(),
-                        )
-                        .await?
-                    {
-                        return Ok(run);
-                    }
                     return Err(error.into());
                 }
             },
@@ -2275,20 +2586,6 @@ async fn run_provider_tool_loop(
                     } => "provider cancellation was requested".into(),
                     _ => "provider turn did not complete normally".into(),
                 };
-                if written
-                    && let Some(run) = finalize_written_provider_work(
-                        context,
-                        &http,
-                        &handle,
-                        &session_id,
-                        &last_message_id,
-                        usage,
-                        &detail,
-                    )
-                    .await?
-                {
-                    return Ok(run);
-                }
                 return Err(detail.into());
             }
         };
@@ -2305,7 +2602,7 @@ async fn run_provider_tool_loop(
                 return Err("provider turn failed".into());
             }
         };
-        last_message_id = message_id.clone();
+        last_message_id = message_id;
         let turn_usage = extract_usage(&message);
         if let Some(turn) = &turn {
             settle_provider_turn(context, &turn.reservation_id, &turn_usage).await?;
@@ -2318,37 +2615,45 @@ async fn run_provider_tool_loop(
         if let Ok(mut tracker) = context.usage_tracker.lock() {
             *tracker = usage;
         }
-        let action = match extract_action(&message) {
+        let action = match decode_structured_output(&mut structured_output, || {
+            extract_action(&message).map_err(|error| error.to_string())
+        }) {
             Ok(action) => action,
-            Err(error) => {
+            Err(StructuredOutputError::Repair {
+                attempt,
+                max_repairs,
+                detail,
+            }) => {
                 post_tool_event(
                     context,
                     "invalid-action",
                     "final",
                     "ERROR",
-                    &format!("invalid provider action: {error}"),
+                    &format!("invalid provider action (repair {attempt}/{max_repairs}): {detail}"),
                 )
                 .await?;
                 prompt = json!({
                     "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
                     "parts": [{"type": "text", "text": format!(
-                        "Your previous response was rejected: {error}. Return exactly one JSON object. Use a write_file tool_request for every file change. Finish with {{\"type\":\"final\",\"files\":[],\"explanation\":\"...\"}} and keep `files` empty."
+                        "Your previous response was rejected: {detail}. Return exactly one JSON object. Use a write_file tool_request for every file change. Finish with {{\"type\":\"final\",\"files\":[],\"explanation\":\"...\"}} and keep `files` empty."
                     )}]
                 });
                 continue;
+            }
+            Err(error @ StructuredOutputError::Exhausted { .. }) => {
+                return Err(format!("provider structured output rejected: {error}").into());
             }
         };
         match action {
             ProviderAction::Final { files, explanation } => {
                 if !written && files.is_empty() {
-                    post_tool_event(
+                    post_final_nudge(
                         context,
                         "empty-final",
-                        "final",
-                        "ERROR",
                         "no file has been written; an empty final response cannot create a candidate",
                     )
                     .await?;
+                    progress.observe_final_nudge();
                     prompt = json!({
                         "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
                         "parts": [{"type": "text", "text": "You have not written any file, so no candidate can be created. Use a write_file tool_request now with the complete corrected file content. Do not return a final response until at least one file has been written."}]
@@ -2361,31 +2666,65 @@ async fn run_provider_tool_loop(
                         .await?;
                 }
                 if !files.is_empty() {
-                    if !context
-                        .assignment
-                        .allowed_tools
-                        .contains(&"write_file".into())
-                    {
-                        return Err("provider returned files without write_file permission".into());
-                    }
-                    let applied = files
-                        .into_iter()
-                        .map(|file| {
-                            progress.observe_write(&file.path, &file.content);
-                            factory_native::execution::AppliedFile {
-                                path: file.path,
-                                content: file.content,
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    supervisor_write(
+                    // Final-file vectors bypass the dynamic-write duplicate
+                    // guard and success-first evidence ordering. The provider
+                    // contract requires write_file tool requests instead.
+                    post_final_nudge(
                         context,
-                        &handle.workspace_id,
-                        &handle.capability,
-                        applied,
-                        !written,
+                        "final-files",
+                        "final responses must use an empty files array",
                     )
                     .await?;
+                    progress.observe_final_nudge();
+                    prompt = json!({
+                        "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
+                        "parts": [{"type": "text", "text": "Final responses must have an empty files array. Use a write_file tool_request for every file change, then return final with files: []."}]
+                    });
+                    continue;
+                }
+                if context.enforce_check_completion
+                    && let Some(failure) = complete_missing_frozen_checks(
+                        context,
+                        &handle,
+                        &mut dependencies,
+                        &mut progress,
+                        &mut passed_checks,
+                    )
+                    .await?
+                {
+                    eprintln!(
+                        "worker: deterministic frozen check failed; feeding the failure back to the provider"
+                    );
+                    post_final_nudge(
+                        context,
+                        "incomplete-final",
+                        "frozen acceptance checks failed; the Worker executed them automatically",
+                    )
+                    .await?;
+                    progress.observe_final_nudge();
+                    let instructions = missing_check_instructions(
+                        &context.assignment.action_spec.checks,
+                        &context.assignment.allowed_tools,
+                        &passed_checks,
+                    )
+                    .unwrap_or_default();
+                    prompt = json!({
+                        "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
+                        "parts": [{"type": "text", "text": format!("{failure}\n\n{instructions}")}]
+                    });
+                    continue;
+                }
+                let all_checks_passed = !context.enforce_check_completion
+                    || missing_frozen_checks(
+                        &context.assignment.action_spec.checks,
+                        &passed_checks,
+                    )
+                    .is_empty();
+                if !candidate_allowed(TerminalCompletion::Completed, written, all_checks_passed) {
+                    return Err(
+                        "provider final lacks completed terminal, write or check evidence; no candidate was created"
+                            .into(),
+                    );
                 }
                 persist_final_progress_checkpoint(context, &mut progress).await?;
                 factory_native::runtime::delete_opencode_session(
@@ -2396,14 +2735,15 @@ async fn run_provider_tool_loop(
                     &session_id,
                 )
                 .await?;
-                let candidate =
-                    supervisor_finalize(context, &handle.workspace_id, &handle.capability).await?;
+                let candidate = finalize_candidate(context, &handle, &mut dependencies).await?;
                 cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
                 return Ok(ProviderRun {
                     candidate,
                     provider_session_id: session_id,
-                    turn_id: message_id,
+                    turn_id: last_message_id,
                     usage,
+                    final_source: factory_native::quality::CandidateFinalSource::ModelFinal,
+                    salvage: None,
                 });
             }
             ProviderAction::ToolRequest {
@@ -2417,6 +2757,9 @@ async fn run_provider_tool_loop(
                 if call_id.trim().is_empty() || !call_ids.insert(call_id.clone()) {
                     return Err("provider tool call id is empty or duplicated".into());
                 }
+                // A leading `./` denotes the same project-relative file. The
+                // scope check still rejects `..`, absolute paths and `.git`.
+                let path = path.strip_prefix("./").unwrap_or(path.as_str()).to_owned();
                 post_tool_event(context, &call_id, &tool, "REQUEST", "tool requested").await?;
                 let state = provider_state(context).await?;
                 if state == "CANCEL_REQUESTED" {
@@ -2441,9 +2784,23 @@ async fn run_provider_tool_loop(
                 let decision = decide_tool(context, &tool, &path, &content, &argv, timeout_secs);
                 match decision {
                     Ok(ToolDecision::Write) => {
+                        if progress.content_unchanged(&path, &content) {
+                            post_tool_event(context, &call_id, &tool, "DENY", "identical content")
+                                .await?;
+                            prompt = tool_result(
+                                context.assignment.provider.as_str(),
+                                context.assignment.model.as_str(),
+                                &call_id,
+                                "denied",
+                                "identical content: the file is unchanged; a frozen check failed, so change the content to satisfy it",
+                                None,
+                            );
+                            continue;
+                        }
                         post_tool_event(context, &call_id, &tool, "ALLOW", "path authorized")
                             .await?;
-                        progress.observe_write(&path, &content);
+                        let path_for_progress = path.clone();
+                        let content_for_progress = content.clone();
                         let file = factory_native::execution::AppliedFile { path, content };
                         match supervisor_write(
                             context,
@@ -2456,6 +2813,10 @@ async fn run_provider_tool_loop(
                         {
                             Ok(()) => {
                                 written = true;
+                                progress.observe_write(&path_for_progress, &content_for_progress);
+                                // A changed candidate invalidates earlier check
+                                // receipts; final must exercise the new tree.
+                                passed_checks.clear();
                                 post_tool_event(
                                     context,
                                     &call_id,
@@ -2487,7 +2848,11 @@ async fn run_provider_tool_loop(
                             }
                         }
                     }
-                    Ok(ToolDecision::Run) => {
+                    Ok(ToolDecision::Run {
+                        check_id,
+                        timeout_secs: effective_timeout,
+                    }) => {
+                        let timeout_secs = effective_timeout;
                         post_tool_event(
                             context,
                             &call_id,
@@ -2496,16 +2861,102 @@ async fn run_provider_tool_loop(
                             "frozen check authorized",
                         )
                         .await?;
-                        match supervisor_run(
-                            context,
-                            &handle.workspace_id,
-                            &handle.capability,
-                            &argv,
-                            timeout_secs,
-                        )
-                        .await
-                        {
-                            Ok(result) => {
+                        ensure_dependencies(context, &handle, &mut dependencies).await?;
+                        let check = context
+                            .assignment
+                            .action_spec
+                            .checks
+                            .iter()
+                            .find(|check| check.id == check_id)
+                            .ok_or_else(|| {
+                                format!(
+                                    "ENVIRONMENT_PLAN_REQUIRED: check {check_id} is not in the frozen ActionSpec"
+                                )
+                            })?;
+                        let target = check_execution_target(context, check)?;
+                        // A frozen check must run through the environment
+                        // check endpoint, never the generic supervisor image
+                        // path: the builder image is not a generic runtime
+                        // image and the supervisor refuses it.
+                        let result = if let (Some(target), Some(execution)) = (
+                            target.as_ref(),
+                            context.assignment.environment_execution.as_ref(),
+                        ) {
+                            let environment_check =
+                                factory_native::runtime_broker::EnvironmentCheckSpec {
+                                    check_id: target.check_id.clone(),
+                                    description: target.description.clone(),
+                                    argv: target.argv.clone(),
+                                    cwd: target.cwd.clone(),
+                                    timeout_secs: target.timeout_secs,
+                                    expect_exit: target.expect_exit,
+                                };
+                            match supervisor_environment_check(
+                                context,
+                                &handle.workspace_id,
+                                &handle.capability,
+                                execution,
+                                &environment_check,
+                            )
+                            .await
+                            {
+                                Ok(result) => Ok((
+                                    result.exit_code,
+                                    result.stdout,
+                                    result.stderr,
+                                    result.stdout_truncated || result.stderr_truncated,
+                                )),
+                                Err(error) => Err(error),
+                            }
+                        } else if target.is_some() {
+                            #[cfg(all(feature = "test-support", not(test)))]
+                            {
+                                supervisor_run(
+                                    context,
+                                    &handle.workspace_id,
+                                    &handle.capability,
+                                    None,
+                                    &argv,
+                                    timeout_secs,
+                                )
+                                .await
+                                .map(|result| {
+                                    (
+                                        result.exit_code,
+                                        result.stdout,
+                                        result.stderr,
+                                        result.stdout_truncated || result.stderr_truncated,
+                                    )
+                                })
+                            }
+                            #[cfg(not(all(feature = "test-support", not(test))))]
+                            {
+                                Err(format!(
+                                    "ENVIRONMENT_PLAN_REQUIRED: check {check_id} requires the Campaign environment binding"
+                                )
+                                .into())
+                            }
+                        } else {
+                            supervisor_run(
+                                context,
+                                &handle.workspace_id,
+                                &handle.capability,
+                                None,
+                                &argv,
+                                timeout_secs,
+                            )
+                            .await
+                            .map(|result| {
+                                (
+                                    result.exit_code,
+                                    result.stdout,
+                                    result.stderr,
+                                    result.stdout_truncated || result.stderr_truncated,
+                                )
+                            })
+                        };
+                        match result {
+                            Ok((exit_code, stdout, stderr, output_truncated)) => {
                                 // post_check_result posts the required
                                 // run_command RESULT event together with its
                                 // execution-check receipt.
@@ -2514,22 +2965,34 @@ async fn run_provider_tool_loop(
                                     &call_id,
                                     &argv,
                                     &progress.candidate_digest(),
-                                    result.exit_code,
+                                    exit_code,
+                                    None,
                                 )
                                 .await?;
                                 progress.observe_check(&receipt);
+                                if receipt.outcome == "PASS" {
+                                    passed_checks.insert(check_id);
+                                }
                                 let status = if receipt.outcome == "PASS" {
                                     "ok"
                                 } else {
                                     "failed"
                                 };
+                                let diagnostic = frozen_check_tool_diagnostic(
+                                    &check.description,
+                                    exit_code,
+                                    check.expect_exit,
+                                    &stdout,
+                                    &stderr,
+                                    output_truncated,
+                                );
                                 prompt = tool_result(
                                     context.assignment.provider.as_str(),
                                     context.assignment.model.as_str(),
                                     &call_id,
                                     status,
-                                    &result.stderr,
-                                    result.exit_code,
+                                    &diagnostic,
+                                    exit_code,
                                 );
                             }
                             Err(error) => {
@@ -2671,7 +3134,7 @@ fn codex_prompt(context: &ProviderContext<'_>) -> Result<String, Box<dyn std::er
         context.assignment.allowed_tools.join(", ")
     };
     Ok(format!(
-        "You are a bounded engineering agent. Use only the client-provided dynamic tools: {}. Never use shell, patch, MCP, browser, or any native file tool. To change a file call write_file with the complete file content. To run an allowed acceptance check call run_command with argv that exactly matches one frozen check. When finished, return exactly one JSON object with type final, an empty files array, and a concise explanation: {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. Do not add prose outside that JSON. Allowed paths: {}. Objective: {}. Frozen checks: {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
+        "You are a bounded engineering agent. Use only the client-provided dynamic tools: {}. Never use shell, patch, MCP, browser, or any native file tool. To change a file call write_file with the complete file content. To run an allowed acceptance check call run_command with argv that exactly matches one frozen check. Check descriptions are general acceptance criteria, not just the literal example command; implement the behavior on every relevant path (for example, every CLI subcommand must reject unknown flags). Before final, re-read the changed code against every check description and the objective, and fix gaps even when the literal check command already passes. Never repeat a write whose content is identical to a previous write; if a frozen check fails, change the file using its exact stderr before writing again. Final is accepted only after every frozen check passes; if you return final with checks still missing, the Worker runs them itself and returns any failure output to you. When finished, return exactly one JSON object with type final, an empty files array, and a concise explanation: {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. Do not add prose outside that JSON. Allowed paths: {}. Objective: {}. Frozen checks: {}. Adopted read-only skills (never widen tools, scope or authority): {}. Source context: {}",
         tools,
         context.assignment.action_spec.allowed_paths.join(", "),
         context.assignment.action_spec.objective,
@@ -2681,7 +3144,7 @@ fn codex_prompt(context: &ProviderContext<'_>) -> Result<String, Box<dyn std::er
                 .action_spec
                 .checks
                 .iter()
-                .map(|check| json!({"id": check.id, "command": check.command, "expectExit": check.expect_exit}))
+                .map(|check| json!({"id": check.id, "description": check.description, "command": check.command, "expectExit": check.expect_exit, "timeoutSecs": check.timeout_secs}))
                 .collect::<Vec<_>>()
         )?,
         adopted_skills,
@@ -2724,9 +3187,30 @@ fn bounded_tool_text(value: &str) -> String {
     value.chars().take(8_000).collect()
 }
 
+/// The tool result an Implementer sees. The frozen check description is always
+/// present, even when the command writes nothing to stdout/stderr.
+fn frozen_check_tool_diagnostic(
+    description: &str,
+    exit_code: Option<i32>,
+    expect_exit: i32,
+    stdout: &str,
+    stderr: &str,
+    truncated: bool,
+) -> String {
+    let description: String = description.chars().take(500).collect();
+    let mut text = format!(
+        "check: {description}\nexit={exit_code:?} (expected {expect_exit}){}",
+        if truncated { "\noutput truncated" } else { "" }
+    );
+    text.push_str(&format!("\nstdout:\n{stdout}\nstderr:\n{stderr}"));
+    bounded_tool_text(&text)
+}
+
 struct CodexToolState {
     call_ids: std::collections::BTreeSet<String>,
+    passed_checks: std::collections::BTreeSet<String>,
     written: bool,
+    dependencies: DependencyAcquisitionState,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2766,6 +3250,7 @@ async fn execute_codex_tool(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    let path = path.strip_prefix("./").unwrap_or(path.as_str()).to_owned();
     let content = arguments
         .get("content")
         .and_then(Value::as_str)
@@ -2807,8 +3292,16 @@ async fn execute_codex_tool(
     let decision = decide_tool(context, tool, &path, &content, &argv, timeout_secs);
     match decision {
         Ok(ToolDecision::Write) => {
+            if progress.content_unchanged(&path, &content) {
+                post_tool_event(context, call_id, tool, "DENY", "identical content").await?;
+                return Ok((
+                    false,
+                    "identical content: the file is unchanged; a frozen check failed, so change the content to satisfy it".into(),
+                ));
+            }
             post_tool_event(context, call_id, tool, "ALLOW", "path authorized").await?;
-            progress.observe_write(&path, &content);
+            let path_for_progress = path.clone();
+            let content_for_progress = content.clone();
             let file = factory_native::execution::AppliedFile { path, content };
             match supervisor_write(
                 context,
@@ -2821,6 +3314,9 @@ async fn execute_codex_tool(
             {
                 Ok(()) => {
                     tool_state.written = true;
+                    progress.observe_write(&path_for_progress, &content_for_progress);
+                    // A changed candidate invalidates earlier check receipts.
+                    tool_state.passed_checks.clear();
                     post_tool_event(context, call_id, tool, "RESULT", "write applied").await?;
                     Ok((true, "write applied".into()))
                 }
@@ -2830,36 +3326,126 @@ async fn execute_codex_tool(
                 }
             }
         }
-        Ok(ToolDecision::Run) => {
+        Ok(ToolDecision::Run {
+            check_id,
+            timeout_secs: effective_timeout,
+        }) => {
+            let timeout_secs = effective_timeout;
             post_tool_event(context, call_id, tool, "ALLOW", "frozen check authorized").await?;
-            let run = tokio::time::timeout_at(
-                deadline,
-                supervisor_run(
-                    context,
-                    &handle.workspace_id,
-                    &handle.capability,
-                    &argv,
-                    timeout_secs,
-                ),
-            )
+            ensure_dependencies(context, handle, &mut tool_state.dependencies).await?;
+            let check = context
+                .assignment
+                .action_spec
+                .checks
+                .iter()
+                .find(|check| check.id == check_id)
+                .ok_or_else(|| {
+                    format!(
+                        "ENVIRONMENT_PLAN_REQUIRED: check {check_id} is not in the frozen ActionSpec"
+                    )
+                })?;
+            let target = check_execution_target(context, check)?;
+            // Codex dynamic tool calls follow the same rule as the OpenCode
+            // path: an environment-bound check runs through the environment
+            // check endpoint; only an unbound check uses generic run.
+            let run = tokio::time::timeout_at(deadline, async {
+                if let (Some(target), Some(execution)) = (
+                    target.as_ref(),
+                    context.assignment.environment_execution.as_ref(),
+                ) {
+                    let environment_check =
+                        factory_native::runtime_broker::EnvironmentCheckSpec {
+                            check_id: target.check_id.clone(),
+                            description: target.description.clone(),
+                            argv: target.argv.clone(),
+                            cwd: target.cwd.clone(),
+                            timeout_secs: target.timeout_secs,
+                            expect_exit: target.expect_exit,
+                        };
+                    let result = supervisor_environment_check(
+                        context,
+                        &handle.workspace_id,
+                        &handle.capability,
+                        execution,
+                        &environment_check,
+                    )
+                    .await?;
+                    Ok::<_, Box<dyn std::error::Error>>((
+                        result.exit_code,
+                        result.stdout,
+                        result.stderr,
+                        result.stdout_truncated || result.stderr_truncated,
+                    ))
+                } else if target.is_some() {
+                    #[cfg(all(feature = "test-support", not(test)))]
+                    {
+                        let result = supervisor_run(
+                            context,
+                            &handle.workspace_id,
+                            &handle.capability,
+                            None,
+                            &argv,
+                            timeout_secs,
+                        )
+                        .await?;
+                        Ok::<_, Box<dyn std::error::Error>>((
+                            result.exit_code,
+                            result.stdout,
+                            result.stderr,
+                            result.stdout_truncated || result.stderr_truncated,
+                        ))
+                    }
+                    #[cfg(not(all(feature = "test-support", not(test))))]
+                    {
+                        Err(format!(
+                            "ENVIRONMENT_PLAN_REQUIRED: check {check_id} requires the Campaign environment binding"
+                        )
+                        .into())
+                    }
+                } else {
+                    let result = supervisor_run(
+                        context,
+                        &handle.workspace_id,
+                        &handle.capability,
+                        None,
+                        &argv,
+                        timeout_secs,
+                    )
+                    .await?;
+                    Ok::<_, Box<dyn std::error::Error>>((
+                        result.exit_code,
+                        result.stdout,
+                        result.stderr,
+                        result.stdout_truncated || result.stderr_truncated,
+                    ))
+                }
+            })
             .await;
             match run {
-                Ok(Ok(result)) => {
+                Ok(Ok((exit_code, stdout, stderr, truncated))) => {
                     let receipt = post_check_result(
                         context,
                         call_id,
                         &argv,
                         &progress.candidate_digest(),
-                        result.exit_code,
+                        exit_code,
+                        None,
                     )
                     .await?;
                     progress.observe_check(&receipt);
+                    if receipt.outcome == "PASS" {
+                        tool_state.passed_checks.insert(check_id);
+                    }
                     Ok((
                         receipt.outcome == "PASS",
-                        bounded_tool_text(&format!(
-                            "exit={:?}\nstdout:\n{}\nstderr:\n{}",
-                            result.exit_code, result.stdout, result.stderr
-                        )),
+                        frozen_check_tool_diagnostic(
+                            &check.description,
+                            exit_code,
+                            check.expect_exit,
+                            &stdout,
+                            &stderr,
+                            truncated,
+                        ),
                     ))
                 }
                 Ok(Err(error)) => {
@@ -3027,7 +3613,9 @@ async fn run_codex_tool_loop(
     };
     let mut tool_state = CodexToolState {
         call_ids: std::collections::BTreeSet::new(),
+        passed_checks: std::collections::BTreeSet::new(),
         written: false,
+        dependencies: DependencyAcquisitionState::default(),
     };
     let mut last_turn_id = String::new();
     let mut active_reservation: Option<String> = None;
@@ -3047,7 +3635,29 @@ async fn run_codex_tool_loop(
                 if let Some(halt) =
                     WorkerProgressHalt::from_response(&progress.work_item_id, &response)
                 {
-                    return Err(Box::new(halt) as Box<dyn std::error::Error>);
+                    match finalize_stagnant_candidate(
+                        context,
+                        &handle,
+                        &mut tool_state.dependencies,
+                        &mut progress,
+                        &mut tool_state.passed_checks,
+                        tool_state.written,
+                        halt,
+                        usage,
+                        thread_id.clone(),
+                        last_turn_id.clone(),
+                        ProviderSessionCleanup::Codex {
+                            rpc,
+                            thread_id: &thread_id,
+                        },
+                    )
+                    .await?
+                    {
+                        StagnationSalvage::Finalized(run) => return Ok(*run),
+                        StagnationSalvage::Halted(halt) => {
+                            return Err(Box::new(halt) as Box<dyn std::error::Error>);
+                        }
+                    }
                 }
             }
             progress.begin_turn();
@@ -3319,20 +3929,26 @@ async fn run_codex_tool_loop(
                 *tracker = usage;
             }
             let Some(text) = final_text else {
+                post_final_nudge(
+                    context,
+                    "missing-codex-final",
+                    "Codex returned no final JSON object",
+                )
+                .await?;
+                progress.observe_final_nudge();
                 prompt = "Return exactly the required final JSON object now. If you have not written a file, use write_file first.".into();
                 continue;
             };
             let action = match extract_action_text(&text) {
                 Ok(action) => action,
                 Err(error) => {
-                    post_tool_event(
+                    post_final_nudge(
                         context,
-                        "invalid-codex-action",
-                        "final",
-                        "ERROR",
-                        &format!("invalid Codex action: {error}"),
+                        "invalid-codex-final",
+                        &format!("invalid Codex final action: {error}"),
                     )
                     .await?;
+                    progress.observe_final_nudge();
                     prompt = format!(
                         "Your previous final response was rejected: {error}. Return exactly one JSON object with type final."
                     );
@@ -3342,6 +3958,13 @@ async fn run_codex_tool_loop(
             match action {
                 ProviderAction::Final { files, explanation } => {
                     if !tool_state.written && files.is_empty() {
+                        post_final_nudge(
+                            context,
+                            "empty-codex-final",
+                            "no file has been written; an empty final response cannot create a candidate",
+                        )
+                        .await?;
+                        progress.observe_final_nudge();
                         prompt = "No file has been written. Use write_file now, then return the final JSON object.".into();
                         continue;
                     }
@@ -3351,31 +3974,34 @@ async fn run_codex_tool_loop(
                             .await?;
                     }
                     if !files.is_empty() {
-                        if !context
-                            .assignment
-                            .allowed_tools
-                            .iter()
-                            .any(|tool| tool == "write_file")
-                        {
-                            return Err(
-                                "Codex returned files without write_file permission".into()
-                            );
-                        }
-                        let applied = files
-                            .into_iter()
-                            .map(|file| factory_native::execution::AppliedFile {
-                                path: file.path,
-                                content: file.content,
-                            })
-                            .collect::<Vec<_>>();
-                        supervisor_write(
+                        prompt = "Final responses must have an empty files array. Use write_file tool requests for every file change, then return final with files: [].".into();
+                        continue;
+                    }
+                    if context.enforce_check_completion
+                        && let Some(failure) = complete_missing_frozen_checks(
                             context,
-                            &handle.workspace_id,
-                            &handle.capability,
-                            applied,
-                            !tool_state.written,
+                            &handle,
+                            &mut tool_state.dependencies,
+                            &mut progress,
+                            &mut tool_state.passed_checks,
+                        )
+                        .await?
+                    {
+                        post_final_nudge(
+                            context,
+                            "incomplete-final",
+                            "frozen acceptance checks failed; the Worker executed them automatically",
                         )
                         .await?;
+                        progress.observe_final_nudge();
+                        let instructions = missing_check_instructions(
+                            &context.assignment.action_spec.checks,
+                            &context.assignment.allowed_tools,
+                            &tool_state.passed_checks,
+                        )
+                        .unwrap_or_default();
+                        prompt = format!("{failure}\n\n{instructions}");
+                        continue;
                     }
                     persist_final_progress_checkpoint(context, &mut progress).await?;
                     let _ = tokio::time::timeout(
@@ -3383,15 +4009,20 @@ async fn run_codex_tool_loop(
                         rpc.archive_thread(&thread_id),
                     )
                     .await;
-                    let candidate =
-                        supervisor_finalize(context, &handle.workspace_id, &handle.capability)
-                            .await?;
+                    let candidate = finalize_candidate(
+                        context,
+                        &handle,
+                        &mut tool_state.dependencies,
+                    )
+                    .await?;
                     cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
                     return Ok(ProviderRun {
                         candidate,
                         provider_session_id: thread_id,
                         turn_id: last_turn_id.clone(),
                         usage,
+                        final_source: factory_native::quality::CandidateFinalSource::ModelFinal,
+                        salvage: None,
                     });
                 }
                 ProviderAction::ToolRequest {
@@ -3438,7 +4069,7 @@ async fn run_codex_tool_loop(
 
 enum ToolDecision {
     Write,
-    Run,
+    Run { check_id: String, timeout_secs: u64 },
 }
 
 fn decide_tool(
@@ -3486,10 +4117,388 @@ fn decide_tool(
             {
                 return Err("command timeout exceeds the frozen check or assignment bound".into());
             }
-            Ok(ToolDecision::Run)
+            // The model's timeout is advisory. The frozen check owns the
+            // execution budget so a short model value cannot truncate a
+            // healthy compile/test run. Deterministic Worker execution uses
+            // the same frozen bound.
+            Ok(ToolDecision::Run {
+                check_id: check.id.clone(),
+                timeout_secs: effective_check_timeout(context, check),
+            })
         }
         _ => Err(format!("unknown tool {tool}")),
     }
+}
+
+fn check_environment_binding_error(check: &factory_native::lead::SpecCheck) -> Option<String> {
+    match (
+        check.environment_plan_id.as_deref(),
+        check.environment_spec_sha256.as_deref(),
+    ) {
+        (None, None) | (Some(_), Some(_)) => None,
+        _ => Some(format!(
+            "ENVIRONMENT_PLAN_REQUIRED: check {} has a partial environment binding",
+            check.id
+        )),
+    }
+}
+
+fn check_execution_target(
+    context: &ProviderContext<'_>,
+    check: &factory_native::lead::SpecCheck,
+) -> Result<Option<factory_native::planning::environment::CheckExecutionTarget>, String> {
+    if check.environment_plan_id.is_none() && check.environment_spec_sha256.is_none() {
+        if context.assignment.action_spec.environment_required {
+            return Err(format!(
+                "ENVIRONMENT_PLAN_REQUIRED: check {} has no environment plan; a production check may not fall back to a generic image",
+                check.id
+            ));
+        }
+        return Ok(None);
+    }
+    let execution = match context.assignment.environment_execution.as_ref() {
+        Some(execution) => execution,
+        None => {
+            #[cfg(all(feature = "test-support", not(test)))]
+            return Ok(None);
+            #[cfg(not(all(feature = "test-support", not(test))))]
+            return Err(format!(
+                "ENVIRONMENT_PLAN_REQUIRED: check {} requires the Campaign environment binding",
+                check.id
+            ));
+        }
+    };
+    let target = factory_native::planning::environment::select_check_execution(
+        check,
+        &execution.plan,
+        &execution.spec,
+        &execution.receipt,
+    )
+    .map_err(|error| format!("{}: {}", error.code_str(), error.message))?;
+    if target.builder_image.is_empty() || !target.builder_image_digest.starts_with("sha256:") {
+        return Err(
+            "ENVIRONMENT_BUILDER_UNAVAILABLE: the environment has no digest-pinned builder image"
+                .into(),
+        );
+    }
+    Ok(Some(target))
+}
+
+fn effective_check_timeout(
+    context: &ProviderContext<'_>,
+    check: &factory_native::lead::SpecCheck,
+) -> u64 {
+    u64::from(check.timeout_secs)
+        .min(300)
+        .min(u64::from(
+            operation_limits(context).tool_call_timeout_secs.get(),
+        ))
+        .max(1)
+}
+
+fn missing_frozen_checks<'a>(
+    checks: &'a [factory_native::lead::SpecCheck],
+    passed: &std::collections::BTreeSet<String>,
+) -> Vec<&'a factory_native::lead::SpecCheck> {
+    checks
+        .iter()
+        .filter(|check| !passed.contains(&check.id))
+        .collect()
+}
+
+#[derive(Debug)]
+struct FrozenCheckExecution {
+    check_id: String,
+    description: String,
+    exit_code: Option<i32>,
+    expected_exit: i32,
+    passed: bool,
+    stdout: String,
+    stderr: String,
+    output_truncated: bool,
+}
+
+/// Execute every frozen check that has not passed yet. This is deterministic
+/// Worker completion policy: the model may run checks itself, but it cannot
+/// finish a candidate by omitting them. Only the exact frozen argv and the
+/// frozen timeout are used through the existing Supervisor operation path.
+/// Test-only fixture transports keep their documented exemption from checks.
+async fn execute_missing_frozen_checks(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    dependencies: &mut DependencyAcquisitionState,
+    progress: &mut TurnProgress,
+    passed_checks: &mut std::collections::BTreeSet<String>,
+) -> Result<Vec<FrozenCheckExecution>, Box<dyn std::error::Error>> {
+    if !context.enforce_check_completion {
+        return Ok(Vec::new());
+    }
+    let missing = missing_frozen_checks(&context.assignment.action_spec.checks, passed_checks);
+    execute_frozen_checks(
+        context,
+        handle,
+        dependencies,
+        progress,
+        passed_checks,
+        missing,
+        None,
+    )
+    .await
+}
+
+/// Re-execute every frozen check against the exact finalized candidate. Core
+/// requires one PASS receipt per check bound to that commit/tree before it will
+/// accept a stagnation salvage.
+async fn execute_all_frozen_checks_for_candidate(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    dependencies: &mut DependencyAcquisitionState,
+    progress: &mut TurnProgress,
+    passed_checks: &mut std::collections::BTreeSet<String>,
+    candidate: &factory_native::workspace::CandidateRevision,
+) -> Result<Vec<FrozenCheckExecution>, Box<dyn std::error::Error>> {
+    if !context.enforce_check_completion {
+        return Ok(Vec::new());
+    }
+    let checks = context
+        .assignment
+        .action_spec
+        .checks
+        .iter()
+        .collect::<Vec<_>>();
+    execute_frozen_checks(
+        context,
+        handle,
+        dependencies,
+        progress,
+        passed_checks,
+        checks,
+        Some((candidate.commit_sha.as_str(), candidate.tree_sha.as_str())),
+    )
+    .await
+}
+
+async fn execute_frozen_checks(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    dependencies: &mut DependencyAcquisitionState,
+    progress: &mut TurnProgress,
+    passed_checks: &mut std::collections::BTreeSet<String>,
+    checks: Vec<&factory_native::lead::SpecCheck>,
+    candidate: Option<(&str, &str)>,
+) -> Result<Vec<FrozenCheckExecution>, Box<dyn std::error::Error>> {
+    if checks.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Dependency acquisition is a prerequisite for offline checks and stays
+    // attempt-scoped; it runs at most once before the first check or finalize.
+    ensure_dependencies(context, handle, dependencies).await?;
+    let mut executions = Vec::with_capacity(checks.len());
+    for (index, check) in checks.into_iter().enumerate() {
+        if let Some(error) = check_environment_binding_error(check) {
+            return Err(error.into());
+        }
+        let call_id = format!(
+            "worker-check-{}-{}-{}",
+            progress.turn,
+            index + 1,
+            Uuid::new_v4().simple()
+        );
+        post_tool_event(
+            context,
+            &call_id,
+            "run_command",
+            "REQUEST",
+            &format!(
+                "Worker executing frozen check {} after final was requested",
+                check.id
+            ),
+        )
+        .await?;
+        post_tool_event(
+            context,
+            &call_id,
+            "run_command",
+            "ALLOW",
+            "exact frozen acceptance check",
+        )
+        .await?;
+        let timeout_secs = effective_check_timeout(context, check);
+        let target = check_execution_target(context, check)?;
+        let (exit_code, stdout, stderr, output_truncated) = if let Some(target) = target {
+            let execution = context
+                .assignment
+                .environment_execution
+                .as_ref()
+                .ok_or_else(|| {
+                    format!(
+                        "ENVIRONMENT_PLAN_REQUIRED: check {} requires the Campaign environment binding",
+                        check.id
+                    )
+                })?;
+            let environment_check = factory_native::runtime_broker::EnvironmentCheckSpec {
+                check_id: target.check_id.clone(),
+                description: target.description.clone(),
+                argv: target.argv.clone(),
+                cwd: target.cwd.clone(),
+                timeout_secs: target.timeout_secs,
+                expect_exit: target.expect_exit,
+            };
+            let result = supervisor_environment_check(
+                context,
+                &handle.workspace_id,
+                &handle.capability,
+                execution,
+                &environment_check,
+            )
+            .await
+            .map_err(|error| {
+                format!(
+                    "Worker could not execute frozen check {} in the frozen environment; no candidate was created: {error}",
+                    check.id
+                )
+            })?;
+            let exit_code = result.exit_code.ok_or_else(|| {
+                format!(
+                    "Worker environment check {} returned no exit code; no candidate was created",
+                    check.id
+                )
+            })?;
+            (
+                Some(exit_code),
+                result.stdout,
+                result.stderr,
+                result.stdout_truncated || result.stderr_truncated,
+            )
+        } else {
+            let image = None;
+            let result = supervisor_run(
+                context,
+                &handle.workspace_id,
+                &handle.capability,
+                image,
+                &check.command,
+                timeout_secs,
+            )
+            .await
+            .map_err(|error| {
+                format!(
+                    "Worker could not execute frozen check {}; no candidate was created: {error}",
+                    check.id
+                )
+            })?;
+            (
+                result.exit_code,
+                result.stdout,
+                result.stderr,
+                result.stdout_truncated || result.stderr_truncated,
+            )
+        };
+        let receipt = post_check_result(
+            context,
+            &call_id,
+            &check.command,
+            &progress.candidate_digest(),
+            exit_code,
+            candidate,
+        )
+        .await?;
+        progress.observe_check(&receipt);
+        let passed = receipt.outcome == "PASS";
+        if passed {
+            passed_checks.insert(check.id.clone());
+        }
+        executions.push(FrozenCheckExecution {
+            check_id: check.id.clone(),
+            description: check.description.clone(),
+            exit_code,
+            expected_exit: check.expect_exit,
+            passed,
+            stdout,
+            stderr,
+            output_truncated,
+        });
+    }
+    Ok(executions)
+}
+
+fn frozen_check_failure_summary(executions: &[FrozenCheckExecution]) -> Option<String> {
+    let failed = executions
+        .iter()
+        .filter(|execution| !execution.passed)
+        .collect::<Vec<_>>();
+    if failed.is_empty() {
+        return None;
+    }
+    let passed = executions.len().saturating_sub(failed.len());
+    let mut summary = format!(
+        "The Worker executed the remaining frozen acceptance checks automatically. {passed} passed and {} failed; no candidate was submitted. Fix the workspace with write_file, then return final again. The Worker will execute all remaining frozen checks itself.\n",
+        failed.len()
+    );
+    for execution in failed {
+        summary.push_str(&format!(
+            "\nFrozen check {} FAILED: {}\nexit={:?}, expected={}{}:\nstdout:\n{}\nstderr:\n{}\n",
+            execution.check_id,
+            bounded_tool_text(&execution.description),
+            execution.exit_code,
+            execution.expected_exit,
+            if execution.output_truncated {
+                " (output truncated by the Supervisor)"
+            } else {
+                ""
+            },
+            bounded_tool_text(&execution.stdout),
+            bounded_tool_text(&execution.stderr)
+        ));
+    }
+    Some(summary.chars().take(16_000).collect())
+}
+
+/// Run unfinished frozen checks when the model requests final. All pass means
+/// the caller may finalize immediately with real receipts; any failure returns
+/// a bounded observation for the next model turn. Execution errors fail closed.
+async fn complete_missing_frozen_checks(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    dependencies: &mut DependencyAcquisitionState,
+    progress: &mut TurnProgress,
+    passed_checks: &mut std::collections::BTreeSet<String>,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let executions =
+        execute_missing_frozen_checks(context, handle, dependencies, progress, passed_checks)
+            .await?;
+    Ok(frozen_check_failure_summary(&executions))
+}
+
+fn missing_check_instructions(
+    checks: &[factory_native::lead::SpecCheck],
+    allowed_tools: &[String],
+    passed: &std::collections::BTreeSet<String>,
+) -> Option<String> {
+    if !allowed_tools.iter().any(|tool| tool == "run_command") {
+        return None;
+    }
+    let missing = checks
+        .iter()
+        .filter(|check| !passed.contains(&check.id))
+        .map(|check| {
+            format!(
+                "{} ({}): run_command(argv={:?}, timeout_secs={}) expected exit {}",
+                check.id,
+                check.description,
+                check.command,
+                check.timeout_secs.min(300),
+                check.expect_exit
+            )
+        })
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Not finished: every frozen acceptance check must pass in the workspace before you may return final. Missing checks: {}. Fix the workspace with write_file and return final again; the Worker executes missing frozen checks automatically and will not create a candidate while any check fails. You may still run them with run_command using the exact argv and timeout_secs above. If a check fails, read its output, fix the workspace, and return final again. Do not return final until every check has passed.",
+        missing.join("; ")
+    ))
 }
 
 fn tool_result(
@@ -3564,13 +4573,31 @@ async fn post_tool_event(
     Ok(())
 }
 
+async fn post_final_nudge(
+    context: &ProviderContext<'_>,
+    call_id: &str,
+    detail: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    post_tool_event(context, call_id, "final_nudge", "ERROR", detail).await
+}
+
 async fn post_check_result(
     context: &ProviderContext<'_>,
     call_id: &str,
     command: &[String],
     candidate_sha256: &str,
     exit_code: Option<i32>,
+    candidate: Option<(&str, &str)>,
 ) -> Result<ExecutionCheckReceiptRecord, Box<dyn std::error::Error>> {
+    let mut check = json!({
+        "command": command,
+        "candidate_sha256": candidate_sha256,
+        "exit_code": exit_code
+    });
+    if let Some((commit_sha, tree_sha)) = candidate {
+        check["candidate_commit_sha"] = json!(commit_sha);
+        check["candidate_tree_sha"] = json!(tree_sha);
+    }
     let response = context
         .client
         .post(context.core.join("worker/provider_tool_event")?)
@@ -3583,11 +4610,7 @@ async fn post_check_result(
             "tool": "run_command",
             "decision": "RESULT",
             "detail": format!("exit={exit_code:?}"),
-            "check": {
-                "command": command,
-                "candidate_sha256": candidate_sha256,
-                "exit_code": exit_code
-            }
+            "check": check
         }))
         .send()
         .await?;
@@ -3622,6 +4645,13 @@ fn request_digest(value: &serde_json::Value) -> Result<String, Box<dyn std::erro
 /// rather than byte equality.
 fn strict_request_digest(provider_kind: &str) -> bool {
     !matches!(provider_kind, "opencode" | "codex")
+}
+
+/// Test-only provider transports simulate a model turn and do not execute the
+/// frozen checks. Production routes must satisfy every check before final.
+fn fixture_provider_route() -> bool {
+    env::var("FACTORY_PROVIDER_KIND").as_deref() == Ok("fixture")
+        || env::var("FACTORY_PROVIDER_BINARY").is_ok()
 }
 
 async fn authorize_provider_turn(
@@ -3684,31 +4714,15 @@ async fn settle_provider_turn(
     if let Some(policy) = context.turn_policy {
         *policy.lock().map_err(|_| "provider turn policy lock")? = None;
     }
-    let response = context
-        .client
-        .post(context.core.join("worker/provider_turn_settle")?)
-        .bearer_auth(context.session_token)
-        .json(&json!({
-            "usage": {
-                "reservation_id": reservation_id,
-                "worker_id": context.worker_id,
-                "input_tokens": usage.input_tokens,
-                "output_tokens": usage.output_tokens,
-                "total_tokens": usage.total_tokens,
-                "cost_micros": usage.cost_micros,
-                "usage_known": usage.known
-            }
-        }))
-        .send()
-        .await?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Core rejected provider turn usage: {} {}",
-            response.status(),
-            response.text().await.unwrap_or_default()
-        )
-        .into());
-    }
+    factory_native::provider_lifecycle::settle_provider_turn(
+        context.client,
+        context.core,
+        context.session_token,
+        context.worker_id,
+        reservation_id,
+        usage,
+    )
+    .await?;
     Ok(())
 }
 
@@ -3718,23 +4732,16 @@ async fn release_provider_turn(context: &ProviderContext<'_>, reservation_id: &s
     {
         *policy = None;
     }
-    let _ = context
-        .client
-        .post(
-            context
-                .core
-                .join("worker/provider_turn_release")
-                .unwrap_or_else(|_| context.core.clone()),
-        )
-        .bearer_auth(context.session_token)
-        .json(&json!({
-            "reservation_id": reservation_id,
-            "session_record_id": context.session_record_id,
-            "worker_id": context.worker_id,
-            "generation": context.assignment.lease.generation
-        }))
-        .send()
-        .await;
+    let _ = factory_native::provider_lifecycle::release_provider_turn(
+        context.client,
+        context.core,
+        context.session_token,
+        reservation_id,
+        context.session_record_id,
+        context.worker_id,
+        context.assignment.lease.generation,
+    )
+    .await;
 }
 
 async fn request_workspace_operation(
@@ -3820,6 +4827,7 @@ async fn supervisor_run(
     context: &ProviderContext<'_>,
     workspace_id: &str,
     capability: &str,
+    image: Option<&str>,
     argv: &[String],
     timeout_secs: u64,
 ) -> Result<ExecutionResult, Box<dyn std::error::Error>> {
@@ -3848,7 +4856,9 @@ async fn supervisor_run(
         .bearer_auth(capability)
         .header("x-factory-operation-grant", operation)
         .json(&ToolRunRequest {
-            image: context.supervisor.image.clone(),
+            image: image
+                .map(str::to_owned)
+                .unwrap_or_else(|| context.supervisor.image.clone()),
             argv: argv.to_vec(),
             timeout_secs,
         })
@@ -3861,6 +4871,71 @@ async fn supervisor_run(
         return Err(format!("Supervisor run failed: {status}: {body}").into());
     }
     Ok(response.json().await?)
+}
+
+async fn supervisor_environment_check(
+    context: &ProviderContext<'_>,
+    workspace_id: &str,
+    capability: &str,
+    execution: &factory_native::planning::environment::EnvironmentExecutionBinding,
+    check: &factory_native::runtime_broker::EnvironmentCheckSpec,
+) -> Result<factory_native::runtime_broker::EnvironmentCheckResult, Box<dyn std::error::Error>> {
+    let digest = request_digest(&json!({
+        "argv": &check.argv,
+        "timeout_secs": check.timeout_secs
+    }))?;
+    let operation = request_workspace_operation(WorkspaceOperation {
+        client: context.client,
+        core: context.core,
+        session_token: context.session_token,
+        worker_id: context.worker_id,
+        attempt_id: &context.assignment.lease.attempt_id,
+        generation: context.assignment.lease.generation,
+        workspace_id,
+        operation: "run",
+        request_sha256: digest,
+    })
+    .await?;
+    let response = context
+        .supervisor
+        .client
+        .post(
+            context
+                .supervisor
+                .base
+                .join(&format!("v1/workspaces/{workspace_id}/environment-check"))?,
+        )
+        .bearer_auth(capability)
+        .header("x-factory-operation-grant", operation)
+        .json(
+            &factory_native::runtime_broker::EnvironmentCheckExecutionRequest {
+                image: execution.spec.builder_image.clone(),
+                digest: execution.spec.builder_image_digest.clone(),
+                plan: execution.plan.clone(),
+                spec: execution.spec.clone(),
+                receipt: execution.receipt.clone(),
+                check: check.clone(),
+            },
+        )
+        .timeout(Duration::from_secs(u64::from(check.timeout_secs) + 180))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let body = body.chars().take(1_000).collect::<String>();
+        return Err(format!("Supervisor environment check failed: {status}: {body}").into());
+    }
+    let result: factory_native::runtime_broker::EnvironmentCheckResult = response.json().await?;
+    result
+        .validate_for_check(
+            &check.check_id,
+            &check.description,
+            &execution.spec.spec_sha256,
+            check.expect_exit,
+        )
+        .map_err(|error| format!("Supervisor environment check result is invalid: {error}"))?;
+    Ok(result)
 }
 
 async fn supervisor_finalize(
@@ -3933,14 +5008,15 @@ async fn run_provider_patch(
         }]
     });
     let http = factory_native::runtime::opencode_http_client(Duration::ZERO)?;
-    let event_response = factory_native::runtime::open_opencode_event_stream(
-        &http,
+    let mut connector = factory_native::runtime::OpenCodeEventConnector::new(
+        http.clone(),
         context.base_url,
         context.password,
         context.api_directory,
-    )
-    .await?;
-    let mut event_stream = event_response.bytes_stream();
+    )?;
+    let mut event_stream: ProviderEventStream = EventStreamConnector::connect(&mut connector, None)
+        .await
+        .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })?;
     let mut parser = factory_native::sse::SseParser::new(1_048_576);
     let created = factory_native::runtime::create_opencode_session(
         &http,
@@ -3994,6 +5070,8 @@ async fn run_provider_patch(
         &provider_session_id,
     )
     .await?;
+    let mut waiter =
+        ReconnectWaiter::new(connector, SseReconnectPolicy::default()).with_stream(event_stream);
     let turn = if context.turn_policy.is_some() {
         Some(authorize_provider_turn(context, &prompt).await?)
     } else {
@@ -4014,20 +5092,14 @@ async fn run_provider_patch(
         }
         return Err(error.into());
     }
-    let terminal = match factory_native::runtime::wait_for_opencode_prompt_terminal(
-        &mut event_stream,
-        &mut parser,
-        &provider_session_id,
-        false,
-    )
-    .await
+    let terminal = match wait_for_provider_terminal(&mut waiter, &provider_session_id, false).await
     {
         Ok(terminal) => terminal,
         Err(error) => {
             if let Some(turn) = &turn {
                 release_provider_turn(context, &turn.reservation_id).await;
             }
-            return Err(error.into());
+            return Err(error);
         }
     };
     let response = match &terminal {
@@ -4199,6 +5271,15 @@ async fn run_provider_patch(
         })
         .collect::<Vec<_>>();
     if context.assignment.allowed_tools.is_empty() {
+        if dependency_acquisition_request(&context.assignment.action_spec, context.directory)?
+            .is_some()
+        {
+            let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
+            return Err(
+                "brokered dependency acquisition requires the write/run/finalize path; refusing an apply-only candidate"
+                    .into(),
+            );
+        }
         let apply = ApplyFilesRequest {
             allowed_paths: context.assignment.action_spec.allowed_paths.clone(),
             files,
@@ -4243,6 +5324,8 @@ async fn run_provider_patch(
             provider_session_id: session_id,
             turn_id,
             usage,
+            final_source: factory_native::quality::CandidateFinalSource::ModelFinal,
+            salvage: None,
         });
     }
     let write = WriteFilesRequest {
@@ -4269,6 +5352,8 @@ async fn run_provider_patch(
         let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
         return Err(format!("Supervisor provider write failed: {status} {body}").into());
     }
+    let mut dependencies = DependencyAcquisitionState::default();
+    ensure_dependencies(context, &handle, &mut dependencies).await?;
     for command in plan.commands {
         let response = context
             .supervisor
@@ -4303,6 +5388,7 @@ async fn run_provider_patch(
             .into());
         }
     }
+    ensure_dependencies(context, &handle, &mut dependencies).await?;
     let response = context
         .supervisor
         .client
@@ -4328,6 +5414,8 @@ async fn run_provider_patch(
         provider_session_id: session_id,
         turn_id,
         usage,
+        final_source: factory_native::quality::CandidateFinalSource::ModelFinal,
+        salvage: None,
     })
 }
 
@@ -4337,20 +5425,13 @@ async fn post_provider_terminal(
     session_token: &str,
     terminal: &ProviderTerminal,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let response = client
-        .post(core.join("worker/provider_terminal")?)
-        .bearer_auth(session_token)
-        .json(terminal)
-        .send()
-        .await?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Core rejected provider terminal evidence: {} {}",
-            response.status(),
-            response.text().await.unwrap_or_default()
-        )
-        .into());
-    }
+    factory_native::provider_lifecycle::post_provider_terminal(
+        client,
+        core,
+        session_token,
+        terminal,
+    )
+    .await?;
     Ok(())
 }
 
@@ -4364,6 +5445,11 @@ async fn execute_assignment(
 ) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
     if assignment.kind == "INTEGRATION" {
         return integrate_assignment(assignment, supervisor).await;
+    }
+    if assignment.execution_mode == "FIXTURE"
+        && let Some(reason) = fixture_dependency_blocker(&assignment.action_spec)
+    {
+        return Err(reason.into());
     }
     let map = env::var("FACTORY_FIXTURE_MAP")
         .ok()
@@ -4574,6 +5660,37 @@ fn validated_loopback_url(
 #[cfg(test)]
 mod tests {
     use super::opencode_sandbox_config;
+    use axum::response::IntoResponse;
+    use factory_native::provider_patch::ProviderUsage;
+    use std::time::Duration;
+
+    #[test]
+    fn frozen_check_tool_diagnostic_always_carries_the_description() {
+        let diagnostic = super::frozen_check_tool_diagnostic(
+            "missing Delivery acceptance heading",
+            Some(1),
+            0,
+            "",
+            "",
+            false,
+        );
+        assert!(
+            diagnostic.starts_with(
+                "check: missing Delivery acceptance heading\nexit=Some(1) (expected 0)"
+            ),
+            "{diagnostic}"
+        );
+        let bounded = super::frozen_check_tool_diagnostic(
+            &"d".repeat(20_000),
+            Some(254),
+            0,
+            "",
+            "npm error enoent",
+            true,
+        );
+        assert!(bounded.chars().count() <= 8_000);
+        assert!(bounded.contains("output truncated"));
+    }
 
     #[test]
     fn opencode_provider_config_does_not_hardcode_retry_suppression() {
@@ -4591,11 +5708,1480 @@ mod tests {
     }
 
     use super::{
-        ActionSpec, Assignment, ContinuationDecision, Lease, ProgressKind, TurnProgress,
-        WorkerProgressHalt, opencode_first_action_instruction, sha256_hex, strict_request_digest,
+        ActionSpec, Assignment, ContinuationDecision, DependencyAcquisitionState, Lease,
+        ProgressKind, ProviderContext, Supervisor, TurnProgress, WorkerProgressHalt,
+        WorkspaceHandle, WorkspaceStatus, finalize_candidate, missing_check_instructions,
+        opencode_first_action_instruction, sha256_hex, strict_request_digest,
         submit_progress_checkpoint, validate_provider_tools, validated_loopback_url,
     };
     use factory_native::db::ExecutionCheckReceiptRecord;
+    use factory_native::lead::{CheckKind, SpecCheck};
+    use factory_native::planning::environment::{
+        DEFAULT_PLATFORM, ENVIRONMENT_POLICY_REVISION, EnvironmentBuildReceipt,
+        EnvironmentBuilderDescriptor, EnvironmentBuilderStatus, EnvironmentExecutionBinding,
+        EnvironmentFile, EnvironmentFileOrigin, EnvironmentNixPolicy, EnvironmentPlan,
+        EnvironmentPlanSource, EnvironmentPlanStatus, EnvironmentSpec, EnvironmentSpecStatus,
+        ExistingEnvironmentKind, LicenseInventory, NetworkPolicy, ProjectConventions,
+        ResourceLimits, SandboxAttestation, SandboxPolicy,
+    };
+
+    fn auto_check_policy() -> factory_native::execution_policy::FrozenExecutionPolicy {
+        use std::num::NonZeroU32;
+        factory_native::execution_policy::FrozenExecutionPolicy::V2(
+            factory_native::execution_policy::ExecutionPolicyV2 {
+                policy_id: "policy".into(),
+                authorization_id: "authorization".into(),
+                monetary_envelope_id: "envelope".into(),
+                scope_sha256: "a".repeat(64),
+                progress: factory_native::execution_policy::ProgressPolicy {
+                    diagnose_after_stagnant_checkpoints: NonZeroU32::new(2).unwrap(),
+                    escalate_after_unsuccessful_replans: NonZeroU32::new(1).unwrap(),
+                    observation_timeout_secs: NonZeroU32::new(300).unwrap(),
+                    autonomy: Default::default(),
+                },
+                operations: factory_native::execution_policy::OperationLimits {
+                    model_request_timeout_secs: NonZeroU32::new(300).unwrap(),
+                    tool_call_timeout_secs: NonZeroU32::new(600).unwrap(),
+                    max_request_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+                    max_response_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+                    max_generation_tokens: NonZeroU32::new(8_192).unwrap(),
+                    max_in_flight_operations: NonZeroU32::new(4).unwrap(),
+                },
+            },
+        )
+    }
+
+    fn auto_check_write_action() -> serde_json::Value {
+        serde_json::json!({
+            "type": "tool_request",
+            "call_id": "write-1",
+            "tool": "write_file",
+            "path": "src/lib.rs",
+            "content": "fixed\n"
+        })
+    }
+
+    fn auto_check_final_action() -> serde_json::Value {
+        serde_json::json!({
+            "type": "final",
+            "files": [],
+            "explanation": "implemented"
+        })
+    }
+
+    #[derive(Clone)]
+    struct AutoCheckProviderState {
+        session: String,
+        actions: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        prompts: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        events: tokio::sync::broadcast::Sender<String>,
+    }
+
+    async fn auto_check_provider_events(
+        axum::extract::State(state): axum::extract::State<AutoCheckProviderState>,
+    ) -> axum::response::sse::Sse<
+        impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+    > {
+        use futures_util::StreamExt;
+        let created = format!(
+            "{{\"id\":\"evt-created\",\"type\":\"session.created\",\"properties\":{{\"sessionID\":\"{}\",\"info\":{{\"id\":\"{}\"}}}}}}",
+            state.session, state.session
+        );
+        let receiver = state.events.subscribe();
+        let initial = futures_util::stream::once(async move {
+            Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(created))
+        });
+        let rest = futures_util::stream::unfold(receiver, |mut receiver| async move {
+            loop {
+                match receiver.recv().await {
+                    Ok(data) => {
+                        return Some((
+                            Ok::<_, std::convert::Infallible>(
+                                axum::response::sse::Event::default().data(data),
+                            ),
+                            receiver,
+                        ));
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        });
+        axum::response::sse::Sse::new(initial.chain(rest))
+            .keep_alive(axum::response::sse::KeepAlive::default())
+    }
+
+    async fn auto_check_provider_create_session(
+        axum::extract::State(state): axum::extract::State<AutoCheckProviderState>,
+    ) -> axum::Json<serde_json::Value> {
+        axum::Json(serde_json::json!({"id": state.session}))
+    }
+
+    async fn auto_check_provider_prompt(
+        axum::extract::State(state): axum::extract::State<AutoCheckProviderState>,
+        axum::Json(body): axum::Json<serde_json::Value>,
+    ) -> axum::http::StatusCode {
+        state.prompts.lock().unwrap().push(body);
+        let provider_error = {
+            let mut actions = state.actions.lock().unwrap();
+            if actions.first().is_some_and(|action| {
+                action.get("type").and_then(serde_json::Value::as_str) == Some("provider_error")
+            }) {
+                actions.remove(0);
+                true
+            } else {
+                false
+            }
+        };
+        let frame = if provider_error {
+            format!(
+                "{{\"type\":\"session.error\",\"properties\":{{\"sessionID\":\"{}\",\"error\":{{\"name\":\"ProviderError\"}}}}}}",
+                state.session
+            )
+        } else {
+            format!(
+                "{{\"type\":\"session.idle\",\"properties\":{{\"sessionID\":\"{}\"}}}}",
+                state.session
+            )
+        };
+        let _ = state.events.send(frame);
+        axum::http::StatusCode::NO_CONTENT
+    }
+
+    async fn auto_check_provider_message(
+        axum::extract::State(state): axum::extract::State<AutoCheckProviderState>,
+    ) -> axum::Json<serde_json::Value> {
+        let mut actions = state.actions.lock().unwrap();
+        let action = if actions.is_empty() {
+            serde_json::json!({
+                "type": "final",
+                "files": [],
+                "explanation": "unexpected extra provider turn"
+            })
+        } else {
+            actions.remove(0)
+        };
+        drop(actions);
+        axum::Json(serde_json::json!([{
+            "info": {
+                "id": "msg-1",
+                "sessionID": state.session,
+                "role": "assistant",
+                "tokens": {"input": 1, "output": 1, "total": 2},
+                "cost": 0.0
+            },
+            "parts": [{"type": "text", "text": action.to_string()}]
+        }]))
+    }
+
+    async fn auto_check_provider_delete() -> axum::Json<bool> {
+        axum::Json(true)
+    }
+
+    async fn auto_check_provider_missing() -> axum::http::StatusCode {
+        axum::http::StatusCode::NOT_FOUND
+    }
+
+    type AutoCheckRuns = std::sync::Arc<std::sync::Mutex<Vec<(Vec<String>, u64)>>>;
+    type AutoCheckRunResults =
+        std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<(Option<i32>, String, String)>>>;
+
+    #[derive(Clone)]
+    struct AutoCheckBackendState {
+        base: String,
+        root: std::path::PathBuf,
+        checks: Vec<SpecCheck>,
+        runs: AutoCheckRuns,
+        run_results: AutoCheckRunResults,
+        finalize_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        write_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        checkpoint_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        progress_decisions:
+            std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<ContinuationDecision>>>,
+        progress_checkpoint_hashes:
+            std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, String>>>,
+        progress_requests: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        progress_rejections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        receipts: std::sync::Arc<std::sync::Mutex<Vec<ExecutionCheckReceiptRecord>>>,
+        environment_checks: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        environment_check_response:
+            std::sync::Arc<std::sync::Mutex<Option<(axum::http::StatusCode, serde_json::Value)>>>,
+        sequence: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    }
+
+    async fn auto_check_provider_active() -> axum::Json<serde_json::Value> {
+        axum::Json(serde_json::json!({}))
+    }
+
+    async fn auto_check_agent_state() -> axum::Json<serde_json::Value> {
+        axum::Json(serde_json::json!({"state": "RUNNING"}))
+    }
+
+    async fn auto_check_tool_event(
+        axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+        axum::Json(input): axum::Json<factory_native::db::ProviderToolEventInput>,
+    ) -> axum::Json<factory_native::db::ProviderToolEventRecord> {
+        use std::sync::atomic::Ordering;
+        let execution_check = input.check.as_ref().map(|check| {
+            let frozen = state
+                .checks
+                .iter()
+                .find(|frozen| frozen.command == check.command);
+            let expected_exit = frozen.map(|frozen| frozen.expect_exit).unwrap_or(0);
+            let check_id = frozen.map(|frozen| frozen.id.clone()).unwrap_or_default();
+            let outcome = if check.exit_code == Some(expected_exit) {
+                "PASS"
+            } else {
+                "FAIL"
+            };
+            let sequence = state.sequence.fetch_add(1, Ordering::SeqCst);
+            ExecutionCheckReceiptRecord {
+                receipt_id: format!("receipt-{sequence}"),
+                campaign_id: "campaign".into(),
+                work_item_id: "unit-1".into(),
+                attempt_id: "attempt".into(),
+                session_record_id: input.session_record_id.clone(),
+                sequence,
+                call_id: input.call_id.clone(),
+                check_id,
+                suite: format!("check:{}", check.command.join("\u{0}")),
+                candidate_sha256: check.candidate_sha256.clone(),
+                candidate_commit_sha: check.candidate_commit_sha.clone().unwrap_or_default(),
+                candidate_tree_sha: check.candidate_tree_sha.clone().unwrap_or_default(),
+                exit_code: check.exit_code,
+                expected_exit,
+                outcome: outcome.into(),
+                result_sha256: sha256_hex(
+                    format!(
+                        "{}:{}:{}",
+                        input.call_id,
+                        check.candidate_sha256,
+                        check.exit_code.unwrap_or(-1)
+                    )
+                    .as_bytes(),
+                ),
+                fail_to_pass: false,
+            }
+        });
+        if let Some(receipt) = &execution_check {
+            state.receipts.lock().unwrap().push(receipt.clone());
+        }
+        axum::Json(factory_native::db::ProviderToolEventRecord {
+            session_record_id: input.session_record_id,
+            sequence: state.sequence.fetch_add(1, Ordering::SeqCst),
+            call_id: input.call_id,
+            tool: input.tool,
+            decision: input.decision,
+            detail: input.detail,
+            created_at: "test".into(),
+            execution_check,
+        })
+    }
+
+    async fn auto_check_progress_checkpoint(
+        axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+        axum::Json(input): axum::Json<serde_json::Value>,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        use std::sync::atomic::Ordering;
+        state.checkpoint_calls.fetch_add(1, Ordering::SeqCst);
+        let Some(checkpoint) = input.get("checkpoint") else {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"error": "missing checkpoint"})),
+            )
+                .into_response();
+        };
+        let Some(checkpoint_id) = checkpoint
+            .get("checkpointId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        else {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"error": "missing checkpoint id"})),
+            )
+                .into_response();
+        };
+        let checkpoint_sha256 = sha256_hex(
+            serde_json::to_string(checkpoint)
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        {
+            let mut stored = state.progress_checkpoint_hashes.lock().unwrap();
+            if let Some(existing) = stored.get(&checkpoint_id) {
+                if existing != &checkpoint_sha256 {
+                    state.progress_rejections.fetch_add(1, Ordering::SeqCst);
+                    return (
+                        axum::http::StatusCode::CONFLICT,
+                        axum::Json(serde_json::json!({
+                            "error": "progress checkpoint id was reused with different content"
+                        })),
+                    )
+                        .into_response();
+                }
+            } else {
+                stored.insert(checkpoint_id.to_owned(), checkpoint_sha256);
+            }
+        }
+        state.progress_requests.lock().unwrap().push(input);
+        let decision = state
+            .progress_decisions
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(ContinuationDecision::Continue);
+        let (classification, stagnant_checkpoints, hold_open) = match decision {
+            ContinuationDecision::Diagnose => ("STAGNANT", 2, true),
+            ContinuationDecision::Escalate => ("STAGNANT", 3, true),
+            _ => ("PROVISIONAL", 0, false),
+        };
+        axum::Json(serde_json::json!({
+            "checkpointId": checkpoint_id,
+            "decision": decision,
+            "classification": classification,
+            "stagnantCheckpoints": stagnant_checkpoints,
+            "unsuccessfulReplans": 0,
+            "holdOpen": hold_open
+        }))
+        .into_response()
+    }
+
+    async fn auto_check_workspace_operation() -> axum::Json<serde_json::Value> {
+        axum::Json(serde_json::json!({"grant": "grant"}))
+    }
+
+    async fn auto_check_environment_check(
+        axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+        axum::Json(body): axum::Json<serde_json::Value>,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        state.environment_checks.lock().unwrap().push(body.clone());
+        if let Some((status, body)) = state.environment_check_response.lock().unwrap().take() {
+            return (status, axum::Json(body)).into_response();
+        }
+        axum::Json(serde_json::json!({
+            "checkId": body["check"]["checkId"],
+            "description": body["check"]["description"],
+            "specSha256": body["spec"]["specSha256"],
+            "status": "PASSED",
+            "exitCode": 0,
+            "expectExit": body["check"]["expectExit"],
+            "passed": true,
+            "diagnostic": format!("{} (exit 0, expected 0)", body["check"]["description"].as_str().unwrap_or("")),
+            "logs": "environment check passed\n",
+            "logsTruncated": false,
+            "stdout": "environment check passed\n",
+            "stderr": "",
+            "stdoutTruncated": false,
+            "stderrTruncated": false,
+            "cleanupConfirmed": true,
+            "durationMs": 5
+        }))
+        .into_response()
+    }
+
+    async fn auto_check_allocate(
+        axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+    ) -> axum::Json<serde_json::Value> {
+        axum::Json(serde_json::json!({
+            "workspaceId": "ws",
+            "attemptId": "attempt",
+            "baseCommit": state.base,
+            "generation": 1,
+            "status": "ALLOCATED",
+            "candidate": null,
+            "capability": "capability"
+        }))
+    }
+
+    async fn auto_check_write(
+        axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+        axum::Json(request): axum::Json<factory_native::execution::WriteFilesRequest>,
+    ) -> axum::http::StatusCode {
+        state
+            .write_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        for file in request.files {
+            let path = state.root.join(&file.path);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, &file.content).unwrap();
+        }
+        axum::http::StatusCode::NO_CONTENT
+    }
+
+    async fn auto_check_run(
+        axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+        axum::Json(request): axum::Json<factory_native::execution::ToolRunRequest>,
+    ) -> axum::Json<serde_json::Value> {
+        state
+            .runs
+            .lock()
+            .unwrap()
+            .push((request.argv.clone(), request.timeout_secs));
+        let (exit_code, stdout, stderr) = state
+            .run_results
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or((Some(0), String::new(), String::new()));
+        axum::Json(serde_json::json!({
+            "exitCode": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdoutTruncated": false,
+            "stderrTruncated": false,
+            "candidate": null,
+            "snapshotSha256": "e".repeat(64),
+            "workspace": {
+                "workspaceId": "ws",
+                "attemptId": "attempt",
+                "baseCommit": state.base,
+                "generation": 1,
+                "status": "RUNNING",
+                "candidate": null,
+                "capability": "capability",
+                "capabilityExpiresAtMs": 0
+            },
+            "confinement": {
+                "mountKind": "volume",
+                "hostWorkspaceMounted": false,
+                "network": "none",
+                "readOnlyRoot": true,
+                "capabilitiesDropped": true,
+                "noNewPrivileges": true,
+                "image": "test/image:1"
+            }
+        }))
+    }
+
+    async fn auto_check_finalize(
+        axum::extract::State(state): axum::extract::State<AutoCheckBackendState>,
+    ) -> axum::Json<serde_json::Value> {
+        state
+            .finalize_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let git = |arguments: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(&state.root)
+                .args(arguments)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {arguments:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "candidate"]);
+        let commit = git(&["rev-parse", "HEAD"]);
+        let tree = git(&["rev-parse", "HEAD^{tree}"]);
+        axum::Json(serde_json::json!({
+            "commitSha": commit,
+            "treeSha": tree
+        }))
+    }
+
+    async fn auto_check_cleanup() -> axum::http::StatusCode {
+        axum::http::StatusCode::NO_CONTENT
+    }
+
+    struct AutoCheckHarness {
+        core: reqwest::Url,
+        provider_url: String,
+        directory: String,
+        client: reqwest::Client,
+        supervisor: Supervisor,
+        provider_session: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        usage_tracker: std::sync::Arc<std::sync::Mutex<ProviderUsage>>,
+        assignment: Assignment,
+        prompts: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        runs: AutoCheckRuns,
+        finalize_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        checkpoint_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        progress_requests: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        progress_rejections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        receipts: std::sync::Arc<std::sync::Mutex<Vec<ExecutionCheckReceiptRecord>>>,
+        environment_checks: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        environment_check_response:
+            std::sync::Arc<std::sync::Mutex<Option<(axum::http::StatusCode, serde_json::Value)>>>,
+        provider_server: tokio::task::JoinHandle<()>,
+        backend_server: tokio::task::JoinHandle<()>,
+        root: std::path::PathBuf,
+    }
+
+    impl Drop for AutoCheckHarness {
+        fn drop(&mut self) {
+            self.provider_server.abort();
+            self.backend_server.abort();
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    impl AutoCheckHarness {
+        async fn start(
+            actions: Vec<serde_json::Value>,
+            run_results: Vec<(Option<i32>, String, String)>,
+            checks: Vec<SpecCheck>,
+        ) -> Self {
+            Self::start_with_decisions(actions, run_results, checks, Vec::new()).await
+        }
+
+        async fn start_with_decisions(
+            actions: Vec<serde_json::Value>,
+            run_results: Vec<(Option<i32>, String, String)>,
+            checks: Vec<SpecCheck>,
+            progress_decisions: Vec<ContinuationDecision>,
+        ) -> Self {
+            use axum::routing::{delete, get, post};
+            use std::sync::atomic::AtomicUsize;
+            use std::sync::{Arc, Mutex};
+            use tokio::sync::broadcast;
+
+            let root = std::env::temp_dir().join(format!(
+                "factory-worker-auto-check-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            std::fs::write(root.join("src/lib.rs"), "base\n").unwrap();
+            let git = |args: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .current_dir(&root)
+                    .args(args)
+                    .env("GIT_AUTHOR_NAME", "Test")
+                    .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+                    .env("GIT_COMMITTER_NAME", "Test")
+                    .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "git {args:?}: {:?}", output);
+                String::from_utf8_lossy(&output.stdout).trim().to_owned()
+            };
+            git(&["init", "-q"]);
+            git(&["add", "src/lib.rs"]);
+            git(&["commit", "-qm", "base"]);
+            let base = git(&["rev-parse", "HEAD"]);
+
+            let prompts = Arc::new(Mutex::new(Vec::new()));
+            let provider_state = AutoCheckProviderState {
+                session: "ses_auto_check".into(),
+                actions: Arc::new(Mutex::new(actions)),
+                prompts: Arc::clone(&prompts),
+                events: broadcast::channel(16).0,
+            };
+            let provider_router = axum::Router::new()
+                .route("/event", get(auto_check_provider_events))
+                .route("/session", post(auto_check_provider_create_session))
+                .route(
+                    "/session/{session}/prompt_async",
+                    post(auto_check_provider_prompt),
+                )
+                .route(
+                    "/session/{session}/message",
+                    get(auto_check_provider_message),
+                )
+                .route(
+                    "/session/{session}",
+                    delete(auto_check_provider_delete).get(auto_check_provider_missing),
+                )
+                .with_state(provider_state);
+            let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let provider_addr = provider_listener.local_addr().unwrap();
+            let provider_server = tokio::spawn(async move {
+                axum::serve(provider_listener, provider_router)
+                    .await
+                    .unwrap();
+            });
+
+            let runs = Arc::new(Mutex::new(Vec::new()));
+            let finalize_calls = Arc::new(AtomicUsize::new(0));
+            let checkpoint_calls = Arc::new(AtomicUsize::new(0));
+            let progress_requests = Arc::new(Mutex::new(Vec::new()));
+            let progress_rejections = Arc::new(AtomicUsize::new(0));
+            let receipts = Arc::new(Mutex::new(Vec::new()));
+            let environment_checks = Arc::new(Mutex::new(Vec::new()));
+            let environment_check_response = Arc::new(Mutex::new(None));
+            let backend_state = AutoCheckBackendState {
+                base: base.clone(),
+                root: root.clone(),
+                checks: checks.clone(),
+                runs: Arc::clone(&runs),
+                run_results: Arc::new(Mutex::new(run_results.into())),
+                finalize_calls: Arc::clone(&finalize_calls),
+                write_calls: Arc::new(AtomicUsize::new(0)),
+                checkpoint_calls: Arc::clone(&checkpoint_calls),
+                progress_decisions: Arc::new(Mutex::new(progress_decisions.into())),
+                progress_checkpoint_hashes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+                progress_requests: Arc::clone(&progress_requests),
+                progress_rejections: Arc::clone(&progress_rejections),
+                receipts: Arc::clone(&receipts),
+                environment_checks: Arc::clone(&environment_checks),
+                environment_check_response: Arc::clone(&environment_check_response),
+                sequence: Arc::new(std::sync::atomic::AtomicI64::new(1)),
+            };
+            let backend_router = axum::Router::new()
+                .route("/worker/provider_active", post(auto_check_provider_active))
+                .route("/worker/provider_state", post(auto_check_agent_state))
+                .route("/worker/provider_tool_event", post(auto_check_tool_event))
+                .route(
+                    "/worker/progress_checkpoint",
+                    post(auto_check_progress_checkpoint),
+                )
+                .route(
+                    "/worker/workspace_operation",
+                    post(auto_check_workspace_operation),
+                )
+                .route("/v1/workspaces", post(auto_check_allocate))
+                .route("/v1/workspaces/ws/write", post(auto_check_write))
+                .route("/v1/workspaces/ws/run", post(auto_check_run))
+                .route(
+                    "/v1/workspaces/ws/environment-check",
+                    post(auto_check_environment_check),
+                )
+                .route("/v1/workspaces/ws/finalize", post(auto_check_finalize))
+                .route("/v1/workspaces/ws", delete(auto_check_cleanup))
+                .with_state(backend_state);
+            let backend_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let backend_addr = backend_listener.local_addr().unwrap();
+            let backend_server = tokio::spawn(async move {
+                axum::serve(backend_listener, backend_router).await.unwrap();
+            });
+
+            let client = reqwest::Client::new();
+            let core = reqwest::Url::parse(&format!("http://{backend_addr}")).unwrap();
+            let supervisor = Supervisor {
+                client: client.clone(),
+                base: core.clone(),
+                token: "supervisor-token".into(),
+                image: "test/image:1".into(),
+                timeout_secs: 30,
+            };
+            let mut assignment = assignment_for_progress();
+            let directory = root.to_string_lossy().into_owned();
+            assignment.repository = directory.clone();
+            assignment.action_spec.repository = directory.clone();
+            assignment.action_spec.base_commit = base;
+            assignment.action_spec.allowed_paths = vec!["src".into()];
+            assignment.action_spec.checks = checks;
+            assignment.allowed_tools = vec!["write_file".into(), "run_command".into()];
+            assignment.lease.attempt_id = "attempt".into();
+            assignment.execution_policy = Some(auto_check_policy());
+
+            Self {
+                core,
+                provider_url: format!("http://{provider_addr}"),
+                directory,
+                client,
+                supervisor,
+                provider_session: Arc::new(Mutex::new(None)),
+                usage_tracker: Arc::new(Mutex::new(ProviderUsage::default())),
+                assignment,
+                prompts,
+                runs,
+                finalize_calls,
+                checkpoint_calls,
+                progress_requests,
+                progress_rejections,
+                receipts,
+                environment_checks,
+                environment_check_response,
+                provider_server,
+                backend_server,
+                root,
+            }
+        }
+
+        fn context<'a>(&'a self) -> ProviderContext<'a> {
+            ProviderContext {
+                client: &self.client,
+                core: &self.core,
+                session_token: "session-token",
+                worker_id: "worker",
+                session_record_id: "session-record",
+                base_url: &self.provider_url,
+                password: "provider-password",
+                directory: &self.directory,
+                api_directory: "",
+                provider_kind: "opencode",
+                provider_session: &self.provider_session,
+                usage_tracker: &self.usage_tracker,
+                turn_policy: None,
+                assignment: &self.assignment,
+                supervisor: &self.supervisor,
+                enforce_check_completion: true,
+            }
+        }
+
+        async fn execute_checks(
+            &self,
+            checks: Vec<SpecCheck>,
+        ) -> Result<Vec<super::FrozenCheckExecution>, String> {
+            let context = self.context();
+            let handle = WorkspaceHandle {
+                workspace_id: "ws".into(),
+                attempt_id: "attempt".into(),
+                base_commit: "a".repeat(40),
+                generation: 1,
+                status: WorkspaceStatus::Allocated,
+                candidate: None,
+                capability: "capability".into(),
+                capability_expires_at_ms: 0,
+            };
+            let mut dependencies = super::DependencyAcquisitionState {
+                attempted: false,
+                receipt: None,
+            };
+            let mut progress = super::TurnProgress::from_identity(
+                "campaign".into(),
+                "unit-1".into(),
+                "attempt".into(),
+                1,
+                "run-test".into(),
+                0,
+            );
+            let mut passed = std::collections::BTreeSet::new();
+            let check_refs = checks.iter().collect::<Vec<_>>();
+            super::execute_frozen_checks(
+                &context,
+                &handle,
+                &mut dependencies,
+                &mut progress,
+                &mut passed,
+                check_refs,
+                None,
+            )
+            .await
+            .map_err(|error| error.to_string())
+        }
+
+        async fn run(
+            &self,
+        ) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>>
+        {
+            Ok(self.run_with_provenance().await?.candidate)
+        }
+
+        async fn run_with_provenance(
+            &self,
+        ) -> Result<super::ProviderRun, Box<dyn std::error::Error>> {
+            super::run_provider_tool_loop(&self.context()).await
+        }
+    }
+
+    fn valid_environment_execution() -> EnvironmentExecutionBinding {
+        let base_commit = "b".repeat(40);
+        let project_id = "project-1";
+        let request_id = "request-1";
+        let action_id = "action-1";
+        let plan_id = "plan-1";
+        let mut conventions = ProjectConventions {
+            schema_version: 1,
+            project_id: project_id.into(),
+            base_commit: base_commit.clone(),
+            conventions_sha256: String::new(),
+            scanned_at: "2026-11-10T00:00:00Z".into(),
+            files: Vec::new(),
+            commands: Vec::new(),
+            conflicts: Vec::new(),
+            truncated: false,
+            skipped_entries: 0,
+            provenance: "test".into(),
+            existing_environment: ExistingEnvironmentKind::None,
+        };
+        conventions.conventions_sha256 = conventions.compute_sha256();
+        let content = "{\n  outputs = { self }: { default = builtins.currentSystem; };\n}\n";
+        let mut inventory = LicenseInventory::default();
+        inventory.refresh_hashes(plan_id);
+        let mut plan = EnvironmentPlan {
+            schema_version: 1,
+            plan_id: plan_id.into(),
+            project_id: project_id.into(),
+            request_id: request_id.into(),
+            action_id: action_id.into(),
+            campaign_id: None,
+            base_commit: base_commit.clone(),
+            conventions_sha256: conventions.conventions_sha256.clone(),
+            conventions,
+            risk_class: "R0".into(),
+            status: EnvironmentPlanStatus::Frozen,
+            revision: 1,
+            source: EnvironmentPlanSource::Generated,
+            toolchains: Vec::new(),
+            packages: Vec::new(),
+            services: Vec::new(),
+            commands: std::collections::BTreeMap::new(),
+            browsers: Vec::new(),
+            files: vec![EnvironmentFile {
+                path: "flake.nix".into(),
+                sha256: sha256_hex(content.as_bytes()),
+                origin: EnvironmentFileOrigin::Generated,
+                content: Some(content.into()),
+            }],
+            nix: EnvironmentNixPolicy {
+                nixpkgs: format!("github:NixOS/nixpkgs/{}", "a".repeat(40)),
+                inputs: Vec::new(),
+                allow_unfree: false,
+                sandbox: SandboxPolicy {
+                    sandbox: true,
+                    impure: false,
+                    host_mounts: Vec::new(),
+                    privileged: false,
+                    host_network: false,
+                    host_sockets: Vec::new(),
+                },
+            },
+            resources: ResourceLimits::default(),
+            network: NetworkPolicy::default(),
+            license_inventory: inventory.clone(),
+            license_inventory_sha256: inventory.inventory_sha256.clone(),
+            builder: EnvironmentBuilderDescriptor {
+                image: "localhost/software-factory-environment-builder:dev".into(),
+                digest: format!("sha256:{}", "1".repeat(64)),
+                platform: DEFAULT_PLATFORM.into(),
+                policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                default_nixpkgs: String::new(),
+                status: EnvironmentBuilderStatus::Ready,
+            },
+            resolution: None,
+            lead_review: None,
+            blockers: Vec::new(),
+            commands_rationale: "test".into(),
+            plan_sha256: String::new(),
+            created_at: "2026-11-10T00:00:00Z".into(),
+        };
+        plan.refresh_hash();
+        plan.validate(chrono::Utc::now()).unwrap();
+        let mut spec = EnvironmentSpec {
+            schema_version: 1,
+            spec_id: "spec-1".into(),
+            spec_sha256: String::new(),
+            project_id: project_id.into(),
+            request_id: request_id.into(),
+            action_id: action_id.into(),
+            campaign_id: None,
+            base_commit,
+            plan_id: plan_id.into(),
+            plan_sha256: plan.plan_sha256.clone(),
+            conventions_sha256: plan.conventions_sha256.clone(),
+            review_id: "review-1".into(),
+            platform: DEFAULT_PLATFORM.into(),
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            flake_lock_sha256: "e".repeat(64),
+            devenv_lock_sha256: String::new(),
+            license_inventory_sha256: plan.license_inventory_sha256.clone(),
+            sbom_sha256: plan.license_inventory.sbom_sha256.clone(),
+            builder_image: plan.builder.image.clone(),
+            builder_image_digest: plan.builder.digest.clone(),
+            resource_policy: plan.resources,
+            network_policy: plan.network.clone(),
+            status: EnvironmentSpecStatus::Frozen,
+            frozen_at: "2026-11-10T00:00:00Z".into(),
+        };
+        spec.spec_sha256 = spec.compute_sha256();
+        spec.validate().unwrap();
+        let receipt = EnvironmentBuildReceipt {
+            schema_version: 1,
+            receipt_id: "receipt-1".into(),
+            spec_sha256: spec.spec_sha256.clone(),
+            platform: spec.platform.clone(),
+            builder_image: spec.builder_image.clone(),
+            builder_image_digest: spec.builder_image_digest.clone(),
+            builder_policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+            status: EnvironmentBuilderStatus::Succeeded,
+            store_path: "/nix/store/fixture".into(),
+            output_sha256: "5".repeat(64),
+            sbom_sha256: spec.sbom_sha256.clone(),
+            log_ref: "build.log".into(),
+            sandbox_attestation: SandboxAttestation {
+                non_root: true,
+                no_secrets: true,
+                no_host_network: true,
+                no_host_socket: true,
+                no_host_mount: true,
+                sandbox: true,
+                impure: false,
+                bounded_resources: true,
+            },
+            blockers: Vec::new(),
+            duration_ms: 1,
+            created_at: "2026-11-10T00:00:00Z".into(),
+        };
+        receipt.validate_for(&spec).unwrap();
+        EnvironmentExecutionBinding {
+            plan,
+            spec,
+            receipt,
+        }
+    }
+
+    fn environment_bound_check(binding: &EnvironmentExecutionBinding) -> SpecCheck {
+        SpecCheck {
+            id: "build".into(),
+            kind: CheckKind::Build,
+            description: "frozen environment build".into(),
+            command: vec!["cargo".into(), "build".into()],
+            expect_exit: 0,
+            timeout_secs: 30,
+            environment_plan_id: Some(binding.plan.plan_id.clone()),
+            environment_spec_sha256: Some(binding.spec.spec_sha256.clone()),
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_uses_the_frozen_builder_check_path_instead_of_generic_run() {
+        let binding = valid_environment_execution();
+        let check = environment_bound_check(&binding);
+        let mut harness = AutoCheckHarness::start(
+            vec![auto_check_write_action(), auto_check_final_action()],
+            Vec::new(),
+            vec![check.clone()],
+        )
+        .await;
+        harness.assignment.environment_execution = Some(binding.clone());
+        harness.assignment.action_spec.environment_required = true;
+        let executions = harness
+            .execute_checks(vec![check.clone()])
+            .await
+            .expect("environment check executed");
+        assert_eq!(executions.len(), 1);
+        assert!(executions[0].passed);
+        assert_eq!(executions[0].stdout, "environment check passed\n");
+        assert!(
+            harness.runs.lock().unwrap().is_empty(),
+            "the generic supervisor run route must not be used for an environment-bound check"
+        );
+        let requests = harness.environment_checks.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(request["check"]["checkId"], "build");
+        assert_eq!(request["check"]["description"], check.description);
+        assert_eq!(
+            request["check"]["argv"],
+            serde_json::json!(["cargo", "build"])
+        );
+        assert_eq!(request["check"]["timeoutSecs"], 30);
+        assert_eq!(request["check"]["expectExit"], 0);
+        assert_eq!(request["image"], binding.spec.builder_image);
+        assert_eq!(request["digest"], binding.spec.builder_image_digest);
+        assert_eq!(request["spec"]["specSha256"], binding.spec.spec_sha256);
+        assert_eq!(request["plan"]["planSha256"], binding.plan.plan_sha256);
+        assert!(
+            request.get("workspaceVolume").is_none(),
+            "the Worker must never send a workspace volume"
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_refuses_an_environment_bound_check_without_the_campaign_binding() {
+        let binding = valid_environment_execution();
+        let check = environment_bound_check(&binding);
+        let mut harness = AutoCheckHarness::start(
+            vec![auto_check_write_action(), auto_check_final_action()],
+            Vec::new(),
+            vec![check.clone()],
+        )
+        .await;
+        harness.assignment.action_spec.environment_required = true;
+        let error = harness
+            .execute_checks(vec![check])
+            .await
+            .expect_err("missing environment binding must fail closed");
+        assert!(error.contains("ENVIRONMENT_PLAN_REQUIRED"), "{error}");
+        assert!(harness.environment_checks.lock().unwrap().is_empty());
+        assert!(harness.runs.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn worker_surfaces_environment_check_failure_and_timeout() {
+        let binding = valid_environment_execution();
+        let check = environment_bound_check(&binding);
+        let mut harness = AutoCheckHarness::start(
+            vec![auto_check_write_action(), auto_check_final_action()],
+            Vec::new(),
+            vec![check.clone()],
+        )
+        .await;
+        harness.assignment.environment_execution = Some(binding.clone());
+        harness.assignment.action_spec.environment_required = true;
+        *harness.environment_check_response.lock().unwrap() = Some((
+            axum::http::StatusCode::OK,
+            serde_json::json!({
+                "checkId": "build",
+                "description": check.description,
+                "specSha256": binding.spec.spec_sha256,
+                "status": "FAILED",
+                "exitCode": 2,
+                "expectExit": 0,
+                "passed": false,
+                "diagnostic": "build the frozen workspace (exit 2, expected 0): error[E0001]",
+                "logs": "compile failed\n",
+                "logsTruncated": false,
+                "stdout": "compile failed\n",
+                "stderr": "error[E0001]\n",
+                "stdoutTruncated": false,
+                "stderrTruncated": false,
+                "cleanupConfirmed": true,
+                "durationMs": 9
+            }),
+        ));
+        let executions = harness
+            .execute_checks(vec![check.clone()])
+            .await
+            .expect("a failed check is a typed result, not an execution error");
+        assert!(!executions[0].passed);
+        assert_eq!(executions[0].exit_code, Some(2));
+        assert_eq!(executions[0].stdout, "compile failed\n");
+        assert_eq!(executions[0].stderr, "error[E0001]\n");
+
+        *harness.environment_check_response.lock().unwrap() = Some((
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+            serde_json::json!({
+                "code": "ENVIRONMENT_BUILD_TIMEOUT",
+                "error": "the environment check exceeded its wall-clock bound"
+            }),
+        ));
+        let error = harness
+            .execute_checks(vec![check])
+            .await
+            .expect_err("timeout must fail closed");
+        assert!(error.contains("ENVIRONMENT_BUILD_TIMEOUT"), "{error}");
+        assert!(error.contains("504"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn worker_executes_missing_frozen_checks_and_finalizes_without_extra_model_turn() {
+        let check = SpecCheck {
+            id: "build".into(),
+            kind: CheckKind::Build,
+            description: "cargo build".into(),
+            command: vec!["cargo".into(), "build".into()],
+            expect_exit: 0,
+            timeout_secs: 120,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
+        };
+        let harness = AutoCheckHarness::start(
+            vec![auto_check_write_action(), auto_check_final_action()],
+            vec![(Some(0), "built\n".into(), String::new())],
+            vec![check.clone()],
+        )
+        .await;
+        let run = harness
+            .run_with_provenance()
+            .await
+            .expect("candidate was finalized");
+        assert_eq!(run.candidate.commit_sha.len(), 40);
+        assert_eq!(
+            run.final_source,
+            factory_native::quality::CandidateFinalSource::ModelFinal,
+            "a normal provider final is never relabelled as salvage"
+        );
+        assert!(
+            run.salvage.is_none(),
+            "a normal model final must not emit stagnation evidence"
+        );
+        assert_eq!(
+            harness.prompts.lock().unwrap().len(),
+            2,
+            "passing deterministic checks must not require another model turn"
+        );
+        assert_eq!(
+            harness
+                .finalize_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            *harness.runs.lock().unwrap(),
+            vec![(check.command.clone(), check.timeout_secs as u64)],
+            "only the exact frozen argv and timeout may be executed"
+        );
+    }
+
+    fn stagnation_check() -> SpecCheck {
+        SpecCheck {
+            id: "build".into(),
+            kind: CheckKind::Build,
+            description: "cargo build".into(),
+            command: vec!["cargo".into(), "build".into()],
+            expect_exit: 0,
+            timeout_secs: 120,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
+        }
+    }
+
+    #[test]
+    fn partial_environment_binding_is_refused_before_execution() {
+        let mut check = stagnation_check();
+        assert!(super::check_environment_binding_error(&check).is_none());
+        check.environment_plan_id = Some("plan-1".into());
+        assert!(
+            super::check_environment_binding_error(&check)
+                .is_some_and(|error| error.contains("ENVIRONMENT_PLAN_REQUIRED"))
+        );
+        check.environment_spec_sha256 = Some("a".repeat(64));
+        assert!(super::check_environment_binding_error(&check).is_none());
+    }
+
+    #[tokio::test]
+    async fn worker_salvages_a_changed_candidate_after_diagnose_when_all_frozen_checks_pass() {
+        use std::sync::atomic::Ordering;
+
+        let check = stagnation_check();
+        let harness = AutoCheckHarness::start_with_decisions(
+            vec![auto_check_final_action(), auto_check_write_action()],
+            vec![(Some(0), "built\n".into(), String::new())],
+            vec![check.clone()],
+            vec![
+                ContinuationDecision::Continue,
+                ContinuationDecision::Diagnose,
+            ],
+        )
+        .await;
+        let run = harness
+            .run_with_provenance()
+            .await
+            .expect("a changed candidate with passing frozen checks is salvageable");
+        assert_eq!(run.candidate.commit_sha.len(), 40);
+        assert_eq!(
+            run.final_source,
+            factory_native::quality::CandidateFinalSource::StagnationSalvage
+        );
+        let salvage = run
+            .salvage
+            .as_ref()
+            .expect("salvage must carry the work-item claim");
+        assert_eq!(salvage.work_item_id, "unit-1");
+        assert_eq!(
+            harness.prompts.lock().unwrap().len(),
+            2,
+            "the salvage itself must not request another model turn"
+        );
+        assert_eq!(
+            harness.finalize_calls.load(Ordering::SeqCst),
+            1,
+            "the worker must submit exactly one candidate"
+        );
+        assert_eq!(
+            *harness.runs.lock().unwrap(),
+            vec![(check.command.clone(), check.timeout_secs as u64)],
+            "salvage may only execute each missing frozen check once"
+        );
+        let receipts = harness.receipts.lock().unwrap();
+        assert_eq!(receipts.len(), 1, "a check receipt must be recorded");
+        assert_eq!(receipts[0].outcome, "PASS");
+        assert_eq!(
+            harness.checkpoint_calls.load(Ordering::SeqCst),
+            2,
+            "the provisional and Diagnose checkpoints are submitted; salvage must not add a later progress decision"
+        );
+        assert_eq!(
+            harness.progress_rejections.load(Ordering::SeqCst),
+            0,
+            "checkpoint ids must not be reused with different content"
+        );
+        let requests = harness.progress_requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let diagnose_id = requests[1]
+            .pointer("/checkpoint/checkpointId")
+            .and_then(serde_json::Value::as_str)
+            .expect("diagnose checkpoint id");
+        assert!(
+            !diagnose_id.ends_with("-salvage"),
+            "salvage must not submit a later checkpoint that supersedes the Diagnose decision: {diagnose_id}"
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_diagnose_without_a_final_nudge_returns_the_original_halt() {
+        use std::sync::atomic::Ordering;
+
+        let harness = AutoCheckHarness::start_with_decisions(
+            vec![auto_check_write_action()],
+            vec![(Some(0), "built\n".into(), String::new())],
+            vec![stagnation_check()],
+            vec![ContinuationDecision::Diagnose],
+        )
+        .await;
+        let error = harness
+            .run()
+            .await
+            .expect_err("salvage requires at least one deterministic final nudge");
+        let halt = error
+            .downcast_ref::<WorkerProgressHalt>()
+            .expect("the original progress halt must be returned");
+        assert_eq!(halt.decision, ContinuationDecision::Diagnose);
+        assert!(
+            harness.runs.lock().unwrap().is_empty(),
+            "no frozen check may run before the final-nudge prerequisite is met"
+        );
+        assert!(harness.receipts.lock().unwrap().is_empty());
+        assert_eq!(harness.finalize_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(harness.checkpoint_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn worker_diagnose_with_a_failing_frozen_check_returns_the_original_halt() {
+        use std::sync::atomic::Ordering;
+
+        let check = stagnation_check();
+        let harness = AutoCheckHarness::start_with_decisions(
+            vec![auto_check_final_action(), auto_check_write_action()],
+            vec![(Some(1), String::new(), "compile error\n".into())],
+            vec![check.clone()],
+            vec![
+                ContinuationDecision::Continue,
+                ContinuationDecision::Diagnose,
+            ],
+        )
+        .await;
+        let error = harness
+            .run()
+            .await
+            .expect_err("a failing frozen check must not produce a candidate");
+        let halt = error
+            .downcast_ref::<WorkerProgressHalt>()
+            .expect("the original progress halt must be returned");
+        assert_eq!(halt.decision, ContinuationDecision::Diagnose);
+        assert_eq!(halt.work_item_id, "unit-1");
+        assert_eq!(
+            harness.finalize_calls.load(Ordering::SeqCst),
+            1,
+            "the workspace is finalized only to bind exact-candidate check receipts; no candidate is submitted after a failed check"
+        );
+        assert_eq!(
+            *harness.runs.lock().unwrap(),
+            vec![(check.command.clone(), check.timeout_secs as u64)]
+        );
+        assert_eq!(harness.prompts.lock().unwrap().len(), 2);
+        let receipts = harness.receipts.lock().unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].outcome, "FAIL");
+        assert_eq!(harness.checkpoint_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn worker_diagnose_without_a_write_returns_the_original_halt() {
+        use std::sync::atomic::Ordering;
+
+        let harness = AutoCheckHarness::start_with_decisions(
+            vec![auto_check_final_action()],
+            vec![(Some(0), "built\n".into(), String::new())],
+            vec![stagnation_check()],
+            vec![ContinuationDecision::Diagnose],
+        )
+        .await;
+        let error = harness
+            .run()
+            .await
+            .expect_err("an unchanged workspace must not be salvaged");
+        let halt = error
+            .downcast_ref::<WorkerProgressHalt>()
+            .expect("the original progress halt must be returned");
+        assert_eq!(halt.decision, ContinuationDecision::Diagnose);
+        assert!(
+            harness.runs.lock().unwrap().is_empty(),
+            "no frozen check may run when nothing was written"
+        );
+        assert!(harness.receipts.lock().unwrap().is_empty());
+        assert_eq!(harness.finalize_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(harness.prompts.lock().unwrap().len(), 1);
+        assert_eq!(harness.checkpoint_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn worker_escalate_is_never_salvaged_even_with_passing_checks() {
+        use std::sync::atomic::Ordering;
+
+        let harness = AutoCheckHarness::start_with_decisions(
+            vec![auto_check_write_action()],
+            vec![(Some(0), "built\n".into(), String::new())],
+            vec![stagnation_check()],
+            vec![ContinuationDecision::Escalate],
+        )
+        .await;
+        let error = harness
+            .run()
+            .await
+            .expect_err("only a Diagnose decision may be salvaged");
+        let halt = error
+            .downcast_ref::<WorkerProgressHalt>()
+            .expect("the original progress halt must be returned");
+        assert_eq!(halt.decision, ContinuationDecision::Escalate);
+        assert!(
+            harness.runs.lock().unwrap().is_empty(),
+            "an escalation must not run or accept frozen checks"
+        );
+        assert!(harness.receipts.lock().unwrap().is_empty());
+        assert_eq!(harness.finalize_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(harness.prompts.lock().unwrap().len(), 1);
+        assert_eq!(harness.checkpoint_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn worker_never_executes_a_model_command_that_is_not_the_exact_frozen_argv() {
+        let check = SpecCheck {
+            id: "build".into(),
+            kind: CheckKind::Build,
+            description: "cargo build".into(),
+            command: vec!["cargo".into(), "build".into()],
+            expect_exit: 0,
+            timeout_secs: 120,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
+        };
+        let harness = AutoCheckHarness::start(
+            vec![
+                auto_check_write_action(),
+                serde_json::json!({
+                    "type": "tool_request",
+                    "call_id": "run-1",
+                    "tool": "run_command",
+                    "argv": ["cargo", "test"],
+                    "timeout_secs": 60
+                }),
+                auto_check_final_action(),
+            ],
+            vec![(Some(0), "built\n".into(), String::new())],
+            vec![check.clone()],
+        )
+        .await;
+        let candidate = harness.run().await.expect("candidate was finalized");
+        assert_eq!(candidate.commit_sha.len(), 40);
+        assert_eq!(
+            *harness.runs.lock().unwrap(),
+            vec![(check.command.clone(), check.timeout_secs as u64)],
+            "an unauthorized model command must never reach the Supervisor"
+        );
+        assert_eq!(
+            harness
+                .finalize_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_reruns_a_check_after_a_later_write_changes_the_candidate() {
+        let check = SpecCheck {
+            id: "build".into(),
+            kind: CheckKind::Build,
+            description: "cargo build".into(),
+            command: vec!["cargo".into(), "build".into()],
+            expect_exit: 0,
+            timeout_secs: 120,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
+        };
+        let harness = AutoCheckHarness::start(
+            vec![
+                auto_check_write_action(),
+                serde_json::json!({
+                    "type": "tool_request",
+                    "call_id": "run-1",
+                    "tool": "run_command",
+                    "argv": ["cargo", "build"],
+                    "timeout_secs": 120
+                }),
+                serde_json::json!({
+                    "type": "tool_request",
+                    "call_id": "write-2",
+                    "tool": "write_file",
+                    "path": "src/lib.rs",
+                    "content": "changed again\n"
+                }),
+                auto_check_final_action(),
+            ],
+            vec![
+                (Some(0), "first build\n".into(), String::new()),
+                (Some(0), "second build\n".into(), String::new()),
+            ],
+            vec![check.clone()],
+        )
+        .await;
+        let candidate = harness.run().await.expect("candidate was finalized");
+        assert_eq!(candidate.commit_sha.len(), 40);
+        assert_eq!(
+            *harness.runs.lock().unwrap(),
+            vec![
+                (check.command.clone(), check.timeout_secs as u64),
+                (check.command.clone(), check.timeout_secs as u64)
+            ],
+            "a check receipt for an older candidate must not accept the final tree"
+        );
+        assert_eq!(
+            harness
+                .finalize_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_feeds_failed_frozen_check_back_and_never_finalizes_failed_candidate() {
+        let check = SpecCheck {
+            id: "test".into(),
+            kind: CheckKind::Test,
+            description: "cargo test".into(),
+            command: vec!["cargo".into(), "test".into()],
+            expect_exit: 0,
+            timeout_secs: 60,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
+        };
+        let noisy = "x".repeat(20_000);
+        let harness = AutoCheckHarness::start(
+            vec![
+                auto_check_write_action(),
+                auto_check_final_action(),
+                serde_json::json!({"type": "provider_error"}),
+            ],
+            vec![(Some(1), noisy.clone(), noisy.clone())],
+            vec![check.clone()],
+        )
+        .await;
+        let result = harness.run().await;
+        assert!(result.is_err(), "a failed frozen check must not finalize");
+        assert_eq!(
+            harness
+                .finalize_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "no candidate may be submitted on a failing check"
+        );
+        assert_eq!(
+            *harness.runs.lock().unwrap(),
+            vec![(check.command.clone(), check.timeout_secs as u64)]
+        );
+        let prompts = harness.prompts.lock().unwrap();
+        assert_eq!(
+            prompts.len(),
+            3,
+            "the worker must continue with the check failure observation"
+        );
+        let failure_prompt = prompts[2]
+            .pointer("/parts/0/text")
+            .and_then(serde_json::Value::as_str)
+            .expect("failure observation text");
+        assert!(failure_prompt.contains("Frozen check test FAILED"));
+        assert!(failure_prompt.contains("expected=0"));
+        assert!(
+            failure_prompt.len() < 20_000,
+            "check output must stay bounded: {} bytes",
+            failure_prompt.len()
+        );
+    }
 
     fn check_receipt(
         call_id: &str,
@@ -4611,8 +7197,11 @@ mod tests {
             session_record_id: "session".into(),
             sequence: 1,
             call_id: call_id.into(),
+            check_id: "build".into(),
             suite: "check:cargo\u{0}test".into(),
             candidate_sha256: "c".repeat(64),
+            candidate_commit_sha: String::new(),
+            candidate_tree_sha: String::new(),
             exit_code: Some(if outcome == "PASS" { 0 } else { 1 }),
             expected_exit: 0,
             outcome: outcome.into(),
@@ -4630,6 +7219,47 @@ mod tests {
         );
         let command_only = vec!["run_command".to_string()];
         assert!(!opencode_first_action_instruction(&command_only).contains("write_file"));
+    }
+
+    #[test]
+    fn final_requires_every_frozen_check_to_pass() {
+        let checks = vec![
+            SpecCheck {
+                id: "build".into(),
+                kind: CheckKind::Build,
+                description: "build".into(),
+                command: vec!["cargo".into(), "build".into()],
+                expect_exit: 0,
+                timeout_secs: 120,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
+            },
+            SpecCheck {
+                id: "negative".into(),
+                kind: CheckKind::Negative,
+                description: "reject empty name".into(),
+                command: vec!["gym".into(), "member".into(), "add".into()],
+                expect_exit: 1,
+                timeout_secs: 30,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
+            },
+        ];
+        let tools = vec!["write_file".to_string(), "run_command".to_string()];
+        let mut passed = std::collections::BTreeSet::new();
+        let message = missing_check_instructions(&checks, &tools, &passed).unwrap();
+        assert!(message.contains("build (build)"));
+        assert!(message.contains("negative (reject empty name)"));
+        assert!(message.contains("expected exit 1"));
+        passed.insert("build".into());
+        let message = missing_check_instructions(&checks, &tools, &passed).unwrap();
+        assert!(!message.contains("build (build)"));
+        assert!(message.contains("negative (reject empty name)"));
+        passed.insert("negative".into());
+        assert!(missing_check_instructions(&checks, &tools, &passed).is_none());
+        assert!(
+            missing_check_instructions(&checks, &["write_file".to_string()], &passed).is_none()
+        );
     }
 
     #[test]
@@ -4669,6 +7299,16 @@ mod tests {
                 model: "deepseek-v4.1-flash".into(),
                 allowed_paths: vec!["src".into()],
                 checks: Vec::new(),
+                dependency_plan: None,
+                dependencies_required: false,
+                environment_plan_id: None,
+                environment_plan_sha256: None,
+                environment_spec_sha256: None,
+                environment_builder_image: None,
+                environment_builder_image_digest: None,
+                environment_required: false,
+
+                environment_spec_id: None,
             },
             action_spec_sha256: "c".repeat(64),
             repository: "/repo".into(),
@@ -4683,7 +7323,24 @@ mod tests {
             allowed_tools: Vec::new(),
             attempt_grant: String::new(),
             skills: Vec::new(),
+            environment_execution: None,
         }
+    }
+
+    #[test]
+    fn identical_content_is_detected() {
+        let mut progress = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
+        progress.observe_write("README.md", "same content");
+        assert!(progress.content_unchanged("README.md", "same content"));
+        assert!(!progress.content_unchanged("README.md", "different content"));
+        assert!(!progress.content_unchanged("other.md", "same content"));
     }
 
     #[test]
@@ -5001,5 +7658,647 @@ mod tests {
         );
         assert!(validated_loopback_url("http://localhost:8765", "TEST", &[]).is_ok());
         assert!(validated_loopback_url("http://127.0.0.1:8765/path", "TEST", &[]).is_err());
+    }
+
+    #[tokio::test]
+    async fn provider_failure_after_write_and_passing_checks_does_not_submit_candidate() {
+        use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+        use axum::routing::{delete, get, post};
+        use axum::{Json, Router};
+        use futures_util::StreamExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        use tokio::sync::broadcast;
+
+        #[derive(Clone)]
+        struct ProviderState {
+            session: String,
+            prompts: Arc<AtomicUsize>,
+            events: broadcast::Sender<String>,
+        }
+
+        async fn events(
+            axum::extract::State(state): axum::extract::State<ProviderState>,
+        ) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, std::convert::Infallible>>>
+        {
+            let created = format!(
+                "{{\"id\":\"evt-created\",\"type\":\"session.created\",\"properties\":{{\"sessionID\":\"{}\",\"info\":{{\"id\":\"{}\"}}}}}}",
+                state.session, state.session
+            );
+            let receiver = state.events.subscribe();
+            let initial = futures_util::stream::once(async move {
+                Ok::<_, std::convert::Infallible>(SseEvent::default().data(created))
+            });
+            let rest = futures_util::stream::unfold(receiver, |mut receiver| async move {
+                loop {
+                    match receiver.recv().await {
+                        Ok(data) => {
+                            return Some((
+                                Ok::<_, std::convert::Infallible>(SseEvent::default().data(data)),
+                                receiver,
+                            ));
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => return None,
+                    }
+                }
+            });
+            Sse::new(initial.chain(rest)).keep_alive(KeepAlive::default())
+        }
+
+        async fn create_session(
+            axum::extract::State(state): axum::extract::State<ProviderState>,
+        ) -> Json<serde_json::Value> {
+            Json(serde_json::json!({"id": state.session}))
+        }
+
+        async fn prompt(
+            axum::extract::State(state): axum::extract::State<ProviderState>,
+        ) -> axum::http::StatusCode {
+            let turn = state.prompts.fetch_add(1, Ordering::SeqCst) + 1;
+            let frame = if turn == 1 {
+                format!(
+                    "{{\"type\":\"session.idle\",\"properties\":{{\"sessionID\":\"{}\"}}}}",
+                    state.session
+                )
+            } else {
+                format!(
+                    "{{\"type\":\"session.error\",\"properties\":{{\"sessionID\":\"{}\",\"error\":{{\"name\":\"ProviderError\"}}}}}}",
+                    state.session
+                )
+            };
+            let _ = state.events.send(frame);
+            axum::http::StatusCode::NO_CONTENT
+        }
+
+        async fn assistant_message(
+            axum::extract::State(state): axum::extract::State<ProviderState>,
+        ) -> Json<serde_json::Value> {
+            let action = serde_json::json!({
+                "type": "tool_request",
+                "call_id": "call-1",
+                "tool": "write_file",
+                "path": "src/lib.rs",
+                "content": "fixed\n"
+            });
+            Json(serde_json::json!([{
+                "info": {
+                    "id": "msg-1",
+                    "sessionID": state.session,
+                    "role": "assistant",
+                    "tokens": {"input": 1, "output": 1, "total": 2},
+                    "cost": 0.0
+                },
+                "parts": [{"type": "text", "text": action.to_string()}]
+            }]))
+        }
+
+        let prompts = Arc::new(AtomicUsize::new(0));
+        let provider_state = ProviderState {
+            session: "ses_failure".into(),
+            prompts: Arc::clone(&prompts),
+            events: broadcast::channel(16).0,
+        };
+        let provider_router = Router::new()
+            .route("/event", get(events))
+            .route("/session", post(create_session))
+            .route("/session/{session}/prompt_async", post(prompt))
+            .route("/session/{session}/message", get(assistant_message))
+            .with_state(provider_state);
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_addr = provider_listener.local_addr().unwrap();
+        let provider_server = tokio::spawn(async move {
+            axum::serve(provider_listener, provider_router)
+                .await
+                .unwrap();
+        });
+
+        #[derive(Clone)]
+        struct BackendState {
+            finalize_calls: Arc<AtomicUsize>,
+            write_calls: Arc<AtomicUsize>,
+            base: String,
+        }
+
+        async fn provider_active() -> Json<serde_json::Value> {
+            Json(serde_json::json!({}))
+        }
+        async fn agent_state() -> Json<serde_json::Value> {
+            Json(serde_json::json!({"state": "RUNNING"}))
+        }
+        async fn tool_event() -> axum::http::StatusCode {
+            axum::http::StatusCode::NO_CONTENT
+        }
+        async fn progress_checkpoint() -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "checkpointId": "checkpoint",
+                "decision": "CONTINUE",
+                "classification": "PROVISIONAL",
+                "stagnantCheckpoints": 0,
+                "unsuccessfulReplans": 0,
+                "holdOpen": false
+            }))
+        }
+        async fn workspace_operation() -> Json<serde_json::Value> {
+            Json(serde_json::json!({"grant": "grant"}))
+        }
+        async fn allocate(
+            axum::extract::State(state): axum::extract::State<BackendState>,
+        ) -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "workspaceId": "ws",
+                "attemptId": "attempt-failure",
+                "baseCommit": state.base,
+                "generation": 1,
+                "status": "ALLOCATED",
+                "candidate": null,
+                "capability": "capability"
+            }))
+        }
+        async fn write(
+            axum::extract::State(state): axum::extract::State<BackendState>,
+        ) -> axum::http::StatusCode {
+            state.write_calls.fetch_add(1, Ordering::SeqCst);
+            axum::http::StatusCode::NO_CONTENT
+        }
+        async fn finalize(
+            axum::extract::State(state): axum::extract::State<BackendState>,
+        ) -> Json<serde_json::Value> {
+            state.finalize_calls.fetch_add(1, Ordering::SeqCst);
+            Json(serde_json::json!({
+                "commitSha": "c".repeat(40),
+                "treeSha": "d".repeat(40)
+            }))
+        }
+        async fn cleanup_workspace() -> axum::http::StatusCode {
+            axum::http::StatusCode::NO_CONTENT
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "factory-worker-provider-failure-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "base\n").unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(&root)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}: {:?}", output);
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["add", "src/lib.rs"]);
+        git(&["commit", "-qm", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+
+        let backend_state = BackendState {
+            finalize_calls: Arc::new(AtomicUsize::new(0)),
+            write_calls: Arc::new(AtomicUsize::new(0)),
+            base: base.clone(),
+        };
+        let backend_router = Router::new()
+            .route("/worker/provider_active", post(provider_active))
+            .route("/worker/provider_state", post(agent_state))
+            .route("/worker/provider_tool_event", post(tool_event))
+            .route("/worker/progress_checkpoint", post(progress_checkpoint))
+            .route("/worker/workspace_operation", post(workspace_operation))
+            .route("/v1/workspaces", post(allocate))
+            .route("/v1/workspaces/ws/write", post(write))
+            .route("/v1/workspaces/ws/finalize", post(finalize))
+            .route("/v1/workspaces/ws", delete(cleanup_workspace))
+            .with_state(backend_state.clone());
+        let backend_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend_addr = backend_listener.local_addr().unwrap();
+        let backend_server = tokio::spawn(async move {
+            axum::serve(backend_listener, backend_router).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let backend_url = reqwest::Url::parse(&format!("http://{backend_addr}")).unwrap();
+        let supervisor = Supervisor {
+            client: client.clone(),
+            base: backend_url.clone(),
+            token: "supervisor-token".into(),
+            image: "test/image:1".into(),
+            timeout_secs: 30,
+        };
+        let provider_session = Arc::new(Mutex::new(None));
+        let usage_tracker = Arc::new(Mutex::new(ProviderUsage::default()));
+        let mut assignment = assignment_for_progress();
+        assignment.repository = root.to_string_lossy().into_owned();
+        assignment.action_spec.repository = assignment.repository.clone();
+        assignment.action_spec.base_commit = base;
+        assignment.action_spec.allowed_paths = vec!["src".into()];
+        // The old salvage path finalized a candidate whenever all frozen
+        // checks passed. With an empty check set, `missing_check_instructions`
+        // reports every frozen check as satisfied while completion enforcement
+        // stays on, which is exactly the regression condition.
+        assignment.action_spec.checks.clear();
+        assignment.allowed_tools = vec!["write_file".into(), "run_command".into()];
+        assignment.lease.attempt_id = "attempt-failure".into();
+        let directory = root.to_string_lossy().into_owned();
+        let provider_url = format!("http://{provider_addr}");
+        let context = ProviderContext {
+            client: &client,
+            core: &backend_url,
+            session_token: "session-token",
+            worker_id: "worker",
+            session_record_id: "session-record",
+            base_url: &provider_url,
+            password: "provider-password",
+            directory: &directory,
+            api_directory: "",
+            provider_kind: "opencode",
+            provider_session: &provider_session,
+            usage_tracker: &usage_tracker,
+            turn_policy: None,
+            assignment: &assignment,
+            supervisor: &supervisor,
+            enforce_check_completion: true,
+        };
+        let result = super::run_provider_tool_loop(&context).await;
+        assert!(result.is_err(), "provider failure must not produce a run");
+        assert_eq!(
+            backend_state.write_calls.load(Ordering::SeqCst),
+            1,
+            "the provider must have applied a write before the failing terminal"
+        );
+        assert_eq!(
+            backend_state.finalize_calls.load(Ordering::SeqCst),
+            0,
+            "a provider failure must not submit a candidate"
+        );
+        assert_eq!(prompts.load(Ordering::SeqCst), 2);
+        provider_server.abort();
+        backend_server.abort();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn fixture_execution_with_a_dependency_plan_submits_no_candidate() {
+        let client = reqwest::Client::new();
+        let core = reqwest::Url::parse("http://127.0.0.1:9").unwrap();
+        let supervisor = Supervisor {
+            client: client.clone(),
+            base: reqwest::Url::parse("http://127.0.0.1:9").unwrap(),
+            token: "supervisor-token".into(),
+            image: "test/image:1".into(),
+            timeout_secs: 30,
+        };
+        let mut assignment = assignment_for_progress();
+        assignment.execution_mode = "FIXTURE".into();
+        assignment.action_spec.dependencies_required = true;
+        assignment.action_spec.dependency_plan = Some(dependency_plan());
+        let error = super::execute_assignment(
+            &client,
+            &core,
+            "session-token",
+            "worker",
+            &assignment,
+            &supervisor,
+        )
+        .await
+        .expect_err("FIXTURE must not submit a candidate for a dependency plan");
+        assert!(
+            error
+                .to_string()
+                .contains("FIXTURE execution cannot satisfy"),
+            "error: {error}"
+        );
+
+        assignment.action_spec.dependencies_required = false;
+        assignment.action_spec.dependency_plan = None;
+        assert!(super::fixture_dependency_blocker(&assignment.action_spec).is_none());
+    }
+
+    fn dependency_plan() -> factory_native::dependencies::DependencyPlan {
+        use factory_native::dependencies::{
+            BrokeredFetch, DependencyEvidence, DependencyKind, DependencyPlan,
+        };
+        use factory_native::planning::{
+            DependencyItem, DependencyPlan as PlanningDependencyPlan, DependencyStrategy,
+        };
+        let planning = PlanningDependencyPlan {
+            strategy: DependencyStrategy::BrokeredFetch,
+            items: vec![DependencyItem {
+                name: "itoa".into(),
+                version: "1.0.17".into(),
+                source: "registry+https://github.com/rust-lang/crates.io-index".into(),
+                license: "MIT OR Apache-2.0".into(),
+                checksum: "a".repeat(64),
+                advisory_status: "no-known-advisories".into(),
+                sbom_ref: "artifacts/sbom.json".into(),
+            }],
+            cache_ref: "vendor".into(),
+            sbom_ref: "artifacts/sbom.json".into(),
+            owner_approval: None,
+        };
+        let evidence = DependencyEvidence {
+            lockfile_sha256: "b".repeat(64),
+            vendor_sha256: "c".repeat(64),
+            sbom_ref: "artifacts/sbom.json".into(),
+            sbom_sha256: "d".repeat(64),
+            license_report_ref: "artifacts/licenses.json".into(),
+            license_report_sha256: "e".repeat(64),
+            advisory_report_ref: "artifacts/advisories.json".into(),
+            advisory_report_sha256: "f".repeat(64),
+        };
+        let fetch = BrokeredFetch::new(
+            "registry+https://github.com/rust-lang/crates.io-index",
+            "Cargo.lock",
+            "b".repeat(64),
+            "vendor",
+        );
+        DependencyPlan::from_planning(&planning, DependencyKind::Rust, evidence, Some(fetch))
+            .expect("fixture dependency plan")
+    }
+
+    #[derive(Clone)]
+    struct DependencyFixture {
+        fail: bool,
+        paths: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    fn dependency_fixture_router(fixture: DependencyFixture) -> axum::Router {
+        use axum::{Json, extract::State, routing::post};
+        async fn operation() -> Json<serde_json::Value> {
+            Json(serde_json::json!({"grant": "test-grant"}))
+        }
+        async fn dependencies(
+            State(fixture): State<DependencyFixture>,
+            Json(body): Json<serde_json::Value>,
+        ) -> axum::response::Response {
+            fixture.paths.lock().unwrap().push("/dependencies".into());
+            if fixture.fail {
+                return (
+                    axum::http::StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({"error": "egress proxy unavailable"})),
+                )
+                    .into_response();
+            }
+            let lockfile = body["lockfileSha256"].as_str().unwrap().to_owned();
+            Json(serde_json::json!({
+                "image": "localhost/software-factory-dependency:dev",
+                "lockfileSha256": lockfile,
+                "vendorSha256": "c".repeat(64),
+                "vendorEntries": 1,
+                "sbomPath": "vendor/.factory-supply-chain/sbom.cdx.json",
+                "sbomSha256": "d".repeat(64),
+                "licensePath": "vendor/.factory-supply-chain/licenses.json",
+                "licenseSha256": "e".repeat(64),
+                "advisoryPath": "vendor/.factory-supply-chain/advisories.json",
+                "advisorySha256": "f".repeat(64),
+                "stagingCleaned": true
+            }))
+            .into_response()
+        }
+        async fn finalize(State(fixture): State<DependencyFixture>) -> Json<serde_json::Value> {
+            fixture.paths.lock().unwrap().push("/finalize".into());
+            Json(serde_json::json!({
+                "commitSha": "c".repeat(40),
+                "treeSha": "d".repeat(40)
+            }))
+        }
+        axum::Router::new()
+            .route("/worker/workspace_operation", post(operation))
+            .route(
+                "/worker/provider_tool_event",
+                post(|| async { axum::http::StatusCode::NO_CONTENT }),
+            )
+            .route("/v1/workspaces/ws/dependencies", post(dependencies))
+            .route("/v1/workspaces/ws/finalize", post(finalize))
+            .with_state(fixture)
+    }
+
+    async fn dependency_context(
+        _assignment: &Assignment,
+        base: reqwest::Url,
+    ) -> (
+        reqwest::Client,
+        std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        std::sync::Arc<std::sync::Mutex<ProviderUsage>>,
+        Supervisor,
+    ) {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let supervisor = Supervisor {
+            client: client.clone(),
+            base: base.clone(),
+            token: "supervisor-token".into(),
+            image: "test/image:1".into(),
+            timeout_secs: 60,
+        };
+        (
+            client,
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+            std::sync::Arc::new(std::sync::Mutex::new(ProviderUsage::default())),
+            supervisor,
+        )
+    }
+
+    #[tokio::test]
+    async fn dependency_fixture_assignment_acquires_before_finalize_and_blocks_on_failure() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let base = reqwest::Url::parse(&format!("http://{address}")).unwrap();
+        let fixture = DependencyFixture {
+            fail: false,
+            paths: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let paths = fixture.paths.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, dependency_fixture_router(fixture))
+                .await
+                .unwrap();
+        });
+        let mut assignment = assignment_for_progress();
+        assignment.action_spec.dependency_plan = Some(dependency_plan());
+        let (client, provider_session, usage_tracker, supervisor) =
+            dependency_context(&assignment, base.clone()).await;
+        let handle = WorkspaceHandle {
+            workspace_id: "ws".into(),
+            attempt_id: "attempt".into(),
+            base_commit: "a".repeat(40),
+            generation: 1,
+            status: WorkspaceStatus::Allocated,
+            candidate: None,
+            capability: "capability".into(),
+            capability_expires_at_ms: 0,
+        };
+        let context = ProviderContext {
+            client: &client,
+            core: &base,
+            session_token: "session",
+            worker_id: "worker",
+            session_record_id: "session",
+            base_url: "",
+            password: "",
+            directory: "/tmp",
+            api_directory: "",
+            provider_kind: "fixture",
+            provider_session: &provider_session,
+            usage_tracker: &usage_tracker,
+            turn_policy: None,
+            assignment: &assignment,
+            supervisor: &supervisor,
+            enforce_check_completion: false,
+        };
+        let mut state = DependencyAcquisitionState::default();
+        let candidate = finalize_candidate(&context, &handle, &mut state)
+            .await
+            .expect("fixture dependency candidate");
+        assert_eq!(candidate.commit_sha, "c".repeat(40));
+        assert_eq!(
+            *paths.lock().unwrap(),
+            vec!["/dependencies".to_string(), "/finalize".to_string()]
+        );
+        server.abort();
+
+        // A failed acquisition must block finalization with an explicit
+        // blocker and must never reach the finalize endpoint.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let base = reqwest::Url::parse(&format!("http://{address}")).unwrap();
+        let failed = DependencyFixture {
+            fail: true,
+            paths: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let failed_paths = failed.paths.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, dependency_fixture_router(failed))
+                .await
+                .unwrap();
+        });
+        let (client, provider_session, usage_tracker, supervisor) =
+            dependency_context(&assignment, base.clone()).await;
+        let context = ProviderContext {
+            client: &client,
+            core: &base,
+            session_token: "session",
+            worker_id: "worker",
+            session_record_id: "session",
+            base_url: "",
+            password: "",
+            directory: "/tmp",
+            api_directory: "",
+            provider_kind: "fixture",
+            provider_session: &provider_session,
+            usage_tracker: &usage_tracker,
+            turn_policy: None,
+            assignment: &assignment,
+            supervisor: &supervisor,
+            enforce_check_completion: false,
+        };
+        let mut state = DependencyAcquisitionState::default();
+        let error = finalize_candidate(&context, &handle, &mut state)
+            .await
+            .expect_err("failed dependency acquisition must block finalize");
+        assert!(
+            error.to_string().contains("dependency acquisition blocked"),
+            "error: {error}"
+        );
+        assert_eq!(
+            *failed_paths.lock().unwrap(),
+            vec!["/dependencies".to_string()]
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn dependency_requirement_without_plan_blocks_and_no_requirement_proceeds() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let base = reqwest::Url::parse(&format!("http://{address}")).unwrap();
+        let fixture = DependencyFixture {
+            fail: false,
+            paths: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let paths = fixture.paths.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, dependency_fixture_router(fixture))
+                .await
+                .unwrap();
+        });
+        let assignment = assignment_for_progress();
+        let (client, provider_session, usage_tracker, supervisor) =
+            dependency_context(&assignment, base.clone()).await;
+        let handle = WorkspaceHandle {
+            workspace_id: "ws".into(),
+            attempt_id: "attempt".into(),
+            base_commit: "a".repeat(40),
+            generation: 1,
+            status: WorkspaceStatus::Allocated,
+            candidate: None,
+            capability: "capability".into(),
+            capability_expires_at_ms: 0,
+        };
+        let context = ProviderContext {
+            client: &client,
+            core: &base,
+            session_token: "session",
+            worker_id: "worker",
+            session_record_id: "session",
+            base_url: "",
+            password: "",
+            directory: "/tmp",
+            api_directory: "",
+            provider_kind: "fixture",
+            provider_session: &provider_session,
+            usage_tracker: &usage_tracker,
+            turn_policy: None,
+            assignment: &assignment,
+            supervisor: &supervisor,
+            enforce_check_completion: false,
+        };
+        let mut state = DependencyAcquisitionState::default();
+        finalize_candidate(&context, &handle, &mut state)
+            .await
+            .expect("no-dependency assignment proceeds");
+        assert_eq!(*paths.lock().unwrap(), vec!["/finalize".to_string()]);
+        server.abort();
+
+        let mut missing = assignment_for_progress();
+        missing.action_spec.dependencies_required = true;
+        missing.action_spec.dependency_plan = None;
+        let (client, provider_session, usage_tracker, supervisor) =
+            dependency_context(&missing, reqwest::Url::parse("http://127.0.0.1:9").unwrap()).await;
+        let core = reqwest::Url::parse("http://127.0.0.1:9").unwrap();
+        let context = ProviderContext {
+            client: &client,
+            core: &core,
+            session_token: "session",
+            worker_id: "worker",
+            session_record_id: "session",
+            base_url: "",
+            password: "",
+            directory: "/tmp",
+            api_directory: "",
+            provider_kind: "fixture",
+            provider_session: &provider_session,
+            usage_tracker: &usage_tracker,
+            turn_policy: None,
+            assignment: &missing,
+            supervisor: &supervisor,
+            enforce_check_completion: false,
+        };
+        let mut state = DependencyAcquisitionState::default();
+        let error = finalize_candidate(&context, &handle, &mut state)
+            .await
+            .expect_err("missing dependency plan must block");
+        assert!(
+            error
+                .to_string()
+                .contains("requires dependency acquisition"),
+            "error: {error}"
+        );
     }
 }

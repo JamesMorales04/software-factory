@@ -56,6 +56,26 @@ function latestGate(
   return latest;
 }
 
+function projectedLeadStatus(
+  campaign: Campaign,
+  gate: Gate | null,
+  lead: LeadRequestProjection | null,
+): string {
+  if (campaign.status === "CANCELLED") return "CANCELLED";
+  if (campaign.status === "FAILED") return "FAILED";
+  if (gate?.outcome === "ACCEPTED") return "COMPLETED";
+  if (
+    gate &&
+    ["REPAIR_REQUIRED", "HUMAN_REQUIRED", "NOT_TESTED", "BLOCKED"].includes(
+      gate.outcome,
+    )
+  ) {
+    return "BLOCKED";
+  }
+  if (campaign.status === "AUTHORIZED") return "EXECUTING";
+  return lead?.request.state ?? campaign.status;
+}
+
 /**
  * Campaign pulse is a read-only projection of recorded Core state. It never
  * derives success from a model response, a fixture or an assumed agent action.
@@ -89,7 +109,7 @@ export function CampaignPulse({
       id: "lead",
       name: t("campaignPulse.agent.lead"),
       detail: t("campaignPulse.agent.leadDetail"),
-      status: lead?.request.state ?? campaign.status,
+      status: projectedLeadStatus(campaign, gate, lead),
       icon: UserRound,
     },
     {

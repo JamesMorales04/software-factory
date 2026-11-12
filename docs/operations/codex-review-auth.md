@@ -79,8 +79,9 @@ command exits nonzero after printing the status JSON.
 `modelAccess` remains `NOT_VERIFIED`: `model/list` is a catalog check, not
 proof that the plan can use Luna. Only an actual review request can verify
 access for that request; a failed request produces `NOT_TESTED`, never PASS.
-The reviewer service is built from the dedicated `reviewer` image target and
-mounts `factory-codex-home` at `/codex-home`; it is not the verifier image.
+Every reviewer fleet service is built from the dedicated `reviewer` image
+target and mounts `factory-codex-home` at `/codex-home`; none is the verifier
+image. Each role authenticates with its own token, principal and role.
 
 ## Enable native review
 
@@ -95,7 +96,9 @@ For the bounded real-provider UAT, `compose.real-provider-uat.yaml` sets it to
 `1` on Core. Restart Core and the reviewer after changing it:
 
 ```sh
-podman compose -f compose.yaml -f compose.real-provider-uat.yaml up -d core reviewer
+podman compose -f compose.yaml -f compose.real-provider-uat.yaml up -d core \
+  reviewer-functional reviewer-architecture reviewer-code-quality \
+  reviewer-security reviewer-testing reviewer-operability
 ```
 
 Core then answers `GET /review/config` with `mechanism: "CODEX_APP_SERVER"`.

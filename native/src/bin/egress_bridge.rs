@@ -1,7 +1,7 @@
 //! Loopback TCP to Unix-socket bridge used inside the confined provider
 //! sandbox. It has no credential and forwards only to the bound host broker.
 
-use std::{env, time::Duration};
+use std::env;
 
 use tokio::{
     io::AsyncWriteExt,
@@ -22,11 +22,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let Ok(mut upstream) = UnixStream::connect(socket).await else {
                 return;
             };
-            let _ = tokio::time::timeout(
-                Duration::from_secs(150),
-                tokio::io::copy_bidirectional(&mut stream, &mut upstream),
-            )
-            .await;
+            // Model turns may stream for longer than any fixed bridge deadline.
+            // The broker enforces authorization, budgets and request binding;
+            // this bridge only carries the already-authorized connection.
+            let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
             let _ = stream.shutdown().await;
             let _ = upstream.shutdown().await;
         });

@@ -5,6 +5,7 @@ use sqlx_sqlite::SqliteConnection;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+use super::lifecycle::CAMPAIGN_EFFECTIVE_STATUS_SQL;
 use crate::project_import::ProjectDiscovery;
 
 /// Explicit source metadata captured when a Project is registered. The source
@@ -25,8 +26,22 @@ pub struct ProjectCampaignSummary {
     pub id: String,
     pub action_id: String,
     pub objective: String,
+    /// Raw durable Campaign state, retained for history.
     pub status: String,
+    /// Operator-facing state: terminal Campaign status, active Run state or the
+    /// latest immutable Gate outcome.
+    pub effective_status: String,
     pub created_at: String,
+}
+
+impl ProjectCampaignSummary {
+    /// Terminal Campaign and Gate states are not active work.
+    pub fn is_active(&self) -> bool {
+        !matches!(
+            self.effective_status.as_str(),
+            "CANCELLED" | "FAILED" | "COMPLETED" | "ACCEPTED" | "REJECTED"
+        )
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -234,6 +249,7 @@ impl Database {
             ActionSpecInput {
                 allowed_paths: &[],
                 checks: &[],
+                dependency_plan: None,
             },
         )
         .await
@@ -248,14 +264,21 @@ impl Database {
         key: &str,
         spec_input: ActionSpecInput<'_>,
     ) -> Result<Action, Error> {
-        let allowed_paths = spec_input.allowed_paths;
-        let checks = spec_input.checks;
+        let ActionSpecInput {
+            allowed_paths,
+            checks,
+            dependency_plan,
+        } = spec_input;
         if !allowed_paths.is_empty() {
             crate::lead::validate_repository_paths("allowedPaths", allowed_paths)
                 .map_err(|error| Error::Delegation(error.to_string()))?;
         }
         crate::lead::validate_mixed_checks(checks)
             .map_err(|error| Error::Delegation(error.to_string()))?;
+        if let Some(plan) = dependency_plan {
+            plan.validate()
+                .map_err(|error| Error::Delegation(error.to_string()))?;
+        }
         if objective.trim().is_empty() || objective.len() > 20_000 {
             return Err(Error::Invalid("objective length"));
         }
@@ -265,18 +288,35 @@ impl Database {
         if model.trim().is_empty() || model.len() > 128 {
             return Err(Error::Invalid("model"));
         }
-        let request_digest = sha256_hex(
-            serde_json::to_string(&(
-                project_id,
-                objective,
-                provider,
-                model,
-                allowed_paths,
-                checks,
-            ))
-            .expect("action digest serializes")
-            .as_bytes(),
-        );
+        // Preserve the historical digest when no plan is present so existing
+        // idempotency keys remain replayable.
+        let request_digest = match dependency_plan {
+            Some(plan) => sha256_hex(
+                serde_json::to_string(&(
+                    project_id,
+                    objective,
+                    provider,
+                    model,
+                    allowed_paths,
+                    checks,
+                    plan,
+                ))
+                .expect("action digest serializes")
+                .as_bytes(),
+            ),
+            None => sha256_hex(
+                serde_json::to_string(&(
+                    project_id,
+                    objective,
+                    provider,
+                    model,
+                    allowed_paths,
+                    checks,
+                ))
+                .expect("action digest serializes")
+                .as_bytes(),
+            ),
+        };
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         if let Some(id) = replay(&mut transaction, key, "create_action", &request_digest).await? {
@@ -286,7 +326,9 @@ impl Database {
         }
         let project = load_project(&mut transaction, project_id).await?;
         let objective_sha256 = sha256_hex(objective.as_bytes());
-        let spec = ActionSpec {
+        let action_id = Uuid::new_v4().to_string();
+        #[allow(unused_mut)]
+        let mut spec = ActionSpec {
             schema_version: 1,
             project_id: project_id.into(),
             repository: project.repository,
@@ -297,11 +339,24 @@ impl Database {
             model: model.into(),
             allowed_paths: allowed_paths.to_vec(),
             checks: checks.to_vec(),
+            dependency_plan: dependency_plan.cloned(),
+            dependencies_required: dependency_plan.is_some_and(|plan| {
+                plan.acquisition != crate::dependencies::DependencyAcquisition::NotRequired
+            }),
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
+            environment_spec_id: None,
         };
+        #[cfg(any(test, feature = "test-support"))]
+        crate::db::apply_test_environment_binding(&mut spec, &action_id);
         let spec_json = serde_json::to_string(&spec).expect("ActionSpec serializes");
         let spec_sha256 = sha256_hex(spec_json.as_bytes());
         let action = Action {
-            id: Uuid::new_v4().to_string(),
+            id: action_id,
             project_id: project_id.into(),
             objective: objective.into(),
             provider: provider.into(),
@@ -345,6 +400,64 @@ impl Database {
             "awaiting risk classification and execution authority",
         )
         .await?;
+        transaction.commit().await?;
+        #[cfg(test)]
+        let action = {
+            let mut connection = self.pool.acquire().await?;
+            load_action(&mut connection, &action.id).await?
+        };
+        Ok(action)
+    }
+
+    /// Attach or clear the frozen dependency plan before the action is
+    /// authorized. The action must not have started a Campaign; this prevents a
+    /// post-authorization spec change that would invalidate the Attempt grant.
+    pub async fn set_action_dependency_plan(
+        &self,
+        action_id: &str,
+        dependency_plan: Option<&crate::dependencies::DependencyPlan>,
+        dependencies_required: bool,
+    ) -> Result<Action, Error> {
+        if let Some(plan) = dependency_plan {
+            plan.validate()
+                .map_err(|error| Error::Validation(error.to_string()))?;
+        }
+        if dependencies_required && dependency_plan.is_none() {
+            return Err(Error::Validation(
+                "a dependency-requiring action requires a frozen dependency plan".into(),
+            ));
+        }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let campaigns: (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM campaigns WHERE action_id=?1")
+                .bind(action_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+        if campaigns.0 != 0 {
+            return Err(Error::Conflict("a Campaign already exists for this action"));
+        }
+        let (spec_json,): (String,) =
+            sqlx::query_as::query_as("SELECT spec_json FROM action_specs WHERE action_id=?1")
+                .bind(action_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .ok_or(Error::NotFound)?;
+        let mut spec: ActionSpec = serde_json::from_str(&spec_json)
+            .map_err(|_| Error::Invalid("frozen ActionSpec encoding"))?;
+        spec.dependency_plan = dependency_plan.cloned();
+        spec.dependencies_required = dependencies_required;
+        let spec_json = serde_json::to_string(&spec).expect("ActionSpec serializes");
+        let spec_sha256 = sha256_hex(spec_json.as_bytes());
+        sqlx::query::query(
+            "UPDATE action_specs SET spec_json=?1,spec_sha256=?2 WHERE action_id=?3",
+        )
+        .bind(&spec_json)
+        .bind(&spec_sha256)
+        .bind(action_id)
+        .execute(&mut *transaction)
+        .await?;
+        let action = load_action(&mut transaction, action_id).await?;
         transaction.commit().await?;
         Ok(action)
     }
@@ -442,7 +555,7 @@ impl Database {
         let rows: Vec<ProjectColumns> = sqlx::query_as::query_as(
             "SELECT id,repository,base_commit,created_at,identity,name,source_kind,source_url,
                     source_key,source_visibility,default_branch,remote_origin
-             FROM projects ORDER BY created_at",
+             FROM projects ORDER BY created_at,id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -453,23 +566,29 @@ impl Database {
         &self,
         project_id: &str,
     ) -> Result<Vec<ProjectCampaignSummary>, Error> {
-        let rows: Vec<(String, String, String, String, String)> = sqlx::query_as::query_as(
-            "SELECT c.id,c.action_id,a.objective,c.status,c.created_at
+        let sql = format!(
+            "SELECT c.id,c.action_id,a.objective,c.status,c.created_at,
+                    {CAMPAIGN_EFFECTIVE_STATUS_SQL}
              FROM campaigns c JOIN actions a ON a.id=c.action_id
-             WHERE a.project_id=?1 ORDER BY c.created_at DESC, c.id",
-        )
-        .bind(project_id)
-        .fetch_all(&self.pool)
-        .await?;
+             WHERE a.project_id=?1 ORDER BY c.created_at DESC, c.id"
+        );
+        let rows: Vec<(String, String, String, String, String, String)> =
+            sqlx::query_as::query_as(&sql)
+                .bind(project_id)
+                .fetch_all(&self.pool)
+                .await?;
         Ok(rows
             .into_iter()
             .map(
-                |(id, action_id, objective, status, created_at)| ProjectCampaignSummary {
-                    id,
-                    action_id,
-                    objective,
-                    status,
-                    created_at,
+                |(id, action_id, objective, status, created_at, effective_status)| {
+                    ProjectCampaignSummary {
+                        id,
+                        action_id,
+                        objective,
+                        status,
+                        effective_status,
+                        created_at,
+                    }
                 },
             )
             .collect())

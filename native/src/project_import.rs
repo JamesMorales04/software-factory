@@ -838,13 +838,13 @@ pub fn discover(repository: &Path, base_commit: &str) -> Result<ProjectDiscovery
     })
 }
 
-struct TreeScan {
-    paths: Vec<String>,
-    truncated: bool,
-    skipped_entries: usize,
+pub(crate) struct TreeScan {
+    pub(crate) paths: Vec<String>,
+    pub(crate) truncated: bool,
+    pub(crate) skipped_entries: usize,
 }
 
-fn git_tree(repository: &Path, base_commit: &str) -> Result<TreeScan, ImportError> {
+pub(crate) fn git_tree(repository: &Path, base_commit: &str) -> Result<TreeScan, ImportError> {
     let mut command = std::process::Command::new("git");
     command
         .arg("-C")
@@ -928,7 +928,11 @@ fn git_tree(repository: &Path, base_commit: &str) -> Result<TreeScan, ImportErro
     })
 }
 
-fn git_blob(repository: &Path, base_commit: &str, path: &str) -> Result<String, ImportError> {
+pub(crate) fn git_blob(
+    repository: &Path,
+    base_commit: &str,
+    path: &str,
+) -> Result<String, ImportError> {
     if path.contains('\0') || path.contains('\n') || path.starts_with('-') {
         return Err(ImportError::Discovery(
             "manifest path has an unsafe shape".into(),
@@ -1037,6 +1041,8 @@ fn check(id: &str, kind: CheckKind, description: &str, command: &[&str]) -> Spec
         command: command.iter().map(|value| (*value).to_owned()).collect(),
         expect_exit: 0,
         timeout_secs: MAX_DISCOVERY_CHECK_TIMEOUT_SECS,
+        environment_plan_id: None,
+        environment_spec_sha256: None,
     }
 }
 
@@ -1504,7 +1510,7 @@ fn browser_checks(contents: &BTreeMap<String, String>) -> Vec<SpecCheck> {
     }
 }
 
-fn is_commit_id(value: &str) -> bool {
+pub(crate) fn is_commit_id(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 

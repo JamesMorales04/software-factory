@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   getProjectDiscovery: vi.fn(),
   scanProjectDiscovery: vi.fn(),
   updateProjectConfig: vi.fn(),
+  getProjectDeliveryPolicy: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -104,6 +105,7 @@ const summary: ProjectSummary = {
         actionId: "action-1",
         objective: "Implement the widget",
         status: "AUTHORIZED",
+        effectiveStatus: "AUTHORIZED",
         createdAt: "2026-10-28T08:00:00Z",
       },
     ],
@@ -189,6 +191,14 @@ describe("ProjectDetail", () => {
     mocks.getProjectDiscovery.mockReset().mockResolvedValue(noDiscovery);
     mocks.scanProjectDiscovery.mockReset();
     mocks.updateProjectConfig.mockReset();
+    mocks.getProjectDeliveryPolicy.mockReset().mockResolvedValue({
+      policy: null,
+      revisions: [],
+      binding: summary.github.binding,
+      default_branch: "main",
+      merge_method: "squash",
+      source: "test",
+    });
   });
 
   it("renders the Core-backed project summary and technical details", async () => {
@@ -207,6 +217,42 @@ describe("ProjectDetail", () => {
     expect(technical).not.toBeNull();
     expect(technical?.textContent).toContain("/projects/project-abc");
     expect(technical?.textContent).toContain("github:acme/widgets");
+  });
+
+  it("uses Gate-effective status for the active Campaign list and badge", async () => {
+    mocks.getProjectSummary.mockResolvedValue({
+      ...summary,
+      campaigns: {
+        active: [
+          {
+            id: "campaign-accepted",
+            actionId: "action-1",
+            objective: "Accepted widget",
+            status: "AUTHORIZED",
+            effectiveStatus: "ACCEPTED",
+            createdAt: "2026-10-28T09:00:00Z",
+          },
+          {
+            id: "campaign-repair",
+            actionId: "action-2",
+            objective: "Repair widget",
+            status: "AUTHORIZED",
+            effectiveStatus: "REPAIR_REQUIRED",
+            createdAt: "2026-10-28T10:00:00Z",
+          },
+        ],
+        active_count: 2,
+        recent: [],
+        total: 2,
+      },
+    });
+    renderDetail();
+
+    expect(await screen.findByText("Active Campaigns: 1")).toBeTruthy();
+    expect(screen.queryByText("Accepted widget")).toBeNull();
+    expect(screen.getByText("Repair widget")).toBeTruthy();
+    expect(screen.getByText("Repair required")).toBeTruthy();
+    expect(screen.queryByText("Authorized")).toBeNull();
   });
 
   it("scans bounded manifests and shows advisory checks", async () => {

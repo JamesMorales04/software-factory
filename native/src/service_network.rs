@@ -72,14 +72,37 @@ mod tests {
 
     #[test]
     fn origins_use_an_explicit_service_allowlist() {
-        assert!(validate_http_origin("http://127.0.0.1:8765", "core", false, &["core"]).is_ok());
         assert!(
-            validate_http_origin("http://core:8765", "core", false, &["core"]).is_err(),
+            validate_http_origin("http://127.0.0.1:8765", "core", false, &["core-control"]).is_ok()
+        );
+        assert!(
+            validate_http_origin("http://core-control:8765", "core", false, &["core-control"])
+                .is_err(),
             "container service DNS must require container mode"
         );
-        assert!(validate_http_origin("http://core:8765", "core", true, &["core"]).is_ok());
-        assert!(validate_http_origin("http://attacker:8765", "core", true, &["core"]).is_err());
-        assert!(validate_http_origin("http://core:8765/path", "core", true, &["core"]).is_err());
-        assert!(validate_http_origin("https://core:8765", "core", true, &["core"]).is_err());
+        assert!(
+            validate_http_origin("http://core-control:8765", "core", true, &["core-control"])
+                .is_ok()
+        );
+        assert!(
+            validate_http_origin("http://core:8765", "core", true, &["core-control"]).is_err(),
+            "the ambiguous core service name is not a control host"
+        );
+        assert!(
+            validate_http_origin("http://attacker:8765", "core", true, &["core-control"]).is_err()
+        );
+        assert!(
+            validate_http_origin(
+                "http://core-control:8765/path",
+                "core",
+                true,
+                &["core-control"]
+            )
+            .is_err()
+        );
+        assert!(
+            validate_http_origin("https://core-control:8765", "core", true, &["core-control"])
+                .is_err()
+        );
     }
 }

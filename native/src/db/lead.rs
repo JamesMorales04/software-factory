@@ -709,7 +709,7 @@ impl Database {
         let gate_outcome = match &request.campaign_id {
             Some(campaign_id) => {
                 let row: Option<(String,)> = sqlx::query_as::query_as(
-                    "SELECT gd.outcome FROM gate_decisions gd
+                    "SELECT gd.outcome FROM gate_decisions_current gd
                      JOIN candidates c ON c.id=gd.candidate_id
                      JOIN attempts a ON a.id=c.attempt_id
                      JOIN runs r ON r.id=a.run_id
@@ -2058,7 +2058,7 @@ async fn start_lead_campaign_in_tx(
     }
     let mut actual_checks = identity.action_spec.checks.clone();
     actual_checks.sort_by(|left, right| left.id.cmp(&right.id));
-    if expected_checks != actual_checks {
+    if !checks_match_ignoring_environment(&expected_checks, &actual_checks) {
         return Err(Error::Forbidden(
             "frozen plan does not match the ActionSpec checks".into(),
         ));
@@ -2082,6 +2082,7 @@ async fn start_lead_campaign_in_tx(
             grant,
             unit,
             &config.base_commit,
+            &identity.action_spec,
         )?);
     }
     let mut authorization_input = match mechanism.as_str() {
@@ -2493,8 +2494,14 @@ async fn start_lead_campaign_in_tx(
         .await?;
     }
     sqlx::query::query(
-        "INSERT INTO campaign_review_requirements (campaign_id,reviewer_count,created_at)
-         SELECT ?1,pp.reviewer_count,?2 FROM agentic_participant_plans pp WHERE pp.request_id=?3
+        "INSERT INTO campaign_review_requirements
+           (campaign_id,reviewer_count,required_roles_json,required_assignments_json,created_at)
+         SELECT ?1,pp.reviewer_count,
+                COALESCE(json_extract(pp.plan_json,'$.reviewerRoles'),'[]'),
+                COALESCE(json_extract(pp.plan_json,'$.reviewerAssignments'),'[]'),?2
+         FROM agentic_participant_plans pp
+         JOIN intake_requests ir ON ir.id=pp.request_id
+         WHERE ir.lead_request_id=?3
          ON CONFLICT(campaign_id) DO NOTHING",
     )
     .bind(&campaign.id)
@@ -2977,6 +2984,25 @@ async fn ensure_action_spec_for_frozen_plan(
         if sha256_hex(spec_json.as_bytes()) != saved_sha256 {
             return Err(Error::Invalid("frozen ActionSpec digest mismatch"));
         }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let mut spec: ActionSpec = serde_json::from_str(&spec_json)
+                .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+            if !spec.environment_required {
+                crate::db::apply_test_environment_binding(&mut spec, &request.action_id);
+                let spec_json = serde_json::to_string(&spec)
+                    .map_err(|_| Error::Invalid("ActionSpec encoding"))?;
+                let spec_sha256 = sha256_hex(spec_json.as_bytes());
+                sqlx::query::query(
+                    "UPDATE action_specs SET spec_json=?1,spec_sha256=?2 WHERE action_id=?3",
+                )
+                .bind(&spec_json)
+                .bind(&spec_sha256)
+                .bind(&request.action_id)
+                .execute(&mut *connection)
+                .await?;
+            }
+        }
         return Ok(());
     }
     let draft = match load_action_draft(connection, &request.action_id).await {
@@ -3006,7 +3032,10 @@ async fn ensure_action_spec_for_frozen_plan(
             "draft Action identity does not match the registered implementer route".into(),
         ));
     }
-    let spec = derive_root_action_spec(request, proposal, config, grant)?;
+    #[allow(unused_mut)]
+    let mut spec = derive_root_action_spec(request, proposal, config, grant)?;
+    #[cfg(any(test, feature = "test-support"))]
+    crate::db::apply_test_environment_binding(&mut spec, &request.action_id);
     let spec_json =
         serde_json::to_string(&spec).map_err(|_| Error::Invalid("ActionSpec encoding"))?;
     let spec_sha256 = sha256_hex(spec_json.as_bytes());
@@ -3064,7 +3093,32 @@ fn derive_root_action_spec(
         model: grant.route.model.clone(),
         allowed_paths,
         checks,
+        dependency_plan: None,
+        dependencies_required: false,
+        environment_plan_id: None,
+        environment_plan_sha256: None,
+        environment_spec_sha256: None,
+        environment_builder_image: None,
+        environment_builder_image_digest: None,
+        environment_required: false,
+
+        environment_spec_id: None,
     })
+}
+
+/// Compare check identity without the ActionSpec-bound environment IDs. The
+/// environment is validated and bound separately; a model proposal cannot know
+/// the plan/spec hashes that Core freezes later.
+fn checks_match_ignoring_environment(left: &[SpecCheck], right: &[SpecCheck]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right.iter()).all(|(left, right)| {
+            left.id == right.id
+                && left.kind == right.kind
+                && left.description == right.description
+                && left.command == right.command
+                && left.expect_exit == right.expect_exit
+                && left.timeout_secs == right.timeout_secs
+        })
 }
 
 fn complete_plan_checks(proposal: &LeadPlanProposal) -> Result<Vec<SpecCheck>, Error> {
@@ -3292,6 +3346,7 @@ fn unit_action_spec(
     grant: &StandingDelegationV2,
     unit: &crate::lead::LeadWorkUnit,
     base_commit: &str,
+    root_spec: &ActionSpec,
 ) -> Result<ActionSpec, Error> {
     let mut checks = unit.acceptance_criteria.clone();
     checks.extend(unit.negative_cases.clone());
@@ -3315,6 +3370,46 @@ fn unit_action_spec(
     } else {
         unit.description.clone()
     };
+    let environment_plan_id =
+        root_spec
+            .environment_plan_id
+            .clone()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "a per-unit ActionSpec cannot be created from an unbound root ActionSpec"
+                    .into(),
+            })?;
+    let environment_plan_sha256 =
+        root_spec
+            .environment_plan_sha256
+            .clone()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the root ActionSpec has no environment plan hash".into(),
+            })?;
+    let environment_spec_sha256 =
+        root_spec
+            .environment_spec_sha256
+            .clone()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the root ActionSpec has no frozen environment spec hash".into(),
+            })?;
+    if !root_spec.environment_required
+        || root_spec.environment_builder_image.is_none()
+        || root_spec.environment_builder_image_digest.is_none()
+    {
+        return Err(Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message:
+                "the root ActionSpec is not bound to a frozen environment and builder identity"
+                    .into(),
+        });
+    }
+    for check in &mut checks {
+        check.environment_plan_id = Some(environment_plan_id.clone());
+        check.environment_spec_sha256 = Some(environment_spec_sha256.clone());
+    }
     Ok(ActionSpec {
         schema_version: 1,
         project_id: config.project_id.clone(),
@@ -3326,6 +3421,15 @@ fn unit_action_spec(
         model: grant.route.model.clone(),
         allowed_paths: unit.allowed_paths.clone(),
         checks,
+        dependency_plan: None,
+        dependencies_required: false,
+        environment_plan_id: Some(environment_plan_id),
+        environment_plan_sha256: Some(environment_plan_sha256),
+        environment_spec_sha256: Some(environment_spec_sha256),
+        environment_builder_image: root_spec.environment_builder_image.clone(),
+        environment_builder_image_digest: root_spec.environment_builder_image_digest.clone(),
+        environment_required: true,
+        environment_spec_id: root_spec.environment_spec_id.clone(),
     })
 }
 
@@ -3758,8 +3862,59 @@ async fn ensure_integration(
         .map_err(|_| Error::Invalid("stored proposal encoding"))?;
     let config = load_project_config(transaction, &project_id).await?;
     let grant = load_delegation_v2(transaction, &delegation_id).await?;
+    let root_spec_json: (String,) = sqlx::query_as::query_as(
+        "SELECT s.spec_json FROM campaigns c JOIN action_specs s ON s.action_id=c.action_id
+         WHERE c.id=?1",
+    )
+    .bind(campaign_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let root_spec: ActionSpec = serde_json::from_str(&root_spec_json.0)
+        .map_err(|_| Error::Invalid("frozen root ActionSpec encoding"))?;
+    let environment_plan_id =
+        root_spec
+            .environment_plan_id
+            .clone()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "integration ActionSpec requires a bound Campaign environment plan".into(),
+            })?;
+    let environment_plan_sha256 =
+        root_spec
+            .environment_plan_sha256
+            .clone()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "integration ActionSpec requires the Campaign environment plan hash"
+                    .into(),
+            })?;
+    let environment_spec_id =
+        root_spec
+            .environment_spec_id
+            .clone()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "integration ActionSpec requires the frozen environment spec id".into(),
+            })?;
+    let environment_spec_sha256 =
+        root_spec
+            .environment_spec_sha256
+            .clone()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "integration ActionSpec requires the frozen environment spec hash".into(),
+            })?;
+    if !root_spec.environment_required
+        || root_spec.environment_builder_image.is_none()
+        || root_spec.environment_builder_image_digest.is_none()
+    {
+        return Err(Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message: "integration ActionSpec requires the Campaign builder identity".into(),
+        });
+    }
     let mut allowed_paths = std::collections::BTreeSet::new();
-    let checks = if purpose == "FANIN" {
+    let mut checks = if purpose == "FANIN" {
         let task = sqlx::query::query("SELECT spec_json FROM lead_tasks WHERE task_id=?1")
             .bind(next_task_id)
             .fetch_one(&mut *transaction)
@@ -3789,6 +3944,10 @@ async fn ensure_integration(
         }
         checks
     };
+    for check in &mut checks {
+        check.environment_plan_id = Some(environment_plan_id.clone());
+        check.environment_spec_sha256 = Some(environment_spec_sha256.clone());
+    }
     let objective = if purpose == "FINAL" {
         "Integrate final WorkGraph candidates".to_string()
     } else {
@@ -3805,6 +3964,15 @@ async fn ensure_integration(
         model: grant.route.model.clone(),
         allowed_paths: allowed_paths.into_iter().collect(),
         checks,
+        dependency_plan: None,
+        dependencies_required: false,
+        environment_plan_id: Some(environment_plan_id),
+        environment_plan_sha256: Some(environment_plan_sha256),
+        environment_spec_id: Some(environment_spec_id),
+        environment_spec_sha256: Some(environment_spec_sha256),
+        environment_builder_image: root_spec.environment_builder_image.clone(),
+        environment_builder_image_digest: root_spec.environment_builder_image_digest.clone(),
+        environment_required: true,
     };
     let spec_json = serde_json::to_string(&spec)
         .map_err(|_| Error::Invalid("integration ActionSpec encoding"))?;
@@ -4036,7 +4204,7 @@ impl Database {
             let verified: Option<(String, String, String)> = sqlx::query_as::query_as(
                 "SELECT gd.outcome,c.commit_sha,
                         COALESCE(lt.unit_id,li.integration_id,r.campaign_id)
-                 FROM gate_decisions gd
+                 FROM gate_decisions_current gd
                  JOIN candidates c ON c.id=gd.candidate_id
                  JOIN attempts a ON a.id=c.attempt_id
                  JOIN runs r ON r.id=a.run_id
@@ -4229,13 +4397,15 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         let inserted = sqlx::query::query(
             "INSERT OR IGNORE INTO progress_checkpoints
-             (checkpoint_id,campaign_id,work_item_id,operation_id,evidence_ids_json,
-              outcome_sha256,classification,decision,checkpoint_json,checkpoint_sha256,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+             (checkpoint_id,campaign_id,work_item_id,attempt_id,operation_id,evidence_ids_json,
+              outcome_sha256,classification,decision,stagnant_checkpoints,unsuccessful_replans,
+              checkpoint_json,checkpoint_sha256,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
         )
         .bind(&checkpoint.checkpoint_id)
         .bind(campaign_id)
         .bind(&checkpoint.work_item_id)
+        .bind(fence.map(|fence| fence.attempt_id).unwrap_or(""))
         .bind(&checkpoint.operation_id)
         .bind(
             serde_json::to_string(&checkpoint.evidence_ids)
@@ -4244,6 +4414,8 @@ impl Database {
         .bind(&checkpoint.outcome_sha256)
         .bind(&classification)
         .bind(&decision)
+        .bind(i64::from(outcome.stagnant_checkpoints))
+        .bind(i64::from(outcome.unsuccessful_replans))
         .bind(&checkpoint_json)
         .bind(&checkpoint_sha256)
         .bind(&now)
@@ -4828,7 +5000,7 @@ async fn verify_progress_evidence_in_tx(
             crate::execution_policy::ProgressKind::RepairValidated => {
                 let gates: Vec<(String, String, String, String)> = sqlx::query_as::query_as(
                     "SELECT gd.candidate_id,gd.outcome,gd.decided_at,c.commit_sha
-                     FROM gate_decisions gd
+                     FROM gate_decisions_current gd
                      JOIN candidates c ON c.id=gd.candidate_id
                      JOIN attempts a ON a.id=c.attempt_id
                      JOIN runs r ON r.id=a.run_id
@@ -5111,6 +5283,8 @@ mod tests {
                     command: vec!["cargo".into(), "fmt".into(), "--check".into()],
                     expect_exit: 0,
                     timeout_secs: 60,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
                 SpecCheck {
                     id: "build".into(),
@@ -5119,6 +5293,8 @@ mod tests {
                     command: vec!["cargo".into(), "build".into()],
                     expect_exit: 0,
                     timeout_secs: 120,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
                 SpecCheck {
                     id: "test".into(),
@@ -5127,6 +5303,8 @@ mod tests {
                     command: vec!["cargo".into(), "test".into()],
                     expect_exit: 0,
                     timeout_secs: 120,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
                 SpecCheck {
                     id: "functional".into(),
@@ -5135,6 +5313,8 @@ mod tests {
                     command: vec!["cargo".into(), "run".into()],
                     expect_exit: 0,
                     timeout_secs: 120,
+                    environment_plan_id: None,
+                    environment_spec_sha256: None,
                 },
             ],
             vec![SpecCheck {
@@ -5144,6 +5324,8 @@ mod tests {
                 command: vec!["cargo".into(), "run".into(), "--invalid".into()],
                 expect_exit: 1,
                 timeout_secs: 60,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
             }],
         )
     }
@@ -5182,6 +5364,7 @@ mod tests {
                 acceptance_criteria: Vec::new(),
                 negative_cases: Vec::new(),
             }],
+            environment_proposal: None,
         };
         LeadAssessment {
             schema_revision: 1,
@@ -5242,6 +5425,7 @@ mod tests {
                 ActionSpecInput {
                     allowed_paths: &allowed,
                     checks: &checks,
+                    dependency_plan: None,
                 },
             )
             .await
@@ -5428,6 +5612,16 @@ mod tests {
             model: grant.route.model.clone(),
             allowed_paths: config.allowed_paths.clone(),
             checks: acceptance.into_iter().chain(negative).collect(),
+            dependency_plan: None,
+            dependencies_required: false,
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
+
+            environment_spec_id: None,
         };
         let binding = ActionBinding {
             id: request.action_id.clone(),
@@ -5690,6 +5884,7 @@ mod tests {
                 ActionSpecInput {
                     allowed_paths: &["src".to_string()],
                     checks: &checks,
+                    dependency_plan: None,
                 },
             )
             .await
@@ -5807,6 +6002,7 @@ mod tests {
                 ActionSpecInput {
                     allowed_paths: &["src".to_string()],
                     checks: &checks,
+                    dependency_plan: None,
                 },
             )
             .await
@@ -5962,6 +6158,7 @@ mod tests {
                 ActionSpecInput {
                     allowed_paths: &["src".to_string()],
                     checks: &checks,
+                    dependency_plan: None,
                 },
             )
             .await
@@ -6082,6 +6279,36 @@ mod tests {
             .find(|(unit, _, _)| unit == "root-b")
             .and_then(|(_, _, attempt)| attempt.clone())
             .unwrap();
+        for attempt in [&root_a_attempt, &root_b_attempt] {
+            let (unit_spec_json,): (String,) =
+                sqlx::query_as::query_as("SELECT spec_json FROM attempt_specs WHERE attempt_id=?1")
+                    .bind(attempt)
+                    .fetch_one(&db.pool)
+                    .await
+                    .unwrap();
+            let unit_spec: ActionSpec = serde_json::from_str(&unit_spec_json).unwrap();
+            assert!(unit_spec.environment_required);
+            assert_eq!(
+                unit_spec.environment_plan_id,
+                action.spec.environment_plan_id
+            );
+            assert_eq!(
+                unit_spec.environment_spec_sha256,
+                action.spec.environment_spec_sha256
+            );
+            assert_eq!(
+                unit_spec.environment_spec_id,
+                action.spec.environment_spec_id
+            );
+            assert_eq!(
+                unit_spec.environment_builder_image_digest,
+                action.spec.environment_builder_image_digest
+            );
+            assert!(unit_spec.checks.iter().all(|check| {
+                check.environment_plan_id == action.spec.environment_plan_id
+                    && check.environment_spec_sha256 == action.spec.environment_spec_sha256
+            }));
+        }
         for (attempt, commit) in [
             (&root_a_attempt, "a".repeat(40)),
             (&root_b_attempt, "b".repeat(40)),
@@ -6118,6 +6345,38 @@ mod tests {
         assert_eq!(integration.0, "FANIN");
         assert_eq!(integration.1, "QUEUED");
         let integration_attempt = integration.2.unwrap();
+        let (integration_spec_json,): (String,) =
+            sqlx::query_as::query_as("SELECT spec_json FROM attempt_specs WHERE attempt_id=?1")
+                .bind(&integration_attempt)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        let integration_spec: ActionSpec = serde_json::from_str(&integration_spec_json).unwrap();
+        assert!(integration_spec.environment_required);
+        assert_eq!(
+            integration_spec.environment_plan_id,
+            action.spec.environment_plan_id
+        );
+        assert_eq!(
+            integration_spec.environment_plan_sha256,
+            action.spec.environment_plan_sha256
+        );
+        assert_eq!(
+            integration_spec.environment_spec_id,
+            action.spec.environment_spec_id
+        );
+        assert_eq!(
+            integration_spec.environment_spec_sha256,
+            action.spec.environment_spec_sha256
+        );
+        assert_eq!(
+            integration_spec.environment_builder_image_digest,
+            action.spec.environment_builder_image_digest
+        );
+        assert!(integration_spec.checks.iter().all(|check| {
+            check.environment_plan_id == action.spec.environment_plan_id
+                && check.environment_spec_sha256 == action.spec.environment_spec_sha256
+        }));
         let integrated = Uuid::new_v4().to_string();
         sqlx::query::query(
             "INSERT INTO candidates
@@ -6789,6 +7048,7 @@ mod tests {
                 ActionSpecInput {
                     allowed_paths: &["src".to_string()],
                     checks: &[],
+                    dependency_plan: None,
                 },
             )
             .await
@@ -7731,6 +7991,7 @@ mod tests {
                 objective: &request.objective,
                 grant: &grant,
                 now: Utc::now(),
+                greenfield: false,
             },
         )
         .await;
@@ -8049,6 +8310,8 @@ mod tests {
                 command: vec!["cargo".into(), "test".into()],
                 candidate_sha256: candidate_sha256.into(),
                 exit_code: Some(exit_code),
+                candidate_commit_sha: None,
+                candidate_tree_sha: None,
             }),
         })
         .await
@@ -8091,6 +8354,8 @@ mod tests {
             command: vec!["cargo".into(), "test".into()],
             expect_exit: 0,
             timeout_secs: 60,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
         }];
         let action = db
             .create_action_with_spec(
@@ -8102,6 +8367,7 @@ mod tests {
                 crate::db::ActionSpecInput {
                     allowed_paths: &allowed_paths,
                     checks: &checks,
+                    dependency_plan: None,
                 },
             )
             .await
@@ -8321,6 +8587,7 @@ mod tests {
                 receipt_id: "progress-blocked-receipt".into(),
                 result_sha256: sha256_hex(b"blocked"),
                 terminal_status: "BLOCKED".into(),
+                reason: "blocked".into(),
             },
             now_ms,
         )

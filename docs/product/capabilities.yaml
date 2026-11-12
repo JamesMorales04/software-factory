@@ -120,6 +120,7 @@ milestones:
   - CAP-024
   - CAP-025
   - CAP-026
+  - CAP-067
   exclusions:
   - Unconditional merge
   - controller binary promotion
@@ -307,6 +308,7 @@ milestones:
   - Typed triage and StackProfile
   - Director, Operation Manager and portfolio concurrency
   - Planner, Spec Manager and frozen specs projected to issues and kanban
+  - Agnostic environment compiler; conventions discovery, licensed Nix/devenv plan, Lead-model review, frozen EnvironmentSpec, Campaign/check binding, migration 0076 and Office environment panel
   - Explorer, Librarian, Context7 and temporary skills
   - Dynamic participant composition and cheap operations interpreter
   - Bounded repair from the exact candidate
@@ -334,8 +336,9 @@ milestones:
   - agent and skill sprawl without minimum-sufficient composition
   - issue/kanban drift from Core truth
   - repair scope creep or candidate identity loss
+  - a generated environment drifting from its frozen lock, licence inventory or builder digest
   deterministic_acceptance:
-  - Triage floors, participant composition, owner charter, repair authorization, context handoff, spec issue projection and reviewer aggregation pass deterministic positive and negative tests.
+  - Triage floors, participant composition, owner charter, repair authorization, context handoff, spec issue projection, environment compiler (conventions, licence gate, Lead model decision, builder resolution, plan/spec/check binding) and reviewer aggregation pass deterministic positive and negative tests.
   real_acceptance:
   - A real-model browser campaign exercises a large spec, repair, concurrency and owner decision through Office without API or shell shortcuts.
   owner_decisions:
@@ -523,9 +526,13 @@ capabilities:
     source:
     - native/src/provider_session.rs
     - native/src/provider_patch.rs
+    - native/src/provider_stream.rs
+    - native/src/provider_reliability.rs
+    - native/src/provider_lifecycle.rs
     - native/src/bin/worker.rs
     test:
     - native/tests/e2e_fixture_dispatch.rs
+    - native/tests/provider_chaos.rs
     - native/src/db/provider_sessions.rs
   acceptance:
     deterministic: Applicable worker and direct-provider integration contract, negative and regression checks pass on an
@@ -547,6 +554,10 @@ capabilities:
     test-only GPT-6 Luna proxy record. A reviewer-only native Codex App Server `review/start` transport and
     dedicated ChatGPT credential volume are implemented behind `FACTORY_ENABLE_CODEX_REVIEW=1`; real ChatGPT
     login, live Luna review and ISOLATED dispatch remain NOT_TESTED.
+  - WP5 adds bounded SSE reconnect with `Last-Event-ID`, a nonconsecutive duplicate window, no hidden turn deadline,
+    exclusive reservation settlement/release and no candidate on provider failure or reconnect exhaustion. The
+    deterministic offline fault matrix passes; a live long-turn/SSE-cut UAT remains NOT_TESTED. See
+    docs/implementation/wp5-provider-chaos-evidence.md.
   - SEC-01-ISOLATED is out of scope for the current TRUSTED_LOCAL product (ADR-0035); no isolation is claimed and
     isolated dispatch remains fail-closed.
   blockers:
@@ -577,8 +588,12 @@ capabilities:
     - docs/contracts/quality-pipeline-s4a.md
     source:
     - native/src/workspace.rs
+    - native/src/workspace_archive.rs
+    - native/src/execution.rs
     test:
     - native/src/workspace.rs
+    - native/src/workspace_archive.rs
+    - native/src/execution.rs
   acceptance:
     deterministic: Applicable candidate revision lineage contract, negative and regression checks pass on an exact
       candidate.
@@ -593,7 +608,10 @@ capabilities:
     uat: []
     deployment: []
     isolation: []
-  limitations: []
+  limitations:
+  - Workspace snapshots exclude generated targets, reject symlinks/unsafe archives and reconcile only
+    supervisor-owned orphan volumes/containers. Compose end-to-end restart and HTTP inventory acceptance remain
+    NOT_TESTED. See docs/implementation/wp6-workspace-recovery-evidence.md.
   blockers: []
 - id: CAP-006
   name: Independent verification and review
@@ -683,6 +701,15 @@ capabilities:
     isolation: []
   limitations:
   - Gate acceptance is candidate-specific and is not deployment or security certification.
+  - Candidates now record `final_source` as `MODEL_FINAL` or `STAGNATION_SALVAGE`. Deterministic stagnation salvage is
+    allowed only when the latest durable progress decision is `Diagnose` satisfying the frozen progress counts, the
+    ActionSpec has at least one frozen check, at least one Core-recorded final nudge exists, the exact candidate diff
+    is non-empty and exactly one PASS execution receipt per frozen check is bound to the exact
+    check id, candidate commit/tree, Attempt, Campaign and work item. Core derives these values from durable records,
+    records `worker.stagnation_finalized` and permits one salvage per work item. R0 salvage remains eligible for the
+    ordinary Gate; R1-R3 salvage can never be accepted automatically and carries `SALVAGE_HUMAN_REVIEW_REQUIRED`.
+    R1-R3 authorization itself remains disabled in the current product, so the R1+ branch is domain-tested but not
+    reachable through the authorization route.
   blockers: []
 - id: CAP-008
   name: Scoped capability grants
@@ -858,10 +885,14 @@ capabilities:
     - office/src/components/office/ParticipantInspector.tsx
     - office/src/views/Issues.tsx
     - office/src/views/issues.css
+    - office/src/components/office/LinkedIssues.tsx
     - native/src/db/participants.rs
     - native/src/db/github.rs
+    - native/src/db/issue_links.rs
     - native/src/github.rs
     - native/src/github_sync.rs
+    - native/src/issues/mod.rs
+    - native/src/issues/delivery.rs
     test:
     - office/src/views/Campaigns.tsx
     - office/src/views/AgentOffice.test.tsx
@@ -869,10 +900,12 @@ capabilities:
     - office/src/components/office/officeAvatarAppearance.test.ts
     - office/src/components/office/officeSceneLayout.test.ts
     - office/src/views/Issues.board.test.tsx
+    - office/src/components/office/LinkedIssues.test.tsx
     - native/src/db/participants.rs
     - native/src/github.rs
     - native/src/github_sync.rs
     - native/src/bin/core.rs
+    - native/src/issues/delivery_tests.rs
   acceptance:
     deterministic: The Office typechecks, lints, passes component tests and builds; participant and tool-event routes require operator authentication, validate filters, bound pagination and redact provider detail.
     real: An authenticated Chromium journey opens Agent Office, inspects recorded participants and follows links to Campaign, WorkGraph, execution and quality evidence without invented activity.
@@ -888,10 +921,11 @@ capabilities:
   limitations:
   - Office recovery and cleanup projections remain incomplete.
   - Campaign and Lead labels can remain AUTHORIZED/RUNNING after an ACCEPTED Run; the gate and Run states are authoritative.
+  - The 2026-11-10 vlog run exercised the read-only Issues board in real Chromium at 1440/768/390, including five target issues under Needs Attention with automatic intake off and the `No issue synchronization recorded` state; it is recorded in docs/evidence/live-vlog-acceptance-2026-11-10.md as implementer/orchestrator evidence, not independent certification. Issue-to-Campaign execution, completed sync and issue write/comment paths remain NOT_TESTED. WP2 now implements frozen issue links, Core-derived delivery state, idempotent issue comment/close receipts and an operator retry. The delivery hooks are available in `native/src/issues/` for WP3, but WP2 does not call them from PR-open or merge handlers; no real authorized GitHub write journey, WP3 auto-merge integration or independent acceptance has been run.
   - Agent Office is read-only; it does not expose stop, model switching, budget changes or tool invocation.
   - Provider-session liveness is represented by recorded lease state only; external provider state is not independently verified.
   - Agent Office V3 covers deterministic layouts and unique avatar appearances through the current 200-participant projection. Renderer fixture captures are not live Core or inspector acceptance; the original vector scene remains less painterly and spatially rich than the approved reference. Product Owner visual approval and authenticated Agent Office browser acceptance remain pending.
-  - GitHub issue synchronization is read-only and bounded; governed intake/board ordering, issue writing, comments, Action/Campaign relationships and a real authorized GitHub call remain not tested. The Issues view is wired at /issues; real browser acceptance is pending.
+  - GitHub issue synchronization is read-only and bounded; issue comment/close effects are now Core-only and ledgered, but a real authorized GitHub write, board ordering, WP3 auto-merge integration and browser acceptance remain not tested. The Issues view is wired at /issues; real browser acceptance is pending.
   blockers: []
 - id: CAP-012
   name: Durable events and telemetry
@@ -919,8 +953,11 @@ capabilities:
     source:
     - native/src/telemetry.rs
     - native/src/observability.rs
+    - native/src/trace.rs
+    - native/src/replay.rs
     test:
     - native/src/telemetry.rs
+    - native/src/trace.rs
     - native/tests/observability.rs
   acceptance:
     deterministic: Applicable durable events and telemetry contract, negative and regression checks pass on an exact
@@ -938,6 +975,10 @@ capabilities:
     isolation: []
   limitations:
   - Metrics completeness and end-to-end telemetry coverage are not established.
+  - The operator-authenticated request trace endpoint and Office view are implemented with bounded steps/events,
+    redaction and typed alerts. Endpoint and component tests pass, and the WP10 implementer Chromium harness
+    exercised the trace states against an isolated real Core. Real Compose browser acceptance and independent
+    acceptance remain NOT_TESTED. See docs/implementation/wp11-trace-view-evidence.md.
   blockers: []
 - id: CAP-013
   name: Intelligent Lead
@@ -1442,14 +1483,14 @@ capabilities:
   blockers:
   - Live GitHub repository, checks and protection rules are required for real acceptance.
 - id: CAP-026
-  name: Conditional R0 merge
+  name: Risk-tiered delivery and auto-merge
   category: Delivery
-  purpose: Merge eligible low-risk changes only after protected recheck
+  purpose: Merge an exact accepted candidate only under a versioned Project delivery policy, fresh protection/check evidence and an explicit risk tier
   product_objective: Governed delivery
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -1460,22 +1501,39 @@ capabilities:
   - CAP-025
   target_milestone: F1-S5
   refs:
-    adr: []
-    contract: []
-    source: []
-    test: []
+    adr:
+    - docs/architecture/decisions/ADR-0040-risk-tiered-delivery-and-auto-merge.md
+    contract:
+    - docs/contracts/delivery-policy.md
+    source:
+    - native/src/delivery.rs
+    - native/src/db/delivery.rs
+    - native/src/github.rs
+    - native/src/bin/core.rs
+    - office/src/components/office/CampaignDelivery.tsx
+    - office/src/components/office/DeliveryPolicyEditor.tsx
+    test:
+    - native/src/delivery_tests.rs
+    - office/src/components/office/CampaignDelivery.test.tsx
+    - office/src/components/office/DeliveryPolicyEditor.test.tsx
   acceptance:
-    deterministic: Applicable conditional r0 merge contract, negative and regression checks pass on an exact candidate.
-    real: Exercise conditional r0 merge in a genuine authorized project journey and independently verify the outcome.
+    deterministic: R0 auto-merges only under an enabled RISK_TIERED policy; R1 requires opt-in, a matching Owner Charter delivery grant and a post-merge check; every R1 merge, including an owner-confirmed manual merge, runs the post-merge check; R2/R3/unknown stay manual; the exact candidate/head/base, Gate, policy revision, checks, branch protection and final_source/salvage evidence are re-read immediately before the merge; R1/R2/R3 STAGNATION_SALVAGE requires authenticated human review and is never auto-merged; missing or mismatched R0 salvage evidence is surfaced as a status blocker and blocks delivery; a blocked attempt cannot silently change base branch; the durable attempt is reserved atomically before any push/PR/issue side effect so concurrent different-base requests have exactly one winner and the loser gets BASE_MISMATCH with no external effects; duplicate attempts replay without a second write; a failed post-merge check opens an incident and never auto-reverts.
+    real: Exercise an authorized disposable GitHub repository through policy configuration, exact-candidate push, PR open, protected merge, issue close and a manual revert.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/delivery-policy-deterministic-2026-11-11.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
+  limitations:
+  - The deterministic fake-GitHub and local bare-remote journey does not certify real GitHub branch protection, permissions or merge behavior.
+  - R0 auto-merge defaults to disabled because a Project must append a RISK_TIERED policy and configure required checks.
+  - A post-merge failure freezes auto-merge and requires a manual, reviewed revert; Factory does not auto-revert.
+  - No authenticated human-review record exists yet for R1/R2/R3 salvage, so delivery blocks it with SALVAGE_HUMAN_REVIEW_REQUIRED rather than inventing approval.
+  - Real authorized GitHub delivery remains NOT_TESTED.
   blockers:
-  - Protected delivery authority requires separate Product Owner approval.
+  - Authorized disposable GitHub repository, write credential and protected branch are required for real acceptance.
 - id: CAP-027
   name: Persistent maintenance objectives
   category: Maintenance
@@ -2367,21 +2425,28 @@ capabilities:
   refs:
     adr:
     - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
+    - docs/architecture/decisions/ADR-0043-intake-follow-ups-and-merged-base.md
     contract:
     - docs/product/office-design-system.md
     - docs/product/factory-office.md
+    - docs/contracts/intake-follow-up.md
     source:
     - native/src/bin/core.rs
+    - native/src/db/intake.rs
+    - native/src/db/project_configs.rs
+    - native/src/delivery.rs
     - office/src/views/Requests.tsx
+    - office/src/views/RequestWorkspace.tsx
     - office/src/views/DecisionInbox.tsx
     - office/src/views/Campaigns.tsx
     - office/src/coreApi.ts
     test:
     - office/src/views/Home.test.tsx
+    - office/src/views/RequestWorkspace.test.tsx
     - office/src/views/DecisionInbox.test.tsx
     - office/e2e-browser/rust-journey.mjs
   acceptance:
-    deterministic: Requests, Campaigns and decisions require operator authentication, return Core snapshot shapes, filter by Project, render human-readable states, and their views typecheck, lint, pass component tests and build inside the container-native workflow.
+    deterministic: Requests, Campaigns and decisions require operator authentication, return Core snapshot shapes, filter by Project, render human-readable states, and their views typecheck, lint, pass component tests and build inside the container-native workflow. A terminal intake request accepts one follow-up message, creates exactly one child with parent lineage and the same exact profile/policy path, refuses a second fork, and the child has no parent plan, ActionSpec, candidate or Campaign. The parent policy can only be continued by the principal that confirmed it, even when a different principal has their own matching grant. A verified default-branch merge advances the Project config base as a new revision monotonically; the merge must descend from the current base, equal/already-ahead merges do not write, and stale-ancestor or divergent merges fail closed. Blocked, failed, reverted, other-branch, branch-read-error and unverified merged-replay states do not advance the base.
     real: An authenticated browser journey reaches Requests, Campaigns and Decision Inbox, follows hash and copied path deep links, and renders Core-backed decisions with exact targets; removed routes redirect without dead ends.
   evidence:
     deterministic:
@@ -2393,9 +2458,11 @@ capabilities:
     isolation: []
   limitations:
   - Requests and Inbox poll Core; they do not claim SSE, replay or live streaming.
+  - The 2026-11-10 vlog run did not exercise Requests or the Decision Inbox; docs/evidence/live-vlog-acceptance-2026-11-10.md is implementer/orchestrator evidence, not independent live-agent certification.
   - Campaign authorization and Quality Gate repair remain on the Campaign workspace.
   - The Inbox exposes model-call resolution and navigation only; unresolved provider sessions are awareness-only because no operator termination API exists.
   - Removed pages redirect to the closest current workspace; unknown routes return Home.
+  - Follow-up creation is limited to one child per COMPLETED or CANCELLED request and keeps the parent exact profile revision and owner-confirmed policy scope. A base-only Core config advance may re-bind that exact policy to the new config; it never widens paths, capabilities, risk, route, autonomy or subscription confirmation. A merged-base advance fences older unstarted requests with PROJECT_CONFIG_CHANGED; it never silently rebases them. Real Chromium/Compose follow-up acceptance remains NOT_TESTED.
   blockers:
   - Independent browser acceptance and Product Owner review remain pending.
 
@@ -2463,6 +2530,7 @@ capabilities:
   - Candidate diff projection is bounded and omits binary, oversized, symlink/gitlink, non-UTF-8 and budget-exhausted patches; it never executes the candidate.
   - GitHub pull request operations require a Project repository binding and an already pushed head branch; Core does not create or push branches.
   - Real GitHub API permissions, branch protection and a live merge are NOT_TESTED; the fake-upstream tests do not certify live behavior.
+  - The 2026-11-10 vlog run accepted one single-unit candidate and is recorded in docs/evidence/live-vlog-acceptance-2026-11-10.md as implementer/orchestrator evidence, not independent certification; multi-unit Campaigns, issue-to-Campaign linking and push/PR/merge remain NOT_TESTED.
   - Campaign authorization and Gate repair remain on their existing module controls.
   - Campaign and Request panels consume Core's camelCase V2 authorization record; V1 caps are historical only. Fixture Chromium screenshots cover the repaired usage/request panels; real Core/Compose browser acceptance remains implementer-only.
   - Malformed graph data is surfaced as an inconsistency and never repaired in the browser.
@@ -2902,7 +2970,7 @@ capabilities:
     source: [native/src/db/agentic_operations.rs, native/src/bin/core.rs, office/src/views/Director.tsx]
     test: [native/src/db/intake.rs, office/src/views/Director.test.tsx]
   acceptance:
-    deterministic: The Director is scoped to one owner and a portfolio of Projects; each operation has one Operation Manager; the existing Integrator is not treated as a semantic supervisor; concurrent operations use separate worktrees and a priority queue; no fixed product cap replaces CPU, memory, disk, provider and worktree backpressure.
+    deterministic: The Director is scoped to one owner and a portfolio of Projects; each operation has one Operation Manager; the existing Integrator is not treated as a semantic supervisor; concurrent operations use separate worktrees and a priority queue; no fixed product cap replaces CPU, memory, disk, provider and worktree backpressure. Compile plan is gated on the recorded Lead assessment, frozen Lead plan and executable ActionSpec on every path, including requests with a stored PLAN; a missing prerequisite returns 409 ASSESSMENT_REQUIRED before any Planner model call, repair or WorkGraph write, informational requests still return PLANNER_NOT_APPLICABLE, and the Office exposes the same Core-backed assessment action with all three readiness facts.
     real: Two simultaneous browser requests are coordinated by the Director, run in separate worktrees and expose their own Operation Managers and evidence.
   evidence:
     deterministic:
@@ -2921,7 +2989,7 @@ capabilities:
 - id: CAP-060
   name: Planner and Spec Manager
   category: Planning
-  purpose: Decompose a non-trivial request into a dependency-aware WorkGraph and author frozen formal specs with acceptance traceability
+  purpose: Route work through a quality-first planning lane, compile and freeze an agnostic Nix/devenv environment plan before execution, persist stack/architecture/docs/skills/DoD artifacts, compile a dependency-aware WorkGraph, require plan review and author frozen formal specs with acceptance traceability
   product_objective: Executable formal specifications
   decision_status: proposed
   implementation_status: in_progress
@@ -2942,10 +3010,10 @@ capabilities:
     - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
     contract:
     - docs/contracts/agentic-flow.md
-    source: [native/src/agentic.rs, native/src/db/agentic_plans.rs, native/src/bin/core.rs, office/src/views/Director.tsx]
-    test: [native/src/agentic.rs, native/src/db/intake.rs, office/src/views/Director.test.tsx]
+    source: [native/src/agentic.rs, native/src/db/agentic_plans.rs, native/src/db/planning.rs, native/src/planning/mod.rs, native/src/planning/stack.rs, native/src/planning/environment.rs, native/src/planning/architecture.rs, native/src/lead.rs, native/src/lead_model.rs, native/src/model_output.rs, native/src/db/environment.rs, migrations/0076_environment_specs.sql, native/src/planning/skill_refresh.rs, native/src/dependencies.rs, native/src/dependency_broker.rs, native/src/dependency_service.rs, native/src/dependency_egress.rs, native/src/openspec.rs, native/src/openspec_cli.rs, native/src/bin/core.rs, native/src/bin/worker.rs, native/src/bin/verifier.rs, native/src/bin/supervisor.rs, native/src/bin/runtime_broker.rs, deploy/openspec/validate.mjs, deploy/openspec/Dockerfile, office/src/views/Director.tsx, office/src/views/RequestWorkspace.tsx, office/src/views/CampaignDetail.tsx, office/src/views/EnvironmentPanel.tsx]
+    test: [native/src/agentic.rs, native/src/planning/stack.rs, native/src/planning/environment.rs, native/src/planning/architecture.rs, native/src/lead.rs, native/src/lead_model.rs, native/src/model_output.rs, native/src/db/environment.rs, native/src/db/intake.rs, native/src/db/planning.rs, native/src/db/quality.rs, native/src/db/tests.rs, native/tests/planning_pipeline.rs, native/tests/openspec_compose_validation.rs, native/tests/dependency_broker_http.rs, native/tests/dependency_broker_podman.rs, deploy/environment-builder/tests/test_builder.py, deploy/environment-builder/tests/test_disk.py, scripts/environment-builder-real-resolve-smoke.sh, scripts/environment-builder-real-committed-devenv-smoke.sh, scripts/environment-builder-real-config-bypass-smoke.sh, deploy/openspec/validate.test.mjs, office/src/views/Director.test.tsx, office/src/views/EnvironmentPanel.test.tsx]
   acceptance:
-    deterministic: The Planner proposes a WorkGraph that Core validates for cycles, paths, dependencies, competence and budget; the Spec Manager authors observable acceptance and negative cases only for FORMAL_SPEC; deterministic compilation freezes exact requirement, assertion and check identities; post-freeze changes require a new revision.
+    deterministic: Core derives a planning lane floor, compiles a typed EnvironmentPlan from the exact base-commit conventions, validates pins/licences/sandbox/resource/network policy, records a Lead-model planning decision bound to the exact plan/risk hash, and freezes an immutable EnvironmentSpec before Campaign authorization; when semantic triage and deterministic detection leave the stack empty, one bounded HYBRID Lead-model call selects an exact deterministic Core option (or a language/framework that maps to one) and Core validates the catalog entry and project capability before recording a MODEL stack decision; a greenfield selection must return a concrete environment proposal that covers both the selected language and concrete framework using exact normalized aliases, package names/attr segments and `argv[0]` only, otherwise it fails closed with `STACK_ENVIRONMENT_REQUIRED` or `STACK_ENVIRONMENT_MISMATCH`; the proposal is untrusted model output, fills only missing toolchains/packages/commands and never overrides explicit request constraints or committed conventions; a generated environment is lock-resolved by the EnvironmentBuilder port and a missing builder or failed resolution blocks with typed errors; the ActionSpec, checks, Campaign binding and Worker assignment carry the exact plan/spec/builder identity; persists exact stack/architecture/documentation/skill/DoD artifacts and requires a plan review for every lane with policy-bounded auto-approval; the architecture display context normalizes multi-line issue bodies to one bounded control-free line without mutating the raw objective; the Planner proposes a WorkGraph that Core validates for cycles, paths, dependencies, competence and budget; a dependency-requiring plan is frozen onto the ActionSpec before Campaign authorization and can only be acquired after provider writes and before offline checks; the Spec Manager authors observable acceptance and negative cases only for FORMAL_SPEC; deterministic compilation freezes exact requirement, assertion and check identities; every reviewer finding is a durable disposition and an OPEN finding blocks the Gate; post-freeze changes require a new revision.
     real: A multi-unit browser operation is planned, specified, frozen and executed without the model changing a frozen requirement.
   evidence:
     deterministic:
@@ -2956,9 +3024,23 @@ capabilities:
     isolation: []
   limitations:
   - The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas; they do not have separate provider roles yet.
+  - Plan review and finding disposition are implemented in Core and Office. The WP10 implementer Chromium harness exercised the plan-review, reviewer-receipt, finding and trace surfaces against an isolated real Core and passed 39/39; independent acceptance and Product Owner visual approval remain NOT_TESTED.
+  - Skill-pack source availability and content review are separate; only content-reviewed packs count as fresh. The Core refresh scheduler uses durable idempotent events and a rotating project cursor. The WP10 implementer Chromium harness exercised the Skills refresh surface; real Compose scheduler/restart evidence and independent acceptance remain NOT_TESTED. See docs/implementation/wp3-skill-refresh-evidence.md.
+  - The OpenSpec projection uses canonical ADDED Requirements/Requirement/Scenario headings and numeric task IDs; the pinned CLI 1.16.1 validator runs as a profile-gated Compose job against a Core-rendered fixture; Core exposes an idempotent archive transition for the latest validated revision with stored-artifact digest and projection drift checks; a real Core-backed run against a projection produced by the model planning pipeline remains NOT_TESTED. See docs/implementation/wp7-openspec-compose-evidence.md.
+  - Dependency acquisition is wired through the runtime broker with an internal deny-by-default network, an allowlisted CONNECT proxy, image-ID pinning, operation grants, a per-workspace lock and a Core authorization guard. Dependency setup is optional at broker startup; a bundle, image, network or proxy failure logs one bounded warning, disables only the acquisition endpoint, reports `dependencyAcquisition` in `/health`, and fails disabled requests with a typed 503; the broker still serves health, volumes, checks and provider sessions. The broker binds the configured gateway when present and otherwise uses a dependency-subnet-scoped wildcard listener so rootless bridge creation on first attachment cannot crash startup. FIXTURE execution with a dependency plan is rejected by Core authorization and again by the Worker before allocation/candidate submission. Deterministic HTTP and opt-in real-Podman/live-registry tests pass, but a real Compose acquisition and independent acceptance remain NOT_TESTED. Advisory evidence is a package inventory with status NOT_CHECKED; a pinned advisory database, cargo audit/cargo deny verdicts and license-policy enforcement are NOT_IMPLEMENTED. See docs/implementation/wp4-dependency-broker-evidence.md and docs/operations/compose-deployment.md.
   - A real-model browser self-test planned and froze revisions 1 and 2, and the full E2E campaign consumed the frozen plan, but independent live certification is pending.
+  - Wave 12 integration evidence and exact command results are recorded in docs/implementation/wave12-integration-evidence.md; it is implementer evidence, not acceptance.
+  - WP12 records a reproducible deterministic chaos/cross-workstream matrix and repeat-run acceptance script in docs/implementation/wp12-chaos-matrix.md and scripts/quality-wave12-acceptance.sh. The final integrated run passed 20/20. It is implementer evidence only; live provider, real-Podman dependency, real Compose Campaign/browser and independent acceptance paths remain NOT_TESTED.
+  - The 2026-11-10 vlog evidence in docs/evidence/live-vlog-acceptance-2026-11-10.md is implementer/orchestrator evidence; independent acceptance remains pending.
+
+  - The agnostic environment compiler is implemented at the Core/domain/persistence/Office layer with deterministic conventions, plan/spec/licence and Lead-model-review tests. The real Nix/devenv builder image, lock resolution and Node/Playwright check execution are WP1-B/WP1-D and remain NOT_TESTED in the installed Compose stack; no real Nix build or independent browser acceptance is claimed. The environment builder is injected through a typed port; the default Core builder is UNAVAILABLE and fails closed.
+  - A greenfield request no longer requires the operator to choose the stack. When triage and detection are empty, Core makes one bounded Lead-route stack-selection model call against the deterministic option catalog, validates the returned option id/language/framework and required project capability, and records a `MODEL` stack decision. The prompt and provider schema both state the required one-sentence rationale bound of 500 characters; over-long output fails closed instead of being truncated. Unknown, empty, unauthorized or malformed selections fail closed with typed `STACK_SELECTION_INVALID`, `STACK_SELECTION_MODEL_UNAVAILABLE` or `STACK_SELECTION_MODEL_FAILED` codes; the model never grants capabilities or paths. The selected stack can carry a bounded `EnvironmentProposal` fallback when the recorded Lead plan has none, and its profile drives the architecture, skill and Definition of Done artifacts. Deterministic Core unit and Core HTTP/model-fixture tests cover the selected/invalid/unavailable and artifact-flow cases; a live calculator re-plan, real provider stack selection and independent acceptance remain NOT_TESTED.
+  - A model environment proposal cannot supply Nix/devenv files; Core generates them from validated fields. Generated-file validation rejects every unfree-policy identifier and dynamic config-construction forms (`builtins.getAttr`, `listToAttrs`, `mapAttrs`, `fromJSON`, `attrNames`, `functionArgs`). Every Nix file is parsed with `nix-instantiate --parse`; the normalised AST rejects dynamic attrset keys in any `config` expression, non-literal config values (let-bound aliases, function calls, other computed attrsets), computed/aliased `import nixpkgs` arguments and direct aliasing of `import`. There is no fixed lookahead window or semicolon stop; ordinary committed flake interpolation such as `devShells.${system}` remains valid. Arbitrary higher-order functions that conceal `import` from this static scan remain an explicit residual boundary, not a claimed policy-safe subset. It also rejects impure evaluation, unpinned fetch, secret and unsafe sandbox/network constructs. Package source must be exactly `nixpkgs` or `nixpkgs:<the exact dotted attr>`. A package version may be an exact version or a numeric dotted prefix constraint (`22`, `22.20`); ranges, wildcards and malformed values fail closed, and the observed exact version must extend the constraint at a dot boundary. Before freeze, the builder evaluates each selected package's exact pinned nixpkgs attribute (including Devenv-only plans) and returns the exact observed version, the original `versionConstraint` and SPDX-licence/unfree metadata; Core requires exact coverage and rejects a mismatch or missing evidence. The exact observed version is authoritative for the closure audit/SBOM, with no fallback to another package, attribute or toolchain. Resolution also realises the actual closure and verifies every transitive package's licence/unfree state from builder-observed metadata. Outputs are mapped by exact output path or shared deriver; generated environments audit selected package outputs, committed environments audit the realised package profile. Substrate paths (`nix`, `devenv`, `nixpkgs`, `git-hooks`) and the internal `xgcc` output are accepted only by exact reviewed `(pin, deriver, output)` identities; fabricated substrate/xgcc names fail closed, and a pin change fails closed until reviewed. A deriver-backed helper script is audited as a package; the exact reviewed deriver-less `strip.sh` identity is the only non-package helper exemption, and any other deriver-less unrecognized path fails closed. It also checks each planned command executable resolves to an absolute executable file inside the devShell. Deterministic Rust/Python tests cover model-file rejection, every unfree form including the fragment example, dynamic attrset keys with a conventional flake acceptance test, closure-level unfree/denied/unknown packages, fabricated/reviewed `xgcc` identities, substrate closure paths, source/attr disagreement, licence/version lies and missing executables. A real Nix resolution smoke passed for a minimal generated `cargo` environment against the pinned nixpkgs (`packages=1`, `closure=24`, no unfree/denied/unknown); a real Nix build/receipt, the devShell executable check in a built environment and product-topology acceptance remain NOT_TESTED. An authenticated operator can explicitly recompile a plan (`POST /agentic/requests/{id}/plan/recompile`) or an environment (`POST /agentic/requests/{id}/environment/recompile`) with a bounded rationale while no Campaign, run, attempt or authored specification is bound and the latest plan review is not REJECTED/CHANGES_REQUESTED. A recompile creates a new immutable revision, records the prior status/revision/spec hash and actor in an audit event, and never mutates the old rows; a previously frozen environment may be replaced only before execution and the new revision requires Lead review again. Plan recompile returns typed planning conflicts (including `STACK_ENVIRONMENT_*`/`SKILL_PACK_REQUIRED`) instead of a false success, and a changed selected stack or required capability set requires an explicit owner decision (`PLAN_RECOMPILE_STACK_CHANGE_REQUIRES_OWNER`) before any dependency-plan write. A retryable frozen environment spec does not hide Office recompile; only an authored AgenticSpec or Campaign binds execution. A still-blocked recompile returns the new blocked plan rather than 500. Real live retries and independent browser acceptance remain NOT_TESTED.
+  - WP1-C wires the WP1-B builder image through the runtime broker with a distinct environment-owner token, exact bundle digest/allowlist, bounded staging, broker fetch egress and `network=none` builds. An isolated Compose observation reached broker/Core `READY` with the exact bundle digest; a real project resolve/build receipt, warm repeat and independent acceptance remain NOT_TESTED. See docs/implementation/environment-runtime-broker.md.
+  - WP1-D adds the typed `/v1/environments/check` broker route and wires Supervisor, Worker and Verifier environment-bound checks to `builder check`. The broker validates owner, workspace volume, exact builder image/digest, plan/spec/receipt binding and check bounds; the Worker and verifier fail closed without a frozen binding and never fall back to the generic image. The builder enforces the frozen `diskMiB` with complete `du -skc` sampling over `/cache`, `/nix` and the workspace at a bounded interval, requiring the aggregate total and every expected path row; any `du` error, missing path, timeout, truncated stdout or malformed/incomplete result fails closed, while stderr is drained through a bounded buffer. Pre/post checks retry incomplete scans up to three times, while runtime monitors kill after three consecutive incomplete/over-budget samples; over-budget build/resolve/check children are killed with `ENVIRONMENT_RESOURCE_LIMIT`. The broker purges the per-spec cache or records a durable bounded quarantine ledger/in-memory block when removal is unconfirmed; ledger failure denies all cache reuse until restart, and a startup cache-epoch sweep evicts previous-epoch caches so a failed write cannot permit reuse after restart. `disk.exact=false` is recorded and no exact quota is claimed. Mount attestation validates explicit source/target pairs at every accepted target including `/` and system mounts, including a normalized `overlay-containers/<container-id>/userdata/<hosts|hostname|resolv.conf>` structure with no traversal, and fails closed on missing/incomplete mountinfo. Check output is streamed into bounded 256 KiB buffers with explicit pipe closure. Deterministic tests cover success, failure exit mapping, timeout, cleanup, refusal, over-budget build/check, `du` error/invalid output, unreadable scans, mount-source negatives, quarantine-ledger failure/restart, ledger bounds, marker-volume non-accumulation, noisy output and pipe cleanup. A real Compose environment-check with a real frozen spec/receipt and Node/Rust workspace remains NOT_TESTED and is not claimed. See docs/implementation/environment-runtime-broker.md.
+  - A real authenticated Owner unfree-licence override API is deferred. The compiler rejects `allowUnfree`, unknown/denied licences and unfree packages without an exact owner override record; there is no unauthenticated database or HTTP path that can create an override. The reserved owner action must be added before any unfree package can be admitted.
   blockers:
-  - Per-WorkUnit execution state and the full planned-specified-executed journey remain pending.
+  - Per-WorkUnit execution state for multi-unit plans remains pending; the 2026-11-10 single-unit live run completed the planned-specified-frozen-approved-executed journey.
 
 - id: CAP-061
   name: Spec issue projection and kanban
@@ -3068,10 +3150,10 @@ capabilities:
     - docs/architecture/decisions/ADR-0037-agent-topology-context-and-composition.md
     contract:
     - docs/contracts/agentic-flow.md
-    source: [native/src/agentic.rs, native/src/db/agentic_participants.rs, native/src/quality.rs, native/src/cheap_ops.rs, office/src/components/office/CheapOpsPanel.tsx]
-    test: [native/src/agentic.rs, native/src/db/tests.rs, native/src/quality.rs, native/src/cheap_ops.rs]
+    source: [native/src/agentic.rs, native/src/db/agentic_participants.rs, native/src/review_roles.rs, native/src/reviewer_identity.rs, native/src/quality.rs, native/src/cheap_ops.rs, office/src/components/office/CheapOpsPanel.tsx]
+    test: [native/src/agentic.rs, native/src/db/tests.rs, native/src/review_roles.rs, native/src/reviewer_identity.rs, native/src/quality.rs, native/src/cheap_ops.rs]
   acceptance:
-    deterministic: AgentTopology freezes available roles, specializations, routes, tools and classes; ParticipantPlan is compiled from the WorkGraph, CandidateImpact, policies, skills and budgets; an implementer is assigned per independent unit; reviewers are read-only and independent; the same model family is allowed; no extra provider or dimension requirement is imposed in this phase; the cheap interpreter classifies test and command output without deciding pass or fail.
+    deterministic: AgentTopology freezes available roles, specializations, routes, tools and classes; ParticipantPlan is compiled from the WorkGraph, CandidateImpact, policies, skills and budgets; an implementer is assigned per independent unit; reviewer independence is the authenticated identity, process, principal and token, not provider/model choice; the Gate requires an exact frozen role-to-principal assignment set, required role coverage and one receipt per role, rejects roleless receipts or receipts for roles outside the frozen plan, and blocks when assignments are missing or unexpected; the cheap interpreter classifies test and command output without deciding pass or fail.
     real: A multi-stack browser operation compiles two or more implementers and independent reviewers, uses a cheap interpreter and records per-participant usage without self-acceptance.
   evidence:
     deterministic:
@@ -3081,11 +3163,11 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - Provider diversity is not required; the same model family is allowed.
-  - A live Campaign with two independent reviewer processes was not run; the real E2E Campaign used one reviewer and multi-reviewer aggregation is deterministically tested.
-  - The current Compose topology provisions one reviewer identity, so plans are capped at one reviewer; multi-reviewer requires independent reviewer identities and tokens.
+  - Provider/model diversity is neither required nor sufficient for independence; two reviewers with the same model are independent when their authenticated principals and processes differ.
+  - The Compose topology provisions six reviewer services with separate tokens, principals, roles and state volumes; Core derives the principal/role from trusted identity configuration and rejects a caller-selected mismatch. See docs/implementation/wp9-reviewer-independence-evidence.md.
+  - The 2026-11-10 vlog Campaign exercised five required reviewer roles with five distinct principals and five `PASS`/`EXECUTED` receipts at assurance `NONE`; role coverage, same-model acceptance, duplicate-principal rejection and single-receipt deferral remain deterministically tested. The vlog evidence in docs/evidence/live-vlog-acceptance-2026-11-10.md is implementer/orchestrator evidence; independent acceptance remains pending.
   blockers:
-  - Real multi-unit Campaign, two-reviewer aggregation and per-unit execution state remain pending.
+  - Real multi-unit Campaign and per-unit execution state remain pending; the 2026-11-10 single-unit Campaign aggregated five independent reviewer PASS receipts.
 
 - id: CAP-064
   name: Bounded repair orchestration
@@ -3165,7 +3247,7 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - Delivery autonomy and delivery effects are not implemented; delivery remains reserved.
+  - Delivery autonomy is recorded and WP3 consumes it for R1 eligibility; a real live R1 auto-merge under a charter remains NOT_TESTED.
   - R2/R3 autonomous execution stays owner-controlled. R1 autonomy is delegated only when explicit and no reserved matter triggers.
   - The full E2E exercised charter creation and a reserved decision, not routine R1/R2 execution under the charter.
   - Charter budgets are not yet part of the durable record; budget enforcement remains pending.
@@ -3210,3 +3292,50 @@ capabilities:
   - Usage counts are telemetry, not productivity caps.
   blockers:
   - Participant/context projections and Office views remain pending.
+
+- id: CAP-067
+  name: Delivery policy editor and incident control
+  category: Delivery
+  purpose: Expose append-only delivery policy configuration, exact-candidate delivery state, blockers, issue receipts and manual revert evidence in Office
+  product_objective: Governed delivery
+  decision_status: proposed
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-026
+  target_milestone: F1-S5
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0040-risk-tiered-delivery-and-auto-merge.md
+    contract:
+    - docs/contracts/delivery-policy.md
+    source:
+    - office/src/components/office/CampaignDelivery.tsx
+    - office/src/components/office/DeliveryPolicyEditor.tsx
+    - office/src/views/CampaignDetail.tsx
+    - office/src/views/ProjectDetail.tsx
+    test:
+    - office/src/components/office/CampaignDelivery.test.tsx
+    - office/src/components/office/DeliveryPolicyEditor.test.tsx
+  acceptance:
+    deterministic: Office shows the policy revision, risk tier, PR, checks, blockers, auto/manual status, merge SHA, issue receipts and incident/revert state from Core; every control invokes an authenticated Core operation; no token or invented merge state reaches the browser.
+    real: A browser journey appends a policy with supported manual bases, selects a manual base, opens a PR, delivers an eligible candidate and records a manual revert after a post-merge incident at desktop, tablet and 320 px in EN and ES.
+  evidence:
+    deterministic:
+    - docs/evidence/delivery-policy-deterministic-2026-11-11.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Real Chromium acceptance at desktop, tablet and 320 px remains pending.
+  - The panel does not offer an automatic revert or a branch-protection bypass.
+  blockers:
+  - A running Core with an authorized GitHub connection is required for real browser acceptance.

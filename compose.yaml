@@ -19,8 +19,34 @@ x-restricted: &restricted
   restart: unless-stopped
 
 x-control-env: &control-env
-  FACTORY_CORE_URL: http://core:8765
+  # `core` is attached to both factory-control and factory-egress, so it can
+  # resolve to an address where the full control listener is not bound. Every
+  # control-plane caller uses Core's canonical factory-control alias instead.
+  FACTORY_CORE_URL: http://core-control:8765
   FACTORY_CONTAINER_MODE: "1"
+
+# Every reviewer role runs as its own process with its own token file,
+# principal and role. The model route may be identical; independence is the
+# authenticated identity/process, not model or provider diversity.
+x-reviewer-base: &reviewer-base
+  build:
+    context: .
+    dockerfile: deploy/Containerfile
+    target: reviewer
+  image: software-factory-reviewer:dev
+  user: "10001:10001"
+  <<: *restricted
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=512m
+  command:
+    - /bin/sh
+    - -c
+    - until [ -f /config/.ready ]; do sleep 1; done; until curl -fsS http://runtime:8770/health >/dev/null 2>&1; do sleep 1; done; exec /usr/local/bin/factory-reviewer
+  networks:
+    - factory-control
+    - factory-egress
+  stop_grace_period: 20s
 
 services:
   init:
@@ -47,8 +73,15 @@ services:
       FACTORY_CONFIG_WORKER_DIR: /config-worker
       FACTORY_CONFIG_SUPERVISOR_DIR: /config-supervisor
       FACTORY_CONFIG_VERIFIER_DIR: /config-verifier
-      FACTORY_CONFIG_REVIEWER_DIR: /config-reviewer
+      FACTORY_CONFIG_REVIEWER_FUNCTIONAL_DIR: /config-reviewer-functional
+      FACTORY_CONFIG_REVIEWER_ARCHITECTURE_DIR: /config-reviewer-architecture
+      FACTORY_CONFIG_REVIEWER_CODE_QUALITY_DIR: /config-reviewer-code-quality
+      FACTORY_CONFIG_REVIEWER_SECURITY_DIR: /config-reviewer-security
+      FACTORY_CONFIG_REVIEWER_TESTING_DIR: /config-reviewer-testing
+      FACTORY_CONFIG_REVIEWER_OPERABILITY_DIR: /config-reviewer-operability
+      FACTORY_CORE_CONFIG_DIR: /config
       FACTORY_CONFIG_RUNTIME_DIR: /config-runtime
+      FACTORY_CONFIG_OPENSPEC_DIR: /config-openspec
       FACTORY_DATA_DIR: /data
       FACTORY_PROJECTS_DIR: /projects
       FACTORY_PROVIDER_SESSIONS_DIR: /provider-sessions
@@ -60,8 +93,14 @@ services:
       - factory-config-worker:/config-worker
       - factory-config-supervisor:/config-supervisor
       - factory-config-verifier:/config-verifier
-      - factory-config-reviewer:/config-reviewer
+      - factory-config-reviewer-functional:/config-reviewer-functional
+      - factory-config-reviewer-architecture:/config-reviewer-architecture
+      - factory-config-reviewer-code-quality:/config-reviewer-code-quality
+      - factory-config-reviewer-security:/config-reviewer-security
+      - factory-config-reviewer-testing:/config-reviewer-testing
+      - factory-config-reviewer-operability:/config-reviewer-operability
       - factory-config-runtime:/config-runtime
+      - factory-config-openspec:/config-openspec
       - factory-data:/data
       - factory-projects:/projects
       - factory-provider-sessions:/provider-sessions
@@ -99,6 +138,77 @@ services:
         sync /bundle/provider-rootfs.tar.tmp || true
         mv /bundle/provider-rootfs.tar.tmp /bundle/provider-rootfs.tar
         touch /bundle/provider-rootfs.tar.ready
+    volumes:
+      - factory-image-bundle:/bundle
+    network_mode: none
+    restart: "no"
+
+  dependency-bundle:
+    build:
+      context: .
+      dockerfile: deploy/Containerfile
+      target: dependency
+    image: localhost/software-factory-dependency:dev
+    user: "0:0"
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /bundle
+        rm -f /bundle/dependency-rootfs.tar /bundle/dependency-rootfs.tar.tmp /bundle/dependency-rootfs.tar.ready
+        tar --one-file-system \
+          --exclude=./proc --exclude=./sys --exclude=./dev \
+          --exclude=./bundle --exclude=./run --exclude=./tmp \
+          -C / -cf /bundle/dependency-rootfs.tar.tmp .
+        sync /bundle/dependency-rootfs.tar.tmp || true
+        mv /bundle/dependency-rootfs.tar.tmp /bundle/dependency-rootfs.tar
+        touch /bundle/dependency-rootfs.tar.ready
+    volumes:
+      - factory-image-bundle:/bundle
+    network_mode: none
+    restart: "no"
+
+  environment-builder-bundle:
+    build:
+      context: .
+      dockerfile: deploy/environment-builder/Containerfile
+    image: localhost/software-factory-environment-builder:dev
+    user: "0:0"
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /bundle
+        export PATH=/home/factory/.nix-profile/bin:$$PATH
+        rm -f /bundle/environment-builder-rootfs.tar /bundle/environment-builder-rootfs.tar.tmp /bundle/environment-builder.digest /bundle/environment-builder-rootfs.tar.ready
+        tar --one-file-system \
+          --exclude=./proc --exclude=./sys --exclude=./dev \
+          --exclude=./bundle --exclude=./run --exclude=./tmp \
+          -C / -cf /bundle/environment-builder-rootfs.tar.tmp .
+        sync /bundle/environment-builder-rootfs.tar.tmp || true
+        mv /bundle/environment-builder-rootfs.tar.tmp /bundle/environment-builder-rootfs.tar
+        digest="$$(sha256sum /bundle/environment-builder-rootfs.tar | cut -d' ' -f1)"
+        printf 'sha256:%s\n' "$$digest" > /bundle/environment-builder.digest.tmp
+        mv /bundle/environment-builder.digest.tmp /bundle/environment-builder.digest
+        touch /bundle/environment-builder-rootfs.tar.ready
     volumes:
       - factory-image-bundle:/bundle
     network_mode: none
@@ -145,8 +255,14 @@ services:
       TMPDIR: /var/lib/containers/tmp
       FACTORY_BIND: 0.0.0.0:8770
       FACTORY_CONTAINER_MODE: "1"
-      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker.token
+      FACTORY_RUNTIME_BROKER_TOKEN_DIR: /config
+      # The builder image is imported from the bundle, never pulled by tag.
       FACTORY_RUNTIME_IMAGES: docker.io/library/rust:1.90.0-bookworm
+      FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGE: localhost/software-factory-environment-builder:dev
+      FACTORY_RUNTIME_ENVIRONMENT_BUILDER_BUNDLE: /bundles/environment-builder-rootfs.tar
+      FACTORY_RUNTIME_ENVIRONMENT_BUILDER_DIGEST_FILE: /bundles/environment-builder.digest
+      FACTORY_RUNTIME_ENVIRONMENT_BUILDER_PLATFORM: x86_64-linux
+      FACTORY_RUNTIME_ENVIRONMENT_BUILDER_POLICY_REVISION: nix-devenv-environment-v1
       FACTORY_RUNTIME_PROVIDER_IMAGES: localhost/software-factory-provider:dev
       # The installed stack is fail-closed for the live OpenCode route:
       # the deterministic fixture adapter is selected only by the explicit
@@ -154,6 +270,14 @@ services:
       FACTORY_RUNTIME_PROVIDER_KIND: ${FACTORY_PROVIDER_KIND:-opencode}
       FACTORY_RUNTIME_PROVIDER_SESSION_ROOT: /provider-sessions
       FACTORY_RUNTIME_IMPORT_IMAGES: localhost/software-factory-provider:dev=/bundles/provider-rootfs.tar
+      FACTORY_RUNTIME_DEPENDENCY_IMAGE: localhost/software-factory-dependency:dev
+      FACTORY_RUNTIME_DEPENDENCY_BUNDLE: /bundles/dependency-rootfs.tar
+      FACTORY_RUNTIME_DEPENDENCY_REGISTRIES: sparse+https://index.crates.io/,registry+https://github.com/rust-lang/crates.io-index
+      FACTORY_RUNTIME_DEPENDENCY_EGRESS_NETWORK: factory-deps-egress
+      FACTORY_RUNTIME_DEPENDENCY_EGRESS_SUBNET: 10.90.0.0/24
+      FACTORY_RUNTIME_DEPENDENCY_EGRESS_GATEWAY: 10.90.0.1
+      FACTORY_RUNTIME_DEPENDENCY_EGRESS_PORT: "18080"
+      FACTORY_RUNTIME_DEPENDENCY_EGRESS_ALLOW: index.crates.io:443,static.crates.io:443,github.com:443,codeload.github.com:443
     networks:
       - factory-control
       - factory-egress
@@ -176,7 +300,7 @@ services:
     command:
       - /bin/sh
       - -c
-      - until [ -f /config/.ready ]; do sleep 1; done; exec /usr/local/bin/factory-core
+      - until [ -f /config/.ready ]; do sleep 1; done; i=0; until [ -f /bundles/environment-builder.digest ] || [ "$$i" -ge 900 ]; do i=$$((i+1)); sleep 1; done; exec /usr/local/bin/factory-core
     <<: *restricted
     read_only: true
     tmpfs:
@@ -188,6 +312,7 @@ services:
       - factory-config-core:/config:ro
       - factory-projects:/projects
       - factory-office-socket:/office-socket
+      - factory-image-bundle:/bundles:ro
     environment:
       # The full control listener binds only the dedicated control/egress
       # interfaces. It never listens on the optional Office-only network.
@@ -201,13 +326,23 @@ services:
       FACTORY_OPERATOR_TOKEN_FILE: /config/operator.token
       FACTORY_WORKER_BOOTSTRAP_TOKEN_FILE: /config/worker-bootstrap.token
       FACTORY_VERIFIER_TOKEN_FILE: /config/verifier.token
-      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer.token
       FACTORY_VERIFIER_PRINCIPAL: verifier-process
-      FACTORY_REVIEWER_PRINCIPAL: reviewer-process
+      FACTORY_REVIEWER_IDENTITIES_FILE: /config/reviewer-identities.json
       FACTORY_ATTEMPT_GRANT_KEY_FILE: /config/attempt-grant.key
       FACTORY_LEAD_FIXTURE_ASSESSOR: ${FACTORY_LEAD_FIXTURE_ASSESSOR:-0}
       FACTORY_ENABLE_AUTONOMOUS_START: "1"
       FACTORY_ENABLE_CODEX_REVIEW: "0"
+      FACTORY_RUNTIME_BROKER_URL: http://runtime:8770
+      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker-environment.token
+      FACTORY_ENVIRONMENT_BUILDER_IMAGE: localhost/software-factory-environment-builder:dev
+      FACTORY_ENVIRONMENT_BUILDER_DIGEST_FILE: /bundles/environment-builder.digest
+      FACTORY_ENVIRONMENT_BUILDER_PLATFORM: x86_64-linux
+      FACTORY_ENVIRONMENT_NIX_VERSION: 2.28.3
+      FACTORY_ENVIRONMENT_DEVENV_VERSION: 1.11.2
+      # devenv's bundled Cachix manager reads public cache metadata from
+      # https://cachix.org/api/v1/cache/<name>; no CACHIX_AUTH_TOKEN is set and
+      # generated files that add Cachix credentials are refused.
+      FACTORY_ENVIRONMENT_FETCH_ALLOWLIST: https://cache.nixos.org,https://github.com,https://codeload.github.com,https://raw.githubusercontent.com,https://api.github.com,https://cachix.org,https://devenv.cachix.org
     networks:
       factory-control:
         aliases:
@@ -242,6 +377,7 @@ services:
       - factory-projects:/projects
       - factory-supervisor-state:/state
       - factory-config-supervisor:/config:ro
+      - factory-image-bundle:/bundles:ro
     environment:
       <<: *control-env
       FACTORY_SUPERVISOR_BIND: 0.0.0.0:8766
@@ -252,8 +388,10 @@ services:
       FACTORY_SUPERVISOR_STATE_ROOT: /state
       FACTORY_SUPERVISOR_PROJECT_ROOTS: /projects
       FACTORY_SUPERVISOR_IMAGES: docker.io/library/rust:1.90.0-bookworm
+      FACTORY_SUPERVISOR_ENVIRONMENT_BUILDER_IMAGE: localhost/software-factory-environment-builder:dev
+      FACTORY_SUPERVISOR_ENVIRONMENT_BUILDER_DIGEST_FILE: /bundles/environment-builder.digest
       FACTORY_RUNTIME_BROKER_URL: http://runtime:8770
-      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker.token
+      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker-supervisor.token
     networks:
       - factory-control
     healthcheck:
@@ -298,7 +436,7 @@ services:
       FACTORY_PROVIDER_KIND: ${FACTORY_PROVIDER_KIND:-opencode}
       FACTORY_PROVIDER_SESSION_ROOT: /provider-sessions
       FACTORY_RUNTIME_BROKER_URL: http://runtime:8770
-      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker.token
+      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker-provider.token
       FACTORY_FIXTURE_FILE: src/fixture.txt
       FACTORY_FIXTURE_CONTENT: "fixture candidate\n"
     networks:
@@ -329,7 +467,7 @@ services:
       <<: *control-env
       FACTORY_VERIFIER_TOKEN_FILE: /config/verifier.token
       FACTORY_RUNTIME_BROKER_URL: http://runtime:8770
-      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker.token
+      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker-verifier.token
       FACTORY_VERIFIER_IMAGE: docker.io/library/rust:1.90.0-bookworm
       FACTORY_VERIFIER_WORKSPACE: /state
       FACTORY_VERIFIER_WATCH: "1"
@@ -337,39 +475,151 @@ services:
       - factory-control
     stop_grace_period: 20s
 
-  reviewer:
-    build:
-      context: .
-      dockerfile: deploy/Containerfile
-      target: reviewer
-    image: software-factory-reviewer:dev
-    user: "10001:10001"
-    <<: *restricted
-    read_only: true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,size=512m
-    command:
-      - /bin/sh
-      - -c
-      - until [ -f /config/.ready ]; do sleep 1; done; until curl -fsS http://runtime:8770/health >/dev/null 2>&1; do sleep 1; done; exec /usr/local/bin/factory-reviewer
+  reviewer-functional:
+    <<: *reviewer-base
     volumes:
       - factory-projects:/projects:ro
-      - factory-reviewer-state:/state
-      - factory-config-reviewer:/config:ro
+      - factory-reviewer-functional-state:/state
+      - factory-config-reviewer-functional:/config:ro
       - factory-codex-home:/codex-home
     environment:
       <<: *control-env
-      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer.token
+      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer-functional.token
+      FACTORY_REVIEWER_PRINCIPAL: reviewer-functional-process
+      FACTORY_REVIEWER_ROLE: FUNCTIONAL
       FACTORY_REVIEW_MECHANISM: AUTO
       FACTORY_REVIEWER_WATCH: "1"
       FACTORY_CODEX_HOME: /codex-home
       FACTORY_CODEX_BINARY: /usr/local/bin/codex
       FACTORY_REVIEW_WORKSPACE: /state
       FACTORY_CODEX_REVIEW_TIMEOUT_SECS: "300"
+
+  reviewer-architecture:
+    <<: *reviewer-base
+    volumes:
+      - factory-projects:/projects:ro
+      - factory-reviewer-architecture-state:/state
+      - factory-config-reviewer-architecture:/config:ro
+      - factory-codex-home:/codex-home
+    environment:
+      <<: *control-env
+      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer-architecture.token
+      FACTORY_REVIEWER_PRINCIPAL: reviewer-architecture-process
+      FACTORY_REVIEWER_ROLE: ARCHITECTURE
+      FACTORY_REVIEW_MECHANISM: AUTO
+      FACTORY_REVIEWER_WATCH: "1"
+      FACTORY_CODEX_HOME: /codex-home
+      FACTORY_CODEX_BINARY: /usr/local/bin/codex
+      FACTORY_REVIEW_WORKSPACE: /state
+      FACTORY_CODEX_REVIEW_TIMEOUT_SECS: "300"
+
+  reviewer-code-quality:
+    <<: *reviewer-base
+    volumes:
+      - factory-projects:/projects:ro
+      - factory-reviewer-code-quality-state:/state
+      - factory-config-reviewer-code-quality:/config:ro
+      - factory-codex-home:/codex-home
+    environment:
+      <<: *control-env
+      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer-code-quality.token
+      FACTORY_REVIEWER_PRINCIPAL: reviewer-code-quality-process
+      FACTORY_REVIEWER_ROLE: CODE_QUALITY
+      FACTORY_REVIEW_MECHANISM: AUTO
+      FACTORY_REVIEWER_WATCH: "1"
+      FACTORY_CODEX_HOME: /codex-home
+      FACTORY_CODEX_BINARY: /usr/local/bin/codex
+      FACTORY_REVIEW_WORKSPACE: /state
+      FACTORY_CODEX_REVIEW_TIMEOUT_SECS: "300"
+
+  reviewer-security:
+    <<: *reviewer-base
+    volumes:
+      - factory-projects:/projects:ro
+      - factory-reviewer-security-state:/state
+      - factory-config-reviewer-security:/config:ro
+      - factory-codex-home:/codex-home
+    environment:
+      <<: *control-env
+      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer-security.token
+      FACTORY_REVIEWER_PRINCIPAL: reviewer-security-process
+      FACTORY_REVIEWER_ROLE: SECURITY
+      FACTORY_REVIEW_MECHANISM: AUTO
+      FACTORY_REVIEWER_WATCH: "1"
+      FACTORY_CODEX_HOME: /codex-home
+      FACTORY_CODEX_BINARY: /usr/local/bin/codex
+      FACTORY_REVIEW_WORKSPACE: /state
+      FACTORY_CODEX_REVIEW_TIMEOUT_SECS: "300"
+
+  reviewer-testing:
+    <<: *reviewer-base
+    volumes:
+      - factory-projects:/projects:ro
+      - factory-reviewer-testing-state:/state
+      - factory-config-reviewer-testing:/config:ro
+      - factory-codex-home:/codex-home
+    environment:
+      <<: *control-env
+      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer-testing.token
+      FACTORY_REVIEWER_PRINCIPAL: reviewer-testing-process
+      FACTORY_REVIEWER_ROLE: TESTING
+      FACTORY_REVIEW_MECHANISM: AUTO
+      FACTORY_REVIEWER_WATCH: "1"
+      FACTORY_CODEX_HOME: /codex-home
+      FACTORY_CODEX_BINARY: /usr/local/bin/codex
+      FACTORY_REVIEW_WORKSPACE: /state
+      FACTORY_CODEX_REVIEW_TIMEOUT_SECS: "300"
+
+  reviewer-operability:
+    <<: *reviewer-base
+    volumes:
+      - factory-projects:/projects:ro
+      - factory-reviewer-operability-state:/state
+      - factory-config-reviewer-operability:/config:ro
+      - factory-codex-home:/codex-home
+    environment:
+      <<: *control-env
+      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer-operability.token
+      FACTORY_REVIEWER_PRINCIPAL: reviewer-operability-process
+      FACTORY_REVIEWER_ROLE: OPERABILITY
+      FACTORY_REVIEW_MECHANISM: AUTO
+      FACTORY_REVIEWER_WATCH: "1"
+      FACTORY_CODEX_HOME: /codex-home
+      FACTORY_CODEX_BINARY: /usr/local/bin/codex
+      FACTORY_REVIEW_WORKSPACE: /state
+      FACTORY_CODEX_REVIEW_TIMEOUT_SECS: "300"
+
+  # Profile-gated, one-shot OpenSpec validation job. It fetches the latest
+  # Core-rendered projection over the private control network, writes the change
+  # into an isolated tmpfs workspace and runs the pinned CLI. It is not part of
+  # the steady-state stack and never mounts project source or the Core database.
+  openspec-validate:
+    build:
+      context: deploy/openspec
+      dockerfile: Dockerfile
+    image: localhost/software-factory-openspec:1.16.1
+    profiles: ["openspec-validation"]
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /workspace:rw,nosuid,nodev,size=64m,mode=1777
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    volumes:
+      - factory-config-openspec:/config:ro
+    environment:
+      FACTORY_CORE_URL: http://core-control:8765
+      FACTORY_OPERATOR_TOKEN_FILE: /config/operator.token
+      FACTORY_OPENSPEC_REQUEST_ID: ${FACTORY_OPENSPEC_REQUEST_ID:-}
+      FACTORY_OPENSPEC_WORKSPACE: /workspace
+    entrypoint: ["node", "/opt/openspec/validate.mjs"]
     networks:
       - factory-control
-      - factory-egress
-    stop_grace_period: 20s
 
   codex-auth:
     build:
@@ -422,8 +672,14 @@ volumes:
   factory-config-worker:
   factory-config-supervisor:
   factory-config-verifier:
-  factory-config-reviewer:
+  factory-config-reviewer-functional:
+  factory-config-reviewer-architecture:
+  factory-config-reviewer-code-quality:
+  factory-config-reviewer-security:
+  factory-config-reviewer-testing:
+  factory-config-reviewer-operability:
   factory-config-runtime:
+  factory-config-openspec:
   factory-data:
   factory-projects:
   factory-provider-sessions:
@@ -431,7 +687,12 @@ volumes:
   factory-engine:
   factory-supervisor-state:
   factory-verifier-state:
-  factory-reviewer-state:
+  factory-reviewer-functional-state:
+  factory-reviewer-architecture-state:
+  factory-reviewer-code-quality-state:
+  factory-reviewer-security-state:
+  factory-reviewer-testing-state:
+  factory-reviewer-operability-state:
   factory-codex-home:
 
 networks:

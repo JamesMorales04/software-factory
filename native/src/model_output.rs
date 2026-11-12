@@ -8,7 +8,9 @@ use schemars::schema_for;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::lead::{AssessmentInput, LeadAssessment};
+use crate::lead::{AssessmentInput, Intent, LeadAssessment, bound_suggested_next_action};
+use crate::planning::environment::EnvironmentLeadReviewModel;
+use crate::planning::stack::StackSelectionModel;
 use crate::semantic_review::{SemanticReview, SemanticReviewError, SemanticReviewInput};
 
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +39,33 @@ pub fn lead_assessment_schema_sha256() -> String {
         .collect()
 }
 
+pub fn environment_lead_review_schema() -> Value {
+    serde_json::to_value(schema_for!(EnvironmentLeadReviewModel))
+        .expect("generated environment Lead review schema is serializable")
+}
+
+pub fn environment_lead_review_schema_sha256() -> String {
+    let bytes = serde_json::to_vec(&environment_lead_review_schema())
+        .expect("generated environment Lead review schema is serializable");
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+pub fn decode_environment_lead_review(
+    raw: &[u8],
+) -> Result<EnvironmentLeadReviewModel, ModelOutputError> {
+    let value: Value = serde_json::from_slice(raw)?;
+    let schema = environment_lead_review_schema();
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    validator
+        .validate(&value)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    serde_json::from_value(value).map_err(ModelOutputError::Json)
+}
+
 pub fn agentic_triage_schema() -> Value {
     serde_json::to_value(schema_for!(crate::agentic::AgenticTriageModel))
         .expect("generated agentic triage schema is serializable")
@@ -56,6 +85,34 @@ pub fn decode_agentic_triage(
 ) -> Result<crate::agentic::AgenticTriageModel, ModelOutputError> {
     let value: Value = serde_json::from_slice(raw)?;
     let schema = agentic_triage_schema();
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    validator
+        .validate(&value)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    serde_json::from_value(value).map_err(ModelOutputError::Json)
+}
+
+pub fn stack_selection_schema() -> Value {
+    serde_json::to_value(schema_for!(StackSelectionModel))
+        .expect("generated stack selection schema is serializable")
+}
+
+pub fn stack_selection_schema_sha256() -> String {
+    let bytes = serde_json::to_vec(&stack_selection_schema())
+        .expect("generated stack selection schema is serializable");
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Schema-validate the bounded stack-selection model output. Core still
+/// resolves the selection against the deterministic catalog and project
+/// capabilities; schema validity is not a selection grant.
+pub fn decode_stack_selection(raw: &[u8]) -> Result<StackSelectionModel, ModelOutputError> {
+    let value: Value = serde_json::from_slice(raw)?;
+    let schema = stack_selection_schema();
     let validator = jsonschema::validator_for(&schema)
         .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
     validator
@@ -161,7 +218,31 @@ pub fn decode_lead_assessment(
     raw: &[u8],
     input: &AssessmentInput,
 ) -> Result<LeadAssessment, ModelOutputError> {
-    validate_lead_assessment_schema(raw)?;
+    let mut value: Value = serde_json::from_slice(raw)?;
+    // The schema requires 1..=MAX_NOTE_CHARS characters so provider-native
+    // structured output is guided correctly. The advisory field is also
+    // deterministically bounded before schema validation so an otherwise safe
+    // assessment is not blocked by a missing or overlong next action. Unknown
+    // fields and non-string values are left untouched and still fail the schema.
+    let intent = value
+        .get("intent")
+        .cloned()
+        .and_then(|raw| serde_json::from_value::<Intent>(raw).ok());
+    if let Some(intent) = intent
+        && let Some(action) = value.get_mut("suggestedNextAction")
+        && let Some(text) = action.as_str()
+    {
+        let mut bounded = text.to_owned();
+        if bound_suggested_next_action(&mut bounded, intent) {
+            *action = Value::String(bounded);
+        }
+    }
+    let schema = lead_assessment_schema();
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    validator
+        .validate(&value)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
     LeadAssessment::from_json(raw, input)
         .map_err(|error| ModelOutputError::Domain(error.to_string()))
 }
@@ -305,6 +386,18 @@ mod tests {
         let schema = lead_assessment_schema();
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(
+            schema["properties"]["suggestedNextAction"]["type"],
+            "string"
+        );
+        assert_eq!(
+            schema["properties"]["suggestedNextAction"]["minLength"],
+            serde_json::json!(1)
+        );
+        assert_eq!(
+            schema["properties"]["suggestedNextAction"]["maxLength"],
+            serde_json::json!(crate::lead::MAX_NOTE_CHARS)
+        );
         validate_provider_schema(&schema).unwrap();
         assert_eq!(lead_assessment_schema_sha256().len(), 64);
     }
@@ -318,6 +411,120 @@ mod tests {
         let raw = serde_json::to_vec(&value).unwrap();
         assert!(matches!(
             decode_lead_assessment(&raw, &input()),
+            Err(ModelOutputError::Schema(_))
+        ));
+
+        let mut wrong_type: Value =
+            serde_json::from_slice(&serde_json::to_vec(&assessment()).unwrap()).unwrap();
+        wrong_type["suggestedNextAction"] = serde_json::json!(7);
+        assert!(matches!(
+            decode_lead_assessment(&serde_json::to_vec(&wrong_type).unwrap(), &input()),
+            Err(ModelOutputError::Schema(_))
+        ));
+    }
+
+    #[test]
+    fn informational_assessment_next_action_is_bounded_and_planless() {
+        let mut value = serde_json::to_value(assessment()).unwrap();
+        value["intent"] = serde_json::json!("informational");
+        for action in [serde_json::json!(""), serde_json::json!("   ")] {
+            value["suggestedNextAction"] = action;
+            let decoded =
+                decode_lead_assessment(&serde_json::to_vec(&value).unwrap(), &input()).unwrap();
+            assert_eq!(decoded.intent, Intent::Informational);
+            assert_eq!(
+                decoded.suggested_next_action,
+                crate::lead::SUGGESTED_NEXT_ACTION_NO_ACTION
+            );
+            assert!(decoded.proposal.is_none());
+        }
+    }
+
+    #[test]
+    fn overlong_next_action_is_truncated_on_a_character_boundary() {
+        let mut value = serde_json::to_value(assessment()).unwrap();
+        value["intent"] = serde_json::json!("informational");
+        value["suggestedNextAction"] =
+            serde_json::json!("é".repeat(crate::lead::MAX_NOTE_CHARS + 25));
+        let decoded =
+            decode_lead_assessment(&serde_json::to_vec(&value).unwrap(), &input()).unwrap();
+        assert_eq!(
+            decoded.suggested_next_action.chars().count(),
+            crate::lead::MAX_NOTE_CHARS
+        );
+        assert!(decoded.suggested_next_action.starts_with('é'));
+        assert!(decoded.proposal.is_none());
+    }
+
+    #[test]
+    fn stack_selection_schema_is_provider_compatible_and_round_trips() {
+        use crate::planning::environment::{
+            EnvironmentProposal, PackageRequirement, ToolchainRequirement,
+        };
+        let schema = stack_selection_schema();
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["additionalProperties"], false);
+        validate_provider_schema(&schema).unwrap();
+        assert_eq!(stack_selection_schema_sha256().len(), 64);
+        assert!(schema["properties"]["environmentProposal"].is_object());
+        assert_eq!(
+            schema["properties"]["rationale"]["maxLength"],
+            serde_json::json!(500)
+        );
+        assert_eq!(
+            schema["properties"]["rationale"]["minLength"],
+            serde_json::json!(1)
+        );
+        assert_eq!(
+            schema["properties"]["language"]["minLength"],
+            serde_json::json!(1)
+        );
+        assert_eq!(
+            schema["properties"]["framework"]["minLength"],
+            serde_json::json!(1)
+        );
+
+        let required = schema["required"].as_array().unwrap();
+        assert!(
+            required.iter().any(|value| value == "environmentProposal"),
+            "the greenfield stack schema must require a concrete environment proposal"
+        );
+
+        let selection = StackSelectionModel {
+            option_id: "python-service".into(),
+            language: "python".into(),
+            framework: "fastapi".into(),
+            rationale: "A calculator is a compact, testable Python service.".into(),
+            environment_proposal: EnvironmentProposal {
+                nixpkgs: Some(
+                    "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
+                ),
+                toolchains: vec![ToolchainRequirement {
+                    id: "python".into(),
+                    version: "3.12.7".into(),
+                    source: "lead-proposal".into(),
+                    evidence: Vec::new(),
+                }],
+                packages: vec![PackageRequirement {
+                    name: "python3".into(),
+                    version: "3.12.7".into(),
+                    license: "MIT".into(),
+                    source: "nixpkgs".into(),
+                    attr: "python312".into(),
+                    sha256: String::new(),
+                    unfree: false,
+                    attribution: "Python is MIT licensed.".into(),
+                }],
+                ..EnvironmentProposal::default()
+            },
+        };
+        let raw = serde_json::to_vec(&selection).unwrap();
+        let decoded = decode_stack_selection(&raw).unwrap();
+        assert_eq!(decoded, selection);
+        let mut unknown: Value = serde_json::from_slice(&raw).unwrap();
+        unknown["unexpected"] = serde_json::json!(true);
+        assert!(matches!(
+            decode_stack_selection(&serde_json::to_vec(&unknown).unwrap()),
             Err(ModelOutputError::Schema(_))
         ));
     }

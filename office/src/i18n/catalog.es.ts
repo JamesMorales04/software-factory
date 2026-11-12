@@ -151,6 +151,12 @@ export const es: Catalog = {
   "home.projectFallback": "Proyecto {id}",
   "home.project.label": "Proyecto",
   "home.project.select": "Selecciona un Proyecto",
+  "home.environmentConstraints.summary": "Restricciones de entorno (opcional)",
+  "home.environmentConstraints.help":
+    "JSON opcional para el entorno Nix/devenv generado: nixpkgs, toolchains, paquetes, servicios, navegadores y recursos. Core lo valida; los campos desconocidos se rechazan. Las convenciones confirmadas tienen prioridad.",
+  "home.environmentConstraints.label": "JSON de restricciones de entorno",
+  "home.environmentConstraints.invalid":
+    "Introduce un objeto JSON con campos de restricciones admitidos.",
   "home.objective.label": "Tu instrucción al Lead",
   "home.objective.placeholder":
     "Describe qué quieres construir, corregir o mejorar…",
@@ -362,6 +368,8 @@ export const es: Catalog = {
   "request.notice.approved":
     "Core registró la aprobación. El estado de ejecución se muestra desde la proyección actualizada.",
   "request.notice.message": "Mensaje registrado por Core.",
+  "request.notice.followUpStarted":
+    "Core registró el mensaje y creó una solicitud de seguimiento.",
   "request.notice.cancelled":
     "Core registró la cancelación de la solicitud. Esto no cancela una Campaña autorizada.",
   "request.next.title": "Siguiente paso",
@@ -406,6 +414,25 @@ export const es: Catalog = {
   "request.approval.approve": "Aprobar el plan congelado e iniciar",
   "request.approval.disabled":
     "La aprobación está deshabilitada hasta que Core pueda derivar la autorización.",
+  "request.approval.planningDisabled":
+    "Completa la revisión del plan en el Director antes de aprobar.",
+  "request.planning.incompleteTitle": "Revisión del plan incompleta",
+  "request.planning.incompleteBody":
+    "Core requiere los artefactos de planificación y el plan de participantes antes de iniciar este plan congelado.",
+  "request.planning.missingArtifacts": "Faltan artefactos: {values}.",
+  "request.planning.participantMissing":
+    "El plan de participantes no está registrado. Compila el plan y registra el plan de participantes en el Director.",
+  "request.planning.participantIncomplete":
+    "El plan de participantes no coincide con el plan de revisores congelado: {values}.",
+  "request.planning.participantAssignments": "asignaciones de roles de revisor",
+  "request.planning.reviewPending":
+    "La revisión del plan espera la decisión del owner. Aprueba la revisión exacta del plan en el Director antes de iniciar.",
+  "request.planning.reviewNotApproved":
+    "La última revisión del plan es {status}; el plan no puede iniciar hasta que una revisión aprobada vincule la revisión actual.",
+  "request.planning.openDirector":
+    "Abrir la revisión del plan en el Director (Compilar plan / Registrar plan de participantes)",
+  "request.planning.unavailable":
+    "Core no informó de la preparación de la revisión del plan. Recarga esta solicitud antes de aprobar.",
   "request.execution.title": "Ejecución",
   "request.execution.description":
     "Core informa de una Campaña autorizada. Los estados de Campaña, Ejecución, candidato y Quality Gate siguen siendo hechos separados y se muestran en el espacio de trabajo de Campañas.",
@@ -451,6 +478,24 @@ export const es: Catalog = {
     "El plan ejecutable está congelado. Core no acepta enmiendas aquí; inicia una nueva solicitud para cambiar el objetivo o el plan.",
   "request.conversation.terminal":
     "Core informa de que esta solicitud es terminal, por lo que aquí no se ofrecen mensajes nuevos.",
+  "request.conversation.followUpDescription":
+    "Este hilo está completo. Enviar un mensaje inicia una nueva solicitud de seguimiento en el mismo Proyecto y perfil. Recibe una evaluación, plan, congelación de entorno/especificación y Campaign nuevos; nunca reutiliza el plan, candidato o Campaign del padre.",
+  "request.conversation.followUpLabel": "Iniciar una solicitud de seguimiento",
+  "request.conversation.followUpPlaceholder":
+    "Describe el siguiente objetivo para el seguimiento",
+  "request.conversation.startFollowUp": "Iniciar seguimiento",
+  "request.conversation.followUpCreated":
+    "Core creó la solicitud de seguimiento con estado",
+  "request.conversation.followUpExists":
+    "Este hilo ya tiene una solicitud de seguimiento. Continúa en el seguimiento.",
+  "request.conversation.openFollowUp": "Abrir seguimiento",
+  "request.followUp.policyRequired":
+    "Core rechazó el seguimiento: la política de ejecución confirmada por el propietario del padre ya no coincide con este Proyecto, perfil o alcance. Vuelve a habilitar la política o inicia una nueva solicitud; Core no reutilizará la concesión de otro principal.",
+  "request.followUp.exists":
+    "Este hilo ya tiene una solicitud de seguimiento. Ábrela para continuar.",
+  "request.followUp.principalMismatch":
+    "Core rechazó el seguimiento: solo el principal que confirmó la política de ejecución del padre puede continuarlo. Core no reutilizará la concesión de otro principal; continúa con el principal original o inicia una nueva solicitud.",
+  "request.conversation.followUpFrom": "Seguimiento de",
   "request.details.title": "Detalles de la solicitud",
   "request.details.request": "Solicitud",
   "request.details.project": "Proyecto",
@@ -488,6 +533,128 @@ export const es: Catalog = {
   "request.assessment.footnote":
     "La evaluación es un juicio asistido por modelo. La política de Core, el plan congelado y la autorización siguen siendo autoritativos.",
   "request.values.noneRecorded": "Ninguno registrado",
+
+  "environment.title": "Plan de entorno",
+  "environment.none": "Sin plan de entorno",
+  "environment.required": "Requerido para ejecutar",
+  "environment.emptyTitle": "No hay plan de entorno registrado",
+  "environment.emptyDescription":
+    "Core compila el entorno desde el commit base exacto antes de autorizar la Campaign. La ejecución y las comprobaciones se rechazan sin un plan congelado; no se sustituye por una imagen de lenguaje.",
+  "environment.planId": "Id del plan",
+  "environment.planHash": "SHA-256 del plan",
+  "environment.revision": "Revisión",
+  "environment.risk": "Clase de riesgo",
+  "environment.source": "Origen",
+  "environment.baseCommit": "Commit base",
+  "environment.conventionsHash": "SHA-256 de convenciones",
+  "environment.blockers.title": "Bloqueos del entorno",
+  "environment.constraints.action":
+    "Añade restricciones explícitas de entorno (nixpkgs, paquetes, servicios, navegadores o recursos) a una nueva solicitud, o confirma un entorno de proyecto fijado.",
+  "environment.recompile.title": "Recompilar plan o entorno",
+  "environment.recompile.description":
+    "Crea una nueva revisión inmutable antes de que se vincule la ejecución. Las filas anteriores del plan, entorno y especificación no cambian; el nuevo entorno debe ser revisado de nuevo por el Lead.",
+  "environment.recompile.rationaleLabel": "Justificación del operador",
+  "environment.recompile.rationalePlaceholder":
+    "¿Por qué se requiere una nueva revisión?",
+  "environment.recompile.rationaleHelp":
+    "8–2000 caracteres. La justificación y las revisiones anterior/nueva se registran en la auditoría.",
+  "environment.recompile.planAction": "Recompilar plan",
+  "environment.recompile.environmentAction": "Recompilar entorno",
+  "environment.recompile.planHelp":
+    "Vuelve a ejecutar la selección de stack y recompila el plan, entorno, skills y DoD desde el WorkGraph guardado. No puede sustituir en silencio una especificación vinculada ni una Campaign en ejecución.",
+  "environment.recompile.environmentHelp":
+    "Recompila solo el entorno desde la propuesta de stack y las restricciones registradas. Los artefactos del plan no cambian.",
+  "environment.recompile.auditNote":
+    "Es una acción explícita del operador, no un reintento automático. Registra el estado/revisión/hash de especificación anterior y el actor.",
+  "environment.recompile.bound":
+    "Ya hay una Campaign o una especificación vinculada a esta solicitud. La recompilación se oculta porque no puede sustituir un entorno en ejecución ni una decisión del propietario.",
+  "environment.recompile.planSuccess":
+    "Se compiló una nueva revisión del plan. Revísala antes de ejecutar.",
+  "environment.recompile.environmentSuccess":
+    "Se compiló una nueva revisión del entorno. Requiere revisión del Lead antes de ejecutar.",
+  "environment.recompile.error": "La recompilación falló.",
+  "environment.yes": "Sí",
+  "environment.no": "No",
+  "environment.detection.title": "Evidencia de detección",
+  "environment.detection.description":
+    "Manifiestos, lockfiles, pines de entorno y comandos de CI confirmados en el commit base exacto. El árbol de trabajo y el texto del modelo no son evidencia.",
+  "environment.detection.empty":
+    "No se detectaron archivos de convenciones confirmados.",
+  "environment.detection.caption": "Evidencia de convenciones del proyecto",
+  "environment.detection.path": "Ruta",
+  "environment.detection.kind": "Tipo",
+  "environment.detection.precedence": "Precedencia",
+  "environment.detection.pins": "Pines",
+  "environment.conflicts.title": "Convenciones en conflicto",
+  "environment.selected.title": "Entorno seleccionado",
+  "environment.selected.toolchains": "Toolchains",
+  "environment.selected.packages": "Paquetes",
+  "environment.selected.services": "Servicios",
+  "environment.selected.browsers": "Navegadores",
+  "environment.selected.none": "Ninguno",
+  "environment.selected.nixpkgs": "nixpkgs fijado",
+  "environment.selected.allowUnfree": "allowUnfree",
+  "environment.selected.resources": "Límites de recursos",
+  "environment.selected.resourceValue":
+    "{cpu} CPU · {memory} MiB de memoria · {timeout}s de compilación",
+  "environment.selected.network": "Política de red",
+  "environment.license.title": "Puerta de licencias",
+  "environment.license.description":
+    "Cada paquete declarado lleva una expresión SPDX y atribución. Las licencias desconocidas o denegadas bloquean el plan; un paquete no libre requiere una anulación exacta del propietario.",
+  "environment.license.empty": "No hay licencias de paquetes declaradas.",
+  "environment.license.caption": "Inventario de licencias",
+  "environment.license.name": "Paquete",
+  "environment.license.version": "Versión",
+  "environment.license.license": "Licencia",
+  "environment.license.unfree": "No libre",
+  "environment.license.override": "Anulación del propietario",
+  "environment.license.blockersTitle": "Bloqueos de licencia",
+  "environment.builder.title": "Constructor",
+  "environment.builder.status": "Estado del constructor",
+  "environment.builder.image": "Imagen",
+  "environment.builder.digest": "Digest",
+  "environment.builder.receipt": "Último recibo de compilación",
+  "environment.builder.noReceipt": "No hay recibo de compilación correcto",
+  "environment.review.title": "Decisión de planificación del Lead",
+  "environment.review.principal": "Principal del Lead",
+  "environment.review.recordedBy": "Registrado por",
+  "environment.review.decidedAt": "Decidido",
+  "environment.review.model": "Modelo Lead",
+  "environment.review.reservation": "Reserva del modelo",
+  "environment.review.notAuthority":
+    "La decisión de planificación del Lead es evidencia registrada. La validación, licencias y congelación de Core siguen siendo autoritativas, y esta decisión no concede autoridad de ejecución, credenciales ni entrega.",
+  "environment.review.pending":
+    "Aún no hay una decisión de planificación del Lead.",
+  "environment.review.rationale": "Motivo de la revisión del Lead",
+  "environment.review.rationaleHelp":
+    "Al menos 8 caracteres. La decisión vincula el hash y la revisión exactos mostrados arriba.",
+  "environment.review.trigger": "Solicitar revisión del entorno al Lead",
+  "environment.review.approve": "Aprobar plan de entorno",
+  "environment.review.requestChanges": "Solicitar cambios",
+  "environment.review.reject": "Rechazar plan de entorno",
+  "environment.review.actionHelp":
+    "Core pide a la ruta Lead congelada que revise esta revisión exacta del plan. El operador desencadena la llamada pero no elige la decisión; se registra la decisión tipada del modelo Lead y Core sigue validando y congelando.",
+  "environment.review.success": "La revisión de entorno del Lead terminó.",
+  "environment.review.error": "No se pudo registrar la decisión de entorno.",
+  "environment.review.rationaleRequired":
+    "Introduce primero un motivo acotado.",
+  "environment.spec.title": "Especificación de entorno congelada",
+  "environment.spec.hash": "SHA-256 de la especificación",
+  "environment.spec.frozenAt": "Congelada",
+  "environment.spec.flakeLock": "SHA-256 de flake.lock",
+  "environment.spec.devenvLock": "SHA-256 de devenv.lock",
+  "environment.spec.licenses": "SHA-256 del inventario de licencias",
+  "environment.spec.sbom": "SHA-256 del SBOM",
+  "environment.spec.immutable":
+    "Una especificación congelada es inmutable. Un cambio posterior crea una nueva revisión del plan y una nueva especificación; nunca reescribe esta.",
+  "environment.status.frozen": "Congelado",
+  "environment.status.leadApproved": "Aprobado por Lead",
+  "environment.status.coreValidated": "Validado por Core",
+  "environment.status.blocked": "Bloqueado",
+  "environment.status.rejected": "Rechazado",
+  "environment.status.missing": "Ausente",
+  "environment.status.draft": "Borrador",
+
   "request.plan.title": "Plan",
   "request.plan.frozen": "Congelado",
   "request.plan.notFrozen": "Sin congelar",
@@ -526,6 +693,91 @@ export const es: Catalog = {
   "request.plan.checksValue":
     "{acceptance} de aceptación · {negative} negativas",
   "request.plan.noWorkUnits": "No hay unidades de trabajo registradas.",
+
+  "request.trace.title": "Traza del flujo de trabajo",
+  "request.trace.description":
+    "Eventos duraderos acotados y redactados, junto con la proyección determinista de repetición de la última ejecución de este flujo. Los eventos se ordenan por secuencia duradera.",
+  "request.trace.updated": "Actualizado {date}",
+  "request.trace.refresh": "Actualizar traza",
+  "request.trace.loading": "Cargando la traza del flujo…",
+  "request.trace.errorTitle": "Traza del flujo no disponible",
+  "request.trace.error": "No se pudo cargar la traza del flujo de trabajo.",
+  "request.trace.retry": "Reintentar traza",
+  "request.trace.retryNow": "Reintentar ahora",
+  "request.trace.offline":
+    "Se muestra la última traza cargada el {loadedAt}. Falló la actualización: {error}",
+  "request.trace.emptyTitle": "Aún no hay una ejecución del flujo",
+  "request.trace.emptyDescription":
+    "La traza aparece cuando Core crea una ejecución duradera del flujo para esta solicitud.",
+  "request.trace.run": "Ejecución",
+  "request.trace.state": "Estado duradero",
+  "request.trace.revision": "Revisión",
+  "request.trace.finalState": "Estado final reproducido",
+  "request.trace.outcome": "Resultado de la repetición",
+  "request.trace.outcomeRejected": "Desconocido — repetición rechazada",
+  "request.trace.outcomeUnknown": "Desconocido",
+  "request.trace.terminal": "Terminal",
+  "request.trace.inProgress": "En curso",
+  "request.trace.eventCount": "Eventos",
+  "request.trace.eventCountValue": "{events} mostrados · límite {limit}",
+  "request.trace.alertsTitle": "Alertas de repetición",
+  "request.trace.alertsAria": "Alertas de repetición del flujo",
+  "request.trace.alertsEmpty": "No se registraron anomalías de repetición.",
+  "request.trace.sequence": "Secuencia {sequence}",
+  "request.trace.stepsTitle": "Traza de pasos",
+  "request.trace.stepsCountValue": "{count} paso(s) · límite {limit}",
+  "request.trace.stepsEmpty": "No hay pasos duraderos registrados.",
+  "request.trace.stepsTruncated":
+    "Se muestran los {limit} pasos más recientes porque la traza de pasos está acotada. Los pasos anteriores pueden faltar.",
+  "request.trace.stepOpen": "Abierto en la repetición",
+  "request.trace.stepKind": "Tipo",
+  "request.trace.stepAttempt": "Intento",
+  "request.trace.stepUpdated": "Actualizado",
+  "request.trace.stepSequence": "Último evento",
+  "request.trace.eventLogTitle": "Registro de eventos",
+  "request.trace.eventLogHint": "Ordenado por secuencia duradera",
+  "request.trace.eventLogEmpty": "No hay eventos duraderos registrados.",
+  "request.trace.eventLogAria": "Registro de eventos del flujo",
+  "request.trace.noPayload": "No hay carga útil visualizable.",
+  "request.trace.payloadHash": "SHA-256 de la carga útil: {hash}",
+  "request.trace.replayRejected": "Repetición rechazada.",
+  "request.trace.replayRejectedHint":
+    "El registro duradero es ambiguo o incompleto. No se inventó ningún estado; revisa el registro de eventos y las alertas.",
+  "request.trace.truncated":
+    "Se muestran los {limit} eventos más recientes porque la traza está acotada. Los eventos anteriores pueden faltar; las anomalías de repetición pueden deberse al prefijo omitido.",
+  "request.trace.alert.DUPLICATE_SEQUENCE": "Secuencia duplicada",
+  "request.trace.alert.MISSING_TRANSITION": "Transición faltante",
+  "request.trace.alert.OPEN_STEP": "Paso abierto",
+  "request.trace.alert.TERMINAL_STATE": "Estado terminal",
+  "request.trace.alert.NON_TERMINAL_STATE": "En curso",
+  "request.trace.alert.TRACE_TRUNCATED": "Traza truncada",
+  "request.trace.alert.STEP_TRUNCATED": "Traza de pasos truncada",
+  "request.trace.alert.REPLAY_REJECTED": "Repetición rechazada",
+  "request.trace.alert.STATE_DIVERGENCE": "Divergencia de estado",
+  "request.trace.alert.NO_EVENTS": "Sin eventos",
+  "request.trace.alert.MALFORMED_EVENT": "Evento mal formado",
+  "request.trace.alert.duplicateDetail":
+    "La secuencia {sequence} aparece {count} vez/veces con contenido idéntico.",
+  "request.trace.alert.missingTransitionDetail":
+    "Secuencia {sequence}: se esperaba {expected}, se observó {observed}.",
+  "request.trace.alert.openStepDetail":
+    "{stepId} sigue pendiente o en ejecución.",
+  "request.trace.alert.stateDivergenceDetail":
+    "Estado duradero {expected}; la repetición observó {observed}.",
+  "request.trace.alert.malformedEventDetail":
+    "La secuencia {sequence} no es un evento de flujo completo.",
+  "request.trace.alert.truncatedDetail":
+    "Los eventos más antiguos quedan fuera del límite solicitado.",
+  "request.trace.alert.stepsTruncatedDetail":
+    "Los pasos duraderos más antiguos quedan fuera del límite solicitado.",
+  "request.trace.alert.rejectedDetail":
+    "La proyección pura de repetición rechazó este registro.",
+  "request.trace.alert.noEventsDetail":
+    "La ejecución no tiene eventos duraderos.",
+  "request.trace.alert.terminalDetail":
+    "La repetición alcanzó un estado terminal del flujo.",
+  "request.trace.alert.nonTerminalDetail":
+    "La repetición no alcanzó un estado terminal del flujo.",
 
   "actions.title": "Acciones",
   "actions.description":
@@ -1087,6 +1339,7 @@ export const es: Catalog = {
   "issues.board.ready": "Listas",
   "issues.board.queued": "En cola",
   "issues.board.working": "En curso",
+  "issues.board.review": "En revisión",
   "issues.board.attention": "Requieren atención",
   "issues.board.done": "Terminadas",
   "issues.board.empty": "Nada por aquí.",
@@ -2895,7 +3148,15 @@ export const es: Catalog = {
   "evidence.identity.tree": "Árbol",
   "evidence.identity.attempt": "Intento",
   "evidence.identity.implementer": "Implementador",
+  "evidence.identity.finalSource": "Origen final",
   "evidence.identity.recorded": "Registrado",
+  "evidence.finalSource.model": "Final del modelo",
+  "evidence.finalSource.modelDetail":
+    "El proveedor devolvió una respuesta final normal.",
+  "evidence.finalSource.salvage": "Rescate por estancamiento",
+  "evidence.finalSource.salvageDetail":
+    "Finalización determinista tras el diagnóstico de estancamiento del Core; el bucle del modelo ya se había detenido.",
+  "evidence.gate.finalSource": "Origen final del candidato:",
 
   "projectFiles.title": "Archivos del Proyecto",
   "projectFiles.description":
@@ -3546,13 +3807,90 @@ export const es: Catalog = {
   "director.plan.compiling": "Compilando plan",
   "director.plan.empty": "No hay un WorkGraph registrado para esta solicitud.",
   "director.plan.units": "{count} unidad(es)",
-  "director.plan.order": "Orden: {order}",
+  "director.plan.order": "Orden",
   "director.plan.graphSha": "SHA-256 del grafo",
   "director.plan.success":
     "El WorkGraph del Planner fue validado y registrado.",
   "director.plan.error": "No se pudo compilar el WorkGraph del Planner.",
+  "director.plan.assessmentRequired":
+    "Se requiere la evaluación del Lead antes de que Core pueda compilar un WorkGraph del Planner. Ejecuta la evaluación para que Core registre el plan del Lead congelado y el ActionSpec.",
+  "director.plan.leadPlanRequired":
+    "La evaluación del Lead está registrada, pero su plan congelado no está disponible. Ejecuta la evaluación para que Core congele el plan y el ActionSpec.",
+  "director.plan.actionSpecRequired":
+    "El plan del Lead está congelado, pero falta su ActionSpec ejecutable. Core no compilará un WorkGraph del Planner hasta reparar ese requisito.",
+  "director.plan.runAssessment": "Ejecutar evaluación",
+  "director.plan.assessing": "Evaluando…",
+  "director.plan.assessmentSuccess":
+    "Core registró la evaluación del Lead. Compilar plan estará disponible cuando el plan del Lead esté congelado.",
+  "director.plan.assessmentError":
+    "No se pudo ejecutar la evaluación del Lead. La proyección determinista se mantiene.",
   "director.plan.frozen":
     "Una especificación vincula este plan. Un cambio material requiere una nueva solicitud o revisión de especificación.",
+  "director.planning.title": "Revisión del plan",
+  "director.planning.empty":
+    "Todavía no hay artefactos de planificación registrados.",
+  "director.planning.lane": "Carril de planificación",
+  "director.planning.workflow": "Estado del flujo",
+  "director.planning.revision": "Revisión del plan",
+  "director.planning.hash": "SHA-256 del plan",
+  "director.planning.principal": "Principal revisor",
+  "director.planning.points": "Puntos de autonomía",
+  "director.planning.missing": "Faltan artefactos requeridos: {values}.",
+  "director.planning.participantIncompleteTitle":
+    "Plan de participantes incompleto",
+  "director.planning.participantMissing":
+    "El plan de participantes no está registrado. Usa Registrar plan de participantes antes de aprobar.",
+  "director.planning.participantIncomplete":
+    "El plan de participantes no coincide con el plan de revisores congelado: {values}.",
+  "director.planning.participantAssignments":
+    "asignaciones de roles de revisor",
+  "director.planning.reviewPending":
+    "La revisión del plan espera una decisión autenticada del owner. Aprueba, solicita cambios o rechaza la revisión exacta del plan.",
+  "director.planning.reviewNotApproved":
+    "La última revisión del plan es {status}. Aprueba una nueva revisión exacta antes de que el plan pueda iniciar.",
+  "director.planning.rationale": "Justificación de la revisión: {value}",
+  "director.planning.reviewRationale": "Justificación de la revisión",
+  "director.planning.rationaleRequired":
+    "Escribe una justificación antes de revisar el plan.",
+  "director.planning.approve": "Aprobar plan",
+  "director.planning.requestChanges": "Solicitar cambios",
+  "director.planning.reject": "Rechazar plan",
+  "director.planning.reviewSuccess": "La revisión del plan fue registrada.",
+  "director.planning.reviewError": "No se pudo registrar la revisión del plan.",
+  "director.planning.error":
+    "No se pudieron cargar los artefactos de planificación.",
+  "director.planning.stack": "Stack",
+  "director.planning.architecture": "Arquitectura",
+  "director.planning.components": "componente(s)",
+  "director.planning.documentation": "Documentación",
+  "director.planning.requiredDocs": "documento(s) requerido(s)",
+  "director.planning.skills": "Packs de habilidades",
+  "director.planning.dod": "Definición de terminado",
+  "director.planning.checks": "verificación(es)",
+  "director.planning.openspec": "Cambio OpenSpec",
+  "director.findings.title": "Hallazgos del revisor",
+  "director.findings.open": "{count} abiertos",
+  "director.findings.empty":
+    "No hay hallazgos del revisor registrados para esta solicitud.",
+  "director.findings.reviewer": "Revisor: {value}",
+  "director.findings.evidence": "Evidencia: {value}",
+  "director.findings.select": "Hallazgo",
+  "director.findings.selectPlaceholder": "Selecciona un hallazgo abierto",
+  "director.findings.evidenceLabel":
+    "Referencias de evidencia (una por línea o separadas por comas)",
+  "director.findings.ownerDecision":
+    "Referencia de decisión del owner (solo refutación)",
+  "director.findings.ownerDecisionHelp":
+    "Obligatoria para una refutación. Usa el id de una decisión del owner resuelta para esta solicitud.",
+  "director.findings.resolve": "Resolver hallazgo",
+  "director.findings.refute": "Refutar hallazgo",
+  "director.findings.evidenceRequired":
+    "Ingresa al menos una referencia de evidencia.",
+  "director.findings.ownerDecisionRequired":
+    "Una refutación requiere una referencia de decisión del owner.",
+  "director.findings.success": "La disposición del hallazgo fue registrada.",
+  "director.findings.error":
+    "No se pudo registrar la disposición del hallazgo.",
   "director.spec.title": "Especificación formal",
   "director.spec.author": "Redactar especificación",
   "director.spec.authoring": "Redactando especificación",
@@ -3654,6 +3992,36 @@ export const es: Catalog = {
   "skills.revoke.action": "Revocar",
   "skills.revoke.required": "Se requiere un motivo de revocación.",
   "skills.revoke.done": "La habilidad fue revocada.",
+  "skills.refresh.title": "Paquetes de conocimiento tecnológico",
+  "skills.refresh.description":
+    "Core comprueba las fechas de revisión de los paquetes persistidos y curados. Un paquete obsoleto o ausente bloquea la planificación FORMAL_SPEC; este control solo ejecuta la pasada determinista de actualización.",
+  "skills.refresh.action": "Ejecutar actualización",
+  "skills.refresh.interval": "Intervalo de actualización",
+  "skills.refresh.hours": "{hours} h",
+  "skills.refresh.lastRun": "Última pasada",
+  "skills.refresh.nextRun": "Próxima pasada",
+  "skills.refresh.never": "aún no ejecutada",
+  "skills.refresh.notScheduled": "no programada",
+  "skills.refresh.due": "Pendientes o actualizables",
+  "skills.refresh.blocked": "Bloqueantes",
+  "skills.refresh.nextWindow": "Próxima ventana de escaneo",
+  "skills.refresh.nextWindowValue": "{checked} de {total}",
+  "skills.refresh.nextWindowDeferred": "Proyectos fuera de la próxima ventana",
+  "skills.refresh.nextWindowNote":
+    "La próxima pasada escaneará {checked} de {total} proyectos; {skipped} quedarán diferidos.",
+  "skills.refresh.lastPassProjects":
+    "La última pasada completada escaneó {checked} de {total} proyectos; {skipped} diferidos.",
+  "skills.refresh.sourceOnly": "Solo fuente; se requiere revisión de contenido",
+  "skills.refresh.reviewAfter": "revisar después de {date}",
+  "skills.refresh.allFresh": "Los {count} paquetes comprobados están vigentes.",
+  "skills.refresh.lastOutcome":
+    "Último resultado: {refreshed} actualizados, {blocked} bloqueados.",
+  "skills.refresh.truncated":
+    "Solo se muestran las primeras 256 tecnologías; la lista está acotada.",
+  "skills.refresh.unavailable":
+    "El estado de actualización no está disponible porque el planificador no se inició en este proceso.",
+  "skills.refresh.done":
+    "Actualización completada: {refreshed} actualizados, {blocked} bloqueados.",
   "cheapOps.title": "Interpretación de evidencia",
   "cheapOps.authority": "OBSERVATION_ONLY — nunca el Gate",
   "cheapOps.description":
@@ -3675,6 +4043,23 @@ export const es: Catalog = {
   "director.participants.error":
     "No se pudo registrar el plan de participantes.",
   "director.participants.reviewers": "Revisores independientes",
+  "director.participants.independentReceiptsLabel": "Recibos independientes",
+  "director.participants.requiredRoles": "Roles de revisión requeridos",
+  "director.participants.unassigned": "Sin asignar",
+  "director.participants.noRoles":
+    "No hay roles de revisión registrados para esta ruta.",
+  "director.participants.independentReceipts":
+    "{count} de {required} recibos de revisión independientes registrados",
+  "director.participants.receiptStatus": "{result} · {evidence}",
+  "director.participants.receiptMissing": "Sin recibo",
+  "director.participants.planMismatch":
+    "El plan de revisión congelado no vincula los roles requeridos con principals. La aceptación queda bloqueada hasta que Core registre un conjunto exacto de asignaciones.",
+  "director.reviewerRole.FUNCTIONAL": "Funcional",
+  "director.reviewerRole.ARCHITECTURE": "Arquitectura",
+  "director.reviewerRole.CODE_QUALITY": "Calidad de código",
+  "director.reviewerRole.SECURITY": "Seguridad",
+  "director.reviewerRole.TESTING": "Pruebas y trazabilidad",
+  "director.reviewerRole.OPERABILITY": "Operabilidad y rendimiento",
   "director.participants.unitRouting": "Enrutamiento por unidad",
   "evidence.gate.reviewers":
     "{count} recibo(s) de revisores independientes agregados",
@@ -3743,4 +4128,146 @@ export const es: Catalog = {
   "home.thread.state.ASSESSED":
     "La evaluación está completa; no se requiere un plan de ejecución.",
   "charter.decisions.choose": "Selecciona una opción del owner",
+  "issues.delivery.state": "Entrega: {state}",
+  "issues.delivery.pullRequest": "PR #{number}",
+  "issues.delivery.merge": "Merge {sha}",
+  "issues.delivery.retry": "Reintentar efecto en la incidencia",
+  "issues.delivery.retrying": "Reintentando…",
+  "issues.delivery.retried":
+    "Core reintentó el efecto en la incidencia #{number}.",
+  "issues.delivery.retryError":
+    "No se pudo reintentar el efecto en la incidencia.",
+  "linkedIssues.title": "Incidencias vinculadas",
+  "linkedIssues.description":
+    "Congeladas al crear la solicitud. El estado y los recibos de entrega provienen de Core; solo un merge puede completar una incidencia.",
+  "linkedIssues.empty":
+    "Esta solicitud no seleccionó una incidencia de GitHub, por lo que no hay un mapeo de entrega.",
+  "linkedIssues.count": "{count} incidencia(s) vinculada(s)",
+  "linkedIssues.rolePrimary": "Principal",
+  "linkedIssues.roleRelated": "Relacionada",
+  "linkedIssues.delivery": "Entrega",
+  "linkedIssues.workUnit": "Unidad de trabajo",
+  "linkedIssues.pullRequest": "Pull request",
+  "linkedIssues.merge": "Merge",
+  "linkedIssues.receipts": "Recibos de entrega ({count})",
+  "linkedIssues.noReceipts":
+    "No se ha registrado ningún efecto en la incidencia de GitHub.",
+  "linkedIssues.event": "Evento",
+  "linkedIssues.attempts": "intentos {count}",
+  "linkedIssues.retry": "Reintentar",
+  "linkedIssues.retrying": "Reintentando…",
+  "linkedIssues.retryError": "Core no pudo reintentar este evento de entrega.",
+  "delivery.title": "Entrega",
+  "delivery.description":
+    "Entrega por nivel de riesgo controlada por Core. El Gate ACCEPTED es necesario pero nunca suficiente: el candidato, head, política, checks y protección de rama exactos se releen inmediatamente antes de cualquier merge.",
+  "delivery.loading": "Leyendo el estado de entrega…",
+  "delivery.error": "Core no pudo leer el estado de entrega.",
+  "delivery.retry": "Reintentar",
+  "delivery.empty":
+    "No se ha registrado ningún intento de entrega para este candidato.",
+  "delivery.policy": "Política de entrega",
+  "delivery.policyMissing":
+    "No hay política de entrega. Añade una en los ajustes del Proyecto antes de entregar.",
+  "delivery.policyDisabled": "Solo entrega manual",
+  "delivery.policyEnabled": "Auto-merge por riesgo habilitado",
+  "delivery.policyRevision": "Revisión {revision}",
+  "delivery.risk": "Nivel de riesgo",
+  "delivery.autoMerge": "Auto-merge",
+  "delivery.autoMergeR0": "R0 automático",
+  "delivery.autoMergeR1": "R1 automático con opt-in, charter y check posterior",
+  "delivery.manualOnly": "R2, R3 y riesgo desconocido son solo manuales",
+  "delivery.mergeMethod": "Método de merge",
+  "delivery.postMergeCheck": "Check posterior al merge",
+  "delivery.postMergeNotConfigured": "no configurado",
+  "delivery.pullRequest": "Pull request",
+  "delivery.noPullRequest": "No se ha abierto ningún pull request.",
+  "delivery.checks": "Checks",
+  "delivery.noChecks": "No hay una lectura de checks en vivo.",
+  "delivery.protection": "Protección de rama",
+  "delivery.protectionVerified":
+    "Protección verificada con checks requeridos y sin force-push ni borrado.",
+  "delivery.protectionUnverified": "La protección no está verificada.",
+  "delivery.blockers": "Bloqueos",
+  "delivery.noBlockers": "No hay bloqueos registrados.",
+  "delivery.state": "Estado de entrega",
+  "delivery.authorization": "Autorización",
+  "delivery.mergeCommit": "Commit de merge",
+  "delivery.mergedAt": "Mergeado el",
+  "delivery.openPullRequest": "Abrir pull request",
+  "delivery.deliver": "Entregar candidato",
+  "delivery.delivering": "Entregando…",
+  "delivery.manualConfirm": "Soy el owner y apruebo este merge exacto",
+  "delivery.manualConfirmHint":
+    "La entrega manual vuelve a leer candidato, Gate, política, checks y protección antes de escribir.",
+  "delivery.openHint":
+    "Core empuja el candidato exacto a su rama determinista, reutiliza un pull request abierto y nunca hace force-push.",
+  "delivery.issueReceipts": "Recibos de issues",
+  "delivery.noIssueReceipts": "No hay recibos de issues para este intento.",
+  "delivery.incident": "Incidente de entrega",
+  "delivery.noIncident": "No hay incidentes de entrega abiertos.",
+  "delivery.incidentOpen":
+    "El auto-merge está congelado hasta que el owner resuelva este incidente.",
+  "delivery.manualRevertRequired":
+    "Factory no revierte automáticamente. Abre un PR de reversión revisado, mergealo por la ruta protegida normal y regístralo aquí.",
+  "delivery.revertPr": "Número del pull request de reversión",
+  "delivery.revertSha": "SHA del commit de merge de reversión",
+  "delivery.revertRationale": "Motivo de la reversión",
+  "delivery.recordRevert": "Registrar reversión manual",
+  "delivery.recordingRevert": "Registrando…",
+  "delivery.revertRecorded": "Evidencia de reversión manual registrada.",
+  "delivery.reverts": "Reversiones manuales",
+  "delivery.noReverts": "No se ha registrado ninguna reversión manual.",
+  "delivery.liveUnavailable":
+    "La lectura en vivo de GitHub no está disponible: {detail}",
+  "delivery.refresh": "Actualizar entrega",
+  "delivery.gate": "Gate",
+  "delivery.base": "Base",
+  "delivery.expectedHead": "Head esperado",
+  "delivery.candidate": "Candidato",
+  "delivery.actionError": "Core bloqueó o falló la operación de entrega.",
+  "delivery.opened": "Pull request abierto o reutilizado.",
+  "delivery.mergedNotice":
+    "Core registró el merge. Actualiza para ver los recibos finales de issues.",
+  "delivery.freeze": "Congelación de entrega",
+  "delivery.freezeDetail":
+    "Un incidente abierto o el kill switch bloquean todo auto-merge de este Proyecto.",
+  "deliveryPolicy.title": "Política de entrega",
+  "deliveryPolicy.description":
+    "Política de Proyecto append-only. R0 solo puede auto-mergear cuando la entrega por riesgo está habilitada; R1 también exige opt-in explícito, una concesión vigente del Owner Charter y un check posterior. R2/R3 y riesgo desconocido siguen siendo manuales.",
+  "deliveryPolicy.loading": "Leyendo la política de entrega…",
+  "deliveryPolicy.error":
+    "Core no pudo leer la política de entrega del Proyecto.",
+  "deliveryPolicy.unbound":
+    "Vincula este Proyecto a un repositorio de GitHub antes de configurar la entrega.",
+  "deliveryPolicy.enabled": "Habilitar entrega por nivel de riesgo",
+  "deliveryPolicy.r1":
+    "Permitir auto-merge R1 con una concesión coincidente del Owner Charter",
+  "deliveryPolicy.mergeMethod": "Método de merge",
+  "deliveryPolicy.squash": "Squash (obligatorio)",
+  "deliveryPolicy.checks": "Checks requeridos",
+  "deliveryPolicy.checksHint":
+    "Nombres de check separados por comas que exige la protección de rama.",
+  "deliveryPolicy.postMerge": "Check posterior al merge",
+  "deliveryPolicy.postMergeHint":
+    "Obligatorio para R1. Core lo ejecuta contra el commit de merge antes de completar la entrega.",
+  "deliveryPolicy.timeout": "Timeout posterior al merge (segundos)",
+  "deliveryPolicy.killSwitch": "Activar el kill switch de entrega del Proyecto",
+  "deliveryPolicy.save": "Añadir revisión de política",
+  "deliveryPolicy.saving": "Guardando…",
+  "deliveryPolicy.saved": "Revisión de política de entrega añadida.",
+  "deliveryPolicy.currentRevision": "Revisión actual {revision}",
+  "deliveryPolicy.noPolicy": "Todavía no existe ninguna revisión de política.",
+  "deliveryPolicy.manualBase": "Bases manuales",
+  "deliveryPolicy.expiresAt": "Caducidad (RFC3339, opcional)",
+  "deliveryPolicy.ownerOnly":
+    "Solo una operación autenticada del owner puede añadir una revisión de política.",
+  "deliveryPolicy.manualBases": "Ramas base manuales",
+  "deliveryPolicy.manualBasesHint":
+    "Ramas protegidas separadas por comas permitidas para entrega manual. La rama protegida por defecto siempre está disponible.",
+  "delivery.baseBranch": "Rama base",
+  "delivery.salvage": "Origen final de salvamento",
+  "delivery.salvageR0":
+    "El salvamento por estancamiento R0 es elegible para el Gate y la política R0 ordinarios.",
+  "delivery.salvageReviewRequired":
+    "El salvamento por estancamiento R1/R2/R3 requiere revisión humana autenticada del origen final y la evidencia. Nunca se auto-mergea.",
 };

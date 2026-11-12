@@ -14,6 +14,8 @@ import {
   type AgenticSkillRegistryEntry,
   CoreApiError,
   coreApi,
+  type SkillPackState,
+  type SkillRefreshStatus,
 } from "../coreApi";
 import { useI18n } from "../i18n";
 import "./knowledge.css";
@@ -42,11 +44,25 @@ function manifestSource(manifestJson: string): string | null {
   }
 }
 
+function packTone(state: SkillPackState) {
+  switch (state) {
+    case "FRESH":
+      return "success" as const;
+    case "REFRESHABLE":
+    case "DUE":
+      return "attention" as const;
+    case "STALE":
+    case "MISSING":
+      return "danger" as const;
+  }
+}
+
 export function Skills() {
   const { t, formatDate } = useI18n();
   const [entries, setEntries] = useState<AgenticSkillRegistryEntry[] | null>(
     null,
   );
+  const [refresh, setRefresh] = useState<SkillRefreshStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -59,8 +75,12 @@ export function Skills() {
 
   const load = useCallback(async () => {
     try {
-      const result = await coreApi.listAgenticSkills();
+      const [result, refreshStatus] = await Promise.all([
+        coreApi.listAgenticSkills(),
+        coreApi.getSkillRefreshStatus(),
+      ]);
       setEntries(result.skills);
+      setRefresh(refreshStatus);
       setError(null);
     } catch (cause) {
       setError(errorText(cause, t("skills.error.load")));
@@ -138,6 +158,26 @@ export function Skills() {
     );
   }
 
+  async function runRefresh() {
+    setBusy("refresh");
+    setActionError(null);
+    setNotice(null);
+    try {
+      const result = await coreApi.runSkillRefresh();
+      await load();
+      setNotice(
+        t("skills.refresh.done", {
+          refreshed: String(result.report.refreshed.length),
+          blocked: String(result.report.blocked.length),
+        }),
+      );
+    } catch (cause) {
+      setActionError(errorText(cause, t("skills.error.action")));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   if (error) {
     return (
       <div className="page">
@@ -168,6 +208,9 @@ export function Skills() {
     );
   }
 
+  const nonFreshPacks =
+    refresh?.packs.filter((pack) => pack.state !== "FRESH") ?? [];
+
   return (
     <div className="page">
       <PageHeader
@@ -184,6 +227,146 @@ export function Skills() {
           {notice}
         </p>
       )}
+      <Panel className="skills-card">
+        <div className="section-heading">
+          <div>
+            <h2>{t("skills.refresh.title")}</h2>
+            <p className="muted">{t("skills.refresh.description")}</p>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            busy={busy === "refresh"}
+            disabled={busy !== null}
+            onClick={() => void runRefresh()}
+          >
+            {t("skills.refresh.action")}
+          </Button>
+        </div>
+        {refresh ? (
+          <>
+            <dl className="knowledge-facts">
+              <div>
+                <dt>{t("skills.refresh.interval")}</dt>
+                <dd>
+                  {t("skills.refresh.hours", {
+                    hours: String(Math.round(refresh.intervalSeconds / 3600)),
+                  })}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("skills.refresh.lastRun")}</dt>
+                <dd>
+                  {refresh.lastRunAt
+                    ? formatDate(refresh.lastRunAt)
+                    : t("skills.refresh.never")}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("skills.refresh.nextRun")}</dt>
+                <dd>
+                  {refresh.nextRunAt
+                    ? formatDate(refresh.nextRunAt)
+                    : t("skills.refresh.notScheduled")}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("skills.refresh.due")}</dt>
+                <dd>{refresh.due}</dd>
+              </div>
+              <div>
+                <dt>{t("skills.refresh.blocked")}</dt>
+                <dd>{refresh.blocked}</dd>
+              </div>
+              <div>
+                <dt>{t("skills.refresh.nextWindow")}</dt>
+                <dd>
+                  {t("skills.refresh.nextWindowValue", {
+                    checked: String(refresh.projectsChecked),
+                    total: String(refresh.projectTotal),
+                  })}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("skills.refresh.nextWindowDeferred")}</dt>
+                <dd>{refresh.projectsSkipped}</dd>
+              </div>
+            </dl>
+            {refresh.projectsSkipped > 0 && (
+              <p className="muted">
+                {t("skills.refresh.nextWindowNote", {
+                  checked: String(refresh.projectsChecked),
+                  total: String(refresh.projectTotal),
+                  skipped: String(refresh.projectsSkipped),
+                })}
+              </p>
+            )}
+            {refresh.lastOutcome && (
+              <p className="muted">
+                {t("skills.refresh.lastPassProjects", {
+                  checked: String(refresh.lastOutcome.projectsChecked),
+                  total: String(refresh.lastOutcome.projectTotal),
+                  skipped: String(refresh.lastOutcome.projectsSkipped),
+                })}
+              </p>
+            )}
+            {refresh.lastError && (
+              <p className="ui-callout ui-callout--danger" role="alert">
+                {refresh.lastError}
+              </p>
+            )}
+            {nonFreshPacks.length === 0 ? (
+              <p className="muted">
+                {t("skills.refresh.allFresh", {
+                  count: String(refresh.packs.length),
+                })}
+              </p>
+            ) : (
+              <div className="skills-pack-list">
+                {nonFreshPacks.map((pack) => {
+                  const review = pack.persisted ?? pack.builtin;
+                  return (
+                    <div className="skills-pack" key={pack.technology}>
+                      <div>
+                        <strong>{pack.technology}</strong>
+                        <p className="muted">{pack.reason}</p>
+                      </div>
+                      <div className="skills-badges">
+                        <Badge tone={packTone(pack.state)}>{pack.state}</Badge>
+                        {review?.reviewBasis === "SOURCE_AVAILABILITY_ONLY" && (
+                          <Badge tone="attention">
+                            {t("skills.refresh.sourceOnly")}
+                          </Badge>
+                        )}
+                        {review?.reviewAfter && (
+                          <span className="muted">
+                            {t("skills.refresh.reviewAfter", {
+                              date: formatDate(review.reviewAfter),
+                            })}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {refresh.lastOutcome && (
+              <p className="muted">
+                {t("skills.refresh.lastOutcome", {
+                  refreshed: String(refresh.lastOutcome.refreshed.length),
+                  blocked: String(refresh.lastOutcome.blocked.length),
+                })}
+              </p>
+            )}
+            {refresh.truncated && (
+              <p className="muted">{t("skills.refresh.truncated")}</p>
+            )}
+          </>
+        ) : (
+          <p className="muted">{t("skills.refresh.unavailable")}</p>
+        )}
+      </Panel>
       {entries.length === 0 ? (
         <EmptyState
           title={t("skills.empty.title")}

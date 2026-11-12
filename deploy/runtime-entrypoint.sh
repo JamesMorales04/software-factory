@@ -21,10 +21,26 @@ done
 until [ -f /bundles/provider-rootfs.tar.ready ]; do
   sleep 1
 done
+until [ -f /bundles/dependency-rootfs.tar.ready ]; do
+  sleep 1
+done
+until [ -f /bundles/environment-builder-rootfs.tar.ready ]; do
+  sleep 1
+done
 
 if [ ! -f /sys/fs/cgroup/cgroup.controllers ]; then
   echo "factory-runtime: cgroup v2 is required for bounded child execution" >&2
   exit 78
+fi
+
+# Rootless netavark creates a bridge on first attachment and configures its
+# namespaced network sysctls. The outer container's read-only root filesystem
+# exposes /proc/sys read-only, so make only this mount writable. The sysctls
+# remain scoped to the runtime container's network namespace; no host sysctl is
+# changed and the dependency path fails closed if the engine cannot configure
+# its private bridge.
+if ! mount -o remount,rw /proc/sys 2>/dev/null; then
+  echo "factory-runtime: /proc/sys is not writable; private bridge setup may be unavailable" >&2
 fi
 
 # Podman mounts /sys/fs/cgroup read-only by default. The dedicated engine owns

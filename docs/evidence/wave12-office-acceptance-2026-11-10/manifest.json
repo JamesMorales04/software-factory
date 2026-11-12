@@ -1,0 +1,397 @@
+{
+  "schemaVersion": 1,
+  "kind": "implementer-self-test",
+  "independentAcceptance": false,
+  "candidate": {
+    "sha": "97690f48fe267366b605068c04ee6046679bc051",
+    "branch": "factory/quality-wave12-integration",
+    "baseCommit": "452bb40"
+  },
+  "environment": {
+    "coreBinary": "/home/james/Escritorio/Development/sf-quality-wave12/integration/target/debug/factory-core",
+    "coreMode": "debug/test-support",
+    "office": "real Vite dev server",
+    "browser": "156.0.8078.4",
+    "node": "v22.23.2",
+    "widths": [
+      1440,
+      834,
+      390,
+      320
+    ],
+    "languages": [
+      "en",
+      "es"
+    ]
+  },
+  "seededState": "Exact request/plan/artifact/participant/reviewer-receipt/finding/owner-decision/workflow-trace rows were written by the feature-gated test-support seed endpoint. The browser used the real Core HTTP API and SQLite projection. No paid model inference was used and the fixture grants no authority.",
+  "seededRequests": {
+    "planMissing": "22222222-2222-4222-8222-222222222222",
+    "planReady": "11111111-1111-4111-8111-111111111111",
+    "planReject": "33333333-3333-4333-8333-333333333333",
+    "planStale": "44444444-4444-4444-8444-444444444444",
+    "reviewMismatch": "55555555-5555-4555-8555-555555555555",
+    "traceDuplicate": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "traceEmpty": "77777777-7777-4777-8777-777777777777",
+    "traceGap": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    "traceLong": "88888888-8888-4888-8888-888888888888",
+    "tracePopulated": "66666666-6666-4666-8666-666666666666",
+    "traceRejected": "99999999-9999-4999-8999-999999999999",
+    "traceRetry": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+  },
+  "matrix": [
+    {
+      "id": "WP10-UI-042",
+      "control": "Unauthorized Core read",
+      "expected": "an operator projection without the device session is rejected with 401",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-001",
+      "control": "Director plan lane, artifacts, stack, architecture, docs, skills, DoD and OpenSpec",
+      "expected": "all summary facts come from the seeded Core planning projection",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-010",
+      "control": "Reviewer independence required roles and assigned principals",
+      "expected": "five roles and five distinct assigned principals",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-011",
+      "control": "Per-role reviewer receipts",
+      "expected": "two PASS, one CHANGES_REQUESTED and one missing receipt are visible with evidence",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-002",
+      "control": "Plan review rationale validation",
+      "expected": "an empty rationale is rejected before any Core write",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-039",
+      "control": "Keyboard focus order and visible focus on plan review controls",
+      "expected": "Tab moves from the rationale to each review button with a visible focus style",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-003",
+      "control": "Approve the exact plan revision",
+      "expected": "OWNER_APPROVED review and FROZEN workflow state",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-004",
+      "control": "Missing Definition of Done artifact",
+      "expected": "the missing artifact is named and Approve is disabled while request-changes remains available",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-005",
+      "control": "Request changes on the plan",
+      "expected": "CHANGES_REQUESTED review and REPLANNING workflow state",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-006",
+      "control": "Reject the plan",
+      "expected": "REJECTED review and BLOCKED workflow state",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-007",
+      "control": "Exact revision/hash guard",
+      "expected": "a stale plan hash is refused by Core and the review stays pending",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-014",
+      "control": "Frozen reviewer assignment mismatch",
+      "expected": "the alert is shown when required roles have no exact principal assignment",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-015",
+      "control": "Resolve a reviewer finding with evidence",
+      "expected": "the OPEN finding becomes RESOLVED and the Core disposition is projected",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-017",
+      "control": "Refute requires an owner decision",
+      "expected": "the Refute control stays disabled until a decision reference is entered",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-018",
+      "control": "Invalid owner decision reference",
+      "expected": "Core rejects the refutation and the Office shows the error",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-019",
+      "control": "Refute with the approved owner decision",
+      "expected": "the OPEN finding becomes REFUTED with the authenticated owner principal",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-020",
+      "control": "Workflow trace loading state",
+      "expected": "the loading label appears while the Core read is pending",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-023",
+      "control": "Populated run facts",
+      "expected": "run identity, durable state, revision, replayed state, terminal outcome and counts",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-024",
+      "control": "Trace alerts: malformed, open step and terminal",
+      "expected": "each structured alert is labelled and carries its sequence or step detail",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-028",
+      "control": "Step trace and event log",
+      "expected": "durable steps, open marker, ordered events and redacted payloads",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-029",
+      "control": "Negative redaction",
+      "expected": "tokens, prompts, content, API keys and unknown values never reach the DOM",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-025",
+      "control": "Missing-transition alert",
+      "expected": "a gap in the durable state chain is reported",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-026",
+      "control": "Duplicate-sequence alert",
+      "expected": "the test-support projection surfaces a duplicate sequence without inventing state",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-027",
+      "control": "Long lists and truncation",
+      "expected": "200 events and 500 steps are shown with explicit truncation alerts",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-030",
+      "control": "Rejected replay state",
+      "expected": "a rejected replay is shown as unknown/rejected, never as in progress",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-021",
+      "control": "No-run empty state",
+      "expected": "the trace explains that no durable run exists",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-022",
+      "control": "Core error and retry",
+      "expected": "a Core failure shows the error state and Retry reads the real projection",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-032",
+      "control": "Technology pack due, refreshable and blocked counts",
+      "expected": "Core reports three due/refreshable packs and a non-zero blocking count",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-033",
+      "control": "Source-only content-review requirement",
+      "expected": "a source-only pack is labelled and its reason is visible",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-035",
+      "control": "Skills loading state",
+      "expected": "the loading label appears while the Core reads are pending",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-036",
+      "control": "Skills error and retry",
+      "expected": "a failed read shows the error state and Retry recovers from real Core",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-037",
+      "control": "No registered skills empty state",
+      "expected": "the registry explains that no skill has been recorded",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-034",
+      "control": "Run the explicit refresh pass",
+      "expected": "Core refreshes exactly the due/refreshable persisted packs and keeps the blocked pack visible",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-008",
+      "control": "Director English/Spanish responsive layout",
+      "expected": "all review controls remain reachable without document overflow at 1440/834/390/320",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-031",
+      "control": "Trace English/Spanish responsive layout",
+      "expected": "the trace panel has no document overflow and keeps the event log readable at all widths",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-038",
+      "control": "Skills English/Spanish responsive layout",
+      "expected": "the refresh panel and pack list have no document overflow at all widths",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-041",
+      "control": "No literal translation placeholders",
+      "expected": "visible EN and ES surfaces do not render unresolved {placeholder} tokens",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-009",
+      "control": "Keyboard and naming semantics",
+      "expected": "interactive controls have accessible names and the document language follows the switch",
+      "result": "PASS"
+    },
+    {
+      "id": "WP10-UI-040",
+      "control": "Browser console, page and network cleanliness",
+      "expected": "no page errors and no unexpected 4xx/5xx responses",
+      "result": "PASS"
+    }
+  ],
+  "screenshots": [
+    "WP10-UI-001-ready-1440.png",
+    "WP10-UI-003-approved-1440.png",
+    "WP10-UI-004-missing-1440.png",
+    "WP10-UI-006-rejected-1440.png",
+    "WP10-UI-007-stale-error-1440.png",
+    "WP10-UI-014-mismatch-1440.png",
+    "WP10-UI-015-resolved-1440.png",
+    "WP10-UI-019-refuted-1440.png",
+    "WP10-UI-023-populated-1440.png",
+    "WP10-UI-028-event-log-1440.png",
+    "WP10-UI-025-gap-1440.png",
+    "WP10-UI-026-duplicate-1440.png",
+    "WP10-UI-027-truncated-1440.png",
+    "WP10-UI-030-replay-rejected-1440.png",
+    "WP10-UI-022-error-1440.png",
+    "WP10-UI-022-retry-1440.png",
+    "WP10-UI-032-counts-1440.png",
+    "WP10-UI-033-source-only-1440.png",
+    "WP10-UI-036-error-retry-1440.png",
+    "WP10-UI-034-refreshed-1440.png",
+    "WP10-UI-008-es-390.png",
+    "WP10-UI-031-es-390.png",
+    "WP10-UI-038-es-390.png"
+  ],
+  "network": {
+    "httpFailures": [
+      {
+        "status": 401,
+        "url": "http://127.0.0.1:33517/core-api/agentic/portfolio",
+        "expected": true
+      },
+      {
+        "status": 409,
+        "url": "http://127.0.0.1:33517/core-api/agentic/requests/44444444-4444-4444-8444-444444444444/plan-review",
+        "expected": true
+      },
+      {
+        "status": 400,
+        "url": "http://127.0.0.1:33517/core-api/agentic/requests/11111111-1111-4111-8111-111111111111/findings/finding-refute-001/disposition",
+        "expected": true
+      },
+      {
+        "status": 503,
+        "url": "http://127.0.0.1:33517/core-api/agentic/requests/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/trace?limit=200",
+        "expected": true
+      },
+      {
+        "status": 503,
+        "url": "http://127.0.0.1:33517/core-api/agentic/requests/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/trace?limit=200",
+        "expected": true
+      },
+      {
+        "status": 503,
+        "url": "http://127.0.0.1:33517/core-api/agentic/requests/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/trace?limit=200",
+        "expected": true
+      },
+      {
+        "status": 503,
+        "url": "http://127.0.0.1:33517/core-api/agentic/skills",
+        "expected": true
+      },
+      {
+        "status": 503,
+        "url": "http://127.0.0.1:33517/core-api/agentic/skills",
+        "expected": true
+      }
+    ],
+    "unexpected": []
+  },
+  "consoleErrors": [
+    {
+      "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "url": "http://127.0.0.1:33517/",
+      "args": []
+    },
+    {
+      "text": "Failed to load resource: the server responded with a status of 409 (Conflict)",
+      "url": "http://127.0.0.1:33517/#/director?request=44444444-4444-4444-8444-444444444444",
+      "args": []
+    },
+    {
+      "text": "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+      "url": "http://127.0.0.1:33517/#/director?request=11111111-1111-4111-8111-111111111111",
+      "args": []
+    },
+    {
+      "text": "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+      "url": "http://127.0.0.1:33517/#/requests/77777777-7777-4777-8777-777777777777",
+      "args": []
+    },
+    {
+      "text": "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+      "url": "http://127.0.0.1:33517/#/requests/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "args": []
+    },
+    {
+      "text": "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+      "url": "http://127.0.0.1:33517/#/requests/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "args": []
+    },
+    {
+      "text": "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+      "url": "http://127.0.0.1:33517/#/skills",
+      "args": []
+    },
+    {
+      "text": "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+      "url": "http://127.0.0.1:33517/#/skills",
+      "args": []
+    }
+  ],
+  "pageErrors": [],
+  "limitations": [
+    "Seeded Core state, not a model-produced planning campaign.",
+    "The duplicate-sequence projection is injected by the test-support endpoint because the durable event primary key cannot hold a duplicate sequence; the projection still runs through the real trace module.",
+    "The skill loading and read-error states use browser route delays/failures; the successful reads and refresh action use real Core.",
+    "Implementer self-test only; a separate independent verifier and owner visual approval remain required."
+  ]
+}

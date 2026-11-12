@@ -327,6 +327,21 @@ pub struct GitHubPullRequestChecks {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitHubBranchProtection {
+    pub protected: bool,
+    pub required_status_checks_strict: bool,
+    pub required_checks: Vec<String>,
+    pub required_pull_request_reviews: bool,
+    pub required_approving_review_count: u32,
+    pub enforce_admins: bool,
+    pub allow_force_pushes: bool,
+    pub allow_deletions: bool,
+    pub required_conversation_resolution: bool,
+    pub fetched_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitHubComment {
     pub id: u64,
     pub kind: String,
@@ -370,6 +385,16 @@ pub struct GitHubMergeOutcome {
     pub merged: bool,
     pub merge_commit_sha: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubPullRequestMergeState {
+    pub number: u64,
+    pub state: String,
+    pub merged: bool,
+    pub merge_commit_sha: Option<String>,
+    pub head_sha: String,
 }
 
 pub struct NewPullRequest<'a> {
@@ -600,6 +625,54 @@ impl GitHubClient {
         project_pull_request(raw)
     }
 
+    /// Re-read the exact merge state of one pull request. Used to reconcile a
+    /// merge whose HTTP response did not carry a usable commit identity.
+    pub async fn pull_request_merge_state(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<GitHubPullRequestMergeState, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        validate_pull_number(number)?;
+        let response = self
+            .execute(
+                self.client.get(format!(
+                    "{}/repos/{owner}/{repo}/pulls/{number}",
+                    self.base_url
+                )),
+                token,
+            )
+            .await?;
+        let raw: RawPullRequestMergeState = parse_json(&response.body, "pull request")?;
+        let state = match raw.state.as_str() {
+            "open" | "closed" => raw.state,
+            _ => {
+                return Err(GitHubError::InvalidResponse(
+                    "pull request state is unknown".into(),
+                ));
+            }
+        };
+        let head_sha = raw.head.sha.to_ascii_lowercase();
+        if !is_object_id(&head_sha) {
+            return Err(GitHubError::InvalidResponse(
+                "pull request head is malformed".into(),
+            ));
+        }
+        Ok(GitHubPullRequestMergeState {
+            number: raw.number,
+            state,
+            merged: raw.merged,
+            merge_commit_sha: raw
+                .merge_commit_sha
+                .map(|sha| sha.to_ascii_lowercase())
+                .filter(|sha| is_object_id(sha)),
+            head_sha,
+        })
+    }
+
     /// List open pull requests whose head is one exact repository branch.
     pub async fn open_pull_requests_for_head(
         &self,
@@ -668,6 +741,74 @@ impl GitHubClient {
             .await?;
         let raw_status: RawCombinedStatus = parse_json(&combined.body, "commit status")?;
         project_checks(reference, raw_checks, raw_status)
+    }
+
+    /// Read branch protection/ruleset enforcement for one exact branch. A 404
+    /// means protection cannot be proven and delivery must fail closed.
+    pub async fn branch_protection(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+    ) -> Result<GitHubBranchProtection, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        validate_default_branch(branch)?;
+        let response = self
+            .execute(
+                self.client.get(format!(
+                    "{}/repos/{owner}/{repo}/branches/{branch}/protection",
+                    self.base_url
+                )),
+                token,
+            )
+            .await?;
+        let raw: RawBranchProtection = parse_json(&response.body, "branch protection")?;
+        let required_status_checks_strict = raw
+            .required_status_checks
+            .as_ref()
+            .is_some_and(|checks| checks.strict);
+        let mut required_checks = Vec::new();
+        if let Some(checks) = raw.required_status_checks {
+            for context in checks.contexts {
+                let name = bounded(&clean_single_line(&context), MAX_BRANCH_BYTES);
+                if !name.is_empty() && !required_checks.contains(&name) {
+                    required_checks.push(name);
+                }
+            }
+            for check in checks.checks {
+                let name = bounded(&clean_single_line(&check.context), MAX_BRANCH_BYTES);
+                if !name.is_empty() && !required_checks.contains(&name) {
+                    required_checks.push(name);
+                }
+            }
+        }
+        Ok(GitHubBranchProtection {
+            protected: true,
+            required_status_checks_strict,
+            required_checks,
+            required_pull_request_reviews: raw.required_pull_request_reviews.is_some(),
+            required_approving_review_count: raw
+                .required_pull_request_reviews
+                .as_ref()
+                .map(|reviews| reviews.required_approving_review_count)
+                .unwrap_or(0),
+            enforce_admins: raw.enforce_admins.as_ref().is_some_and(|flag| flag.enabled),
+            allow_force_pushes: raw
+                .allow_force_pushes
+                .as_ref()
+                .is_some_and(|flag| flag.enabled),
+            allow_deletions: raw
+                .allow_deletions
+                .as_ref()
+                .is_some_and(|flag| flag.enabled),
+            required_conversation_resolution: raw
+                .required_conversation_resolution
+                .as_ref()
+                .is_some_and(|flag| flag.enabled),
+            fetched_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        })
     }
 
     /// Read the bounded unified diff GitHub renders for one pull request.
@@ -823,6 +964,19 @@ impl GitHubClient {
         number: u64,
         body: &str,
     ) -> Result<GitHubComment, GitHubError> {
+        self.create_issue_comment(token, owner, repo, number, body)
+            .await
+    }
+
+    /// Add one plain comment to an issue or pull request conversation.
+    pub async fn create_issue_comment(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        body: &str,
+    ) -> Result<GitHubComment, GitHubError> {
         validate_token(token)?;
         validate_repo_coordinates(owner, repo)?;
         validate_pull_number(number)?;
@@ -846,6 +1000,140 @@ impl GitHubClient {
         let raw: RawIssueComment = parse_json(&response.body, "comment")?;
         raw.into_comment("issue")
             .ok_or_else(|| GitHubError::InvalidResponse("comment had no usable shape".into()))
+    }
+
+    /// Read one bounded page of issue comments. Used to find a deterministic
+    /// Core marker before retrying a comment whose local receipt was lost.
+    pub async fn issue_comments(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<GitHubCommentList, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        validate_pull_number(number)?;
+        let mut comments = Vec::new();
+        let mut truncated = false;
+        for page in 1..=5 {
+            let response = self
+                .execute(
+                    self.client
+                        .get(format!(
+                            "{}/repos/{owner}/{repo}/issues/{number}/comments",
+                            self.base_url
+                        ))
+                        .query(&[("per_page", "100"), ("page", &page.to_string())]),
+                    token,
+                )
+                .await?;
+            let raw: Vec<RawIssueComment> = parse_json(&response.body, "issue comments")?;
+            let full = raw.len() >= 100;
+            comments.extend(
+                raw.into_iter()
+                    .filter_map(|comment| comment.into_comment("issue")),
+            );
+            if !full {
+                break;
+            }
+            if page == 5 {
+                truncated = true;
+            }
+        }
+        comments.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(GitHubCommentList {
+            truncated,
+            comments,
+            fetched_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        })
+    }
+
+    /// Add existing labels to an issue. The adapter never invents labels; Core
+    /// supplies the exact names and GitHub remains authoritative for whether
+    /// the label exists in the repository.
+    pub async fn add_issue_labels(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        labels: &[String],
+    ) -> Result<Vec<GitHubLabel>, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        validate_pull_number(number)?;
+        validate_issue_labels(labels)?;
+        if labels.is_empty() {
+            return Err(GitHubError::Invalid(
+                "at least one issue label is required".into(),
+            ));
+        }
+        let response = self
+            .execute(
+                self.client
+                    .post(format!(
+                        "{}/repos/{owner}/{repo}/issues/{number}/labels",
+                        self.base_url
+                    ))
+                    .json(&serde_json::json!({"labels": labels})),
+                token,
+            )
+            .await?;
+        let raw: Vec<RawLabel> = parse_json(&response.body, "issue labels")?;
+        Ok(raw
+            .into_iter()
+            .filter(|label| !label.name.trim().is_empty())
+            .take(MAX_LABELS)
+            .map(|label| GitHubLabel {
+                name: bounded(&clean_single_line(&label.name), MAX_LABEL_NAME_BYTES),
+                color: label
+                    .color
+                    .filter(|color| {
+                        color.len() == 6 && color.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+                    .map(|color| color.to_lowercase()),
+            })
+            .collect())
+    }
+
+    /// Close one issue only after Core has recorded an authorized merge.
+    pub async fn close_issue(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        state_reason: Option<&str>,
+    ) -> Result<GitHubIssue, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        validate_pull_number(number)?;
+        let state_reason = state_reason.unwrap_or("completed");
+        if !matches!(state_reason, "completed" | "not_planned" | "duplicate") {
+            return Err(GitHubError::Invalid("issue close reason is invalid".into()));
+        }
+        let response = self
+            .execute(
+                self.client
+                    .patch(format!(
+                        "{}/repos/{owner}/{repo}/issues/{number}",
+                        self.base_url
+                    ))
+                    .json(&serde_json::json!({
+                        "state": "closed",
+                        "state_reason": state_reason,
+                    })),
+                token,
+            )
+            .await?;
+        let raw: RawIssue = parse_json(&response.body, "issue")?;
+        raw.into_issue()
+            .ok_or_else(|| GitHubError::InvalidResponse("issue had no usable shape".into()))
     }
 
     /// Request reviews from named GitHub users. No approval is inferred here.
@@ -1757,6 +2045,50 @@ struct RawBranch {
 }
 
 #[derive(serde::Deserialize)]
+struct RawBranchProtection {
+    #[serde(default)]
+    required_status_checks: Option<RawRequiredStatusChecks>,
+    #[serde(default)]
+    required_pull_request_reviews: Option<RawRequiredPullRequestReviews>,
+    #[serde(default)]
+    enforce_admins: Option<RawProtectionFlag>,
+    #[serde(default)]
+    allow_force_pushes: Option<RawProtectionFlag>,
+    #[serde(default)]
+    allow_deletions: Option<RawProtectionFlag>,
+    #[serde(default)]
+    required_conversation_resolution: Option<RawProtectionFlag>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawRequiredStatusChecks {
+    #[serde(default)]
+    strict: bool,
+    #[serde(default)]
+    contexts: Vec<String>,
+    #[serde(default)]
+    checks: Vec<RawRequiredCheck>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawRequiredCheck {
+    #[serde(default)]
+    context: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RawRequiredPullRequestReviews {
+    #[serde(default)]
+    required_approving_review_count: u32,
+}
+
+#[derive(serde::Deserialize)]
+struct RawProtectionFlag {
+    #[serde(default)]
+    enabled: bool,
+}
+
+#[derive(serde::Deserialize)]
 struct RawCommitRef {
     sha: String,
 }
@@ -1793,6 +2125,17 @@ struct RawPullRequest {
     created_at: String,
     #[serde(default)]
     updated_at: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RawPullRequestMergeState {
+    number: u64,
+    state: String,
+    #[serde(default)]
+    merged: bool,
+    #[serde(default)]
+    merge_commit_sha: Option<String>,
+    head: RawPullRequestRef,
 }
 
 #[derive(serde::Deserialize)]
@@ -2408,6 +2751,93 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         (url, fake)
+    }
+
+    #[derive(Clone)]
+    struct WriteFake {
+        label_body: Arc<Mutex<Option<serde_json::Value>>>,
+        close_body: Arc<Mutex<Option<serde_json::Value>>>,
+    }
+
+    async fn write_issue_handler(
+        State(fake): State<WriteFake>,
+        axum::extract::Path((_owner, _repo, number)): axum::extract::Path<(String, String, u64)>,
+        method: axum::http::Method,
+        body: Option<axum::Json<serde_json::Value>>,
+    ) -> Response {
+        let mut payload = issue(number);
+        if method == axum::http::Method::PATCH {
+            let body = body.map(|axum::Json(value)| value).unwrap_or_default();
+            *fake.close_body.lock().unwrap() = Some(body);
+            payload["state"] = serde_json::json!("closed");
+            payload["state_reason"] = serde_json::json!("completed");
+            payload["closed_at"] = serde_json::json!("2026-10-03T00:00:00Z");
+        }
+        axum::Json(payload).into_response()
+    }
+
+    async fn write_labels_handler(
+        State(fake): State<WriteFake>,
+        axum::extract::Path((_owner, _repo, _number)): axum::extract::Path<(String, String, u64)>,
+        axum::Json(body): axum::Json<serde_json::Value>,
+    ) -> Response {
+        *fake.label_body.lock().unwrap() = Some(body);
+        axum::Json(serde_json::json!([
+            {"name": "factory:delivered", "color": "00ff00"}
+        ]))
+        .into_response()
+    }
+
+    #[tokio::test]
+    async fn adds_issue_labels_and_closes_with_typed_payloads() {
+        let fake = WriteFake {
+            label_body: Arc::new(Mutex::new(None)),
+            close_body: Arc::new(Mutex::new(None)),
+        };
+        let app = Router::new()
+            .route(
+                "/repos/{owner}/{repo}/issues/{number}",
+                get(write_issue_handler).patch(write_issue_handler),
+            )
+            .route(
+                "/repos/{owner}/{repo}/issues/{number}/labels",
+                axum::routing::post(write_labels_handler),
+            )
+            .with_state(fake.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = GitHubClient::with_base_url(&url, true).unwrap();
+        let labels = client
+            .add_issue_labels(TOKEN, "acme", "widgets", 7, &["factory:delivered".into()])
+            .await
+            .unwrap();
+        assert_eq!(labels[0].name, "factory:delivered");
+        assert_eq!(
+            fake.label_body.lock().unwrap().as_ref().unwrap()["labels"][0],
+            "factory:delivered"
+        );
+        let closed = client
+            .close_issue(TOKEN, "acme", "widgets", 7, Some("completed"))
+            .await
+            .unwrap();
+        assert_eq!(closed.state, "closed");
+        assert_eq!(
+            fake.close_body.lock().unwrap().as_ref().unwrap()["state"],
+            "closed"
+        );
+        assert_eq!(
+            fake.close_body.lock().unwrap().as_ref().unwrap()["state_reason"],
+            "completed"
+        );
+        assert!(
+            client
+                .close_issue(TOKEN, "acme", "widgets", 0, None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

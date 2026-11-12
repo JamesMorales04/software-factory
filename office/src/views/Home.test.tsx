@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   getOverview: vi.fn(),
   createIntakeRequest: vi.fn(),
   enableExecutionPolicy: vi.fn(),
+  newIdempotencyKey: vi.fn(() => "idem-test"),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -52,7 +53,7 @@ vi.mock("../coreApi", () => ({
           : this.code;
     }
   },
-  newIdempotencyKey: () => "idem-test",
+  newIdempotencyKey: mocks.newIdempotencyKey,
 }));
 
 const project: Project = {
@@ -532,6 +533,37 @@ describe("Home", () => {
       execution_profile_id: "profile-1",
       mode: "REVIEW_PLAN",
       idempotency_key: "idem-test",
+    });
+  });
+
+  it("submits bounded environment constraints with a request", async () => {
+    renderHome();
+    await screen.findByLabelText("Execution profile");
+    await userEvent.type(
+      screen.getByLabelText("Your instruction to the Lead"),
+      "Create a pinned Python environment.",
+    );
+    await userEvent.click(
+      screen.getByText("Environment constraints (optional)"),
+    );
+    mocks.newIdempotencyKey.mockReturnValueOnce("idem-after-constraints");
+    await userEvent.click(
+      screen.getByLabelText("Environment constraints JSON"),
+    );
+    await userEvent.paste(
+      '{"nixpkgs":"github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"}',
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
+    expect(await screen.findByText("Request workspace probe")).toBeDefined();
+    expect(mocks.createIntakeRequest).toHaveBeenCalledWith({
+      project_id: "project-1",
+      objective: "Create a pinned Python environment.",
+      mode: "REVIEW_PLAN",
+      idempotency_key: "idem-after-constraints",
+      environment_constraints: {
+        nixpkgs:
+          "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+      },
     });
   });
 

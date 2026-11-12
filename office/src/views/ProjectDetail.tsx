@@ -1,6 +1,7 @@
 import { ArrowLeft, RefreshCw, ScanSearch, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { DeliveryPolicyEditor } from "../components/office/DeliveryPolicyEditor";
 import { StatusBadge } from "../components/office/StatusBadge";
 import { Badge, type BadgeTone } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
@@ -23,6 +24,14 @@ import { useI18n } from "../i18n";
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof CoreApiError ? cause.message : fallback;
 }
+
+const INACTIVE_CAMPAIGN_STATUSES = new Set([
+  "CANCELLED",
+  "FAILED",
+  "COMPLETED",
+  "ACCEPTED",
+  "REJECTED",
+]);
 
 function healthTone(health: ProjectSummary["github"]["health"]): BadgeTone {
   if (health === "CONNECTED") return "success";
@@ -165,6 +174,9 @@ export function ProjectDetail() {
 
   const project = summary.project;
   const binding = summary.github.binding;
+  const activeCampaigns = summary.campaigns.active.filter(
+    (campaign) => !INACTIVE_CAMPAIGN_STATUSES.has(campaign.effectiveStatus),
+  );
   const ownerRepo =
     binding?.repo_full_name ||
     (project.source_kind === "github"
@@ -339,19 +351,19 @@ export function ProjectDetail() {
           <h2>{t("projects.detail.activityTitle")}</h2>
           <p className="muted">
             {t("projects.detail.activeCampaigns", {
-              count: summary.campaigns.active_count,
+              count: activeCampaigns.length,
             })}
           </p>
-          {summary.campaigns.active.length === 0 ? (
+          {activeCampaigns.length === 0 ? (
             <p className="muted">{t("projects.detail.noActiveCampaigns")}</p>
           ) : (
             <ul className="project-activity-list">
-              {summary.campaigns.active.map((campaign) => (
+              {activeCampaigns.map((campaign) => (
                 <li key={campaign.id}>
                   <Link to={`/campaigns/${encodeURIComponent(campaign.id)}`}>
                     {campaign.objective}
                   </Link>{" "}
-                  <StatusBadge status={campaign.status} />
+                  <StatusBadge status={campaign.effectiveStatus} />
                   <div className="muted project-clamp">
                     <code>{shortId(campaign.id)}</code>
                   </div>
@@ -407,6 +419,8 @@ export function ProjectDetail() {
           </dl>
         </Panel>
       </div>
+
+      <DeliveryPolicyEditor projectId={projectId} />
 
       <Panel className="project-tooling" data-testid="project-tooling">
         <div className="project-tooling-head">

@@ -24,6 +24,12 @@ pub struct ExecutionCheckInput {
     pub candidate_sha256: String,
     #[serde(default)]
     pub exit_code: Option<i32>,
+    /// Exact finalized Candidate binding for a deterministic salvage check.
+    /// Normal in-loop checks omit it; salvage receipts must provide it.
+    #[serde(default)]
+    pub candidate_commit_sha: Option<String>,
+    #[serde(default)]
+    pub candidate_tree_sha: Option<String>,
 }
 
 /// The immutable receipt returned to the Worker and later cited by progress
@@ -37,8 +43,11 @@ pub struct ExecutionCheckReceiptRecord {
     pub session_record_id: String,
     pub sequence: i64,
     pub call_id: String,
+    pub check_id: String,
     pub suite: String,
     pub candidate_sha256: String,
+    pub candidate_commit_sha: String,
+    pub candidate_tree_sha: String,
     pub exit_code: Option<i32>,
     pub expected_exit: i32,
     pub outcome: String,
@@ -57,10 +66,13 @@ pub(super) struct ExecutionCheckReceipt {
     pub attempt_id: String,
     pub work_item_id: String,
     pub call_id: String,
+    pub check_id: String,
     pub suite: String,
     pub command_json: String,
     pub command_sha256: String,
     pub candidate_sha256: String,
+    pub candidate_commit_sha: String,
+    pub candidate_tree_sha: String,
     pub exit_code: Option<i32>,
     pub expected_exit: i32,
     pub outcome: String,
@@ -69,6 +81,10 @@ pub(super) struct ExecutionCheckReceipt {
 
 pub(super) fn suite_for_command(command: &[String]) -> String {
     format!("check:{}", command.join("\u{0}"))
+}
+
+fn is_object_id(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// The fully validated facts for one execution-check receipt. Resolution is
@@ -80,10 +96,13 @@ pub(super) struct ResolvedExecutionCheck {
     campaign_id: String,
     attempt_id: String,
     work_item_id: String,
+    check_id: String,
     suite: String,
     command_json: String,
     command_sha256: String,
     candidate_sha256: String,
+    candidate_commit_sha: String,
+    candidate_tree_sha: String,
     exit_code: Option<i32>,
     expected_exit: i32,
     outcome: &'static str,
@@ -110,12 +129,32 @@ pub(super) async fn resolve_execution_check(
     {
         return Err(Error::Invalid("execution check receipt"));
     }
+    let candidate_binding = match (
+        input.candidate_commit_sha.as_deref(),
+        input.candidate_tree_sha.as_deref(),
+    ) {
+        (None, None) => None,
+        (Some(commit), Some(tree)) if is_object_id(commit) && is_object_id(tree) => {
+            Some((commit.to_owned(), tree.to_owned()))
+        }
+        _ => {
+            return Err(Error::Invalid(
+                "execution check candidate binding must contain both commit and tree",
+            ));
+        }
+    };
     let row = sqlx::query::query(
         "SELECT ps.attempt_id,ps.generation,r.campaign_id,
-                COALESCE(lt.unit_id,li.integration_id,r.campaign_id) AS work_item_id
+                COALESCE(lt.unit_id,li.integration_id,r.campaign_id) AS work_item_id,
+                p.repository,COALESCE(aps.base_commit,p.base_commit) AS base_commit
          FROM provider_sessions ps
          JOIN attempts a ON a.id=ps.attempt_id
          JOIN runs r ON r.id=a.run_id
+         JOIN campaigns c ON c.id=r.campaign_id
+         JOIN actions ac ON ac.id=c.action_id
+         JOIN projects p ON p.id=ac.project_id
+         JOIN action_specs s ON s.action_id=ac.id
+         LEFT JOIN attempt_specs aps ON aps.attempt_id=a.id
          LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
          LEFT JOIN lead_integrations li ON li.attempt_id=a.id
          WHERE ps.session_record_id=?1",
@@ -135,6 +174,21 @@ pub(super) async fn resolve_execution_check(
             "execution check receipt generation differs from the provider session".into(),
         ));
     }
+    if let Some((commit, tree)) = candidate_binding.as_ref() {
+        let repository: String = row.try_get("repository")?;
+        let base_commit: String = row.try_get("base_commit")?;
+        crate::workspace::verify_candidate_commit(
+            std::path::Path::new(&repository),
+            &base_commit,
+            commit,
+            tree,
+        )
+        .map_err(|error| {
+            Error::Forbidden(format!(
+                "execution check candidate binding is not the exact finalized Candidate: {error}"
+            ))
+        })?;
+    }
     let check = frozen_check_for_attempt(connection, &attempt_id, &input.command).await?;
     let suite = suite_for_command(&input.command);
     let expected_exit = check.expect_exit;
@@ -146,13 +200,17 @@ pub(super) async fn resolve_execution_check(
     let command_json = serde_json::to_string(&input.command)
         .map_err(|_| Error::Invalid("execution check command encoding"))?;
     let command_sha256 = sha256_hex(command_json.as_bytes());
+    let (candidate_commit_sha, candidate_tree_sha) = candidate_binding.unwrap_or_default();
     let result_sha256 = execution_result_sha256(
         &campaign_id,
         &work_item_id,
         &attempt_id,
+        &check.id,
         &suite,
         &command_sha256,
         &input.candidate_sha256,
+        &candidate_commit_sha,
+        &candidate_tree_sha,
         input.exit_code,
         expected_exit,
         outcome,
@@ -161,10 +219,13 @@ pub(super) async fn resolve_execution_check(
         campaign_id,
         attempt_id,
         work_item_id,
+        check_id: check.id,
         suite,
         command_json,
         command_sha256,
         candidate_sha256: input.candidate_sha256.clone(),
+        candidate_commit_sha,
+        candidate_tree_sha,
         exit_code: input.exit_code,
         expected_exit,
         outcome,
@@ -187,10 +248,13 @@ pub(super) async fn insert_execution_check_receipt(
         campaign_id,
         attempt_id,
         work_item_id,
+        check_id,
         suite,
         command_json,
         command_sha256,
         candidate_sha256,
+        candidate_commit_sha,
+        candidate_tree_sha,
         exit_code,
         expected_exit,
         outcome,
@@ -216,9 +280,9 @@ pub(super) async fn insert_execution_check_receipt(
     sqlx::query::query(
         "INSERT INTO execution_check_receipts
          (receipt_id,session_record_id,sequence,campaign_id,attempt_id,work_item_id,
-          generation,call_id,suite,command_json,command_sha256,candidate_sha256,
-          exit_code,expected_exit,outcome,result_sha256,created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+          generation,call_id,check_id,suite,command_json,command_sha256,candidate_sha256,
+          candidate_commit_sha,candidate_tree_sha,exit_code,expected_exit,outcome,result_sha256,created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
     )
     .bind(&receipt_id)
     .bind(session_record_id)
@@ -228,10 +292,13 @@ pub(super) async fn insert_execution_check_receipt(
     .bind(work_item_id)
     .bind(generation)
     .bind(call_id)
+    .bind(check_id)
     .bind(suite)
     .bind(command_json)
     .bind(command_sha256)
     .bind(candidate_sha256)
+    .bind(candidate_commit_sha)
+    .bind(candidate_tree_sha)
     .bind(exit_code)
     .bind(expected_exit)
     .bind(outcome)
@@ -247,8 +314,11 @@ pub(super) async fn insert_execution_check_receipt(
         session_record_id: session_record_id.to_owned(),
         sequence,
         call_id: call_id.to_owned(),
+        check_id: check_id.clone(),
         suite: suite.clone(),
         candidate_sha256: candidate_sha256.clone(),
+        candidate_commit_sha: candidate_commit_sha.clone(),
+        candidate_tree_sha: candidate_tree_sha.clone(),
         exit_code: *exit_code,
         expected_exit: *expected_exit,
         outcome: (*outcome).into(),
@@ -329,6 +399,10 @@ pub(super) async fn verify_tests_improved_evidence_in_tx(
     if receipt.result_sha256 != item.artifact_sha256
         || receipt.command_sha256 != sha256_hex(receipt.command_json.as_bytes())
         || !is_sha256(&receipt.candidate_sha256)
+        || (receipt.candidate_commit_sha.is_empty() != receipt.candidate_tree_sha.is_empty())
+        || (!receipt.candidate_commit_sha.is_empty()
+            && (!is_object_id(&receipt.candidate_commit_sha)
+                || !is_object_id(&receipt.candidate_tree_sha)))
     {
         return Err(Error::Forbidden(
             "test progress digest or candidate identity was altered".into(),
@@ -337,7 +411,10 @@ pub(super) async fn verify_tests_improved_evidence_in_tx(
     let command: Vec<String> = serde_json::from_str(&receipt.command_json)
         .map_err(|_| Error::Forbidden("execution receipt command is invalid".into()))?;
     let check = frozen_check_for_attempt(connection, &receipt.attempt_id, &command).await?;
-    if check.expect_exit != receipt.expected_exit || suite_for_command(&command) != receipt.suite {
+    if check.expect_exit != receipt.expected_exit
+        || suite_for_command(&command) != receipt.suite
+        || receipt.check_id != check.id
+    {
         return Err(Error::Forbidden(
             "execution receipt no longer matches the frozen check".into(),
         ));
@@ -419,8 +496,9 @@ async fn load_execution_check_receipt(
 ) -> Result<Option<ExecutionCheckReceipt>, Error> {
     let row = sqlx::query::query(
         "SELECT rowid,receipt_id,session_record_id,sequence,campaign_id,attempt_id,work_item_id,
-                generation,call_id,suite,command_json,command_sha256,candidate_sha256,
-                exit_code,expected_exit,outcome,result_sha256,created_at
+                generation,call_id,check_id,suite,command_json,command_sha256,candidate_sha256,
+                candidate_commit_sha,candidate_tree_sha,exit_code,expected_exit,outcome,
+                result_sha256,created_at
          FROM execution_check_receipts WHERE receipt_id=?1",
     )
     .bind(receipt_id)
@@ -436,10 +514,13 @@ async fn load_execution_check_receipt(
         attempt_id: row.try_get("attempt_id")?,
         work_item_id: row.try_get("work_item_id")?,
         call_id: row.try_get("call_id")?,
+        check_id: row.try_get("check_id")?,
         suite: row.try_get("suite")?,
         command_json: row.try_get("command_json")?,
         command_sha256: row.try_get("command_sha256")?,
         candidate_sha256: row.try_get("candidate_sha256")?,
+        candidate_commit_sha: row.try_get("candidate_commit_sha")?,
+        candidate_tree_sha: row.try_get("candidate_tree_sha")?,
         exit_code: row.try_get("exit_code")?,
         expected_exit: row.try_get("expected_exit")?,
         outcome: row.try_get("outcome")?,
@@ -452,9 +533,12 @@ fn execution_result_sha256(
     campaign_id: &str,
     work_item_id: &str,
     attempt_id: &str,
+    check_id: &str,
     suite: &str,
     command_sha256: &str,
     candidate_sha256: &str,
+    candidate_commit_sha: &str,
+    candidate_tree_sha: &str,
     exit_code: Option<i32>,
     expected_exit: i32,
     outcome: &str,
@@ -463,9 +547,12 @@ fn execution_result_sha256(
         "campaignId": campaign_id,
         "workItemId": work_item_id,
         "attemptId": attempt_id,
+        "checkId": check_id,
         "suite": suite,
         "commandSha256": command_sha256,
         "candidateSha256": candidate_sha256,
+        "candidateCommitSha": candidate_commit_sha,
+        "candidateTreeSha": candidate_tree_sha,
         "exitCode": exit_code,
         "expectedExit": expected_exit,
         "outcome": outcome,

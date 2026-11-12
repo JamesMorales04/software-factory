@@ -54,6 +54,45 @@ class ComposePolicyTests(unittest.TestCase):
             os.unlink(path)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_rejects_ambiguous_core_service_control_url(self):
+        self.assert_rejected(
+            lambda c: c["services"]["worker"]["environment"].__setitem__(
+                "FACTORY_CORE_URL", "http://core:8765"
+            ),
+            "must use the canonical core-control control host",
+        )
+
+    def test_rejects_noncanonical_core_control_url(self):
+        self.assert_rejected(
+            lambda c: c["services"]["worker"]["environment"].__setitem__(
+                "FACTORY_CORE_URL", "http://core-control:8765/"
+            ),
+            "FACTORY_CORE_URL must be http://core-control:8765 on the control network",
+        )
+
+    def test_rejects_control_url_without_the_control_network(self):
+        def drop_control_network(config):
+            networks = config["services"]["worker"]["networks"]
+            if isinstance(networks, dict):
+                networks.pop("factory-control", None)
+            else:
+                networks.remove("factory-control")
+
+        self.assert_rejected(
+            drop_control_network,
+            "FACTORY_CORE_URL requires the factory-control network",
+        )
+
+    def test_rejects_openspec_validation_on_the_ambiguous_core_name(self):
+        if "openspec-validate" not in base_config()["services"]:
+            self.skipTest("OpenSpec validation profile is not active in this config")
+        self.assert_rejected(
+            lambda c: c["services"]["openspec-validate"]["environment"].__setitem__(
+                "FACTORY_CORE_URL", "http://core:8765"
+            ),
+            "must use the canonical core-control control host",
+        )
+
     def test_rejects_worker_extra_capability(self):
         self.assert_rejected(
             lambda c: c["services"]["worker"].__setitem__("cap_add", ["SYS_ADMIN"]),
@@ -111,6 +150,83 @@ class ComposePolicyTests(unittest.TestCase):
             ),
             "device_cgroup_rules are forbidden",
         )
+
+    def test_rejects_unsafe_openspec_validation_job(self):
+        if "openspec-validate" not in base_config()["services"]:
+            self.skipTest("OpenSpec validation profile is not active in this config")
+        self.assert_rejected(
+            lambda c: c["services"]["openspec-validate"].__setitem__(
+                "profiles", ["default"]
+            ),
+            "openspec-validate: only the openspec-validation profile is allowed",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["openspec-validate"].__setitem__("read_only", False),
+            "openspec-validate: read-only root filesystem is required",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["openspec-validate"].__setitem__(
+                "cap_add", ["SYS_ADMIN"]
+            ),
+            "openspec-validate: the validation job must not add capabilities",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["openspec-validate"].__setitem__(
+                "networks", ["factory-control", "factory-egress"]
+            ),
+            "openspec-validate: must use only the private control network",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["openspec-validate"]["environment"].__setitem__(
+                "FACTORY_OPERATOR_TOKEN", "secret-value"
+            ),
+            "openspec-validate: secrets must not be passed in the environment",
+        )
+
+    def test_rejects_openspec_validation_cross_role_volume_or_writable_config(self):
+        if "openspec-validate" not in base_config()["services"]:
+            self.skipTest("OpenSpec validation profile is not active in this config")
+
+        def cross_role(config):
+            for volume in config["services"]["openspec-validate"]["volumes"]:
+                if volume.get("source") == "factory-config-openspec":
+                    volume["source"] = "factory-config-core"
+
+        self.assert_rejected(
+            cross_role,
+            "openspec-validate: exactly one volume factory-config-openspec is allowed",
+        )
+
+        def writable(config):
+            for volume in config["services"]["openspec-validate"]["volumes"]:
+                if volume.get("source") == "factory-config-openspec":
+                    volume["read_only"] = False
+
+        self.assert_rejected(
+            writable,
+            "openspec-validate: its config volume must be read-only at /config",
+        )
+
+    def test_rejects_openspec_validation_project_and_data_mounts(self):
+        if "openspec-validate" not in base_config()["services"]:
+            self.skipTest("OpenSpec validation profile is not active in this config")
+
+        for source in ("factory-projects", "factory-data"):
+            with self.subTest(source=source):
+                def mount_extra_volume(config, source=source):
+                    config["services"]["openspec-validate"]["volumes"].append(
+                        {
+                            "type": "volume",
+                            "source": source,
+                            "target": f"/{source}",
+                            "read_only": True,
+                        }
+                    )
+
+                self.assert_rejected(
+                    mount_extra_volume,
+                    "openspec-validate: exactly one volume factory-config-openspec is allowed",
+                )
 
     def test_rejects_unsafe_security_options(self):
         self.assert_rejected(
@@ -173,7 +289,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assert_rejected(mutate, "host bind")
 
     def test_rejects_office_socket_volume_on_unapproved_services(self):
-        for name in ("supervisor", "worker", "verifier", "reviewer", "runtime"):
+        for name in ("supervisor", "worker", "verifier", "reviewer-functional", "runtime"):
             with self.subTest(service=name):
                 def mount_protected_volume(config):
                     config["volumes"]["factory-office-socket"] = {}
@@ -252,6 +368,124 @@ class ComposePolicyTests(unittest.TestCase):
                     "Office socket volume is restricted to init, core, and tailscale",
                 )
 
+
+    def test_rejects_missing_or_networked_dependency_bundle(self):
+        self.assert_rejected(
+            lambda c: c["services"].pop("dependency-bundle"),
+            "missing services: ['dependency-bundle']",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["dependency-bundle"].__setitem__(
+                "network_mode", "bridge"
+            ),
+            "dependency-bundle: one-shot initialization must use network_mode none",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["dependency-bundle"]["volumes"].append(
+                {
+                    "type": "volume",
+                    "source": "factory-projects",
+                    "target": "/projects",
+                    "read_only": True,
+                }
+            ),
+            "dependency-bundle: exactly one image bundle mount is allowed",
+        )
+
+    def test_rejects_missing_or_networked_environment_builder_bundle(self):
+        self.assert_rejected(
+            lambda c: c["services"].pop("environment-builder-bundle"),
+            "missing services: ['environment-builder-bundle']",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["environment-builder-bundle"].__setitem__(
+                "network_mode", "bridge"
+            ),
+            "environment-builder-bundle: one-shot initialization must use network_mode none",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["environment-builder-bundle"]["volumes"].append(
+                {
+                    "type": "volume",
+                    "source": "factory-projects",
+                    "target": "/projects",
+                    "read_only": True,
+                }
+            ),
+            "environment-builder-bundle: exactly one image bundle mount is allowed",
+        )
+
+    def test_rejects_reviewer_identity_or_cross_role_state(self):
+        def wrong_principal(config):
+            config["services"]["reviewer-security"]["environment"][
+                "FACTORY_REVIEWER_PRINCIPAL"
+            ] = "reviewer-functional-process"
+
+        self.assert_rejected(
+            wrong_principal,
+            "reviewer-security: must use its own reviewer principal",
+        )
+
+        def wrong_role(config):
+            config["services"]["reviewer-testing"]["environment"][
+                "FACTORY_REVIEWER_ROLE"
+            ] = "FUNCTIONAL"
+
+        self.assert_rejected(
+            wrong_role,
+            "reviewer-testing: must use its assigned reviewer role",
+        )
+
+        def wrong_token_file(config):
+            config["services"]["reviewer-operability"]["environment"][
+                "FACTORY_REVIEWER_TOKEN_FILE"
+            ] = "/config/reviewer-functional.token"
+
+        self.assert_rejected(
+            wrong_token_file,
+            "reviewer-operability: must read its own reviewer token file",
+        )
+
+        def cross_state(config):
+            for volume in config["services"]["reviewer-architecture"]["volumes"]:
+                if volume.get("source") == "factory-reviewer-architecture-state":
+                    volume["source"] = "factory-reviewer-functional-state"
+
+        self.assert_rejected(
+            cross_state,
+            "reviewer-architecture: must mount only its own reviewer state volume",
+        )
+
+    def test_rejects_reviewer_cross_role_config_volume(self):
+        def mutate(config):
+            for volume in config["services"]["reviewer-code-quality"]["volumes"]:
+                if volume.get("source") == "factory-config-reviewer-code-quality":
+                    volume["source"] = "factory-config-reviewer-functional"
+
+        self.assert_rejected(
+            mutate,
+            "reviewer-code-quality: must mount only factory-config-reviewer-code-quality",
+        )
+
+    def test_rejects_runtime_dependency_policy_drift(self):
+        self.assert_rejected(
+            lambda c: c["services"]["runtime"]["environment"].__setitem__(
+                "FACTORY_RUNTIME_DEPENDENCY_IMAGE", "docker.io/evil:latest"
+            ),
+            "runtime: the pinned dependency image is required",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["runtime"]["environment"].__setitem__(
+                "FACTORY_RUNTIME_DEPENDENCY_EGRESS_NETWORK", "host"
+            ),
+            "runtime: dependency acquisition must use its dedicated internal network",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["runtime"]["environment"].__setitem__(
+                "FACTORY_RUNTIME_BROKER_TOKEN", "supervisor-token-value"
+            ),
+            "runtime: broker secrets must be file-backed",
+        )
 
     def test_tailscale_serve_config_is_private_https_only(self):
         if "tailscale" not in base_config()["services"]:

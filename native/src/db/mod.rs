@@ -103,12 +103,6 @@ pub struct Action {
     pub spec_sha256: String,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct ActionSpecInput<'a> {
-    pub allowed_paths: &'a [String],
-    pub checks: &'a [SpecCheck],
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ActionSpec {
@@ -124,6 +118,126 @@ pub struct ActionSpec {
     pub allowed_paths: Vec<String>,
     #[serde(default)]
     pub checks: Vec<SpecCheck>,
+    /// Frozen dependency acquisition plan. `None` means the action does not
+    /// require brokered dependency acquisition. A present plan is validated
+    /// before persistence and is carried to the Worker assignment.
+    #[serde(default)]
+    pub dependency_plan: Option<crate::dependencies::DependencyPlan>,
+    /// True when the frozen planning decision requires dependency acquisition
+    /// or a vendor cache. Core and the Worker refuse to authorize/execute when
+    /// this is true but `dependency_plan` is absent.
+    #[serde(default)]
+    pub dependencies_required: bool,
+    /// Exact Core-frozen environment plan/spec binding. Legacy actions may have
+    /// none; Core refuses a check at the environment runner boundary rather
+    /// than substituting a language image.
+    #[serde(default)]
+    pub environment_plan_id: Option<String>,
+    #[serde(default)]
+    pub environment_plan_sha256: Option<String>,
+    #[serde(default)]
+    pub environment_spec_id: Option<String>,
+    #[serde(default)]
+    pub environment_spec_sha256: Option<String>,
+    #[serde(default)]
+    pub environment_builder_image: Option<String>,
+    #[serde(default)]
+    pub environment_builder_image_digest: Option<String>,
+    /// True when this Action must carry a frozen EnvironmentSpec before a
+    /// Campaign may be authorized.
+    #[serde(default)]
+    pub environment_required: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ActionSpecInput<'a> {
+    pub allowed_paths: &'a [String],
+    pub checks: &'a [SpecCheck],
+    pub dependency_plan: Option<&'a crate::dependencies::DependencyPlan>,
+}
+
+/// Deterministic dependency-requirement check shared by assignment dispatch and
+/// authorization. A plan marked as required must carry its frozen execution
+/// plan; absence is a hard refusal, not a silent skip.
+pub fn validate_dependency_requirement(spec: &ActionSpec) -> Result<(), Error> {
+    if spec.dependencies_required && spec.dependency_plan.is_none() {
+        return Err(Error::Forbidden(
+            "frozen work requires dependency acquisition but has no dependency plan".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Deterministic environment-requirement check shared by authorization and
+/// check dispatch. A request that Core compiled with an environment cannot be
+/// authorized or executed without the exact frozen plan/spec, and every check
+/// must carry the same binding. There is no language-image fallback.
+pub fn validate_environment_requirement(spec: &ActionSpec) -> Result<(), Error> {
+    let plan_id = spec
+        .environment_plan_id
+        .as_deref()
+        .ok_or_else(|| Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message: "every executable ActionSpec requires an exact environment plan binding"
+                .into(),
+        })?;
+    let plan_sha =
+        spec.environment_plan_sha256
+            .as_deref()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the ActionSpec has no exact environment plan hash".into(),
+            })?;
+    let spec_id = spec
+        .environment_spec_id
+        .as_deref()
+        .ok_or_else(|| Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message: "the ActionSpec has no frozen environment spec id".into(),
+        })?;
+    let spec_sha =
+        spec.environment_spec_sha256
+            .as_deref()
+            .ok_or_else(|| Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the ActionSpec has no frozen environment spec hash".into(),
+            })?;
+    if !spec.environment_required
+        || spec
+            .environment_builder_image
+            .as_deref()
+            .is_none_or(str::is_empty)
+        || spec
+            .environment_builder_image_digest
+            .as_deref()
+            .is_none_or(|digest| !digest.starts_with("sha256:"))
+    {
+        return Err(Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message: "the ActionSpec does not carry a frozen environment and digest-pinned builder identity"
+                .into(),
+        });
+    }
+    if plan_id.len() > 64 || spec_id.len() > 64 || plan_sha.len() != 64 || spec_sha.len() != 64 {
+        return Err(Error::IntakeConflict {
+            code: "ENVIRONMENT_PLAN_REQUIRED",
+            message: "the ActionSpec environment binding is not a valid plan/spec identity".into(),
+        });
+    }
+    for check in &spec.checks {
+        if check.environment_plan_id.as_deref() != Some(plan_id)
+            || check.environment_spec_sha256.as_deref() != Some(spec_sha)
+        {
+            return Err(Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: format!(
+                    "check {} does not carry the ActionSpec's exact environment plan/spec binding",
+                    check.id
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -199,6 +313,14 @@ pub struct WorkerAssignment {
     /// records at claim time; they cannot widen tools or authority.
     #[serde(default)]
     pub skills: Vec<AssignmentSkill>,
+    /// Exact frozen environment bound to the Campaign. `None` means a legacy
+    /// unbound Campaign; the Worker refuses environment-aware checks rather
+    /// than substituting a language image.
+    #[serde(default)]
+    pub environment: Option<crate::db::CampaignEnvironmentBinding>,
+    /// Exact plan/spec/receipt used to select each check's builder image.
+    #[serde(default)]
+    pub environment_execution: Option<crate::planning::environment::EnvironmentExecutionBinding>,
 }
 
 #[derive(Clone, Debug)]
@@ -227,6 +349,11 @@ pub struct WorkerReport {
     pub receipt_id: String,
     pub result_sha256: String,
     pub terminal_status: String,
+    /// Bounded human-readable blocker/failure reason. It is excluded from the
+    /// receipt digest so historical receipt replay remains stable, and is
+    /// persisted in the run event and progress hold.
+    #[serde(default, skip_serializing)]
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -260,13 +387,20 @@ pub const EVENT_KINDS: &[&str] = &[
     "delegation.released",
     "delegation.reserved",
     "delegation.revoked",
+    "environment.plan.recompiled",
     "execution_policy.granted",
     "github.connection_configured",
     "github.connection_revoked",
     "github.issues_synced",
     "github.project_bound",
+    "intake.follow_up_created",
     "intake.message_recorded",
     "intake.request_created",
+    "issue_delivery.applied",
+    "issue_delivery.failed",
+    "issue_delivery.pending",
+    "issue_delivery.retried",
+    "issue_link.created",
     "issue_intake.batch_acknowledged",
     "issue_intake.batch_revoked",
     "issue_intake.policy_configured",
@@ -294,6 +428,9 @@ pub const EVENT_KINDS: &[&str] = &[
     "model.call_settled",
     "provider.settings_configured",
     "settings.runtime_updated",
+    "skill.pack.refresh_blocked",
+    "skill.pack.refresh_due",
+    "skill.pack.refreshed",
     "provider.session_active",
     "provider.tool_event",
     "provider.session_cancel_requested",
@@ -304,10 +441,13 @@ pub const EVENT_KINDS: &[&str] = &[
     "provider.turn_resolved",
     "provider.turn_settled",
     "provider.session_terminal",
+    "plan.recompiled",
+    "project.base_advanced",
     "project.config_updated",
     "project.discovery_completed",
     "project.registered",
     "quality.gate_decided",
+    "quality.gate_reevaluated",
     "quality.receipt_recorded",
     "run.created",
     "run.status_changed",
@@ -315,8 +455,14 @@ pub const EVENT_KINDS: &[&str] = &[
     "worker.claim_released",
     "worker.registered",
     "worker.session_rotated",
+    "worker.stagnation_finalized",
     "worker.terminal_reported",
     "work_integration.started",
+    "workflow.checkpoint.recorded",
+    "workflow.step.blocked",
+    "workflow.step.failed",
+    "workflow.step.started",
+    "workflow.step.succeeded",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -341,6 +487,8 @@ pub struct CandidateRecord {
     pub integration: bool,
     #[serde(default)]
     pub lineage: Vec<String>,
+    #[serde(default)]
+    pub final_source: crate::quality::CandidateFinalSource,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -353,6 +501,10 @@ pub struct CandidateInspection {
     pub base_commit: String,
     pub integration: bool,
     pub lineage: Vec<String>,
+    /// Exact frozen environment bound to the Campaign. The verifier selects
+    /// every check's builder image from this record.
+    #[serde(default)]
+    pub environment_execution: Option<crate::planning::environment::EnvironmentExecutionBinding>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -364,6 +516,60 @@ pub struct NewCandidate {
     pub action_spec_sha256: String,
     pub commit_sha: String,
     pub tree_sha: String,
+    #[serde(default)]
+    pub final_source: crate::quality::CandidateFinalSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub salvage: Option<CandidateSalvageClaim>,
+}
+
+/// The only Worker-supplied salvage fact accepted by Core. Every trigger and
+/// receipt is derived from durable Core records; this claim only binds the
+/// stable work-item identity to the submission.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CandidateSalvageClaim {
+    pub work_item_id: String,
+}
+
+/// Core-derived, exact-candidate salvage evidence recorded in the immutable
+/// `worker.stagnation_finalized` event. No field is copied from an unverified
+/// Worker count.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CandidateSalvageEvidence {
+    pub campaign_id: String,
+    pub work_item_id: String,
+    pub attempt_id: String,
+    pub model_turns: u64,
+    pub final_nudges: u64,
+    pub frozen_checks: u64,
+    pub passed_checks: u64,
+    pub written: bool,
+    pub decision: String,
+    pub reason: String,
+    pub policy_id: String,
+    pub authorization_id: String,
+    pub diagnose_checkpoint_id: String,
+    pub stagnant_checkpoints: u32,
+    pub unsuccessful_replans: u32,
+    pub diff: CandidateSalvageDiff,
+    pub check_receipts: Vec<CandidateSalvageCheckReceipt>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CandidateSalvageDiff {
+    pub changed_files: u64,
+    pub changed_paths: Vec<String>,
+    pub diff_stat: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CandidateSalvageCheckReceipt {
+    pub check_id: String,
+    pub receipt_id: String,
+    pub result_sha256: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -435,6 +641,8 @@ impl ReviewMechanism {
 pub struct QualityReceiptInput {
     pub receipt_id: String,
     pub principal_id: String,
+    #[serde(default)]
+    pub reviewer_role: Option<crate::planning::ReviewerRole>,
     pub action_spec_sha256: String,
     pub commit_sha: String,
     pub tree_sha: String,
@@ -470,6 +678,7 @@ pub struct QualityReceiptRecord {
     pub candidate_id: String,
     pub role: QualityRole,
     pub principal_id: String,
+    pub reviewer_role: Option<crate::planning::ReviewerRole>,
     pub action_spec_sha256: String,
     pub commit_sha: String,
     pub tree_sha: String,
@@ -706,6 +915,35 @@ impl Database {
         transaction.commit().await?;
         Ok(sequence)
     }
+
+    /// Append one event only when the same subject, kind and bounded detail do
+    /// not already exist. Scheduler passes and retries therefore converge on one
+    /// durable alert instead of duplicating it.
+    pub async fn record_event_once(
+        &self,
+        subject_id: &str,
+        kind: &str,
+        detail: &str,
+    ) -> Result<bool, Error> {
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let existing: Option<(i64,)> = sqlx::query_as::query_as(
+            "SELECT sequence FROM events
+             WHERE subject_id=?1 AND kind=?2 AND detail=?3 LIMIT 1",
+        )
+        .bind(subject_id)
+        .bind(kind)
+        .bind(detail)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if existing.is_some() {
+            transaction.commit().await?;
+            return Ok(false);
+        }
+        record_event(&mut transaction, subject_id, kind, detail).await?;
+        transaction.commit().await?;
+        Ok(true)
+    }
 }
 
 impl From<crate::lead::LeadError> for Error {
@@ -884,6 +1122,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 mod access_revocation;
+mod accounting;
 mod authorization;
 pub use authorization::{
     CampaignAuthorizationRecord, NO_BILLABLE_ENVELOPE, NewCampaignAuthorization,
@@ -928,7 +1167,8 @@ pub use lead::{
 mod intake;
 pub use intake::{
     ExecutionPolicyGrantRecord, ExecutionPolicyGrantResult, IntakeApprovalContext,
-    IntakeMessageRecord, IntakeRequestRecord, LeadExecutionContextRecord, NewExecutionPolicyGrant,
+    IntakeMessageOutcome, IntakeMessageRecord, IntakeRequestRecord, LeadExecutionContextRecord,
+    NewExecutionPolicyGrant,
 };
 mod issue_intake;
 pub use issue_intake::{
@@ -937,9 +1177,19 @@ pub use issue_intake::{
     IssueIntakeReconcileResult, IssueIntakeState, NewIssueIntakeBatch, NewIssueIntakeBatchItem,
     NewIssueIntakePolicy, NewIssueIntakePolicyV2,
 };
+mod issue_links;
+pub use issue_links::{
+    ClaimedIssueDeliveryAttempt, IssueDeliveryClaimOutcome, IssueDeliveryEventCompletion,
+    NewIssueDeliveryEvent,
+};
 pub use model_calls::{
     ModelCallDecision, ModelCallGrant, ModelCallPolicy, ModelCallRecord, ModelCallResult,
     ModelCallRole, ModelCallUsage, NewModelCallAuthorization,
+};
+mod delivery;
+pub use delivery::{
+    DeliveryAttemptUpdate, NewDeliveryAttempt, NewDeliveryAttemptEvent, NewDeliveryDecision,
+    NewDeliveryIncident,
 };
 mod lifecycle;
 pub mod participants;
@@ -951,6 +1201,12 @@ pub use participants::{
 mod execution_receipts;
 mod project_configs;
 pub use execution_receipts::{ExecutionCheckInput, ExecutionCheckReceiptRecord};
+mod environment;
+pub use environment::{CampaignEnvironmentBinding, StoredEnvironmentPlan, StoredEnvironmentSpec};
+#[cfg(any(test, feature = "test-support"))]
+pub use environment::{
+    TestEnvironmentBinding, apply_test_environment_binding, test_environment_binding,
+};
 mod provider_sessions;
 mod provider_settings;
 mod subscription_admissions;
@@ -976,10 +1232,21 @@ pub use project_configs::NewProjectConfig;
 pub use runtime_settings::FactorySettings;
 mod projects;
 pub use projects::{ProjectCampaignSummary, ProjectDiscoveryRecord, RegisterProjectSource};
+mod planning;
+#[cfg(feature = "test-support")]
+mod wave12_fixture;
+pub use planning::{
+    NewPlanReview, OpenSpecProjectionRecord, PlanReviewRecord, PlanningArtifactRecord,
+    SkillPackRecord,
+};
+#[cfg(feature = "test-support")]
+pub use wave12_fixture::TRACE_RETRY_REQUEST as WAVE12_TRACE_RETRY_REQUEST;
 mod quality;
 mod workers;
+mod workflow;
 
 mod device_pairing;
+mod events;
 #[cfg(test)]
 mod issue_intake_tests;
 #[cfg(test)]
@@ -1033,6 +1300,21 @@ async fn install_test_subscription_dispatch_admissions(pool: &SqlitePool) -> Res
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+impl Database {
+    pub(crate) fn test_pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    pub(crate) async fn test_ensure_project_config(&self, project_id: &str) -> Result<(), Error> {
+        let mut transaction = self.pool.begin().await?;
+        self.ensure_project_config(&mut transaction, project_id)
+            .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]

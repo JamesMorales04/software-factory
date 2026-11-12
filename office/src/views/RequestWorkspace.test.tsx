@@ -9,6 +9,8 @@ import {
   type IntakeRequestProjection,
   type LeadAssessmentView,
   type LeadPlanProposalView,
+  type ParticipantPlanReadinessView,
+  type PlanningReadinessView,
   type SpecCheck,
 } from "../coreApi";
 import { I18nProvider, type Locale } from "../i18n";
@@ -21,6 +23,8 @@ const mocks = vi.hoisted(() => ({
   messageIntakeRequest: vi.fn(),
   cancelIntakeRequest: vi.fn(),
   repairCampaign: vi.fn(),
+  getRequestTrace: vi.fn(),
+  getAgenticSpec: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -134,6 +138,46 @@ const plan: FrozenLeadPlanRecord = {
   created_at: "2026-10-27T10:02:00Z",
 };
 
+const readyParticipantPlan: ParticipantPlanReadinessView = {
+  required: true,
+  present: true,
+  ready: true,
+  reviewerCount: 5,
+  requiredReviewerCount: 5,
+  reviewerRoles: [
+    "FUNCTIONAL",
+    "ARCHITECTURE",
+    "CODE_QUALITY",
+    "SECURITY",
+    "TESTING",
+  ],
+  requiredRoles: [
+    "FUNCTIONAL",
+    "ARCHITECTURE",
+    "CODE_QUALITY",
+    "SECURITY",
+    "TESTING",
+  ],
+  missingRoles: [],
+  unexpectedRoles: [],
+  missingAssignments: [],
+  graphStale: false,
+  problems: [],
+};
+
+const readyPlanning: PlanningReadinessView = {
+  lane: "FORMAL_SPEC",
+  artifacts: [],
+  review: null,
+  workflow: null,
+  missingArtifacts: [],
+  participantPlan: readyParticipantPlan,
+  reviewStatus: "AUTO_APPROVED",
+  reviewApproved: true,
+  materialsReady: true,
+  ready: true,
+};
+
 function makeProjection(
   overrides: Partial<IntakeRequestProjection> = {},
 ): IntakeRequestProjection {
@@ -159,6 +203,7 @@ function makeProjection(
     assessment,
     proposal,
     plan,
+    planning: readyPlanning,
     campaign: null,
     messages: [
       {
@@ -216,6 +261,24 @@ describe("RequestWorkspace", () => {
     mocks.approveIntakeRequest.mockReset().mockResolvedValue(awaiting);
     mocks.messageIntakeRequest.mockReset().mockResolvedValue(awaiting);
     mocks.cancelIntakeRequest.mockReset().mockResolvedValue(awaiting);
+    mocks.getAgenticSpec.mockReset().mockResolvedValue({
+      frozen: null,
+      draft: null,
+    });
+    mocks.getRequestTrace.mockReset().mockResolvedValue({
+      requestId: "request-1",
+      run: null,
+      trace: null,
+      events: [],
+      steps: [],
+      alerts: [],
+      terminal: false,
+      eventLimit: 200,
+      truncated: false,
+      stepLimit: 500,
+      stepsTruncated: false,
+      replayError: null,
+    });
     mocks.repairCampaign.mockReset().mockResolvedValue({
       requestId: "repair-1",
       projectId: "project-1",
@@ -306,6 +369,127 @@ describe("RequestWorkspace", () => {
       }),
     );
     expect(await screen.findByText(/Core recorded the approval/)).toBeDefined();
+  });
+
+  it("shows an incomplete plan-review callout and blocks approval", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        planning: {
+          ...readyPlanning,
+          missingArtifacts: ["PLAN", "WORKGRAPH"],
+          ready: false,
+          participantPlan: {
+            ...readyParticipantPlan,
+            present: false,
+            ready: false,
+            reviewerCount: 0,
+            reviewerRoles: [],
+            missingRoles: readyParticipantPlan.requiredRoles,
+            missingAssignments: readyParticipantPlan.requiredRoles,
+          },
+        },
+      }),
+    );
+    renderRequest();
+    expect(await screen.findByText("Plan review incomplete")).toBeDefined();
+    expect(
+      screen.getByText("Missing artifacts: PLAN, WORKGRAPH."),
+    ).toBeDefined();
+    expect(screen.getByText(/participant plan is not recorded/i)).toBeDefined();
+    const approve = screen.getByRole("button", {
+      name: "Approve frozen plan and start",
+    });
+    expect((approve as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByLabelText("Approval rationale") as HTMLTextAreaElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (
+        screen.getByRole("checkbox", {
+          name: /I reviewed the frozen scope/,
+        }) as HTMLInputElement
+      ).disabled,
+    ).toBe(true);
+    expect(
+      screen
+        .getByRole("link", { name: /Open Director plan review/ })
+        .getAttribute("href"),
+    ).toBe("/director?request=request-1");
+  });
+
+  it("blocks approval when the participant plan does not match the frozen reviewer plan", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        planning: {
+          ...readyPlanning,
+          ready: false,
+          participantPlan: {
+            ...readyParticipantPlan,
+            ready: false,
+            reviewerCount: 1,
+            reviewerRoles: ["FUNCTIONAL"],
+            missingRoles: [
+              "ARCHITECTURE",
+              "CODE_QUALITY",
+              "SECURITY",
+              "TESTING",
+            ],
+            missingAssignments: [
+              "ARCHITECTURE",
+              "CODE_QUALITY",
+              "SECURITY",
+              "TESTING",
+            ],
+            problems: [
+              "the participant plan requires 1 reviewer(s); the frozen plan requires 5",
+            ],
+          },
+        },
+      }),
+    );
+    renderRequest();
+    expect(
+      await screen.findByText(
+        /does not match the frozen reviewer plan: ARCHITECTURE, CODE_QUALITY, SECURITY, TESTING/,
+      ),
+    ).toBeDefined();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Approve frozen plan and start",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  });
+
+  it("blocks approval while the plan review awaits the owner decision", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        planning: {
+          ...readyPlanning,
+          ready: false,
+          reviewStatus: "PENDING",
+          reviewApproved: false,
+          materialsReady: true,
+        },
+      }),
+    );
+    renderRequest();
+    expect(
+      await screen.findByText(/plan review is awaiting the owner decision/i),
+    ).toBeDefined();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Approve frozen plan and start",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByLabelText("Approval rationale") as HTMLTextAreaElement)
+        .disabled,
+    ).toBe(true);
   });
 
   it("explains an unavailable authorization and disables approval", async () => {
@@ -420,6 +604,197 @@ describe("RequestWorkspace", () => {
       (screen.getByLabelText("Message the Factory") as HTMLTextAreaElement)
         .value,
     ).toBe("");
+  });
+
+  it("starts one follow-up from a completed request and exposes the created request", async () => {
+    const completed = makeProjection({
+      state: "COMPLETED",
+      stateDetail: "Quality Gate recorded ACCEPTED for the exact candidate.",
+    });
+    const followUp = makeProjection({
+      id: "request-2",
+      state: "SUBMITTED",
+      parentRequestId: "request-1",
+      plan: null,
+      assessment: null,
+      proposal: null,
+      messages: [],
+    });
+    const completedWithFollowUp = makeProjection({
+      state: "COMPLETED",
+      followUpRequest: followUp,
+    });
+    mocks.getIntakeRequest
+      .mockResolvedValueOnce(completed)
+      .mockResolvedValue(completedWithFollowUp);
+    mocks.messageIntakeRequest.mockResolvedValue(completedWithFollowUp);
+    renderRequest();
+    await screen.findByLabelText("Start a follow-up request");
+    await userEvent.type(
+      screen.getByLabelText("Start a follow-up request"),
+      "Add the CSV export follow-up.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start follow-up" }),
+    );
+    await waitFor(() =>
+      expect(mocks.messageIntakeRequest).toHaveBeenCalledWith("request-1", {
+        body: "Add the CSV export follow-up.",
+        idempotency_key: "message-key",
+      }),
+    );
+    expect(
+      await screen.findByText(/Core created the follow-up request with state/),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("link", { name: "Open follow-up" }).getAttribute("href"),
+    ).toBe("/requests/request-2");
+    expect(screen.queryByLabelText("Start a follow-up request")).toBeNull();
+  });
+
+  it("does not offer a follow-up on a withdrawn terminal request", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        state: "CANCELLED",
+        authorization: {
+          required: false,
+          available: false,
+          reason: "INTAKE_WITHDRAWN",
+        },
+      }),
+    );
+    renderRequest();
+    await screen.findByText("Keep the API backward compatible.");
+    expect(screen.queryByLabelText("Start a follow-up request")).toBeNull();
+  });
+
+  it("explains a follow-up policy refusal in English", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({ state: "COMPLETED" }),
+    );
+    mocks.messageIntakeRequest.mockRejectedValue(
+      new CoreApiError(409, "policy no longer matches", {
+        code: "FOLLOW_UP_EXECUTION_POLICY_REQUIRED",
+        error: "policy no longer matches",
+      }),
+    );
+    renderRequest();
+    await screen.findByLabelText("Start a follow-up request");
+    await userEvent.type(
+      screen.getByLabelText("Start a follow-up request"),
+      "Continue with a new objective.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start follow-up" }),
+    );
+    expect(
+      await screen.findByText(/parent owner-confirmed execution policy/),
+    ).toBeDefined();
+    expect(screen.getByRole("alert")).toBeDefined();
+    expect(screen.getByLabelText("Start a follow-up request")).toBeDefined();
+  });
+
+  it("explains a follow-up policy refusal in Spanish", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({ state: "COMPLETED" }),
+    );
+    mocks.messageIntakeRequest.mockRejectedValue(
+      new CoreApiError(409, "policy no longer matches", {
+        code: "FOLLOW_UP_EXECUTION_POLICY_REQUIRED",
+        error: "policy no longer matches",
+      }),
+    );
+    renderRequest("es");
+    await screen.findByLabelText("Iniciar una solicitud de seguimiento");
+    await userEvent.type(
+      screen.getByLabelText("Iniciar una solicitud de seguimiento"),
+      "Continúa con un nuevo objetivo.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Iniciar seguimiento" }),
+    );
+    expect(
+      await screen.findByText(
+        /política de ejecución confirmada por el propietario/,
+      ),
+    ).toBeDefined();
+    expect(screen.getByRole("alert")).toBeDefined();
+  });
+
+  it("explains a follow-up principal mismatch in English", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({ state: "COMPLETED" }),
+    );
+    mocks.messageIntakeRequest.mockRejectedValue(
+      new CoreApiError(409, "principal mismatch", {
+        code: "FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH",
+        error: "principal mismatch",
+      }),
+    );
+    renderRequest();
+    await screen.findByLabelText("Start a follow-up request");
+    await userEvent.type(
+      screen.getByLabelText("Start a follow-up request"),
+      "Continue with another principal.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start follow-up" }),
+    );
+    expect(
+      await screen.findByText(
+        /only the principal that confirmed the parent execution policy/,
+      ),
+    ).toBeDefined();
+    expect(screen.getByRole("alert")).toBeDefined();
+    expect(screen.getByLabelText("Start a follow-up request")).toBeDefined();
+  });
+
+  it("explains a follow-up principal mismatch in Spanish", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({ state: "COMPLETED" }),
+    );
+    mocks.messageIntakeRequest.mockRejectedValue(
+      new CoreApiError(409, "principal mismatch", {
+        code: "FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH",
+        error: "principal mismatch",
+      }),
+    );
+    renderRequest("es");
+    await screen.findByLabelText("Iniciar una solicitud de seguimiento");
+    await userEvent.type(
+      screen.getByLabelText("Iniciar una solicitud de seguimiento"),
+      "Continúa con otro principal.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Iniciar seguimiento" }),
+    );
+    expect(
+      await screen.findByText(
+        /solo el principal que confirmó la política de ejecución del padre/,
+      ),
+    ).toBeDefined();
+    expect(screen.getByRole("alert")).toBeDefined();
+    expect(
+      screen.getByLabelText("Iniciar una solicitud de seguimiento"),
+    ).toBeDefined();
+  });
+
+  it("shows the parent thread on a follow-up request", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        id: "request-2",
+        state: "SUBMITTED",
+        parentRequestId: "request-1",
+        plan: null,
+        assessment: null,
+        proposal: null,
+      }),
+    );
+    const { container } = renderRequest();
+    expect(await screen.findByText(/Follow-up from/)).toBeDefined();
+    const parentLink = container.querySelector('a[href="/requests/request-1"]');
+    expect(parentLink).not.toBeNull();
+    expect(parentLink?.textContent).toContain("request-");
   });
 
   it("starts a bounded repair from the exact rejected candidate after confirmation", async () => {

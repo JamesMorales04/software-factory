@@ -346,6 +346,10 @@ impl IssueIntakeEligibility {
 
 /// Pure deterministic eligibility. Any unknown identity, association,
 /// executability or freshness fact fails closed. There is no model input.
+fn author_id_allowed(allowed_author_ids: &[i64], author_id: i64) -> bool {
+    allowed_author_ids.is_empty() || allowed_author_ids.contains(&author_id)
+}
+
 pub fn evaluate_issue_intake_eligibility(
     policy: Option<&PolicyFacts<'_>>,
     batch: &BatchFacts<'_>,
@@ -448,7 +452,7 @@ pub fn evaluate_issue_intake_eligibility(
         reasons.push("AUTHOR_ID_UNKNOWN".into());
         return IssueIntakeEligibility::blocked(reasons);
     };
-    if !policy.author_ids.contains(&author_id) {
+    if !author_id_allowed(policy.author_ids, author_id) {
         reasons.push("AUTHOR_NOT_ALLOWED".into());
     }
     let Some(association) = observed.author_association.as_deref() else {
@@ -771,7 +775,7 @@ pub fn validate_policy_terms(
     {
         return Err("ISSUE_POLICY_LABELS");
     }
-    if author_ids.is_empty() || author_ids.len() > 100 || author_ids.iter().any(|id| *id <= 0) {
+    if (!author_ids.is_empty() && author_ids.iter().any(|id| *id <= 0)) || author_ids.len() > 100 {
         return Err("ISSUE_POLICY_AUTHOR_IDS");
     }
     if author_associations.is_empty()
@@ -866,6 +870,13 @@ mod tests {
             content_hash: String::new(),
             created_at: "2026-01-01T00:00:00Z".into(),
         }
+    }
+
+    #[test]
+    fn empty_author_ids_mean_any_author() {
+        assert!(author_id_allowed(&[], 7));
+        assert!(author_id_allowed(&[7], 7));
+        assert!(!author_id_allowed(&[8], 7));
     }
 
     #[test]

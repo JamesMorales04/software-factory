@@ -8,6 +8,7 @@ use crate::semantic_review::ReviewerSelection;
 use chrono::Utc;
 use sqlx::row::Row;
 use sqlx_sqlite::{SqliteConnection, SqliteRow};
+use std::collections::BTreeMap;
 use std::path::Path;
 use uuid::Uuid;
 
@@ -47,25 +48,43 @@ impl Database {
         .map_err(|error| Error::Forbidden(format!("candidate lineage rejected: {error}")))?;
         let spec: ActionSpec = serde_json::from_str(&context.spec_json)
             .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
-        if !spec.allowed_paths.is_empty() {
+        let repository = context.repository.clone();
+        let base_commit = context.base_commit.clone();
+        let commit_sha = verified.commit_sha.clone();
+        let changed = tokio::task::spawn_blocking(move || {
+            crate::workspace::changed_paths(Path::new(&repository), &base_commit, &commit_sha)
+        })
+        .await
+        .map_err(|error| Error::Forbidden(format!("candidate path task failed: {error}")))?
+        .map_err(|error| Error::Forbidden(format!("candidate path check failed: {error}")))?;
+        if !spec.allowed_paths.is_empty()
+            && let Some(path) = changed
+                .iter()
+                .find(|path| !crate::workspace::path_covered(path, &spec.allowed_paths))
+        {
+            return Err(Error::Forbidden(format!(
+                "candidate path {path:?} is outside the frozen allowed paths"
+            )));
+        }
+        let diff_stat = if input.final_source
+            == crate::quality::CandidateFinalSource::StagnationSalvage
+        {
             let repository = context.repository.clone();
             let base_commit = context.base_commit.clone();
             let commit_sha = verified.commit_sha.clone();
-            let changed = tokio::task::spawn_blocking(move || {
-                crate::workspace::changed_paths(Path::new(&repository), &base_commit, &commit_sha)
-            })
-            .await
-            .map_err(|error| Error::Forbidden(format!("candidate path task failed: {error}")))?
-            .map_err(|error| Error::Forbidden(format!("candidate path check failed: {error}")))?;
-            if let Some(path) = changed
-                .iter()
-                .find(|path| !crate::workspace::path_covered(path, &spec.allowed_paths))
-            {
-                return Err(Error::Forbidden(format!(
-                    "candidate path {path:?} is outside the frozen allowed paths"
-                )));
-            }
-        }
+            Some(
+                tokio::task::spawn_blocking(move || {
+                    crate::workspace::diff_stat(Path::new(&repository), &base_commit, &commit_sha)
+                })
+                .await
+                .map_err(|error| Error::Forbidden(format!("candidate diff task failed: {error}")))?
+                .map_err(|error| {
+                    Error::Forbidden(format!("candidate diff summary failed: {error}"))
+                })?,
+            )
+        } else {
+            None
+        };
 
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
@@ -87,6 +106,7 @@ impl Database {
                     .commit_sha
                     .eq_ignore_ascii_case(&verified.commit_sha)
                 && existing.tree_sha.eq_ignore_ascii_case(&verified.tree_sha)
+                && existing.final_source == input.final_source
             {
                 transaction.commit().await?;
                 return Ok(existing);
@@ -95,6 +115,17 @@ impl Database {
                 "attempt already recorded a different candidate revision",
             ));
         }
+        let salvage = derive_salvage_evidence(
+            &mut transaction,
+            input,
+            &current,
+            &spec,
+            &verified.commit_sha,
+            &verified.tree_sha,
+            &changed,
+            diff_stat.as_deref(),
+        )
+        .await?;
         require_live_lease(
             &current,
             &input.worker_id,
@@ -111,11 +142,12 @@ impl Database {
             created_at: Utc::now().to_rfc3339(),
             integration: false,
             lineage: Vec::new(),
+            final_source: input.final_source,
         };
         sqlx::query::query(
             "INSERT INTO candidates
-             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,integration,lineage_json)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,0,'[]')",
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,integration,lineage_json,final_source)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,0,'[]',?8)",
         )
             .bind(&candidate.id)
             .bind(&candidate.attempt_id)
@@ -124,6 +156,7 @@ impl Database {
             .bind(&candidate.tree_sha)
             .bind(&candidate.implementer_id)
             .bind(&candidate.created_at)
+            .bind(candidate.final_source.as_str())
             .execute(&mut *transaction)
             .await?;
         let changed = sqlx::query::query(
@@ -147,11 +180,30 @@ impl Database {
             &candidate.id,
             "candidate.recorded",
             &format!(
-                "attempt={} commit={} tree={}",
-                candidate.attempt_id, candidate.commit_sha, candidate.tree_sha
+                "attempt={} commit={} tree={} finalSource={}",
+                candidate.attempt_id,
+                candidate.commit_sha,
+                candidate.tree_sha,
+                candidate.final_source.as_str()
             ),
         )
         .await?;
+        if let Some(evidence) = salvage.as_ref() {
+            let mut detail = serde_json::to_value(evidence)
+                .map_err(|_| Error::Invalid("stagnation salvage evidence encoding"))?;
+            if let Some(object) = detail.as_object_mut() {
+                object.insert("candidateId".into(), serde_json::json!(candidate.id));
+                object.insert("commitSha".into(), serde_json::json!(candidate.commit_sha));
+            }
+            record_event(
+                &mut transaction,
+                &candidate.id,
+                "worker.stagnation_finalized",
+                &serde_json::to_string(&detail)
+                    .map_err(|_| Error::Invalid("stagnation salvage evidence encoding"))?,
+            )
+            .await?;
+        }
         transaction.commit().await?;
         Ok(candidate)
     }
@@ -162,10 +214,26 @@ impl Database {
         role: QualityRole,
         input: &QualityReceiptInput,
     ) -> Result<QualityIngestResult, Error> {
-        validate_receipt_input(input)?;
+        validate_receipt_input(role, input)?;
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         let candidate = validate_receipt_binding(&mut transaction, candidate_id, input).await?;
+        if role == QualityRole::Reviewer {
+            let requirement =
+                reviewer_requirement_for_candidate(&mut transaction, candidate_id).await?;
+            if !requirement.roles.is_empty() {
+                let Some(reviewer_role) = input.reviewer_role else {
+                    return Err(Error::Forbidden(
+                        "reviewer role is required by the frozen reviewer plan".into(),
+                    ));
+                };
+                if !requirement.roles.contains(&reviewer_role) {
+                    return Err(Error::Forbidden(
+                        "reviewer role is not required by the frozen reviewer plan".into(),
+                    ));
+                }
+            }
+        }
         if let Some(receipt) = replayed_receipt(&mut transaction, candidate_id, role, input).await?
         {
             let gate = load_gate(&mut transaction, candidate_id).await?;
@@ -233,12 +301,78 @@ impl Database {
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
+    /// Candidates that this authenticated reviewer identity may still review:
+    /// the verifier must have passed, the Gate must be undecided, the
+    /// candidate must still need this role, and neither this principal nor
+    /// this role may already have a receipt. This prevents a fleet from
+    /// double-reviewing a role while Core remains the authority.
+    pub async fn pending_quality_candidates_for_reviewer(
+        &self,
+        principal_id: &str,
+        reviewer_role: crate::planning::ReviewerRole,
+    ) -> Result<Vec<String>, Error> {
+        if principal_id.trim().is_empty() {
+            return Err(Error::Invalid("reviewer principal"));
+        }
+        let rows: Vec<(String,)> = sqlx::query_as::query_as(
+            "SELECT c.id FROM candidates c
+             WHERE NOT EXISTS (SELECT 1 FROM gate_decisions g WHERE g.candidate_id=c.id)
+               AND EXISTS (SELECT 1 FROM quality_receipts vr
+                           WHERE vr.candidate_id=c.id AND vr.role='verifier' AND vr.result='PASS')
+               AND NOT EXISTS (SELECT 1 FROM quality_receipts r
+                               WHERE r.candidate_id=c.id AND r.role='reviewer'
+                                 AND (r.principal_id=?1 OR r.reviewer_role=?2))
+             ORDER BY c.created_at ASC
+             LIMIT 32",
+        )
+        .bind(principal_id)
+        .bind(reviewer_role.as_str())
+        .fetch_all(&self.pool)
+        .await?;
+        let mut pending = Vec::new();
+        for (candidate_id,) in rows {
+            let requirement = {
+                let mut connection = self.pool.acquire().await?;
+                reviewer_requirement_for_candidate(&mut connection, &candidate_id).await?
+            };
+            if !requirement.roles.is_empty() && !requirement.roles.contains(&reviewer_role) {
+                continue;
+            }
+            let receipts = self.quality_receipts(&candidate_id).await?;
+            let covered = receipts.iter().any(|receipt| {
+                receipt.role == QualityRole::Reviewer
+                    && (receipt.principal_id == principal_id
+                        || receipt.reviewer_role == Some(reviewer_role))
+            });
+            let independent = receipts
+                .iter()
+                .filter(|receipt| receipt.role == QualityRole::Reviewer)
+                .map(|receipt| receipt.principal_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len();
+            let covered_roles = receipts
+                .iter()
+                .filter(|receipt| receipt.role == QualityRole::Reviewer)
+                .filter_map(|receipt| receipt.reviewer_role)
+                .filter(|role| requirement.roles.contains(role))
+                .collect::<std::collections::BTreeSet<_>>();
+            let role_missing =
+                !requirement.roles.is_empty() && !covered_roles.contains(&reviewer_role);
+            let count_missing = independent < requirement.count;
+            if !covered && (role_missing || count_missing) {
+                pending.push(candidate_id);
+            }
+        }
+        pending.truncate(8);
+        Ok(pending)
+    }
+
     pub async fn candidate_inspection(&self, id: &str) -> Result<CandidateInspection, Error> {
         let candidate = self.candidate(id).await?;
         let mut connection = self.pool.acquire().await?;
         super::lead::validate_lead_attempt_lineage(&mut connection, &candidate.attempt_id).await?;
         let row = sqlx::query::query(
-            "SELECT COALESCE(aps.action_id,c.action_id) AS action_id,p.repository,
+            "SELECT COALESCE(aps.action_id,c.action_id) AS action_id,c.id AS campaign_id,p.repository,
                     COALESCE(aps.base_commit,p.base_commit) AS base_commit,
                     COALESCE(aps.spec_json,s.spec_json) AS spec_json,
                     COALESCE(aps.spec_sha256,s.spec_sha256) AS spec_sha256
@@ -257,6 +391,7 @@ impl Database {
         .await?;
         use sqlx::row::Row;
         let action_id: String = row.try_get("action_id")?;
+        let campaign_id: String = row.try_get("campaign_id")?;
         let repository: String = row.try_get("repository")?;
         let base_commit: String = row.try_get("base_commit")?;
         let spec_json: String = row.try_get("spec_json")?;
@@ -268,6 +403,17 @@ impl Database {
         }
         let action_spec: ActionSpec = serde_json::from_str(&spec_json)
             .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+        let environment_execution = self
+            .environment_execution_for_campaign(&campaign_id)
+            .await?;
+        #[cfg(not(all(feature = "test-support", not(test))))]
+        if action_spec.environment_required && environment_execution.is_none() {
+            return Err(Error::IntakeConflict {
+                code: "ENVIRONMENT_PLAN_REQUIRED",
+                message: "the candidate Campaign has no frozen environment execution binding"
+                    .into(),
+            });
+        }
         Ok(CandidateInspection {
             integration: candidate.integration,
             lineage: candidate.lineage.clone(),
@@ -277,6 +423,7 @@ impl Database {
             action_spec_sha256: spec_sha256,
             repository,
             base_commit,
+            environment_execution,
         })
     }
 
@@ -397,11 +544,12 @@ impl Database {
             created_at: Utc::now().to_rfc3339(),
             integration: true,
             lineage: verified.parent_shas.clone(),
+            final_source: crate::quality::CandidateFinalSource::ModelFinal,
         };
         sqlx::query::query(
             "INSERT INTO candidates
-             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,integration,lineage_json)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,1,?8)",
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,integration,lineage_json,final_source)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,1,?8,'MODEL_FINAL')",
         )
         .bind(&candidate.id)
         .bind(&candidate.attempt_id)
@@ -448,12 +596,12 @@ impl Database {
     pub async fn candidates(&self) -> Result<Vec<CandidateRecord>, Error> {
         let rows: Vec<CandidateColumns> = sqlx::query_as::query_as(
             "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,
-                    integration,lineage_json
+                    integration,lineage_json,final_source
              FROM candidates ORDER BY created_at,id",
         )
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(candidate_from_columns).collect())
+        rows.into_iter().map(candidate_from_columns).collect()
     }
 
     /// Latest candidate produced by a Campaign. Repair always starts from the
@@ -464,7 +612,7 @@ impl Database {
     ) -> Result<CandidateRecord, Error> {
         let row: Option<CandidateColumns> = sqlx::query_as::query_as(
             "SELECT cd.id,cd.attempt_id,cd.action_spec_sha256,cd.commit_sha,cd.tree_sha,
-                    cd.implementer_id,cd.created_at,cd.integration,cd.lineage_json
+                    cd.implementer_id,cd.created_at,cd.integration,cd.lineage_json,cd.final_source
              FROM candidates cd
              JOIN attempts a ON a.id=cd.attempt_id
              JOIN runs r ON r.id=a.run_id
@@ -474,7 +622,9 @@ impl Database {
         .bind(campaign_id)
         .fetch_optional(&self.pool)
         .await?;
-        row.map(candidate_from_columns).ok_or(Error::NotFound)
+        row.map(candidate_from_columns)
+            .transpose()?
+            .ok_or(Error::NotFound)
     }
 
     /// Accepted repair candidates whose Project base has not necessarily been
@@ -488,7 +638,7 @@ impl Database {
              JOIN runs r ON r.campaign_id=ir.campaign_id
              JOIN attempts a ON a.run_id=r.id
              JOIN candidates cd ON cd.attempt_id=a.id
-             JOIN gate_decisions gd ON gd.candidate_id=cd.id
+             JOIN gate_decisions_current gd ON gd.candidate_id=cd.id
              WHERE gd.outcome='ACCEPTED'
              ORDER BY cd.created_at DESC,cd.id DESC",
         )
@@ -603,14 +753,28 @@ impl Database {
         }))
     }
 
+    /// Required reviewer roles frozen for this candidate. Empty for a legacy
+    /// candidate with no participant-plan role requirement.
+    pub async fn candidate_reviewer_roles(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Vec<crate::planning::ReviewerRole>, Error> {
+        let mut connection = self.pool.acquire().await?;
+        Ok(
+            reviewer_requirement_for_candidate(&mut connection, candidate_id)
+                .await?
+                .roles,
+        )
+    }
+
     pub async fn quality_receipts(
         &self,
         candidate_id: &str,
     ) -> Result<Vec<QualityReceiptRecord>, Error> {
         let rows = sqlx::query::query(
-            "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
-                    result,evidence,findings_json,mechanism,model_provider,model_name,
-                    model_reservation_id,model_request_sha256,input_tokens,output_tokens,
+            "SELECT receipt_id,candidate_id,role,principal_id,reviewer_role,action_spec_sha256,
+                    commit_sha,tree_sha,result,evidence,findings_json,mechanism,model_provider,
+                    model_name,model_reservation_id,model_request_sha256,input_tokens,output_tokens,
                     total_tokens,cost_micros,usage_known,received_at
              FROM quality_receipts WHERE candidate_id=?1 ORDER BY role",
         )
@@ -618,6 +782,23 @@ impl Database {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(receipt_from_row).collect()
+    }
+
+    /// Re-evaluate the Gate from the existing immutable receipts and the
+    /// current finding dispositions. This accepts no new evidence and appends
+    /// a revision only when the deterministic outcome or reasons changed.
+    pub async fn reevaluate_gate_for_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<GateRecord>, Error> {
+        if candidate_id.trim().is_empty() {
+            return Err(Error::Invalid("candidate id"));
+        }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let gate = reevaluate_gate_for_candidate_in_tx(&mut transaction, candidate_id).await?;
+        transaction.commit().await?;
+        Ok(gate)
     }
 }
 
@@ -635,12 +816,17 @@ struct CandidateContext {
     execution_mode: String,
     kind: String,
     integration_candidates: Vec<String>,
+    campaign_id: String,
+    work_item_id: String,
+    authorization_id: String,
+    policy_id: String,
 }
 
 type CandidateContextRow = (
     Option<String>,
     Option<i64>,
     Option<i64>,
+    String,
     String,
     String,
     String,
@@ -660,7 +846,7 @@ async fn candidate_context(
         "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,p.repository,
                 COALESCE(aps.base_commit,p.base_commit),COALESCE(aps.spec_sha256,s.spec_sha256),
                 COALESCE(aps.spec_json,s.spec_json),COALESCE(ca.execution_mode,'NONE'),
-                COALESCE(aps.kind,'UNIT'),COALESCE(aps.integration_candidates_json,'[]')
+                COALESCE(aps.kind,'UNIT'),COALESCE(aps.integration_candidates_json,'[]'),c.id
          FROM attempts a
          JOIN runs r ON r.id=a.run_id
          JOIN campaigns c ON c.id=r.campaign_id
@@ -673,7 +859,7 @@ async fn candidate_context(
          WHERE a.id=?1",
     )
     .bind(attempt_id)
-    .fetch_optional(connection)
+    .fetch_optional(&mut *connection)
     .await?;
     let (
         worker_id,
@@ -688,7 +874,23 @@ async fn candidate_context(
         execution_mode,
         kind,
         integration_candidates,
+        campaign_id,
     ) = row.ok_or(Error::NotFound)?;
+    let (work_item_id, authorization_id, policy_id): (String, String, String) =
+        sqlx::query_as::query_as(
+            "SELECT COALESCE(lt.unit_id,li.integration_id,c.id),
+                COALESCE(ca.authorization_id,''),COALESCE(ca.policy_id,'')
+         FROM attempts a
+         JOIN runs r ON r.id=a.run_id
+         JOIN campaigns c ON c.id=r.campaign_id
+         LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
+         LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+         LEFT JOIN lead_integrations li ON li.attempt_id=a.id
+         WHERE a.id=?1",
+        )
+        .bind(attempt_id)
+        .fetch_one(&mut *connection)
+        .await?;
     Ok(CandidateContext {
         worker_id: worker_id.unwrap_or_default(),
         generation: generation.unwrap_or(0),
@@ -703,6 +905,10 @@ async fn candidate_context(
         kind,
         integration_candidates: serde_json::from_str(&integration_candidates)
             .map_err(|_| Error::Invalid("stored integration candidates"))?,
+        campaign_id,
+        work_item_id,
+        authorization_id,
+        policy_id,
     })
 }
 
@@ -746,10 +952,255 @@ fn validate_candidate_input(input: &NewCandidate) -> Result<(), Error> {
     {
         return Err(Error::Invalid("candidate submission"));
     }
-    Ok(())
+    validate_candidate_finalization(input)
 }
 
-fn validate_receipt_input(input: &QualityReceiptInput) -> Result<(), Error> {
+fn validate_candidate_finalization(input: &NewCandidate) -> Result<(), Error> {
+    match (input.final_source, input.salvage.as_ref()) {
+        (crate::quality::CandidateFinalSource::ModelFinal, None) => Ok(()),
+        (crate::quality::CandidateFinalSource::ModelFinal, Some(_)) => Err(Error::Invalid(
+            "a model final cannot carry stagnation salvage evidence",
+        )),
+        (crate::quality::CandidateFinalSource::StagnationSalvage, None) => Err(Error::Invalid(
+            "stagnation salvage requires a work-item claim",
+        )),
+        (crate::quality::CandidateFinalSource::StagnationSalvage, Some(claim)) => {
+            if claim.work_item_id.trim().is_empty() || claim.work_item_id.len() > 128 {
+                return Err(Error::Invalid("stagnation salvage work-item claim"));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Derive every salvage fact from immutable Core records. Worker-supplied
+/// booleans, counts, diff text and receipt lists are not accepted: the only
+/// Worker input is the work-item claim.
+#[allow(clippy::too_many_arguments)]
+async fn derive_salvage_evidence(
+    connection: &mut SqliteConnection,
+    input: &NewCandidate,
+    context: &CandidateContext,
+    spec: &ActionSpec,
+    candidate_commit: &str,
+    candidate_tree: &str,
+    changed: &[String],
+    diff_stat: Option<&str>,
+) -> Result<Option<CandidateSalvageEvidence>, Error> {
+    let Some(claim) = input.salvage.as_ref() else {
+        return Ok(None);
+    };
+    if claim.work_item_id != context.work_item_id {
+        return Err(Error::Forbidden(
+            "stagnation salvage work item does not match the Attempt".into(),
+        ));
+    }
+    if changed.is_empty() {
+        return Err(Error::Forbidden(
+            "stagnation salvage requires a non-empty exact candidate diff".into(),
+        ));
+    }
+    if changed.len() > 200 {
+        return Err(Error::Forbidden(
+            "stagnation salvage diff exceeds the bounded evidence limit".into(),
+        ));
+    }
+    let diff_stat = diff_stat
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            Error::Forbidden("stagnation salvage requires an exact diff summary".into())
+        })?;
+    if diff_stat.len() > 16_000 {
+        return Err(Error::Forbidden(
+            "stagnation salvage diff summary exceeds the bounded evidence limit".into(),
+        ));
+    }
+
+    if spec.checks.is_empty() {
+        return Err(Error::Forbidden(format!(
+            "{}: stagnation salvage requires at least one frozen acceptance check",
+            crate::quality::SALVAGE_EMPTY_FROZEN_CHECKS
+        )));
+    }
+    let checkpoint: Option<(String, String, i64, i64)> = sqlx::query_as::query_as(
+        "SELECT checkpoint_id,decision,stagnant_checkpoints,unsuccessful_replans
+         FROM progress_checkpoints
+         WHERE campaign_id=?1 AND work_item_id=?2 AND attempt_id=?3
+         ORDER BY rowid DESC LIMIT 1",
+    )
+    .bind(&context.campaign_id)
+    .bind(&context.work_item_id)
+    .bind(&input.attempt_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((checkpoint_id, decision, stagnant_checkpoints, unsuccessful_replans)) = checkpoint
+    else {
+        return Err(Error::Forbidden(
+            "stagnation salvage requires a durable progress diagnose for this Attempt".into(),
+        ));
+    };
+    if decision != "DIAGNOSE" {
+        return Err(Error::Forbidden(
+            "the latest durable progress decision is not Diagnose".into(),
+        ));
+    }
+    let policy_json: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT progress_policy_json FROM execution_policies WHERE policy_id=?1",
+    )
+    .bind(&context.policy_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let progress: crate::execution_policy::ProgressPolicy = policy_json
+        .map(|(value,)| serde_json::from_str(&value))
+        .transpose()
+        .map_err(|_| Error::Invalid("stored progress policy encoding"))?
+        .ok_or_else(|| {
+            Error::Forbidden("stagnation salvage has no frozen progress policy".into())
+        })?;
+    let stagnant_checkpoints = u32::try_from(stagnant_checkpoints).unwrap_or(u32::MAX);
+    let unsuccessful_replans = u32::try_from(unsuccessful_replans).unwrap_or(u32::MAX);
+    if stagnant_checkpoints < progress.diagnose_after_stagnant_checkpoints.get()
+        || unsuccessful_replans >= progress.escalate_after_unsuccessful_replans.get()
+    {
+        return Err(Error::Forbidden(
+            "durable progress counts do not meet the frozen Diagnose policy".into(),
+        ));
+    }
+
+    let (final_nudges,): (i64,) = sqlx::query_as::query_as(
+        "SELECT COUNT(*) FROM provider_tool_events e
+         JOIN provider_sessions ps ON ps.session_record_id=e.session_record_id
+         WHERE ps.attempt_id=?1 AND ps.generation=?2
+           AND e.tool='final_nudge' AND e.decision='ERROR'",
+    )
+    .bind(&input.attempt_id)
+    .bind(input.generation)
+    .fetch_one(&mut *connection)
+    .await?;
+    let final_nudges = u64::try_from(final_nudges).unwrap_or(0);
+    if final_nudges == 0 {
+        return Err(Error::Forbidden(
+            "stagnation salvage requires durable Core-recorded final-nudge evidence".into(),
+        ));
+    }
+    let (model_turns,): (i64,) = sqlx::query_as::query_as(
+        "SELECT COUNT(*) FROM provider_turn_reservations
+         WHERE attempt_id=?1 AND generation=?2 AND state='SETTLED'",
+    )
+    .bind(&input.attempt_id)
+    .bind(input.generation)
+    .fetch_one(&mut *connection)
+    .await?;
+    let model_turns = u64::try_from(model_turns).unwrap_or(0);
+    if model_turns == 0 {
+        return Err(Error::Forbidden(
+            "stagnation salvage requires a durable settled provider turn".into(),
+        ));
+    }
+
+    let rows: Vec<(String, String, String, String, String)> = sqlx::query_as::query_as(
+        "SELECT receipt_id,check_id,command_json,outcome,result_sha256
+         FROM execution_check_receipts
+         WHERE campaign_id=?1 AND attempt_id=?2 AND work_item_id=?3
+           AND generation=?4 AND candidate_commit_sha=?5 AND candidate_tree_sha=?6
+         ORDER BY rowid",
+    )
+    .bind(&context.campaign_id)
+    .bind(&input.attempt_id)
+    .bind(&context.work_item_id)
+    .bind(input.generation)
+    .bind(candidate_commit)
+    .bind(candidate_tree)
+    .fetch_all(&mut *connection)
+    .await?;
+    let mut receipts = Vec::with_capacity(spec.checks.len());
+    let frozen_ids = spec
+        .checks
+        .iter()
+        .map(|check| check.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for check in &spec.checks {
+        let matches = rows
+            .iter()
+            .filter(|(_, check_id, _, _, _)| check_id == &check.id)
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return Err(Error::Forbidden(
+                "stagnation salvage requires exactly one execution receipt per frozen check".into(),
+            ));
+        }
+        let (receipt_id, check_id, command_json, outcome, result_sha256) = matches[0];
+        let command: Vec<String> = serde_json::from_str(command_json).map_err(|_| {
+            Error::Forbidden("stagnation salvage receipt command is invalid".into())
+        })?;
+        if outcome != "PASS" || command != check.command {
+            return Err(Error::Forbidden(
+                "stagnation salvage execution receipt is not a PASS for the frozen check".into(),
+            ));
+        }
+        receipts.push(CandidateSalvageCheckReceipt {
+            check_id: check_id.clone(),
+            receipt_id: receipt_id.clone(),
+            result_sha256: result_sha256.clone(),
+        });
+    }
+    if rows.len() != spec.checks.len()
+        || rows
+            .iter()
+            .any(|(_, check_id, _, _, _)| !frozen_ids.contains(check_id.as_str()))
+    {
+        return Err(Error::Forbidden(
+            "stagnation salvage contains extra or mismatched execution receipts".into(),
+        ));
+    }
+
+    let prior: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT cd.id FROM candidates cd
+         JOIN attempts a ON a.id=cd.attempt_id
+         JOIN runs r ON r.id=a.run_id
+         LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+         LEFT JOIN lead_integrations li ON li.attempt_id=a.id
+         WHERE r.campaign_id=?1
+           AND COALESCE(lt.unit_id,li.integration_id,r.campaign_id)=?2
+           AND cd.final_source='STAGNATION_SALVAGE'
+         LIMIT 1",
+    )
+    .bind(&context.campaign_id)
+    .bind(&context.work_item_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if prior.is_some() {
+        return Err(Error::Conflict(
+            "work item already used its one stagnation salvage",
+        ));
+    }
+
+    Ok(Some(CandidateSalvageEvidence {
+        campaign_id: context.campaign_id.clone(),
+        work_item_id: context.work_item_id.clone(),
+        attempt_id: input.attempt_id.clone(),
+        model_turns,
+        final_nudges,
+        frozen_checks: u64::try_from(spec.checks.len()).unwrap_or(u64::MAX),
+        passed_checks: u64::try_from(spec.checks.len()).unwrap_or(u64::MAX),
+        written: true,
+        decision: "DIAGNOSE".into(),
+        reason: "DIAGNOSE_WITH_WRITE_AND_ALL_FROZEN_CHECKS_PASS".into(),
+        policy_id: context.policy_id.clone(),
+        authorization_id: context.authorization_id.clone(),
+        diagnose_checkpoint_id: checkpoint_id,
+        stagnant_checkpoints,
+        unsuccessful_replans,
+        diff: CandidateSalvageDiff {
+            changed_files: u64::try_from(changed.len()).unwrap_or(u64::MAX),
+            changed_paths: changed.to_vec(),
+            diff_stat: diff_stat.to_owned(),
+        },
+        check_receipts: receipts,
+    }))
+}
+
+fn validate_receipt_input(role: QualityRole, input: &QualityReceiptInput) -> Result<(), Error> {
     if input.receipt_id.trim().is_empty()
         || input.receipt_id.len() > 128
         || input.principal_id.trim().is_empty()
@@ -759,6 +1210,11 @@ fn validate_receipt_input(input: &QualityReceiptInput) -> Result<(), Error> {
         || !is_git_oid(&input.tree_sha)
     {
         return Err(Error::Invalid("quality receipt"));
+    }
+    if role == QualityRole::Verifier && input.reviewer_role.is_some() {
+        return Err(Error::Invalid(
+            "a verifier receipt cannot claim a reviewer role",
+        ));
     }
     crate::semantic_review::validate_findings(&input.findings)
         .map_err(|_| Error::Invalid("quality receipt findings"))?;
@@ -870,6 +1326,16 @@ async fn ensure_receipt_available(
                 "candidate already has this reviewer's independent receipt",
             ));
         }
+        QualityRole::Reviewer
+            if input.reviewer_role.is_some()
+                && existing
+                    .iter()
+                    .any(|receipt| receipt.reviewer_role == input.reviewer_role) =>
+        {
+            return Err(Error::Conflict(
+                "candidate already has a receipt for this reviewer role",
+            ));
+        }
         _ => {}
     }
     let other_role = match role {
@@ -882,6 +1348,62 @@ async fn ensure_receipt_available(
         return Err(Error::Forbidden(
             "verifier and reviewer must be independent principals".into(),
         ));
+    }
+    Ok(())
+}
+
+/// Create the durable OPEN disposition for every reviewer finding. A finding
+/// without a disposition can never be treated as closed.
+async fn ensure_finding_dispositions(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+    findings: &[crate::review::ReviewFinding],
+    reviewer_principal: &str,
+) -> Result<(), Error> {
+    if findings.is_empty() {
+        return Ok(());
+    }
+    let request: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT ir.id
+         FROM candidates cd
+         JOIN attempts a ON a.id=cd.attempt_id
+         JOIN runs r ON r.id=a.run_id
+         JOIN intake_requests ir ON ir.campaign_id=r.campaign_id
+         WHERE cd.id=?1
+         LIMIT 1",
+    )
+    .bind(candidate_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((request_id,)) = request else {
+        return Ok(());
+    };
+    let now = Utc::now().to_rfc3339();
+    for finding in findings {
+        let disposition = crate::planning::findings::open_disposition(
+            finding,
+            &request_id,
+            candidate_id,
+            reviewer_principal,
+        );
+        let evidence_refs_json = serde_json::to_string(&disposition.evidence_refs)
+            .map_err(|_| Error::Invalid("finding evidence encoding"))?;
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO finding_dispositions
+             (id,request_id,candidate_id,finding_id,route,status,reviewer_principal,
+              resolved_by,evidence_refs_json,owner_decision,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,'OPEN',?6,'',?7,NULL,?8,?8)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&disposition.request_id)
+        .bind(candidate_id)
+        .bind(&disposition.finding_id)
+        .bind(crate::planning::findings::route_code(disposition.route))
+        .bind(reviewer_principal)
+        .bind(evidence_refs_json)
+        .bind(&now)
+        .execute(&mut *connection)
+        .await?;
     }
     Ok(())
 }
@@ -900,6 +1422,7 @@ async fn insert_receipt(
         candidate_id: candidate_id.to_owned(),
         role,
         principal_id: input.principal_id.clone(),
+        reviewer_role: input.reviewer_role,
         action_spec_sha256: input.action_spec_sha256.clone(),
         commit_sha: candidate.commit_sha.clone(),
         tree_sha: candidate.tree_sha.clone(),
@@ -920,16 +1443,22 @@ async fn insert_receipt(
     };
     sqlx::query::query(
         "INSERT INTO quality_receipts
-         (receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
-          result,evidence,findings_json,mechanism,model_provider,model_name,
+         (receipt_id,candidate_id,role,principal_id,reviewer_role,action_spec_sha256,commit_sha,
+          tree_sha,result,evidence,findings_json,mechanism,model_provider,model_name,
           model_reservation_id,model_request_sha256,input_tokens,output_tokens,total_tokens,
           cost_micros,usage_known,received_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
     )
     .bind(&receipt.receipt_id)
     .bind(&receipt.candidate_id)
     .bind(role.as_str())
     .bind(&receipt.principal_id)
+    .bind(
+        receipt
+            .reviewer_role
+            .map(|role| role.as_str())
+            .unwrap_or(""),
+    )
     .bind(&receipt.action_spec_sha256)
     .bind(&receipt.commit_sha)
     .bind(&receipt.tree_sha)
@@ -952,6 +1481,15 @@ async fn insert_receipt(
     .bind(&receipt.received_at)
     .execute(&mut *connection)
     .await?;
+    if role == QualityRole::Reviewer {
+        ensure_finding_dispositions(
+            connection,
+            candidate_id,
+            &receipt.findings,
+            &receipt.principal_id,
+        )
+        .await?;
+    }
     record_event(
         connection,
         candidate_id,
@@ -1223,51 +1761,205 @@ async fn reviewer_selection_for_candidate(
     reviewer_selection_for_candidate_in_tx(connection, candidate_id).await
 }
 
+#[derive(Debug, Clone, Default)]
+struct ReviewerRequirement {
+    count: usize,
+    roles: Vec<crate::planning::ReviewerRole>,
+    assignments: BTreeMap<crate::planning::ReviewerRole, String>,
+}
+
+type ReviewerRequirementRow = (i64, Option<String>, Option<String>, Option<String>);
+
+impl ReviewerRequirement {
+    /// A multi-role Gate may only count receipts when the frozen plan binds
+    /// exactly the required role set to principals. An empty assignment set is
+    /// valid only for a legacy plan with no required roles.
+    fn assignments_match_roles(&self) -> bool {
+        if self.roles.is_empty() {
+            return self.assignments.is_empty();
+        }
+        self.assignments.len() == self.roles.len()
+            && self
+                .roles
+                .iter()
+                .all(|role| self.assignments.contains_key(role))
+    }
+}
+
+fn unique_roles(
+    roles: impl IntoIterator<Item = crate::planning::ReviewerRole>,
+) -> Vec<crate::planning::ReviewerRole> {
+    let mut seen = std::collections::BTreeSet::new();
+    roles
+        .into_iter()
+        .filter(|role| seen.insert(*role))
+        .collect()
+}
+
 async fn reviewer_requirement_for_candidate(
     connection: &mut SqliteConnection,
     candidate_id: &str,
-) -> Result<usize, Error> {
-    let required: Option<(i64,)> = sqlx::query_as::query_as(
+) -> Result<ReviewerRequirement, Error> {
+    let row: Option<ReviewerRequirementRow> = sqlx::query_as::query_as(
         "SELECT COALESCE(
-           (SELECT rr.reviewer_count FROM campaign_review_requirements rr
-            WHERE rr.campaign_id=c.id),
-           (SELECT pp.reviewer_count FROM intake_requests ir
-            JOIN agentic_participant_plans pp ON pp.request_id=ir.id
-            WHERE ir.campaign_id=c.id),
-           1)
-         FROM candidates cd
-         JOIN attempts a ON a.id=cd.attempt_id
-         JOIN runs r ON r.id=a.run_id
-         JOIN campaigns c ON c.id=r.campaign_id
-         WHERE cd.id=?1",
+               (SELECT rr.reviewer_count FROM campaign_review_requirements rr
+                WHERE rr.campaign_id=c.id),
+               (SELECT pp.reviewer_count FROM intake_requests ir
+                JOIN agentic_participant_plans pp ON pp.request_id=ir.id
+                WHERE ir.campaign_id=c.id),
+               1),
+               (SELECT rr.required_roles_json FROM campaign_review_requirements rr
+                WHERE rr.campaign_id=c.id),
+               (SELECT rr.required_assignments_json FROM campaign_review_requirements rr
+                WHERE rr.campaign_id=c.id),
+               (SELECT pp.plan_json FROM intake_requests ir
+                JOIN agentic_participant_plans pp ON pp.request_id=ir.id
+                WHERE ir.campaign_id=c.id)
+             FROM candidates cd
+             JOIN attempts a ON a.id=cd.attempt_id
+             JOIN runs r ON r.id=a.run_id
+             JOIN campaigns c ON c.id=r.campaign_id
+             WHERE cd.id=?1",
     )
     .bind(candidate_id)
     .fetch_optional(&mut *connection)
     .await?;
-    let required = required.map(|(value,)| value).unwrap_or(1);
-    Ok(usize::try_from(required).unwrap_or(1).max(1))
+    let (stored_count, roles_json, assignments_json, plan_json) =
+        row.unwrap_or((1, None, None, None));
+    let mut requirement = ReviewerRequirement {
+        count: usize::try_from(stored_count).unwrap_or(1).max(1),
+        ..ReviewerRequirement::default()
+    };
+    if let Some(roles_json) = roles_json
+        && let Ok(values) = serde_json::from_str::<Vec<String>>(&roles_json)
+    {
+        requirement.roles = unique_roles(
+            values
+                .iter()
+                .filter_map(|value| crate::planning::ReviewerRole::parse(value)),
+        );
+    }
+    if let Some(assignments_json) = assignments_json
+        && let Ok(assignments) = serde_json::from_str::<
+            Vec<crate::review_roles::ReviewerIdentityAssignment>,
+        >(&assignments_json)
+    {
+        requirement.assignments = assignments
+            .into_iter()
+            .map(|assignment| (assignment.role, assignment.principal_id))
+            .collect();
+    }
+    if let Some(plan_json) = plan_json
+        && let Ok(plan) = serde_json::from_str::<crate::agentic::ParticipantPlan>(&plan_json)
+    {
+        if requirement.roles.is_empty() {
+            requirement.roles = unique_roles(plan.reviewer_roles);
+        }
+        if requirement.assignments.is_empty() {
+            requirement.assignments = plan
+                .reviewer_assignments
+                .into_iter()
+                .map(|assignment| (assignment.role, assignment.principal_id))
+                .collect();
+        }
+    }
+    requirement.count = requirement.count.max(requirement.roles.len());
+    Ok(requirement)
 }
 
-async fn decide_gate(
+/// Informational findings on a passing, executed review are observations.
+/// They remain durable in the receipt and disposition ledger, but they never
+/// block acceptance; warning and higher severities keep their existing rules.
+fn informational_observation(
+    reviewer: &QualityReceiptRecord,
+    finding: &crate::review::ReviewFinding,
+) -> bool {
+    reviewer.result == ReceiptResult::Pass
+        && reviewer.evidence == EvidenceKind::Executed
+        && finding.severity == crate::review::FindingSeverity::Info
+}
+
+/// Repair authorization consumes actionable findings only. The observation
+/// exception is deliberately receipt-aware: Info remains actionable on a
+/// non-PASS or non-EXECUTED receipt, exactly as before the observation rule.
+fn is_actionable_finding(
+    reviewer: &QualityReceiptRecord,
+    finding: &crate::review::ReviewFinding,
+) -> bool {
+    !informational_observation(reviewer, finding)
+}
+
+fn actionable_findings(reviewer: &QualityReceiptRecord) -> Vec<crate::review::ReviewFinding> {
+    reviewer
+        .findings
+        .iter()
+        .filter(|finding| is_actionable_finding(reviewer, finding))
+        .cloned()
+        .collect()
+}
+
+struct EvaluatedGate {
+    decision: crate::quality::GateDecision,
+    verifier: QualityReceiptRecord,
+    reviewers: Vec<QualityReceiptRecord>,
+}
+
+async fn evaluate_gate_decision(
     connection: &mut SqliteConnection,
     candidate_id: &str,
     candidate: &CandidateRecord,
-) -> Result<Option<GateRecord>, Error> {
+) -> Result<Option<EvaluatedGate>, Error> {
     let verifier = load_receipt_by_role(connection, candidate_id, QualityRole::Verifier).await?;
     let Some(verifier) = verifier.as_ref() else {
         return Ok(None);
     };
     let reviewer_records =
         load_receipts_by_role(connection, candidate_id, QualityRole::Reviewer).await?;
-    let required_reviewers = reviewer_requirement_for_candidate(connection, candidate_id).await?;
+    let requirement = reviewer_requirement_for_candidate(connection, candidate_id).await?;
     let reviewer_failed = reviewer_records.iter().any(|receipt| {
         matches!(
             receipt.result,
             ReceiptResult::Fail | ReceiptResult::ChangesRequested
         )
     });
+    let assignment_set_invalid = !requirement.assignments_match_roles();
+    let mut principals = std::collections::BTreeSet::new();
+    let mut covered_roles = std::collections::BTreeSet::new();
+    let mut assignment_mismatch = false;
+    let mut unrequired_role = false;
+    let mut roleless_receipt = false;
+    for receipt in &reviewer_records {
+        // The same principal never counts twice, even if historical or
+        // malformed rows exist.
+        principals.insert(receipt.principal_id.as_str());
+        let Some(role) = receipt.reviewer_role else {
+            // A legacy receipt with no role cannot be silently included once
+            // the frozen plan requires role coverage.
+            if !requirement.roles.is_empty() {
+                roleless_receipt = true;
+            }
+            continue;
+        };
+        if !requirement.roles.is_empty() && !requirement.roles.contains(&role) {
+            // A historical or foreign receipt for a role outside the frozen
+            // plan is not ignored: it makes the Gate fail closed. A legacy
+            // candidate with no frozen role requirement accepts any role.
+            unrequired_role = true;
+            continue;
+        }
+        if let Some(expected) = requirement.assignments.get(&role)
+            && expected != &receipt.principal_id
+        {
+            assignment_mismatch = true;
+        }
+        covered_roles.insert(role);
+    }
+    let coverage_ok = !assignment_set_invalid
+        && !assignment_mismatch
+        && principals.len() >= requirement.count
+        && covered_roles.len() >= requirement.roles.len();
 
-    let policy = load_gate_policy(connection, candidate_id).await?;
+    let (policy, risk_class) = load_gate_policy(connection, candidate_id).await?;
     let reviewer_values = reviewer_records
         .iter()
         .map(to_reviewer_receipt)
@@ -1287,11 +1979,38 @@ async fn decide_gate(
         &reviewer_refs,
         policy,
     );
+    if !reviewer_records.is_empty() && assignment_set_invalid {
+        decision = crate::quality::GateDecision {
+            outcome: GateOutcome::Blocked,
+            reasons: vec![
+                "reviewer plan does not bind every required role to an authenticated principal"
+                    .into(),
+            ],
+        };
+    } else if !reviewer_records.is_empty() && unrequired_role {
+        decision = crate::quality::GateDecision {
+            outcome: GateOutcome::Blocked,
+            reasons: vec!["reviewer receipt role is not required by the frozen plan".into()],
+        };
+    } else if !reviewer_records.is_empty() && roleless_receipt {
+        decision = crate::quality::GateDecision {
+            outcome: GateOutcome::Blocked,
+            reasons: vec![
+                "reviewer receipt has no role while the frozen plan requires role coverage".into(),
+            ],
+        };
+    } else if !reviewer_records.is_empty() && assignment_mismatch {
+        decision = crate::quality::GateDecision {
+            outcome: GateOutcome::Blocked,
+            reasons: vec!["reviewer principal does not match the frozen role assignment".into()],
+        };
+    }
     // A passing reviewer set waits until the deterministic plan's reviewer
-    // requirement is satisfied, so an incoming independent reviewer cannot be
-    // invalidated by an early Gate. A failing verifier or reviewer, malformed
-    // evidence or an unknown receipt still decides immediately.
-    if reviewer_records.len() < required_reviewers && !reviewer_failed {
+    // count and required role coverage are satisfied, so an incoming
+    // independent reviewer cannot be invalidated by an early Gate. A failing
+    // verifier or reviewer, malformed evidence or an unknown receipt still
+    // decides immediately.
+    if !coverage_ok && !reviewer_failed {
         let only_missing_reviewer = decision.outcome == GateOutcome::NotTested
             && decision
                 .reasons
@@ -1330,6 +2049,48 @@ async fn decide_gate(
                 reasons: vec!["reviewer approval contradicts a blocking finding".into()],
             };
         }
+    }
+    // Every reviewer finding is a durable disposition. A missing or OPEN
+    // disposition blocks acceptance even when the reviewer receipt itself
+    // passed; the finding must be repaired, resolved with evidence or refuted
+    // by an authenticated owner. Informational findings on a passing, executed
+    // review are observations: they remain visible in the receipt and
+    // disposition ledger but do not block an otherwise accepted Gate.
+    let mut open_findings = 0usize;
+    let mut observations = 0usize;
+    for reviewer in &reviewer_records {
+        for finding in &reviewer.findings {
+            if informational_observation(reviewer, finding) {
+                observations += 1;
+                continue;
+            }
+            let status: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT status FROM finding_dispositions
+                 WHERE candidate_id=?1 AND finding_id=?2",
+            )
+            .bind(candidate_id)
+            .bind(&finding.id)
+            .fetch_optional(&mut *connection)
+            .await?;
+            let closed = matches!(
+                status.as_ref().map(|(status,)| status.as_str()),
+                Some("RESOLVED") | Some("REFUTED")
+            );
+            if !closed {
+                open_findings += 1;
+            }
+        }
+    }
+    if open_findings > 0 && decision.outcome == GateOutcome::Accepted {
+        decision = crate::quality::GateDecision {
+            outcome: GateOutcome::RepairRequired,
+            reasons: vec![format!("{open_findings} reviewer finding(s) remain open")],
+        };
+    }
+    if observations > 0 && decision.outcome == GateOutcome::Accepted {
+        decision.reasons.push(format!(
+            "{observations} informational reviewer finding(s) recorded as observations"
+        ));
     }
     match reviewer_selection_for_candidate_in_tx(connection, candidate_id).await {
         Ok(ReviewerSelection::Deterministic) => {
@@ -1384,10 +2145,30 @@ async fn decide_gate(
     {
         return Ok(None);
     }
+    decision = crate::quality::apply_salvage_review_policy(
+        decision,
+        candidate.final_source,
+        risk_class.as_deref(),
+    );
+    Ok(Some(EvaluatedGate {
+        decision,
+        verifier: verifier.clone(),
+        reviewers: reviewer_records,
+    }))
+}
+
+async fn decide_gate(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+    candidate: &CandidateRecord,
+) -> Result<Option<GateRecord>, Error> {
+    let Some(evaluated) = evaluate_gate_decision(connection, candidate_id, candidate).await? else {
+        return Ok(None);
+    };
     let gate = GateRecord {
         candidate_id: candidate_id.to_owned(),
-        outcome: decision.outcome,
-        reasons: decision.reasons,
+        outcome: evaluated.decision.outcome,
+        reasons: evaluated.decision.reasons,
         decided_at: Utc::now().to_rfc3339(),
     };
     let reasons_json = serde_json::to_string(&gate.reasons).expect("gate reasons are serializable");
@@ -1398,7 +2179,7 @@ async fn decide_gate(
         .bind(&gate.decided_at)
         .execute(&mut *connection)
         .await?;
-    for reviewer in &reviewer_records {
+    for reviewer in &evaluated.reviewers {
         sqlx::query::query(
             "INSERT OR IGNORE INTO gate_decision_reviewers (candidate_id,reviewer_receipt_id)
              VALUES (?1,?2)",
@@ -1415,6 +2196,75 @@ async fn decide_gate(
         &format!("outcome={:?}", gate.outcome),
     )
     .await?;
+    project_gate_to_run(connection, candidate_id, &gate).await?;
+    if let Some(reviewer) = evaluated.reviewers.iter().find(|reviewer| {
+        reviewer
+            .findings
+            .iter()
+            .any(|finding| is_actionable_finding(reviewer, finding))
+    }) {
+        record_gate_repair_authorization(
+            connection,
+            &gate,
+            candidate,
+            reviewer,
+            &evaluated.verifier,
+        )
+        .await?;
+    }
+    Ok(Some(gate))
+}
+
+async fn reevaluate_gate_for_candidate_in_tx(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+) -> Result<Option<GateRecord>, Error> {
+    let candidate = load_candidate(connection, candidate_id).await?;
+    let Some(current) = load_gate(connection, candidate_id).await? else {
+        return Ok(None);
+    };
+    let Some(evaluated) = evaluate_gate_decision(connection, candidate_id, &candidate).await?
+    else {
+        return Ok(Some(current));
+    };
+    if current.outcome == evaluated.decision.outcome
+        && current.reasons == evaluated.decision.reasons
+    {
+        return Ok(Some(current));
+    }
+    let gate = GateRecord {
+        candidate_id: candidate_id.to_owned(),
+        outcome: evaluated.decision.outcome,
+        reasons: evaluated.decision.reasons,
+        decided_at: Utc::now().to_rfc3339(),
+    };
+    let reasons_json = serde_json::to_string(&gate.reasons).expect("gate reasons are serializable");
+    sqlx::query::query(
+        "INSERT INTO gate_decision_revisions (candidate_id,outcome,reasons_json,decided_at)
+         VALUES (?1,?2,?3,?4)",
+    )
+    .bind(&gate.candidate_id)
+    .bind(gate_outcome_str(gate.outcome))
+    .bind(reasons_json)
+    .bind(&gate.decided_at)
+    .execute(&mut *connection)
+    .await?;
+    record_event(
+        connection,
+        candidate_id,
+        "quality.gate_reevaluated",
+        &format!("outcome={:?}", gate.outcome),
+    )
+    .await?;
+    project_gate_to_run(connection, candidate_id, &gate).await?;
+    Ok(Some(gate))
+}
+
+async fn project_gate_to_run(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+    gate: &GateRecord,
+) -> Result<(), Error> {
     let run: Option<(String,)> = sqlx::query_as::query_as(
         "SELECT r.id FROM candidates cd
          JOIN attempts a ON a.id=cd.attempt_id
@@ -1446,10 +2296,7 @@ async fn decide_gate(
         )
         .await?;
     }
-    if let Some(reviewer) = reviewer_records.first() {
-        record_gate_repair_authorization(connection, &gate, candidate, reviewer, verifier).await?;
-    }
-    Ok(Some(gate))
+    Ok(())
 }
 
 struct RepairContext {
@@ -1522,14 +2369,15 @@ async fn record_gate_repair_authorization(
     reviewer: &QualityReceiptRecord,
     verifier: &QualityReceiptRecord,
 ) -> Result<(), Error> {
+    let findings = actionable_findings(reviewer);
     if !matches!(
         gate.outcome,
         GateOutcome::RepairRequired | GateOutcome::HumanRequired
-    ) || reviewer.findings.is_empty()
+    ) || findings.is_empty()
     {
         return Ok(());
     }
-    let score = match autonomy::score_findings(&reviewer.findings) {
+    let score = match autonomy::score_findings(&findings) {
         Ok(score) => score,
         Err(_) => return Ok(()),
     };
@@ -1537,7 +2385,7 @@ async fn record_gate_repair_authorization(
     let decision = autonomy::authorize_repair(&RepairRequest {
         risk_class: &context.risk_class,
         policy: &context.autonomy,
-        findings: &reviewer.findings,
+        findings: &findings,
         reviewer_result: reviewer.result,
         reviewer_evidence_executed: reviewer.evidence == EvidenceKind::Executed,
         reviewer_principal: &reviewer.principal_id,
@@ -1616,9 +2464,10 @@ type CandidateColumns = (
     String,
     i64,
     String,
+    String,
 );
 
-fn candidate_from_columns(columns: CandidateColumns) -> CandidateRecord {
+fn candidate_from_columns(columns: CandidateColumns) -> Result<CandidateRecord, Error> {
     let (
         id,
         attempt_id,
@@ -1629,8 +2478,9 @@ fn candidate_from_columns(columns: CandidateColumns) -> CandidateRecord {
         created_at,
         integration,
         lineage,
+        final_source,
     ) = columns;
-    CandidateRecord {
+    Ok(CandidateRecord {
         id,
         attempt_id,
         action_spec_sha256,
@@ -1640,7 +2490,9 @@ fn candidate_from_columns(columns: CandidateColumns) -> CandidateRecord {
         created_at,
         integration: integration == 1,
         lineage: serde_json::from_str(&lineage).unwrap_or_default(),
-    }
+        final_source: crate::quality::CandidateFinalSource::parse(&final_source)
+            .ok_or(Error::Invalid("stored candidate final source"))?,
+    })
 }
 
 async fn load_candidate(
@@ -1649,13 +2501,15 @@ async fn load_candidate(
 ) -> Result<CandidateRecord, Error> {
     let row: Option<CandidateColumns> = sqlx::query_as::query_as(
         "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,
-                integration,lineage_json
+                integration,lineage_json,final_source
          FROM candidates WHERE id=?1",
     )
     .bind(id)
     .fetch_optional(connection)
     .await?;
-    row.map(candidate_from_columns).ok_or(Error::NotFound)
+    row.map(candidate_from_columns)
+        .transpose()?
+        .ok_or(Error::NotFound)
 }
 
 async fn load_candidate_for_attempt(
@@ -1664,17 +2518,18 @@ async fn load_candidate_for_attempt(
 ) -> Result<Option<CandidateRecord>, Error> {
     let row: Option<CandidateColumns> = sqlx::query_as::query_as(
         "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,
-                integration,lineage_json
+                integration,lineage_json,final_source
          FROM candidates WHERE attempt_id=?1",
     )
     .bind(attempt_id)
     .fetch_optional(connection)
     .await?;
-    Ok(row.map(candidate_from_columns))
+    row.map(candidate_from_columns).transpose()
 }
 
 fn receipt_from_row(row: &SqliteRow) -> Result<QualityReceiptRecord, Error> {
     let role: String = row.try_get("role")?;
+    let reviewer_role: String = row.try_get("reviewer_role")?;
     let result: String = row.try_get("result")?;
     let evidence: String = row.try_get("evidence")?;
     let findings: String = row.try_get("findings_json")?;
@@ -1690,6 +2545,14 @@ fn receipt_from_row(row: &SqliteRow) -> Result<QualityReceiptRecord, Error> {
         role: parse_role(&role)
             .map_err(|()| Error::Invalid("stored quality receipt role is invalid"))?,
         principal_id: row.try_get("principal_id")?,
+        reviewer_role: if reviewer_role.is_empty() {
+            None
+        } else {
+            Some(
+                crate::planning::ReviewerRole::parse(&reviewer_role)
+                    .ok_or(Error::Invalid("stored reviewer role is invalid"))?,
+            )
+        },
         action_spec_sha256: row.try_get("action_spec_sha256")?,
         commit_sha: row.try_get("commit_sha")?,
         tree_sha: row.try_get("tree_sha")?,
@@ -1724,9 +2587,9 @@ async fn load_receipt_by_id(
     receipt_id: &str,
 ) -> Result<Option<QualityReceiptRecord>, Error> {
     let row = sqlx::query::query(
-        "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
-                result,evidence,findings_json,mechanism,model_provider,model_name,
-                model_reservation_id,model_request_sha256,input_tokens,output_tokens,
+        "SELECT receipt_id,candidate_id,role,principal_id,reviewer_role,action_spec_sha256,
+                commit_sha,tree_sha,result,evidence,findings_json,mechanism,model_provider,
+                model_name,model_reservation_id,model_request_sha256,input_tokens,output_tokens,
                 total_tokens,cost_micros,usage_known,received_at
          FROM quality_receipts WHERE receipt_id=?1",
     )
@@ -1742,9 +2605,9 @@ async fn load_receipts_by_role(
     role: QualityRole,
 ) -> Result<Vec<QualityReceiptRecord>, Error> {
     let rows = sqlx::query::query(
-        "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
-                result,evidence,findings_json,mechanism,model_provider,model_name,
-                model_reservation_id,model_request_sha256,input_tokens,output_tokens,
+        "SELECT receipt_id,candidate_id,role,principal_id,reviewer_role,action_spec_sha256,
+                commit_sha,tree_sha,result,evidence,findings_json,mechanism,model_provider,
+                model_name,model_reservation_id,model_request_sha256,input_tokens,output_tokens,
                 total_tokens,cost_micros,usage_known,received_at
          FROM quality_receipts WHERE candidate_id=?1 AND role=?2
          ORDER BY received_at ASC,receipt_id ASC",
@@ -1769,6 +2632,7 @@ async fn load_receipt_by_role(
 
 fn receipt_matches(existing: &QualityReceiptRecord, input: &QualityReceiptInput) -> bool {
     existing.principal_id == input.principal_id
+        && existing.reviewer_role == input.reviewer_role
         && existing.action_spec_sha256 == input.action_spec_sha256
         && existing.commit_sha.eq_ignore_ascii_case(&input.commit_sha)
         && existing.tree_sha.eq_ignore_ascii_case(&input.tree_sha)
@@ -1792,7 +2656,7 @@ async fn load_gate(
     candidate_id: &str,
 ) -> Result<Option<GateRecord>, Error> {
     let row: Option<(String, String, String)> = sqlx::query_as::query_as(
-        "SELECT outcome,reasons_json,decided_at FROM gate_decisions WHERE candidate_id=?1",
+        "SELECT outcome,reasons_json,decided_at FROM gate_decisions_current WHERE candidate_id=?1",
     )
     .bind(candidate_id)
     .fetch_optional(connection)
@@ -1813,7 +2677,7 @@ async fn load_gate(
 async fn load_gate_policy(
     connection: &mut SqliteConnection,
     candidate_id: &str,
-) -> Result<GatePolicy, Error> {
+) -> Result<(GatePolicy, Option<String>), Error> {
     let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as::query_as(
         "SELECT c.status,ca.risk_class,ca.execution_mode FROM candidates cd
          JOIN attempts a ON a.id=cd.attempt_id
@@ -1833,16 +2697,19 @@ async fn load_gate_policy(
         ("BLOCKED_AUTHORIZATION", _) => AuthorizationStatus::HumanApprovalRequired,
         _ => AuthorizationStatus::Denied,
     };
-    let risk = match risk.as_deref() {
+    let risk_status = match risk.as_deref() {
         Some("R0") => RiskStatus::WithinPolicy,
         Some("R1") => RiskStatus::HumanApprovalRequired,
         Some("R2" | "R3") => RiskStatus::ExceedsPolicy,
         _ => RiskStatus::Unknown,
     };
-    Ok(GatePolicy {
-        authorization,
+    Ok((
+        GatePolicy {
+            authorization,
+            risk: risk_status,
+        },
         risk,
-    })
+    ))
 }
 
 fn to_verifier_receipt(record: &QualityReceiptRecord) -> VerifierReceipt {

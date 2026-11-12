@@ -148,6 +148,12 @@ export const en = {
   "home.projectFallback": "Project {id}",
   "home.project.label": "Project",
   "home.project.select": "Select a Project",
+  "home.environmentConstraints.summary": "Environment constraints (optional)",
+  "home.environmentConstraints.help":
+    "Optional JSON for the generated Nix/devenv environment: nixpkgs, toolchains, packages, services, browsers and resources. Core validates it; unknown fields are rejected. Committed conventions take precedence.",
+  "home.environmentConstraints.label": "Environment constraints JSON",
+  "home.environmentConstraints.invalid":
+    "Enter a JSON object with supported environment constraint fields.",
   "home.objective.label": "Your instruction to the Lead",
   "home.objective.placeholder":
     "Describe what you want to build, fix or improve…",
@@ -351,6 +357,8 @@ export const en = {
   "request.notice.approved":
     "Core recorded the approval. Execution state is shown from the refreshed projection.",
   "request.notice.message": "Message recorded by Core.",
+  "request.notice.followUpStarted":
+    "Core recorded the message and created one follow-up request.",
   "request.notice.cancelled":
     "Core recorded the request cancellation. This does not cancel an authorized Campaign.",
   "request.next.title": "Next step",
@@ -395,6 +403,25 @@ export const en = {
   "request.approval.approve": "Approve frozen plan and start",
   "request.approval.disabled":
     "Approval is disabled until Core can derive the authorization.",
+  "request.approval.planningDisabled":
+    "Complete the plan review in the Director before approval.",
+  "request.planning.incompleteTitle": "Plan review incomplete",
+  "request.planning.incompleteBody":
+    "Core requires the planning artifacts and the participant plan before this frozen plan can start.",
+  "request.planning.missingArtifacts": "Missing artifacts: {values}.",
+  "request.planning.participantMissing":
+    "The participant plan is not recorded. Compile the plan and record the participant plan in the Director.",
+  "request.planning.participantIncomplete":
+    "The participant plan does not match the frozen reviewer plan: {values}.",
+  "request.planning.participantAssignments": "reviewer role assignments",
+  "request.planning.reviewPending":
+    "The plan review is awaiting the owner decision. Approve the exact plan revision in the Director before starting.",
+  "request.planning.reviewNotApproved":
+    "The latest plan review is {status}; the plan cannot start until an approved review binds the current revision.",
+  "request.planning.openDirector":
+    "Open Director plan review (Compile plan / Record participant plan)",
+  "request.planning.unavailable":
+    "Core did not report plan-review readiness. Reload this request before approving.",
   "request.execution.title": "Execution",
   "request.execution.description":
     "Core reports an authorized Campaign. Campaign, Run, candidate and Quality Gate state remain separate facts and are shown in the Campaign workspace.",
@@ -440,6 +467,24 @@ export const en = {
     "The executable plan is frozen. Core does not accept amendments here; start a new request to change the objective or plan.",
   "request.conversation.terminal":
     "Core reports this request as terminal, so new messages are not offered here.",
+  "request.conversation.followUpDescription":
+    "This thread is complete. Sending a message starts one new follow-up request in the same Project and profile. It receives a fresh assessment, plan, environment/spec freeze and Campaign; it never reuses the parent plan, candidate or Campaign.",
+  "request.conversation.followUpLabel": "Start a follow-up request",
+  "request.conversation.followUpPlaceholder":
+    "Describe the next objective for the follow-up",
+  "request.conversation.startFollowUp": "Start follow-up",
+  "request.conversation.followUpCreated":
+    "Core created the follow-up request with state",
+  "request.conversation.followUpExists":
+    "This thread already has one follow-up request. Continue in the follow-up.",
+  "request.conversation.openFollowUp": "Open follow-up",
+  "request.followUp.policyRequired":
+    "Core refused the follow-up: the parent owner-confirmed execution policy no longer matches this Project, profile or scope. Re-enable execution policy or start a new request; Core will not reuse another principal's grant.",
+  "request.followUp.exists":
+    "This thread already has a follow-up request. Open it to continue.",
+  "request.followUp.principalMismatch":
+    "Core refused the follow-up: only the principal that confirmed the parent execution policy may continue it. Core will not reuse another principal's grant; continue with the original principal or start a new request.",
+  "request.conversation.followUpFrom": "Follow-up from",
   "request.details.title": "Request details",
   "request.details.request": "Request",
   "request.details.project": "Project",
@@ -477,6 +522,125 @@ export const en = {
   "request.assessment.footnote":
     "Assessment is model-assisted judgment. Core policy, the frozen plan and the authorization remain authoritative.",
   "request.values.noneRecorded": "None recorded",
+
+  "environment.title": "Environment plan",
+  "environment.none": "No environment plan",
+  "environment.required": "Required for execution",
+  "environment.emptyTitle": "No environment plan recorded",
+  "environment.emptyDescription":
+    "Core compiles the environment from the exact base commit before Campaign authorization. Execution and checks are refused without a frozen plan; no language image is substituted.",
+  "environment.planId": "Plan id",
+  "environment.planHash": "Plan SHA-256",
+  "environment.revision": "Revision",
+  "environment.risk": "Risk class",
+  "environment.source": "Source",
+  "environment.baseCommit": "Base commit",
+  "environment.conventionsHash": "Conventions SHA-256",
+  "environment.blockers.title": "Environment blockers",
+  "environment.constraints.action":
+    "Add explicit environment constraints (nixpkgs, packages, services, browsers or resources) to a new request, or commit a pinned project environment.",
+  "environment.recompile.title": "Recompile plan or environment",
+  "environment.recompile.description":
+    "Create a new immutable revision before execution is bound. The previous plan, environment and spec rows remain unchanged; the new environment must be reviewed by the Lead again.",
+  "environment.recompile.rationaleLabel": "Operator rationale",
+  "environment.recompile.rationalePlaceholder":
+    "Why is a new revision required?",
+  "environment.recompile.rationaleHelp":
+    "8–2000 characters. The rationale and previous/new revisions are recorded in the audit log.",
+  "environment.recompile.planAction": "Recompile plan",
+  "environment.recompile.environmentAction": "Recompile environment",
+  "environment.recompile.planHelp":
+    "Re-runs stack selection and recompiles the plan, environment, skills and DoD from the stored WorkGraph. It cannot silently replace a bound specification or executing Campaign.",
+  "environment.recompile.environmentHelp":
+    "Recompiles only the environment from the current recorded stack proposal and request constraints. The plan artifacts remain unchanged.",
+  "environment.recompile.auditNote":
+    "This is an explicit operator action, not an automatic retry. It records the prior status/revision/spec hash and the actor.",
+  "environment.recompile.bound":
+    "A Campaign or authored specification is already bound to this request. Recompile is hidden because it cannot replace an executing environment or an owner decision.",
+  "environment.recompile.planSuccess":
+    "A new plan revision was compiled. Review it before execution.",
+  "environment.recompile.environmentSuccess":
+    "A new environment revision was compiled. It requires Lead review before execution.",
+  "environment.recompile.error": "The recompile failed.",
+  "environment.yes": "Yes",
+  "environment.no": "No",
+  "environment.detection.title": "Detection evidence",
+  "environment.detection.description":
+    "Committed manifests, lockfiles, environment pins and CI commands from the exact base commit. The working tree and model text are not evidence.",
+  "environment.detection.empty": "No committed convention files were detected.",
+  "environment.detection.caption": "Committed project convention evidence",
+  "environment.detection.path": "Path",
+  "environment.detection.kind": "Kind",
+  "environment.detection.precedence": "Precedence",
+  "environment.detection.pins": "Pins",
+  "environment.conflicts.title": "Conflicting conventions",
+  "environment.selected.title": "Selected environment",
+  "environment.selected.toolchains": "Toolchains",
+  "environment.selected.packages": "Packages",
+  "environment.selected.services": "Services",
+  "environment.selected.browsers": "Browsers",
+  "environment.selected.none": "None",
+  "environment.selected.nixpkgs": "Pinned nixpkgs",
+  "environment.selected.allowUnfree": "allowUnfree",
+  "environment.selected.resources": "Resource limits",
+  "environment.selected.resourceValue":
+    "{cpu} CPU · {memory} MiB memory · {timeout}s build timeout",
+  "environment.selected.network": "Network policy",
+  "environment.license.title": "License gate",
+  "environment.license.description":
+    "Every declared package carries an SPDX expression and attribution. Unknown or denied licenses block the plan; an unfree package requires an exact owner override.",
+  "environment.license.empty": "No declared package licenses are recorded.",
+  "environment.license.caption": "License inventory",
+  "environment.license.name": "Package",
+  "environment.license.version": "Version",
+  "environment.license.license": "License",
+  "environment.license.unfree": "Unfree",
+  "environment.license.override": "Owner override",
+  "environment.license.blockersTitle": "License blockers",
+  "environment.builder.title": "Builder",
+  "environment.builder.status": "Builder status",
+  "environment.builder.image": "Image",
+  "environment.builder.digest": "Digest",
+  "environment.builder.receipt": "Latest build receipt",
+  "environment.builder.noReceipt": "No successful build receipt recorded",
+  "environment.review.title": "Lead planning decision",
+  "environment.review.principal": "Lead principal",
+  "environment.review.recordedBy": "Recorded by",
+  "environment.review.decidedAt": "Decided",
+  "environment.review.model": "Lead model",
+  "environment.review.reservation": "Model reservation",
+  "environment.review.notAuthority":
+    "The Lead planning decision is recorded evidence. Core validation, licensing and freeze remain authoritative, and this decision grants no execution, credential or delivery authority.",
+  "environment.review.pending": "No Lead planning decision is recorded yet.",
+  "environment.review.rationale": "Lead review rationale",
+  "environment.review.rationaleHelp":
+    "At least 8 characters. The decision binds the exact plan hash and revision shown above.",
+  "environment.review.trigger": "Request Lead environment review",
+  "environment.review.approve": "Approve environment plan",
+  "environment.review.requestChanges": "Request changes",
+  "environment.review.reject": "Reject environment plan",
+  "environment.review.actionHelp":
+    "Core asks the frozen Lead route to review this exact plan revision. The operator triggers the call but does not choose the decision; the Lead model's typed decision is recorded, and Core still validates and freezes.",
+  "environment.review.success": "The Lead environment review completed.",
+  "environment.review.error": "The environment decision could not be recorded.",
+  "environment.review.rationaleRequired": "Enter a bounded rationale first.",
+  "environment.spec.title": "Frozen environment spec",
+  "environment.spec.hash": "Spec SHA-256",
+  "environment.spec.frozenAt": "Frozen",
+  "environment.spec.flakeLock": "flake.lock SHA-256",
+  "environment.spec.devenvLock": "devenv.lock SHA-256",
+  "environment.spec.licenses": "License inventory SHA-256",
+  "environment.spec.sbom": "SBOM SHA-256",
+  "environment.spec.immutable":
+    "A frozen spec is immutable. A later environment change creates a new plan revision and a new spec; it never rewrites this one.",
+  "environment.status.frozen": "Frozen",
+  "environment.status.leadApproved": "Lead approved",
+  "environment.status.coreValidated": "Core validated",
+  "environment.status.blocked": "Blocked",
+  "environment.status.rejected": "Rejected",
+  "environment.status.missing": "Missing",
+  "environment.status.draft": "Draft",
+
   "request.plan.title": "Plan",
   "request.plan.frozen": "Frozen",
   "request.plan.notFrozen": "Not frozen",
@@ -514,6 +678,89 @@ export const en = {
     "{sessions} sessions · {parallel} parallel · {wallClock}s wall clock · {repairCycles} repair cycles",
   "request.plan.checksValue": "{acceptance} acceptance · {negative} negative",
   "request.plan.noWorkUnits": "No work units recorded.",
+
+  "request.trace.title": "Workflow trace",
+  "request.trace.description":
+    "Bounded, redacted durable events and the deterministic replay projection for this request's latest workflow run. Events are ordered by durable sequence.",
+  "request.trace.updated": "Updated {date}",
+  "request.trace.refresh": "Refresh trace",
+  "request.trace.loading": "Loading workflow trace…",
+  "request.trace.errorTitle": "Workflow trace unavailable",
+  "request.trace.error": "The workflow trace could not be loaded.",
+  "request.trace.retry": "Retry trace",
+  "request.trace.retryNow": "Retry now",
+  "request.trace.offline":
+    "Showing the last trace loaded at {loadedAt}. Refresh failed: {error}",
+  "request.trace.emptyTitle": "No workflow run yet",
+  "request.trace.emptyDescription":
+    "A trace appears after Core creates a durable workflow run for this request.",
+  "request.trace.run": "Run",
+  "request.trace.state": "Durable state",
+  "request.trace.revision": "Revision",
+  "request.trace.finalState": "Replayed final state",
+  "request.trace.outcome": "Replay outcome",
+  "request.trace.outcomeRejected": "Unknown — replay rejected",
+  "request.trace.outcomeUnknown": "Unknown",
+  "request.trace.terminal": "Terminal",
+  "request.trace.inProgress": "In progress",
+  "request.trace.eventCount": "Events",
+  "request.trace.eventCountValue": "{events} shown · limit {limit}",
+  "request.trace.alertsTitle": "Replay alerts",
+  "request.trace.alertsAria": "Workflow replay alerts",
+  "request.trace.alertsEmpty": "No replay anomalies recorded.",
+  "request.trace.sequence": "Sequence {sequence}",
+  "request.trace.stepsTitle": "Step trace",
+  "request.trace.stepsCountValue": "{count} step(s) · limit {limit}",
+  "request.trace.stepsEmpty": "No durable workflow steps recorded.",
+  "request.trace.stepsTruncated":
+    "Showing the newest {limit} steps because the step trace is bounded. Older steps may be omitted.",
+  "request.trace.stepOpen": "Open in replay",
+  "request.trace.stepKind": "Kind",
+  "request.trace.stepAttempt": "Attempt",
+  "request.trace.stepUpdated": "Updated",
+  "request.trace.stepSequence": "Last event",
+  "request.trace.eventLogTitle": "Event log",
+  "request.trace.eventLogHint": "Ordered by durable sequence",
+  "request.trace.eventLogEmpty": "No durable workflow events recorded.",
+  "request.trace.eventLogAria": "Workflow event log",
+  "request.trace.noPayload": "No displayable payload.",
+  "request.trace.payloadHash": "Payload SHA-256: {hash}",
+  "request.trace.replayRejected": "Replay rejected.",
+  "request.trace.replayRejectedHint":
+    "The durable ledger is ambiguous or incomplete. No state was invented; inspect the event log and alerts.",
+  "request.trace.truncated":
+    "Showing the newest {limit} events because this trace is bounded. Older events may be omitted; replay anomalies can result from the omitted prefix.",
+  "request.trace.alert.DUPLICATE_SEQUENCE": "Duplicate sequence",
+  "request.trace.alert.MISSING_TRANSITION": "Missing transition",
+  "request.trace.alert.OPEN_STEP": "Open step",
+  "request.trace.alert.TERMINAL_STATE": "Terminal state",
+  "request.trace.alert.NON_TERMINAL_STATE": "In progress",
+  "request.trace.alert.TRACE_TRUNCATED": "Trace truncated",
+  "request.trace.alert.STEP_TRUNCATED": "Step trace truncated",
+  "request.trace.alert.REPLAY_REJECTED": "Replay rejected",
+  "request.trace.alert.STATE_DIVERGENCE": "State divergence",
+  "request.trace.alert.NO_EVENTS": "No events",
+  "request.trace.alert.MALFORMED_EVENT": "Malformed event",
+  "request.trace.alert.duplicateDetail":
+    "Sequence {sequence} appears {count} time(s) with identical content.",
+  "request.trace.alert.missingTransitionDetail":
+    "Sequence {sequence}: expected {expected}, observed {observed}.",
+  "request.trace.alert.openStepDetail": "{stepId} is still pending or running.",
+  "request.trace.alert.stateDivergenceDetail":
+    "Durable run state {expected}; replay observed {observed}.",
+  "request.trace.alert.malformedEventDetail":
+    "Sequence {sequence} is not a complete workflow event.",
+  "request.trace.alert.truncatedDetail":
+    "The oldest events are outside the requested bound.",
+  "request.trace.alert.stepsTruncatedDetail":
+    "The oldest durable steps are outside the requested step bound.",
+  "request.trace.alert.rejectedDetail":
+    "The pure replay projection refused this ledger.",
+  "request.trace.alert.noEventsDetail": "The run has no durable events.",
+  "request.trace.alert.terminalDetail":
+    "The replay reached a terminal workflow state.",
+  "request.trace.alert.nonTerminalDetail":
+    "The replay has not reached a terminal workflow state.",
 
   "actions.title": "Actions",
   "actions.description":
@@ -1057,6 +1304,7 @@ export const en = {
   "issues.board.ready": "Ready",
   "issues.board.queued": "Queued",
   "issues.board.working": "In progress",
+  "issues.board.review": "In review",
   "issues.board.attention": "Needs attention",
   "issues.board.done": "Done",
   "issues.board.empty": "Nothing here.",
@@ -2789,7 +3037,15 @@ export const en = {
   "evidence.identity.tree": "Tree",
   "evidence.identity.attempt": "Attempt",
   "evidence.identity.implementer": "Implementer",
+  "evidence.identity.finalSource": "Final source",
   "evidence.identity.recorded": "Recorded",
+  "evidence.finalSource.model": "Model final",
+  "evidence.finalSource.modelDetail":
+    "The provider returned a normal final response.",
+  "evidence.finalSource.salvage": "Stagnation salvage",
+  "evidence.finalSource.salvageDetail":
+    "Deterministic completion after Core diagnosed stagnation; the model loop had stopped.",
+  "evidence.gate.finalSource": "Candidate final source:",
 
   "projectFiles.title": "Project files",
   "projectFiles.description":
@@ -3414,12 +3670,84 @@ export const en = {
   "director.plan.compiling": "Compiling plan",
   "director.plan.empty": "No WorkGraph is recorded for this request.",
   "director.plan.units": "{count} unit(s)",
-  "director.plan.order": "Order: {order}",
+  "director.plan.order": "Order",
   "director.plan.graphSha": "Graph SHA-256",
   "director.plan.success": "The Planner WorkGraph was validated and recorded.",
   "director.plan.error": "The Planner WorkGraph could not be compiled.",
+  "director.plan.assessmentRequired":
+    "Lead assessment is required before Core can compile a Planner WorkGraph. Run the assessment so Core records the frozen Lead plan and ActionSpec.",
+  "director.plan.leadPlanRequired":
+    "The Lead assessment is recorded but its frozen Lead plan is not available. Run the assessment so Core freezes the plan and ActionSpec.",
+  "director.plan.actionSpecRequired":
+    "The Lead plan is frozen but its executable ActionSpec is missing. Core will not compile a Planner WorkGraph until that prerequisite is repaired.",
+  "director.plan.runAssessment": "Run assessment",
+  "director.plan.assessing": "Assessing…",
+  "director.plan.assessmentSuccess":
+    "Core recorded the Lead assessment. Compile plan is now available when the Lead plan is frozen.",
+  "director.plan.assessmentError":
+    "The Lead assessment could not be run. The deterministic projection remains.",
   "director.plan.frozen":
     "A specification binds this plan. A material change requires a new request or spec revision.",
+  "director.planning.title": "Plan review",
+  "director.planning.empty": "No planning artifacts are recorded yet.",
+  "director.planning.lane": "Planning lane",
+  "director.planning.workflow": "Workflow state",
+  "director.planning.revision": "Plan revision",
+  "director.planning.hash": "Plan SHA-256",
+  "director.planning.principal": "Review principal",
+  "director.planning.points": "Autonomy points",
+  "director.planning.missing": "Required artifacts are missing: {values}.",
+  "director.planning.participantIncompleteTitle": "Participant plan incomplete",
+  "director.planning.participantMissing":
+    "The participant plan is not recorded. Use Record participant plan before approving.",
+  "director.planning.participantIncomplete":
+    "The participant plan does not match the frozen reviewer plan: {values}.",
+  "director.planning.participantAssignments": "reviewer role assignments",
+  "director.planning.reviewPending":
+    "The plan review is awaiting an authenticated owner decision. Approve, request changes or reject the exact plan revision.",
+  "director.planning.reviewNotApproved":
+    "The latest plan review is {status}. Approve a new exact revision before the plan can start.",
+  "director.planning.rationale": "Review rationale: {value}",
+  "director.planning.reviewRationale": "Review rationale",
+  "director.planning.rationaleRequired":
+    "Enter a rationale before reviewing the plan.",
+  "director.planning.approve": "Approve plan",
+  "director.planning.requestChanges": "Request changes",
+  "director.planning.reject": "Reject plan",
+  "director.planning.reviewSuccess": "The plan review was recorded.",
+  "director.planning.reviewError": "The plan review could not be recorded.",
+  "director.planning.error": "Planning artifacts could not be loaded.",
+  "director.planning.stack": "Stack",
+  "director.planning.architecture": "Architecture",
+  "director.planning.components": "component(s)",
+  "director.planning.documentation": "Documentation",
+  "director.planning.requiredDocs": "required document(s)",
+  "director.planning.skills": "Skill packs",
+  "director.planning.dod": "Definition of Done",
+  "director.planning.checks": "check(s)",
+  "director.planning.openspec": "OpenSpec change",
+  "director.findings.title": "Reviewer findings",
+  "director.findings.open": "{count} open",
+  "director.findings.empty":
+    "No reviewer findings are recorded for this request.",
+  "director.findings.reviewer": "Reviewer: {value}",
+  "director.findings.evidence": "Evidence: {value}",
+  "director.findings.select": "Finding",
+  "director.findings.selectPlaceholder": "Select an open finding",
+  "director.findings.evidenceLabel":
+    "Evidence references (one per line or comma-separated)",
+  "director.findings.ownerDecision":
+    "Owner decision reference (refutation only)",
+  "director.findings.ownerDecisionHelp":
+    "Required for a refutation. Use the id of a resolved owner decision for this request.",
+  "director.findings.resolve": "Resolve finding",
+  "director.findings.refute": "Refute finding",
+  "director.findings.evidenceRequired":
+    "Enter at least one evidence reference.",
+  "director.findings.ownerDecisionRequired":
+    "A refutation requires an owner decision reference.",
+  "director.findings.success": "The finding disposition was recorded.",
+  "director.findings.error": "The finding disposition could not be recorded.",
   "director.spec.title": "Formal specification",
   "director.spec.author": "Author specification",
   "director.spec.authoring": "Authoring specification",
@@ -3520,6 +3848,36 @@ export const en = {
   "skills.revoke.action": "Revoke",
   "skills.revoke.required": "A revocation reason is required.",
   "skills.revoke.done": "The skill was revoked.",
+  "skills.refresh.title": "Technology knowledge packs",
+  "skills.refresh.description":
+    "Core checks persisted and curated technology packs for review dates. A stale or missing pack blocks FORMAL_SPEC planning; this control only runs the deterministic refresh pass.",
+  "skills.refresh.action": "Run refresh pass",
+  "skills.refresh.interval": "Refresh interval",
+  "skills.refresh.hours": "{hours} h",
+  "skills.refresh.lastRun": "Last pass",
+  "skills.refresh.nextRun": "Next pass",
+  "skills.refresh.never": "not run yet",
+  "skills.refresh.notScheduled": "not scheduled",
+  "skills.refresh.due": "Due or refreshable",
+  "skills.refresh.blocked": "Blocking",
+  "skills.refresh.nextWindow": "Next scan window",
+  "skills.refresh.nextWindowValue": "{checked} of {total}",
+  "skills.refresh.nextWindowDeferred": "Projects beyond next window",
+  "skills.refresh.nextWindowNote":
+    "The next pass will scan {checked} of {total} projects; {skipped} will be deferred.",
+  "skills.refresh.lastPassProjects":
+    "Last completed pass scanned {checked} of {total} projects; {skipped} deferred.",
+  "skills.refresh.sourceOnly": "Source only; content review required",
+  "skills.refresh.reviewAfter": "review after {date}",
+  "skills.refresh.allFresh": "All {count} checked packs are fresh.",
+  "skills.refresh.lastOutcome":
+    "Last outcome: {refreshed} refreshed, {blocked} blocked.",
+  "skills.refresh.truncated":
+    "Only the first 256 technologies are shown; the list is bounded.",
+  "skills.refresh.unavailable":
+    "Refresh status is unavailable because the scheduler has not started in this process.",
+  "skills.refresh.done":
+    "Refresh pass complete: {refreshed} refreshed, {blocked} blocked.",
   "cheapOps.title": "Evidence interpretation",
   "cheapOps.authority": "OBSERVATION_ONLY — never the Gate",
   "cheapOps.description":
@@ -3540,6 +3898,23 @@ export const en = {
     "The deterministic participant plan was recorded.",
   "director.participants.error": "The participant plan could not be recorded.",
   "director.participants.reviewers": "Independent reviewers",
+  "director.participants.independentReceiptsLabel": "Independent receipts",
+  "director.participants.requiredRoles": "Required reviewer roles",
+  "director.participants.unassigned": "Not assigned",
+  "director.participants.noRoles":
+    "No reviewer roles are recorded for this route.",
+  "director.participants.independentReceipts":
+    "{count} of {required} independent reviewer receipts recorded",
+  "director.participants.receiptStatus": "{result} · {evidence}",
+  "director.participants.receiptMissing": "No receipt",
+  "director.participants.planMismatch":
+    "The frozen reviewer plan does not bind the required roles to principals. Acceptance is blocked until Core records an exact assignment set.",
+  "director.reviewerRole.FUNCTIONAL": "Functional",
+  "director.reviewerRole.ARCHITECTURE": "Architecture",
+  "director.reviewerRole.CODE_QUALITY": "Code quality",
+  "director.reviewerRole.SECURITY": "Security",
+  "director.reviewerRole.TESTING": "Testing and traceability",
+  "director.reviewerRole.OPERABILITY": "Operability and performance",
   "director.participants.unitRouting": "Unit routing",
   "evidence.gate.reviewers":
     "{count} independent reviewer receipt(s) aggregated",
@@ -3606,6 +3981,144 @@ export const en = {
   "home.thread.state.ASSESSED":
     "The assessment is complete; no execution plan is required.",
   "charter.decisions.choose": "Select an owner option",
+  "issues.delivery.state": "Delivery: {state}",
+  "issues.delivery.pullRequest": "PR #{number}",
+  "issues.delivery.merge": "Merge {sha}",
+  "issues.delivery.retry": "Retry issue effect",
+  "issues.delivery.retrying": "Retrying…",
+  "issues.delivery.retried": "Core retried the issue effect for #{number}.",
+  "issues.delivery.retryError": "The issue effect could not be retried.",
+  "linkedIssues.title": "Linked issues",
+  "linkedIssues.description":
+    "Frozen at request creation. State and delivery receipts come from Core; a merge is the only fact that can complete an issue.",
+  "linkedIssues.empty":
+    "This request did not select a GitHub issue, so there is no delivery mapping.",
+  "linkedIssues.count": "{count} linked issue(s)",
+  "linkedIssues.rolePrimary": "Primary",
+  "linkedIssues.roleRelated": "Related",
+  "linkedIssues.delivery": "Delivery",
+  "linkedIssues.workUnit": "Work unit",
+  "linkedIssues.pullRequest": "Pull request",
+  "linkedIssues.merge": "Merge",
+  "linkedIssues.receipts": "Delivery receipts ({count})",
+  "linkedIssues.noReceipts": "No GitHub issue effect has been recorded.",
+  "linkedIssues.event": "Event",
+  "linkedIssues.attempts": "attempts {count}",
+  "linkedIssues.retry": "Retry",
+  "linkedIssues.retrying": "Retrying…",
+  "linkedIssues.retryError": "Core could not retry this issue delivery event.",
+  "delivery.title": "Delivery",
+  "delivery.description":
+    "Risk-tiered delivery owned by Core. Gate ACCEPTED is necessary, never sufficient: the exact candidate, head, policy, checks and branch protection are re-read immediately before any merge.",
+  "delivery.loading": "Reading delivery state…",
+  "delivery.error": "Core could not read delivery state.",
+  "delivery.retry": "Retry",
+  "delivery.empty": "No delivery attempt has been recorded for this candidate.",
+  "delivery.policy": "Delivery policy",
+  "delivery.policyMissing":
+    "No delivery policy is configured. Append one in the Project settings before delivery.",
+  "delivery.policyDisabled": "Manual delivery only",
+  "delivery.policyEnabled": "Risk-tiered auto-merge enabled",
+  "delivery.policyRevision": "Revision {revision}",
+  "delivery.risk": "Risk tier",
+  "delivery.autoMerge": "Auto-merge",
+  "delivery.autoMergeR0": "R0 automatic",
+  "delivery.autoMergeR1":
+    "R1 automatic with opt-in, charter and post-merge check",
+  "delivery.manualOnly": "R2, R3 and unknown risk are manual only",
+  "delivery.mergeMethod": "Merge method",
+  "delivery.postMergeCheck": "Post-merge check",
+  "delivery.postMergeNotConfigured": "not configured",
+  "delivery.pullRequest": "Pull request",
+  "delivery.noPullRequest": "No pull request has been opened.",
+  "delivery.checks": "Checks",
+  "delivery.noChecks": "No live check read is available.",
+  "delivery.protection": "Branch protection",
+  "delivery.protectionVerified":
+    "Protection verified with required checks and no force-push or deletion.",
+  "delivery.protectionUnverified": "Protection has not been verified.",
+  "delivery.blockers": "Blockers",
+  "delivery.noBlockers": "No blocker is recorded.",
+  "delivery.state": "Delivery state",
+  "delivery.authorization": "Authorization",
+  "delivery.mergeCommit": "Merge commit",
+  "delivery.mergedAt": "Merged at",
+  "delivery.openPullRequest": "Open pull request",
+  "delivery.deliver": "Deliver candidate",
+  "delivery.delivering": "Delivering…",
+  "delivery.manualConfirm": "I am the owner and approve this exact merge",
+  "delivery.manualConfirmHint":
+    "Manual delivery still re-reads the candidate, Gate, policy, checks and branch protection before writing.",
+  "delivery.openHint":
+    "Core pushes the exact candidate to its deterministic branch, reuses an open pull request, and never force-pushes.",
+  "delivery.issueReceipts": "Issue receipts",
+  "delivery.noIssueReceipts":
+    "No issue receipt has been recorded for this attempt.",
+  "delivery.incident": "Delivery incident",
+  "delivery.noIncident": "No delivery incident is open.",
+  "delivery.incidentOpen":
+    "Auto-merge is frozen until the owner resolves this incident.",
+  "delivery.manualRevertRequired":
+    "Factory does not auto-revert. Open a reviewed revert PR, merge it through the normal protected path, then record it here.",
+  "delivery.revertPr": "Revert pull request number",
+  "delivery.revertSha": "Revert merge commit SHA",
+  "delivery.revertRationale": "Revert rationale",
+  "delivery.recordRevert": "Record manual revert",
+  "delivery.recordingRevert": "Recording…",
+  "delivery.revertRecorded": "Manual revert evidence recorded.",
+  "delivery.reverts": "Manual reverts",
+  "delivery.noReverts": "No manual revert has been recorded.",
+  "delivery.liveUnavailable": "Live GitHub read is unavailable: {detail}",
+  "delivery.refresh": "Refresh delivery",
+  "delivery.gate": "Gate",
+  "delivery.base": "Base",
+  "delivery.expectedHead": "Expected head",
+  "delivery.candidate": "Candidate",
+  "delivery.actionError": "Core blocked or failed the delivery operation.",
+  "delivery.opened": "Pull request opened or reused.",
+  "delivery.mergedNotice":
+    "Core recorded the merge. Refresh to see the final issue receipts.",
+  "delivery.freeze": "Delivery freeze",
+  "delivery.freezeDetail":
+    "An open incident or kill switch blocks every auto-merge for this Project.",
+  "deliveryPolicy.title": "Delivery policy",
+  "deliveryPolicy.description":
+    "Append-only Project policy. R0 may auto-merge only when risk-tiered delivery is enabled; R1 also requires the explicit opt-in, a current Owner Charter delivery grant and a post-merge check. R2/R3 and unknown risk remain manual.",
+  "deliveryPolicy.loading": "Reading delivery policy…",
+  "deliveryPolicy.error": "Core could not read the Project delivery policy.",
+  "deliveryPolicy.unbound":
+    "Bind this Project to a GitHub repository before configuring delivery.",
+  "deliveryPolicy.enabled": "Enable risk-tiered delivery",
+  "deliveryPolicy.r1":
+    "Allow R1 auto-merge with a matching Owner Charter grant",
+  "deliveryPolicy.mergeMethod": "Merge method",
+  "deliveryPolicy.squash": "Squash (required)",
+  "deliveryPolicy.checks": "Required checks",
+  "deliveryPolicy.checksHint":
+    "Comma-separated check names required by branch protection.",
+  "deliveryPolicy.postMerge": "Post-merge check",
+  "deliveryPolicy.postMergeHint":
+    "Required for R1. Core runs it against the merge commit before marking delivery complete.",
+  "deliveryPolicy.timeout": "Post-merge timeout (seconds)",
+  "deliveryPolicy.killSwitch": "Activate the Project delivery kill switch",
+  "deliveryPolicy.save": "Append policy revision",
+  "deliveryPolicy.saving": "Saving…",
+  "deliveryPolicy.saved": "Delivery policy revision appended.",
+  "deliveryPolicy.currentRevision": "Current revision {revision}",
+  "deliveryPolicy.noPolicy": "No policy revision exists yet.",
+  "deliveryPolicy.manualBase": "Manual bases",
+  "deliveryPolicy.expiresAt": "Expiry (RFC3339, optional)",
+  "deliveryPolicy.ownerOnly":
+    "Only an authenticated owner operation can append a policy revision.",
+  "deliveryPolicy.manualBases": "Manual base branches",
+  "deliveryPolicy.manualBasesHint":
+    "Comma-separated protected branches allowed for manual delivery. The protected default branch is always available.",
+  "delivery.baseBranch": "Base branch",
+  "delivery.salvage": "Salvage final source",
+  "delivery.salvageR0":
+    "R0 stagnation salvage is eligible for the ordinary Gate and R0 policy.",
+  "delivery.salvageReviewRequired":
+    "R1/R2/R3 stagnation salvage requires authenticated human review of the final-source and salvage evidence. It is never auto-merged.",
 } as const;
 
 export type MessageKey = keyof typeof en;

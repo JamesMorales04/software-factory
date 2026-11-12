@@ -59,6 +59,7 @@ struct ReviewerConfig {
     core: reqwest::Url,
     token: String,
     principal: String,
+    role: factory_native::planning::ReviewerRole,
     mechanism: Option<SemanticReviewMechanism>,
     client: reqwest::Client,
 }
@@ -104,10 +105,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if principal.trim().is_empty() || principal.len() > 128 {
         return Err("FACTORY_REVIEWER_PRINCIPAL is invalid".into());
     }
+    let role = env::var("FACTORY_REVIEWER_ROLE").unwrap_or_else(|_| "FUNCTIONAL".into());
+    let role = factory_native::planning::ReviewerRole::parse(&role)
+        .ok_or("FACTORY_REVIEWER_ROLE is not a canonical reviewer role")?;
     let config = ReviewerConfig {
         core: validated_core_url(&core)?,
         token,
         principal,
+        role,
         mechanism: match env::var("FACTORY_REVIEW_MECHANISM").ok().as_deref() {
             None | Some("AUTO") => None,
             Some(value) => Some(
@@ -159,6 +164,15 @@ async fn review_mechanism(
         .into());
     }
     let body: serde_json::Value = response.json().await?;
+    let configured_role = body
+        .get("reviewerRole")
+        .and_then(serde_json::Value::as_str)
+        .and_then(factory_native::planning::ReviewerRole::parse);
+    if configured_role != Some(config.role) {
+        return Err(
+            "Core authenticated a different reviewer role than FACTORY_REVIEWER_ROLE".into(),
+        );
+    }
     let mechanism = match body.get("mechanism").and_then(serde_json::Value::as_str) {
         Some("MODEL") => SemanticReviewMechanism::Model,
         Some("DETERMINISTIC") => SemanticReviewMechanism::Deterministic,
@@ -344,6 +358,7 @@ async fn run_candidate(
             "candidate_id": candidate_id,
             "receipt_id": Uuid::new_v4().to_string(),
             "principal_id": config.principal,
+            "reviewerRole": config.role.as_str(),
             "actionSpecSha256": action_spec_sha256,
             "commitSha": outcome.commit_sha,
             "treeSha": outcome.tree_sha,
@@ -874,7 +889,7 @@ fn validated_core_url(raw: &str) -> Result<reqwest::Url, Box<dyn std::error::Err
         raw,
         "FACTORY_CORE_URL",
         container_mode,
-        &["core"],
+        &["core-control"],
     )?;
     Ok(url)
 }

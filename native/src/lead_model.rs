@@ -23,6 +23,10 @@ pub struct AssessmentRequest<'a> {
     pub objective: &'a str,
     pub grant: &'a StandingDelegationV2,
     pub now: chrono::DateTime<chrono::Utc>,
+    /// True when Core detected no committed project stack. The prompt then
+    /// requires a concrete environment proposal instead of a hidden
+    /// language/toolchain default.
+    pub greenfield: bool,
 }
 
 fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadError> {
@@ -108,6 +112,11 @@ fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadErro
             "the ActionSpec has no pre-frozen checks. The active quality profile requires at least one check of every kind: {required_kinds}. Propose those checks with real, non-shell argv commands. Put non-negative checks in acceptanceCriteria and negative checks in negativeCases; negative checks must expect a nonzero exit;"
         )
     };
+    let environment_instruction = if request.greenfield {
+        "This is a greenfield request, so proposal.environmentProposal is REQUIRED and must not be null or empty. Derive a concrete stack and environment from the objective: an exact pinned nixpkgs revision (or omit nixpkgs to use the builder's documented default), toolchains with exact versions, nixpkgs packages with exact versions and SPDX license identifiers, and build/test/lint/format/typecheck/run commands as argv vectors. There is no language default in this prompt or in Core, so do not copy a language from an example. Every check executable must be provided by the proposed packages; if you cannot name one, record the missing package as an explicit blocker instead of assuming cargo, rustc, python3, node or npm."
+    } else {
+        "For an existing project, prefer the committed toolchain and commands. proposal.environmentProposal may be null; if you supply one it is untrusted, must be exact and may not assume an executable the project does not provide."
+    };
     Ok(format!(
         "You are the bounded Intelligent Lead. Return ONLY one JSON object that validates against the \
 JSON Schema below. Do not add prose, markdown, comments or unknown fields. \
@@ -116,7 +125,10 @@ paths and capabilities exactly, and use your own judgment for intent, complexity
 assumptions, uncertainty and the effort estimate. Classify a question or a read-only assessment as \
 informational or audit; never propose executable WorkUnits for those intents. For informational or \
 audit without an explicit estimate request, effortEstimate.status must be not_requested with empty \
-unit, bounds, assumptions and unknownReason. {checks_instruction} A change request must carry \
+unit, bounds, assumptions and unknownReason. Every intent must include a non-empty \
+suggestedNextAction of at most {note_chars} characters: for a change intent, state a concrete bounded \
+next step; for informational or audit without change, use exactly {no_action:?}. \
+{checks_instruction} A change request must carry \
 a real estimated or unknown effort estimate. For status=estimated, unit must be \"person-hours\", \
 0 <= minPersonHours <= maxPersonHours, maxPersonHours >= 1, assumptions must be non-empty, and \
 unknownReason must be empty. Objective: {objective}. Project: {project_id}. Action: \
@@ -126,15 +138,15 @@ advisory; Core validates and freezes it. Hard constraints: schemaRevision=1; ech
 and requestId exactly; evidenceRefs must be [\"repository-files\"]; proposal.projectId, actionId, \
 baseRevision, projectConfigHash and objective must match the provided context exactly; proposal.class \
 must be one of {classes:?}; proposal.qualityProfile must be {quality:?}; riskClass must be \"R0\"; \
-Check executables must be available under the listed capabilities: generic-toolchain provides cargo, \
-rustc, python3, sh, grep, awk, sed, find, cat, printf, test and coreutils; node, npm and npx require \
-node-toolchain and are unavailable otherwise. Before proposing a compiled-language build or test, require its manifest to be visible in the bounded source context; if no manifest is visible, prefer a self-contained script and checks that only reference files under the allowed paths, or state the missing manifest as an explicit blocker. The verifier runs checks in the frozen generic \
-toolchain image, so do not plan a node command when node-toolchain is not listed. \
+{environment_instruction} The verifier executes checks in the frozen project environment, not a \
+global language image. Do not assume cargo, rustc, python3, node, npm or any other executable exists \
+unless the environment proposal or committed conventions provide it. \
 budget.timeoutSecs={timeout_secs}; route must be {route:?}; maxParallel=1; \
 workUnits must contain exactly one implementation unit with id \"unit-1\"; its allowedPaths and \
 capabilities must be subsets of the outer lists shown and should reflect the plan reasoning; check ids \
 must be unique.\n\nJSON Schema:\n{schema}\n\nValid example shape:\n{example}",
         checks_instruction = checks_instruction,
+        environment_instruction = environment_instruction,
         objective = request.objective,
         classes = request.grant.objective_classes,
         quality = request.project.quality_profile,
@@ -148,6 +160,8 @@ must be unique.\n\nJSON Schema:\n{schema}\n\nValid example shape:\n{example}",
         timeout_secs = timeout_secs,
         schema = schema,
         example = example,
+        note_chars = crate::lead::MAX_NOTE_CHARS,
+        no_action = crate::lead::SUGGESTED_NEXT_ACTION_NO_ACTION,
     ))
 }
 
@@ -203,4 +217,86 @@ pub async fn assess(
         )?;
     }
     Ok((assessment, proposal))
+}
+
+pub struct EnvironmentReviewRequest<'a> {
+    pub request_id: &'a str,
+    pub objective_id: &'a str,
+    pub project: &'a ProjectConfig,
+    pub plan: &'a crate::planning::environment::EnvironmentPlan,
+    pub grant: &'a StandingDelegationV2,
+    pub now: chrono::DateTime<chrono::Utc>,
+}
+
+/// Ask the frozen Lead route to review one exact EnvironmentPlan. The model
+/// output is schema-validated and must echo the plan identity and risk; Core
+/// still validates the plan, licenses and freeze. The returned model-call
+/// result is the provenance recorded with the Lead decision.
+pub async fn review_environment(
+    gateway: &ModelGateway,
+    database: &Database,
+    request: EnvironmentReviewRequest<'_>,
+) -> Result<
+    (
+        crate::planning::environment::EnvironmentLeadReviewModel,
+        crate::db::ModelCallResult,
+    ),
+    LeadError,
+> {
+    let schema = serde_json::to_string(&crate::model_output::environment_lead_review_schema())
+        .map_err(|error| {
+            LeadError::Assessment(format!("cannot encode environment review schema: {error}"))
+        })?;
+    let plan_json = serde_json::to_string(request.plan).map_err(|error| {
+        LeadError::Assessment(format!("cannot encode environment plan: {error}"))
+    })?;
+    let prompt = format!(
+        "You are the bounded Intelligent Lead. Review exactly one frozen Candidate EnvironmentPlan \
+and return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, \
+markdown, comments or unknown fields. Approve only when the conventions evidence, pinned nixpkgs, \
+licences (allowUnfree must remain false), resources, network policy and builder identity are \
+sufficient for execution. Any unknown or denied licence, missing pin, conflicting convention, \
+unsafe sandbox/network policy or unresolved blocker requires CHANGES_REQUESTED or REJECT. You may \
+not approve an unfree package without an exact owner override and you may not waive a Core \
+validation. Echo requestId, actionId, planSha256, planRevision and riskClass exactly. Rationale \
+must be 8..4000 characters. Constraints are bounded follow-up conditions for the Planner; they do \
+not grant authority. The EnvironmentPlan JSON and JSON Schema follow.\n\nEnvironmentPlan:\n{}\
+\n\nJSON Schema:\n{}",
+        plan_json.chars().take(300_000).collect::<String>(),
+        schema
+    );
+    let result = gateway
+        .call(
+            database,
+            ModelCallRequest {
+                role: ModelCallRole::Lead,
+                principal_id: &request.grant.principal_id,
+                project_id: &request.project.project_id,
+                objective_id: request.objective_id,
+                scope_id: &request.grant.id,
+                purpose: "lead_environment_review",
+                system_prompt:
+                    "Return strict JSON only. A Lead review is a recorded planning decision, not execution authority.",
+                user_prompt: &prompt,
+                max_output_tokens: 0,
+            },
+        )
+        .await
+        .map_err(|error| match error {
+            ModelGatewayError::Ambiguous(_)
+            | ModelGatewayError::Upstream(_)
+            | ModelGatewayError::Usage(_) => {
+                LeadError::TransientAssessment(error.to_string())
+            }
+            ModelGatewayError::Database(
+                crate::db::Error::Forbidden(_) | crate::db::Error::Conflict(_),
+            ) => LeadError::TransientAssessment(error.to_string()),
+            other => LeadError::Assessment(other.to_string()),
+        })?;
+    let review = crate::model_output::decode_environment_lead_review(result.content.as_bytes())
+        .map_err(|error| LeadError::Assessment(error.to_string()))?;
+    review
+        .validate_for(request.plan, request.now)
+        .map_err(|error| LeadError::Assessment(error.message))?;
+    Ok((review, result))
 }

@@ -10,10 +10,13 @@ const mocks = vi.hoisted(() => ({
   listAgenticPortfolio: vi.fn(),
   getAgenticRequest: vi.fn(),
   assessAgenticRequest: vi.fn(),
+  assessIntakeRequest: vi.fn(),
   getAgenticScheduler: vi.fn(),
   setAgenticPriority: vi.fn(),
   getAgenticPlan: vi.fn(),
   planAgenticRequest: vi.fn(),
+  getAgenticPlanning: vi.fn(),
+  reviewAgenticPlan: vi.fn(),
   getAgenticSpec: vi.fn(),
   authorAgenticSpec: vi.fn(),
   freezeAgenticSpec: vi.fn(),
@@ -66,6 +69,9 @@ const detail: AgenticRequestDetail = {
     updatedAt: "2026-11-08T12:00:00Z",
   },
   lead: { state: "Running", campaignId: "campaign-1", failureReason: null },
+  assessmentReady: true,
+  leadPlanReady: true,
+  actionSpecReady: true,
   triage: {
     requestKind: "CHANGE",
     route: "FORMAL_SPEC",
@@ -74,6 +80,13 @@ const detail: AgenticRequestDetail = {
     reasons: ["The request affects a public contract."],
     unknowns: ["The OAuth library version is not pinned."],
   },
+  planningLane: "FORMAL_SPEC",
+  planning: {
+    artifacts: [],
+    review: null,
+    workflow: null,
+  },
+  findings: [],
   stack: {
     languages: ["rust", "typescript"],
     frameworks: ["axum", "react"],
@@ -127,6 +140,56 @@ const detail: AgenticRequestDetail = {
       },
     ],
     reviewerCount: 2,
+    reviewerRoles: ["FUNCTIONAL", "CODE_QUALITY"],
+    reviewerAssignments: [
+      {
+        role: "FUNCTIONAL",
+        principalId: "reviewer-functional-process",
+        provider: "opencode",
+        model: "deepseek-v4.1-flash",
+      },
+      {
+        role: "CODE_QUALITY",
+        principalId: "reviewer-code-quality-process",
+        provider: "opencode",
+        model: "deepseek-v4.1-flash",
+      },
+    ],
+  },
+  reviewerEvidence: {
+    requiredReviewerCount: 2,
+    requiredRoles: ["FUNCTIONAL", "CODE_QUALITY"],
+    assignedPrincipals: [
+      {
+        role: "FUNCTIONAL",
+        principalId: "reviewer-functional-process",
+        provider: "opencode",
+        model: "deepseek-v4.1-flash",
+      },
+      {
+        role: "CODE_QUALITY",
+        principalId: "reviewer-code-quality-process",
+        provider: "opencode",
+        model: "deepseek-v4.1-flash",
+      },
+    ],
+    independentReviewerCount: 2,
+    receipts: [
+      {
+        receiptId: "receipt-functional",
+        principalId: "reviewer-functional-process",
+        role: "FUNCTIONAL",
+        result: "PASS",
+        evidence: "EXECUTED",
+      },
+      {
+        receiptId: "receipt-code-quality",
+        principalId: "reviewer-code-quality-process",
+        role: "CODE_QUALITY",
+        result: "PASS",
+        evidence: "EXECUTED",
+      },
+    ],
   },
   specifications: [
     {
@@ -219,6 +282,7 @@ describe("Director", () => {
     mocks.listAgenticPortfolio.mockReset().mockResolvedValue(portfolio);
     mocks.getAgenticRequest.mockReset().mockResolvedValue(detail);
     mocks.assessAgenticRequest.mockReset().mockResolvedValue({});
+    mocks.assessIntakeRequest.mockReset().mockResolvedValue({});
     mocks.getAgenticScheduler.mockReset().mockResolvedValue({
       capacity: 4,
       active: 1,
@@ -227,6 +291,59 @@ describe("Director", () => {
       worktreePolicy: "PER_ATTEMPT",
     });
     mocks.getAgenticPlan.mockReset().mockResolvedValue({ graph: planRecord });
+    mocks.getAgenticPlanning.mockReset().mockResolvedValue({
+      lane: "FORMAL_SPEC",
+      signals: {
+        objective: "Add an ICS export endpoint",
+        greenfield: false,
+        large: true,
+        missingDocs: false,
+        missingStack: false,
+        architectureUncertainty: false,
+        publicContract: true,
+        dataOrSchema: false,
+        securityBoundary: false,
+        crossModule: false,
+        changedFiles: 2,
+        expectedUnits: 2,
+        explicitRepair: false,
+      },
+      artifacts: [],
+      review: null,
+      workflow: null,
+      missingArtifacts: [],
+      participantPlan: {
+        required: true,
+        present: true,
+        ready: true,
+        reviewerCount: 5,
+        requiredReviewerCount: 5,
+        reviewerRoles: [
+          "FUNCTIONAL",
+          "ARCHITECTURE",
+          "CODE_QUALITY",
+          "SECURITY",
+          "TESTING",
+        ],
+        requiredRoles: [
+          "FUNCTIONAL",
+          "ARCHITECTURE",
+          "CODE_QUALITY",
+          "SECURITY",
+          "TESTING",
+        ],
+        missingRoles: [],
+        unexpectedRoles: [],
+        missingAssignments: [],
+        graphStale: false,
+        problems: [],
+      },
+      reviewStatus: "AUTO_APPROVED",
+      reviewApproved: true,
+      materialsReady: true,
+      ready: true,
+    });
+    mocks.reviewAgenticPlan.mockReset();
     mocks.planAgenticRequest.mockReset().mockResolvedValue({
       graph: planRecord,
       validated: graph,
@@ -295,6 +412,318 @@ describe("Director", () => {
         "The Planner WorkGraph was validated and recorded.",
       ),
     ).toBeDefined();
+  });
+
+  it("gates Compile plan on the Lead assessment and runs the Core action", async () => {
+    const submitted: AgenticRequestDetail = {
+      ...detail,
+      lead: { state: "SUBMITTED", campaignId: null, failureReason: null },
+      assessmentReady: false,
+      leadPlanReady: false,
+      actionSpecReady: false,
+    };
+    const assessed: AgenticRequestDetail = {
+      ...detail,
+      lead: { state: "READY", campaignId: null, failureReason: null },
+      assessmentReady: true,
+      leadPlanReady: true,
+      actionSpecReady: true,
+    };
+    mocks.getAgenticRequest
+      .mockReset()
+      .mockResolvedValueOnce(submitted)
+      .mockResolvedValueOnce(assessed);
+    renderDirector();
+    await screen.findByRole("heading", { name: "Add an ICS export endpoint" });
+
+    const compile = screen.getByRole("button", { name: "Compile plan" });
+    expect((compile as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Lead assessment is required/)).toBeDefined();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Run assessment" }),
+    );
+    expect(mocks.assessIntakeRequest).toHaveBeenCalledWith("request-1");
+    expect(mocks.assessAgenticRequest).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(/Core recorded the Lead assessment/),
+    ).toBeDefined();
+    expect(screen.queryByText(/Lead assessment is required/)).toBeNull();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Compile plan",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+  });
+
+  it("keeps Compile plan disabled when the executable ActionSpec is missing", async () => {
+    mocks.getAgenticRequest.mockResolvedValue({
+      ...detail,
+      assessmentReady: true,
+      leadPlanReady: true,
+      actionSpecReady: false,
+    });
+    renderDirector();
+    await screen.findByRole("heading", { name: "Add an ICS export endpoint" });
+
+    const compile = screen.getByRole("button", { name: "Compile plan" });
+    expect((compile as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/executable ActionSpec is missing/)).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Run assessment" })).toBeNull();
+  });
+
+  it("shows required reviewer roles, assigned principals and independent receipts", async () => {
+    renderDirector();
+    expect(await screen.findByText("Required reviewer roles")).toBeDefined();
+    expect(screen.getByText("Functional")).toBeDefined();
+    expect(screen.getByText("Code quality")).toBeDefined();
+    expect(
+      screen.getAllByText("reviewer-functional-process").length,
+    ).toBeGreaterThan(0);
+    expect(screen.getAllByText("PASS · EXECUTED").length).toBe(2);
+    expect(
+      screen.getByText("2 of 2 independent reviewer receipts recorded"),
+    ).toBeDefined();
+    expect(screen.queryByText(/model diversity/i)).toBeNull();
+  });
+
+  it("marks a required role that has no receipt", async () => {
+    mocks.getAgenticRequest.mockResolvedValue({
+      ...detail,
+      reviewerEvidence: {
+        ...detail.reviewerEvidence,
+        independentReviewerCount: 1,
+        receipts: detail.reviewerEvidence.receipts.filter(
+          (receipt) => receipt.role === "FUNCTIONAL",
+        ),
+      },
+    });
+    renderDirector();
+    await screen.findAllByText("Implement the ICS exporter");
+    expect(screen.getByText("No receipt")).toBeDefined();
+    expect(screen.getByText("PASS · EXECUTED")).toBeDefined();
+    expect(
+      screen.getByText("1 of 2 independent reviewer receipts recorded"),
+    ).toBeDefined();
+  });
+
+  it("shows a changes-requested receipt and its evidence", async () => {
+    mocks.getAgenticRequest.mockResolvedValue({
+      ...detail,
+      reviewerEvidence: {
+        ...detail.reviewerEvidence,
+        receipts: detail.reviewerEvidence.receipts.map((receipt) =>
+          receipt.role === "CODE_QUALITY"
+            ? { ...receipt, result: "CHANGES_REQUESTED" }
+            : receipt,
+        ),
+      },
+    });
+    renderDirector();
+    await screen.findAllByText("Implement the ICS exporter");
+    expect(screen.getByText("CHANGES_REQUESTED · EXECUTED")).toBeDefined();
+  });
+
+  it("shows unassigned required roles without inventing a principal", async () => {
+    mocks.getAgenticRequest.mockResolvedValue({
+      ...detail,
+      participants: {
+        ...detail.participants,
+        reviewerAssignments: [],
+      },
+      reviewerEvidence: {
+        ...detail.reviewerEvidence,
+        independentReviewerCount: 0,
+        receipts: [],
+      },
+    });
+    renderDirector();
+    await screen.findAllByText("Implement the ICS exporter");
+    expect(screen.getAllByText("Not assigned").length).toBe(2);
+    expect(screen.getByRole("alert").textContent).toContain(
+      "does not bind the required roles to principals",
+    );
+    expect(
+      screen.getByText("0 of 2 independent reviewer receipts recorded"),
+    ).toBeDefined();
+  });
+
+  it("records an owner plan review decision", async () => {
+    mocks.getAgenticPlanning.mockResolvedValue({
+      lane: "FORMAL_SPEC",
+      signals: {
+        objective: "Add an ICS export endpoint",
+        greenfield: false,
+        large: true,
+        missingDocs: false,
+        missingStack: false,
+        architectureUncertainty: false,
+        publicContract: true,
+        dataOrSchema: false,
+        securityBoundary: false,
+        crossModule: false,
+        changedFiles: 2,
+        expectedUnits: 2,
+        explicitRepair: false,
+      },
+      artifacts: [],
+      review: {
+        id: "review-1",
+        requestId: "request-1",
+        planRevision: 1,
+        planSha256: "a".repeat(64),
+        status: "PENDING",
+        principalId: "core:planning",
+        rationale: "Owner decision required.",
+        points: 0,
+        reviewedAt: "2026-11-08T12:00:00Z",
+      },
+      workflow: null,
+      missingArtifacts: [],
+      participantPlan: {
+        required: true,
+        present: true,
+        ready: true,
+        reviewerCount: 5,
+        requiredReviewerCount: 5,
+        reviewerRoles: [
+          "FUNCTIONAL",
+          "ARCHITECTURE",
+          "CODE_QUALITY",
+          "SECURITY",
+          "TESTING",
+        ],
+        requiredRoles: [
+          "FUNCTIONAL",
+          "ARCHITECTURE",
+          "CODE_QUALITY",
+          "SECURITY",
+          "TESTING",
+        ],
+        missingRoles: [],
+        unexpectedRoles: [],
+        missingAssignments: [],
+        graphStale: false,
+        problems: [],
+      },
+      reviewStatus: "PENDING",
+      reviewApproved: false,
+      materialsReady: true,
+      ready: false,
+    });
+    mocks.reviewAgenticPlan.mockResolvedValue({
+      review: {
+        id: "review-2",
+        requestId: "request-1",
+        planRevision: 1,
+        planSha256: "a".repeat(64),
+        status: "OWNER_APPROVED",
+        principalId: "operator",
+        rationale: "Owner approved.",
+        points: 0,
+        reviewedAt: "2026-11-08T12:01:00Z",
+      },
+      workflow: null,
+    });
+    renderDirector();
+    expect(
+      await screen.findByRole("heading", { name: "Plan review" }),
+    ).toBeDefined();
+    expect(
+      screen.getByText(/awaiting an authenticated owner decision/i),
+    ).toBeDefined();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Approve plan",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+    await userEvent.type(
+      screen.getByLabelText("Review rationale"),
+      "Owner approved.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+    expect(mocks.reviewAgenticPlan).toHaveBeenCalledWith("request-1", {
+      planRevision: 1,
+      planSha256: "a".repeat(64),
+      decision: "APPROVE",
+      rationale: "Owner approved.",
+    });
+  });
+
+  it("blocks plan approval until the participant plan matches the frozen reviewer plan", async () => {
+    const requiredRoles = [
+      "FUNCTIONAL",
+      "ARCHITECTURE",
+      "CODE_QUALITY",
+      "SECURITY",
+      "TESTING",
+    ] as const;
+    mocks.getAgenticPlanning.mockResolvedValue({
+      lane: "FORMAL_SPEC",
+      signals: {
+        objective: "Add an ICS export endpoint",
+        greenfield: false,
+        large: true,
+        missingDocs: false,
+        missingStack: false,
+        architectureUncertainty: false,
+        publicContract: true,
+        dataOrSchema: false,
+        securityBoundary: false,
+        crossModule: false,
+        changedFiles: 2,
+        expectedUnits: 2,
+        explicitRepair: false,
+      },
+      artifacts: [],
+      review: {
+        id: "review-1",
+        requestId: "request-1",
+        planRevision: 1,
+        planSha256: "a".repeat(64),
+        status: "PENDING",
+        principalId: "core:planning",
+        rationale: "Owner decision required.",
+        points: 0,
+        reviewedAt: "2026-11-08T12:00:00Z",
+      },
+      workflow: null,
+      missingArtifacts: [],
+      participantPlan: {
+        required: true,
+        present: false,
+        ready: false,
+        reviewerCount: 0,
+        requiredReviewerCount: requiredRoles.length,
+        reviewerRoles: [],
+        requiredRoles: [...requiredRoles],
+        missingRoles: [...requiredRoles],
+        unexpectedRoles: [],
+        missingAssignments: [...requiredRoles],
+        graphStale: false,
+        problems: ["the participant plan is not recorded"],
+      },
+      reviewStatus: "PENDING",
+      reviewApproved: false,
+      materialsReady: false,
+      ready: false,
+    });
+    renderDirector();
+    expect(
+      await screen.findByText("Participant plan incomplete"),
+    ).toBeDefined();
+    expect(screen.getByText(/participant plan is not recorded/i)).toBeDefined();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Approve plan",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
   });
 
   it("shows both the frozen revision and a newer draft revision", async () => {

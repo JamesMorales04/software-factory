@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Gate, QualityReceipt, ReviewFinding } from "../../coreApi";
 import { I18nProvider } from "../../i18n";
 import {
+  CandidateFinalSourceBadge,
   QualityGatePanel,
   ReceiptModelProvenance,
   ReviewFindings,
@@ -72,6 +73,10 @@ const gate: Gate = {
   },
 };
 
+function gateWithOutcome(outcome: Gate["outcome"]): Gate {
+  return { ...gate, outcome };
+}
+
 describe("CandidateEvidence", () => {
   it("renders canonical finding points, rationale and native provenance", () => {
     render(
@@ -100,5 +105,56 @@ describe("CandidateEvidence", () => {
     expect(
       screen.getByText(/a critical finding always requires human review/),
     ).toBeDefined();
+  });
+
+  it("hides a historical repair authorization once the gate is accepted", () => {
+    render(
+      <I18nProvider>
+        <QualityGatePanel
+          gate={gateWithOutcome("ACCEPTED")}
+          candidateId="candidate-1"
+        />
+      </I18nProvider>,
+    );
+    expect(screen.queryByText("Repair authorization")).toBeNull();
+    expect(screen.getByText("Accepted")).toBeDefined();
+    expect(
+      screen.getByText("critical review finding requires human review"),
+    ).toBeDefined();
+  });
+
+  it("still renders the repair authorization while repair is required", () => {
+    render(
+      <I18nProvider>
+        <QualityGatePanel
+          gate={gateWithOutcome("REPAIR_REQUIRED")}
+          candidateId="candidate-1"
+        />
+      </I18nProvider>,
+    );
+    expect(screen.getByText("Repair authorization")).toBeDefined();
+  });
+
+  it("labels a stagnation salvage candidate truthfully", () => {
+    render(
+      <I18nProvider>
+        <CandidateFinalSourceBadge source="STAGNATION_SALVAGE" />
+        <QualityGatePanel
+          gate={{
+            ...gateWithOutcome("HUMAN_REQUIRED"),
+            final_source: "STAGNATION_SALVAGE",
+            reasons: [
+              "SALVAGE_HUMAN_REVIEW_REQUIRED: R1+ stagnation salvage requires an authenticated owner/human review before acceptance",
+            ],
+          }}
+          candidateId="candidate-1"
+        />
+      </I18nProvider>,
+    );
+    expect(screen.getAllByText("Stagnation salvage").length).toBe(2);
+    expect(
+      screen.getAllByText(/the model loop had stopped/).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText(/SALVAGE_HUMAN_REVIEW_REQUIRED/)).toBeDefined();
   });
 });

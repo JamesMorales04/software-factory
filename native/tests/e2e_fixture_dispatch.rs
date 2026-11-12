@@ -72,10 +72,12 @@ impl CoreProcess {
         }
     }
 
+    #[cfg(feature = "test-support")]
     fn start_with_lead_model(database: &Path, port: u16, log: &Path, model_url: &str) -> Self {
         Self::start_with_lead_model_config(database, port, log, model_url, false)
     }
 
+    #[cfg(feature = "test-support")]
     fn start_with_lead_model_and_codex(
         database: &Path,
         port: u16,
@@ -85,6 +87,7 @@ impl CoreProcess {
         Self::start_with_lead_model_config(database, port, log, model_url, true)
     }
 
+    #[cfg(feature = "test-support")]
     fn start_with_lead_model_config(
         database: &Path,
         port: u16,
@@ -287,7 +290,7 @@ fn run_reviewer_with(
     root: &Path,
     base_url: &str,
     candidate_id: &str,
-    principal: &str,
+    _principal: &str,
     log_name: &str,
     mechanism: Option<&str>,
 ) {
@@ -297,7 +300,7 @@ fn run_reviewer_with(
         .env("FACTORY_CORE_URL", base_url)
         .env("FACTORY_REVIEWER_TOKEN", REVIEWER_TOKEN)
         .env("FACTORY_CANDIDATE_ID", candidate_id)
-        .env("FACTORY_REVIEWER_PRINCIPAL", principal)
+        .env("FACTORY_REVIEWER_PRINCIPAL", "reviewer-process")
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone().unwrap()))
         .stderr(Stdio::from(log));
@@ -771,7 +774,13 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
         )),
     )
     .await;
-    assert_eq!(authorized.status(), StatusCode::CREATED);
+    let authorized_status = authorized.status();
+    let authorized_body = authorized.text().await.unwrap_or_default();
+    assert_eq!(
+        authorized_status,
+        StatusCode::CREATED,
+        "campaign authorization failed: {authorized_body}"
+    );
     let second_campaign: Value = operator(
         &client,
         reqwest::Method::POST,
@@ -945,7 +954,7 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
         .env("FACTORY_CORE_URL", &base_url)
         .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
         .env("FACTORY_CANDIDATE_ID", &candidate_id)
-        .env("FACTORY_VERIFIER_PRINCIPAL", "verifier-process-e2e")
+        .env("FACTORY_VERIFIER_PRINCIPAL", "verifier-process")
         .env(
             "FACTORY_VERIFIER_WORKSPACE",
             root.join("verifier-workspaces"),
@@ -973,7 +982,7 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
         &root,
         &base_url,
         &candidate_id,
-        "reviewer-process-e2e",
+        "reviewer-process",
         "reviewer.log",
     );
     let gate: Value = operator(
@@ -986,7 +995,7 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
     .json()
     .await
     .unwrap();
-    assert_eq!(gate["outcome"], "ACCEPTED");
+    assert_eq!(gate["outcome"], "ACCEPTED", "gate: {gate}");
     let runs: Value = operator(
         &client,
         reqwest::Method::GET,
@@ -1028,6 +1037,7 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(feature = "test-support")]
 struct FixtureCandidate {
     campaign_id: String,
     candidate_id: String,
@@ -1037,6 +1047,7 @@ struct FixtureCandidate {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "test-support")]
 async fn drive_fixture_campaign_to_candidate(
     client: &reqwest::Client,
     base_url: &str,
@@ -1185,6 +1196,7 @@ async fn drive_fixture_campaign_to_candidate(
     }
 }
 
+#[cfg(feature = "test-support")]
 async fn run_fixture_verifier(
     root: &Path,
     base_url: &str,
@@ -1405,7 +1417,7 @@ async fn semantic_reviewer_model_and_codex_modes_bind_findings_provenance_and_re
         &root,
         &base_url,
         &first.candidate_id,
-        "semantic-verifier-first",
+        "verifier-process",
         "first",
         FIXTURE_IMAGE,
     )
@@ -1515,7 +1527,7 @@ async fn semantic_reviewer_model_and_codex_modes_bind_findings_provenance_and_re
         &root,
         &base_url,
         &second.candidate_id,
-        "semantic-verifier-second",
+        "verifier-process",
         "second",
         FIXTURE_IMAGE,
     )
@@ -1586,7 +1598,7 @@ async fn semantic_reviewer_model_and_codex_modes_bind_findings_provenance_and_re
         &root,
         &base_url,
         &third.candidate_id,
-        "semantic-verifier-third",
+        "verifier-process",
         "third",
         FIXTURE_IMAGE,
     )
@@ -2190,7 +2202,7 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
         .env("FACTORY_CORE_URL", &base_url)
         .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
         .env("FACTORY_CANDIDATE_ID", &candidate_id)
-        .env("FACTORY_VERIFIER_PRINCIPAL", "lead-verifier")
+        .env("FACTORY_VERIFIER_PRINCIPAL", "verifier-process")
         .env("FACTORY_VERIFIER_WORKSPACE", root.join("verifier-work"))
         .env("FACTORY_VERIFIER_IMAGE", FIXTURE_IMAGE)
         .env("FACTORY_VERIFIER_TEST_BACKEND", "local")
@@ -2516,7 +2528,7 @@ async fn parallel_workgraph_reaches_accepted_on_integrated_candidate() {
         .env("FACTORY_CORE_URL", &base_url)
         .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
         .env("FACTORY_CANDIDATE_ID", &candidate_id)
-        .env("FACTORY_VERIFIER_PRINCIPAL", "integration-verifier")
+        .env("FACTORY_VERIFIER_PRINCIPAL", "verifier-process")
         .env(
             "FACTORY_VERIFIER_WORKSPACE",
             root.join("verifier-integration-work"),
@@ -2960,7 +2972,7 @@ async fn restarted_fanin_workgraph_reaches_accepted_on_integrated_base() {
         .env("FACTORY_CORE_URL", &base_url)
         .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
         .env("FACTORY_CANDIDATE_ID", &candidate_id)
-        .env("FACTORY_VERIFIER_PRINCIPAL", "fanin-verifier")
+        .env("FACTORY_VERIFIER_PRINCIPAL", "verifier-process")
         .env(
             "FACTORY_VERIFIER_WORKSPACE",
             root.join("fanin-verifier-work"),
@@ -4215,7 +4227,7 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
         .env("FACTORY_CORE_URL", &base_url)
         .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
         .env("FACTORY_CANDIDATE_ID", &candidate_id)
-        .env("FACTORY_VERIFIER_PRINCIPAL", "provider-verifier")
+        .env("FACTORY_VERIFIER_PRINCIPAL", "verifier-process")
         .env(
             "FACTORY_VERIFIER_WORKSPACE",
             root.join("provider-verifier-work"),

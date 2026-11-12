@@ -82,6 +82,15 @@ Request workspace keeps the manual assessment and exact plan-approval flow.
 Every request remains bounded by its frozen profile, delegation, allowed paths,
 capabilities, operations, progress policy and expiry.
 
+A completed or cancelled request can receive one additional operator message to
+start a follow-up request in the same Project and exact profile. The Request
+workspace explains that sending starts a new request, shows the parent on the
+child, and shows the created child and its state on the parent. The follow-up is
+new evidence: it runs its own assessment, plan/environment/spec freeze and
+Campaign and never reuses the parent plan, candidate or Campaign. When a Factory
+delivery merges the protected default branch, Core advances the Project base to
+the exact merge commit so the follow-up plans from merged main.
+
 Autonomous intake is a Core-owned background advance, not a browser macro.
 Creating an `AUTONOMOUS` request with a valid autonomous grant makes Core run
 the assessment, freeze the plan and call the autonomous start boundary. The

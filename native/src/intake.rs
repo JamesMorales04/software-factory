@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use crate::execution_policy::{OperationLimits, ProgressPolicy};
 use crate::execution_profile::ExecutionProfileContent;
 use crate::lead::{
-    Capability, LeadPlanProposal, ObjectiveClass, ProviderRoute, RiskClass, StandingDelegationV2,
+    Capability, LeadPlanProposal, LeadRequestProjectionState, ObjectiveClass, ProviderRoute,
+    RiskClass, StandingDelegationV2,
 };
 
 /// Core-owned validity of one explicit execution-policy grant. This is a
@@ -124,6 +125,25 @@ impl IntakeState {
 
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Cancelled)
+    }
+
+    /// Project the Lead request disposition into the operator-facing intake
+    /// state. This is a mechanical mapping used by both Core and persistence.
+    pub fn from_lead_projection(state: LeadRequestProjectionState) -> Self {
+        match state {
+            LeadRequestProjectionState::Submitted => Self::Submitted,
+            LeadRequestProjectionState::Assessing => Self::Assessing,
+            LeadRequestProjectionState::PlanReady => Self::PlanReady,
+            LeadRequestProjectionState::AwaitingApproval => Self::AwaitingApproval,
+            LeadRequestProjectionState::Executing => Self::Executing,
+            LeadRequestProjectionState::Completed => Self::Completed,
+            LeadRequestProjectionState::Blocked => Self::Blocked,
+            LeadRequestProjectionState::Failed => Self::Failed,
+            LeadRequestProjectionState::Assessed => Self::Assessed,
+            LeadRequestProjectionState::Withdrawn | LeadRequestProjectionState::Cancelled => {
+                Self::Cancelled
+            }
+        }
     }
 }
 
@@ -355,6 +375,8 @@ mod tests {
             command: vec!["cargo".into(), "test".into()],
             expect_exit,
             timeout_secs: 60,
+            environment_plan_id: None,
+            environment_spec_sha256: None,
         }
     }
 
@@ -395,6 +417,7 @@ mod tests {
                 acceptance_criteria: Vec::new(),
                 negative_cases: Vec::new(),
             }],
+            environment_proposal: None,
         }
     }
 

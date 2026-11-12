@@ -1,0 +1,59 @@
+{
+  "requestId": "wp7-compose-fixture",
+  "changeId": "add-bounded-request-validation",
+  "changePath": "openspec/changes/add-bounded-request-validation",
+  "revision": 1,
+  "validated": true,
+  "archived": false,
+  "artifactContentSha256": "4bc709ab27f04ad60b4e5b5d11c8257a72af6ddf95fa55f95ee4e5bd8a6f615a",
+  "hashes": {
+    "proposalSha256": "5c118fe9db6a51e11338cb13e5443319ac69da31c01dcc2b747d5e8e24632844",
+    "specsSha256": "f5b7cf7b4b93f9076d300bf8987c31ed2c56a0d86e16714ee641f3de598ec7a6",
+    "designSha256": "a4be83659a25bb74aa327604656bb50dc29ed8b9d3b2a9805806385545ca689b",
+    "tasksSha256": "7aa3344072dcf13dff62b99a323e319f859718ff83173677b322d69e31ea40b1"
+  },
+  "manifest": {
+    "changeId": "add-bounded-request-validation",
+    "revision": 1,
+    "artifacts": [
+      {
+        "path": "proposal.md",
+        "sha256": "5c118fe9db6a51e11338cb13e5443319ac69da31c01dcc2b747d5e8e24632844"
+      },
+      {
+        "path": "specs/add-bounded-request-validation/spec.md",
+        "sha256": "a6472d50639d0547b009622e9addb45ff981c2e46844b4539921661dea1fa5c1"
+      },
+      {
+        "path": "design.md",
+        "sha256": "a4be83659a25bb74aa327604656bb50dc29ed8b9d3b2a9805806385545ca689b"
+      },
+      {
+        "path": "tasks.md",
+        "sha256": "7aa3344072dcf13dff62b99a323e319f859718ff83173677b322d69e31ea40b1"
+      }
+    ]
+  },
+  "files": [
+    {
+      "path": "proposal.md",
+      "sha256": "5c118fe9db6a51e11338cb13e5443319ac69da31c01dcc2b747d5e8e24632844",
+      "content": "# Add bounded request validation\n\nChange: `add-bounded-request-validation` (revision 1)\n\n## Why\n\nThe request boundary accepts malformed identifiers and unbounded payloads.\n\n## What Changes\n\n- Validate request identifiers and payload bounds at the boundary.\n- Return a typed error instead of a partial request.\n\n## Non-Goals\n\n- Do not change the public request schema.\n\n## Artifacts\n\n- [Specification](specs/add-bounded-request-validation/spec.md)\n- [Design](design.md)\n- [Tasks](tasks.md)\n\n---\nCore is authoritative. This OpenSpec change is a deterministic projection; edited markdown is draft context until Core validates and freezes a new revision.\n"
+    },
+    {
+      "path": "specs/add-bounded-request-validation/spec.md",
+      "sha256": "a6472d50639d0547b009622e9addb45ff981c2e46844b4539921661dea1fa5c1",
+      "content": "## ADDED Requirements\n\n### Requirement: REQ-001\n\nThe request boundary SHALL reject malformed identifiers.\n\n#### Scenario: REQ-001-ACC-01\n\n- **WHEN** the acceptance case is exercised\n- **THEN** A malformed identifier returns a typed error.\n\n#### Scenario: REQ-001-NEG-01\n\n- **WHEN** the negative case is exercised\n- **THEN** A valid identifier is preserved unchanged.\n\n### Requirement: REQ-002\n\nThe request boundary SHALL reject unbounded payloads.\n\n#### Scenario: REQ-002-ACC-01\n\n- **WHEN** the acceptance case is exercised\n- **THEN** An oversized payload returns a typed error.\n\n#### Scenario: REQ-002-NEG-01\n\n- **WHEN** the negative case is exercised\n- **THEN** A bounded payload is accepted.\n\n---\nCore is authoritative. Requirement and scenario identifiers are deterministic projections of the frozen specification.\n"
+    },
+    {
+      "path": "design.md",
+      "sha256": "a4be83659a25bb74aa327604656bb50dc29ed8b9d3b2a9805806385545ca689b",
+      "content": "# Design: Add bounded request validation\n\nChange: `add-bounded-request-validation` (revision 1)\n\n## Stack\n\nRust 2024 with std only.\n\n## Architecture\n\nOne bounded module at the request boundary.\n\n## Design Notes\n\n## Dependencies\n\nNo new dependency.\n\n## ADRs\n\nADR-0001 records the boundary.\n\n## Dependencies\n\nThis projection does not add, remove or approve a dependency. Dependency decisions are recorded in the design notes above and in the stack decision.\n\n## ADRs\n\nThis projection does not create or approve an ADR. ADR references are recorded in the design notes above and in the architecture summary.\n"
+    },
+    {
+      "path": "tasks.md",
+      "sha256": "7aa3344072dcf13dff62b99a323e319f859718ff83173677b322d69e31ea40b1",
+      "content": "# Tasks: Add bounded request validation\n\nChange: `add-bounded-request-validation` (revision 1)\n\n## 1. Implementation\n\n- [ ] 1.1 — Implement identifier validation\n  - Paths: `src/request.rs`\n  - Acceptance:\n    - REQ-001 a malformed identifier returns a typed error.\n  - Evidence:\n    - cargo test -p factory-native --lib request\n  - Requirements: REQ-001\n- [ ] 1.2 — Implement payload bounds\n  - Paths: `tests/request.rs`\n  - Acceptance:\n    - REQ-002 an oversized payload returns a typed error.\n  - Evidence:\n    - cargo test -p factory-native --test request\n  - Requirements: REQ-002\n\n## Traceability\n\n| Requirement | Tasks |\n|---|---|\n| REQ-001 | 1.1 |\n| REQ-002 | 1.2 |\n\n---\nA checked box is not acceptance. Core validates the task, checks and evidence; this projection never grants completion.\n"
+    }
+  ]
+}

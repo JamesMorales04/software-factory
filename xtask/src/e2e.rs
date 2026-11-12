@@ -116,6 +116,8 @@ pub(crate) fn negatives() -> Result<(), String> {
         "test",
         "--workspace",
         "--locked",
+        "--features",
+        "test-support",
         "--test",
         "e2e_dispatch_negative",
     ])

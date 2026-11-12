@@ -1,0 +1,1 @@
+{"checkId":"node-playwright","argv":["env","CHROMIUM_EXE=/nix/store/k6vmry8ij0ay963bxgfiazrcd6f112sc-playwright-chromium/chrome-linux/chrome","npm","test"],"cwd":"projects/node","timeoutSecs":300,"expectExit":0}

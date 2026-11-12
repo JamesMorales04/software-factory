@@ -46,13 +46,24 @@ podman compose up -d --build
 This builds the images (the first build compiles all binaries once), creates
 the private networks and durable volumes, generates per-service secrets,
 imports the provider image into the dedicated engine, starts Core/Office,
-Supervisor, Worker, verifier, reviewer and the runtime broker, and waits for
-the Core, Supervisor, Worker and runtime health checks. The verifier and reviewer
-are started after the runtime is healthy but have no Compose healthcheck.
+Supervisor, Worker, verifier, the six-service reviewer fleet and the runtime
+broker, and waits for the Core, Supervisor, Worker and runtime health checks.
+The verifier and reviewer services are started after the runtime is healthy but
+have no Compose healthcheck.
+
+The reviewer fleet is `reviewer-functional`, `reviewer-architecture`,
+`reviewer-code-quality`, `reviewer-security`, `reviewer-testing` and
+`reviewer-operability`. Each service has its own token file, principal, role
+and state volume. `factory-compose-init` writes one token per identity into the
+matching service volume and into Core's `/config`, plus
+`/config/reviewer-identities.json`, which Core reads through
+`FACTORY_REVIEWER_IDENTITIES_FILE`. No reviewer token is shared across roles and
+no token is printed. Reviewer independence is identity/process based; the same
+provider/model may serve every role.
 
 Codex ChatGPT authentication and native review are opt-in. The reviewer image
 contains the pinned Codex App Server, and the dedicated `factory-codex-home`
-volume is mounted only into the reviewer and the one-shot `codex-auth` /
+volume is mounted into every reviewer role and the one-shot `codex-auth` /
 `codex-status` services. See
 [Codex ChatGPT authentication and native review](codex-review-auth.md) for the
 device-code login and `FACTORY_ENABLE_CODEX_REVIEW=1` activation steps.
@@ -65,6 +76,27 @@ http://127.0.0.1:8893
 
 Set `FACTORY_PORT` to change the host port. No other service publishes a port.
 
+### Runtime-broker owner credentials
+
+`factory-compose-init` generates four distinct runtime-broker tokens and
+places each caller's token in its own config volume:
+
+| Caller | Token file |
+|---|---|
+| Supervisor | `runtime-broker-supervisor.token` |
+| Verifier | `runtime-broker-verifier.token` |
+| Worker/provider | `runtime-broker-provider.token` |
+| Core/environment | `runtime-broker-environment.token` |
+
+The Core environment token is stored in Core's own config volume and is used
+only by `RuntimeBrokerEnvironmentBuilder`. The runtime service receives all four
+files under `/config` and derives the caller's `ResourceOwner` from the bearer
+token. The broker rejects a missing or
+unknown token and applies the derived owner to create, import, export, execute,
+delete, reset and inspect operations. Never replace these with one shared
+token, and never accept an owner from the request body or query string. Tokens
+are read from files, never passed in argv or logged.
+
 ### First build time
 
 The unified `deploy/Containerfile` compiles Core, compose-init, Supervisor,
@@ -72,6 +104,138 @@ Worker, verifier, reviewer, runtime broker, provider bridges and the fixture
 provider in one shared builder stage. A cold build is several minutes; later
 builds reuse the cache. The provider image contains pinned OpenCode/Codex
 executables and Node, so its bundle is large (about 1.5 GiB on the tested host).
+
+## Dependency acquisition
+
+The `dependency` target is a separate credential-free Rust acquisition image.
+`dependency-bundle` exports its rootfs to the shared image-bundle volume and the
+runtime entrypoint waits for the bundle marker before starting the broker. The
+broker imports it into the dedicated engine, pins the imported image ID and
+re-verifies that exact ID before every acquisition. It exposes only
+`POST /v1/dependencies/acquire`.
+
+Acquisition runs on a dedicated internal Podman network with no external route.
+The runtime broker runs a deny-by-default HTTPS CONNECT proxy on that network's
+gateway; the acquisition container receives only the proxy URL and can reach no
+other destination. Cargo's `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` and
+`CARGO_HTTP_PROXY` are fixed to the proxy, and the proxy allows only the
+configured crates.io/GitHub hosts (`FACTORY_RUNTIME_DEPENDENCY_EGRESS_ALLOW`).
+Direct egress and non-allowlisted CONNECT destinations are refused.
+
+Dependency acquisition is optional and never blocks the runtime broker. At
+startup the broker attempts the dependency bundle import, exact image-ID pin,
+network inspection and proxy bind. Any failure is logged once as a bounded
+warning, only the acquisition endpoint is disabled, and the broker continues to
+serve health, volumes, checks and provider sessions. `/health` reports
+`dependencyAcquisition: { "enabled": false, "code": "...", "reason": "..." }`;
+an authenticated acquisition request to the disabled endpoint fails closed with
+`503` and `DEPENDENCY_EGRESS_UNAVAILABLE` or
+`DEPENDENCY_RUNTIME_UNAVAILABLE`. There is no direct-egress fallback and the
+owner-token and workspace-lock checks are unchanged.
+
+Rootless nested Podman creates a bridge network interface only when a container
+attaches. The runtime entrypoint therefore makes the container-local `/proc/sys`
+mount writable so netavark can apply namespaced bridge sysctls, and the broker
+binds the configured gateway when it exists. If the gateway address is not
+present yet, it binds a wildcard listener and accepts connections only from the
+configured dependency subnet; the acquisition container is still
+sent the fixed gateway proxy URL and has no other route. An existing
+`factory-deps-egress` network is accepted only when it is still marked
+`internal` and carries the `io.software-factory.managed=true` label; a
+non-internal or unmanaged network is refused and disables only the dependency
+endpoint.
+
+The planning route attaches a frozen dependency plan to the ActionSpec before
+plan review and Campaign authorization; the spec is immutable after Campaign
+start. Core and the Worker refuse dependency-requiring work when the plan is
+missing. The Worker acquires after provider writes and before offline
+checks/finalization. A failed acquisition, a missing plan or invalid evidence
+blocks the candidate and is persisted as a terminal blocker reason.
+Vendor-cache plans are enforced by the offline checks. The check container
+remains `--network=none` and `--offline`.
+
+## Environment builder bundle
+
+The `environment-builder-bundle` one-shot service exports the generic
+Nix/devenv builder rootfs and a SHA-256 content digest to the shared
+`factory-image-bundle` volume. The runtime entrypoint waits for
+`environment-builder-rootfs.tar.ready`; the broker imports the rootfs into the
+private nested engine under the dedicated image/digest label and runs it only by
+immutable image ID. Core reads the same digest file and installs the runtime
+broker environment builder when its image/digest, broker URL and environment
+owner token are present. An absent or failed bundle keeps the builder
+`UNAVAILABLE`; generated environments stay blocked.
+
+The builder bundle is large (the Nix/devenv image is several GiB), so the first
+Compose build/start is slower than later starts. The builder joins no
+credential network; its fetch phase gets a per-operation internal network and
+the plan's allowlist proxy. Build runs with network disabled.
+
+The Supervisor mounts the same bundle read-only only to read the exact builder
+digest. `FACTORY_SUPERVISOR_ENVIRONMENT_BUILDER_IMAGE` and
+`FACTORY_SUPERVISOR_ENVIRONMENT_BUILDER_DIGEST_FILE` pin the image identity it
+will proxy for Worker checks. A missing digest file or mismatch fails the
+`/v1/workspaces/{workspace_id}/environment-check` request closed; the Supervisor
+never accepts an image, plan, argv or workspace volume from the client.
+
+## OpenSpec validation job (profile-gated)
+
+The pinned OpenSpec CLI is not a host dependency. A one-shot Compose service
+validates the latest Core-rendered projection:
+
+```sh
+podman compose --profile openspec-validation build openspec-validate
+FACTORY_OPENSPEC_REQUEST_ID=<request-id> \
+  podman compose --profile openspec-validation run --rm --no-deps openspec-validate
+```
+
+`openspec-validate` is not part of the default steady-state stack. It:
+
+- builds from [`deploy/openspec/Dockerfile`](../../deploy/openspec/Dockerfile)
+  with the official `@fission-ai/openspec@1.16.1` package on Node 22.23.2;
+- reads the operator token from `/config/operator.token` in the dedicated
+  `factory-config-openspec` volume (never from the command line or an
+  environment value);
+- joins only `factory-control`, calls
+  `GET /agentic/requests/{id}/openspec` on Core, and has no egress network;
+- writes `openspec/changes/<change-id>/...` into a private tmpfs workspace,
+  verifies every file against the Core manifest hash, runs
+  `openspec validate <change-id> --strict`, and removes the workspace;
+- mounts no project source, no Core database and no host path;
+- prints exactly one bounded JSON result and exits non-zero on failure.
+
+The result carries `status` (`PASS`/`FAIL`), `changeId`, `revision`,
+`openspecVersion`, `artifactHashes`, the validation `exitCode`, bounded
+stdout/stderr and a typed failure `code`. A `PASS` is validation evidence for
+plan review: it does not accept a candidate, close a finding or grant delivery
+authority. Core remains authoritative.
+
+If Core has no persisted projection, the job reports
+`OPENSPEC_NOT_FOUND`. If the stored projection and artifact disagree, Core
+returns `OPENSPEC_PROJECTION_STALE` and the job fails closed. Keep the
+`FACTORY_OPENSPEC_REQUEST_ID` value in the operator environment; it is not a
+secret.
+
+### Archive and drift
+
+Core exposes `POST /agentic/requests/{id}/openspec/archive` for the exact
+projection read by the job. The request binds `changeId`, `revision` and
+`artifactContentSha256`. Core recomputes the stored artifact JSON digest,
+verifies the projection and manifest hashes, and only then moves the durable
+projection to `archived: true`:
+
+- replaying the same binding is idempotent and returns
+  `alreadyArchived: true` without changing the row;
+- a changed artifact, stale revision/hash, superseded revision, or different
+  archive binding is rejected as drift/immutability, never silently repaired;
+- the revision must remain the latest for the request when Core checks and
+  updates it under the same write transaction;
+- the response carries `archivePath` (`openspec/changes/archive/<change-id>`)
+  and the exact projection hashes.
+
+Archiving is a projection transition only. It never accepts a candidate, closes
+a finding or grants delivery authority. A drift failure is surfaced to the
+operator; Core does not rewrite the stored artifact or archive it.
 
 ## First-run enrollment
 
@@ -176,6 +340,23 @@ dedicated engine storage. A restart preserves the Project, Campaign, candidate
 and gate; services wait for init material and the runtime bundle marker before
 starting, then converge through health checks.
 
+Test installations that accumulated old Campaigns or unresolved model
+reservations can use the guarded, backed-up [test-data reset](test-data-reset.md).
+It is a development/operator tool, never an install step or automatic cleanup,
+and it only resets Core database state.
+
+Upgrading from a pre-owner-label installation can leave managed
+`factory-ws-*` volumes with an exact workspace label but no owner label. The
+Supervisor's `create_volume` call adopts only that exact workspace identity:
+while holding the per-volume lock, the broker re-reads `managed=true`, the exact
+workspace label, the absence/emptiness of the owner label and the
+active-execution registry, removes the legacy volume through the checked path
+and recreates it with the authenticated owner label. Volumes with a different
+workspace, an existing owner, a missing managed label or no labels remain `409`
+conflicts and are preserved. Legacy execution containers are adopted only
+during explicit Supervisor cleanup when a managed container has the matching
+workspace volume label and no owner label; reconciliation never sweeps them.
+
 ## Deterministic acceptance and browser smoke
 
 The deterministic container journey uses the fixture provider only and never
@@ -242,6 +423,7 @@ podman compose -p software-factory-e2e -f compose.yaml -f compose.e2e.yaml down 
 | Runtime | `quay.io/podman/stable:v5.8.9` + VFS |
 | Office build | Node `22.23.2`, React/Vite pinned by `office/package-lock.json` |
 | Provider | Node `22.23.2`, OpenCode `1.18.32`, Codex `0.156.1` |
+| OpenSpec validation | Node `22.23.2`, `@fission-ai/openspec@1.16.1` |
 
 Base images are pinned by version tag. Digest pinning is not enforced; record
 local image digests for any certification. The provider image is not published;
@@ -321,7 +503,12 @@ networks, publish its own host port, configure Funnel, or pass
 Factory/provider credentials to Tailscale. Core keeps its existing `127.0.0.1`
 publication for local access and recovery.
 Core's full control listener binds only the `core-control` (factory-control)
-and `core-egress` (factory-egress) network aliases. Tailscale Serve forwards
+and `core-egress` (factory-egress) network aliases. Supervisor, Worker,
+verifier, reviewer and OpenSpec control-plane clients therefore set
+`FACTORY_CORE_URL=http://core-control:8765`. They must never use the plain
+`core` service name, which is attached to both networks and can resolve to an
+address where the control listener is not bound; the Compose policy check
+rejects that regression. Tailscale Serve forwards
 only to Core's restricted Office listener through the dedicated
 `factory-office-socket` Unix domain socket volume, mounted read-only in
 Tailscale. The listener omits Worker, Supervisor, verifier, reviewer, and
