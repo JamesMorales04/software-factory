@@ -5364,6 +5364,7 @@ mod tests {
                 acceptance_criteria: Vec::new(),
                 negative_cases: Vec::new(),
             }],
+            environment_proposal: None,
         };
         LeadAssessment {
             schema_revision: 1,
@@ -7990,6 +7991,7 @@ mod tests {
                 objective: &request.objective,
                 grant: &grant,
                 now: Utc::now(),
+                greenfield: false,
             },
         )
         .await;

@@ -9718,6 +9718,10 @@ async fn assess_lead_request(
     } else {
         "FIXTURE"
     };
+    let greenfield = agentic_stack_for_project(&app, &request.project_id)
+        .await
+        .languages
+        .is_empty();
     let (mut assessment, proposal) = if let Some(gateway) = &current_gateway {
         match factory_native::lead_model::assess(
             gateway,
@@ -9730,6 +9734,7 @@ async fn assess_lead_request(
                 objective: &request.objective,
                 grant: &grant,
                 now: chrono::Utc::now(),
+                greenfield,
             },
         )
         .await
@@ -11204,6 +11209,9 @@ struct AgenticModelOutcome {
 /// (100_000 output tokens in the supported profile) and the shared technical
 /// ceilings remain authoritative and can still refuse or settle the call.
 const AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS: u64 = 16_384;
+/// A stack selection is a tiny structured decision; keep the paid output
+/// bounded well below the full planner budget.
+const STACK_SELECTION_OUTPUT_TOKENS: u64 = 4_096;
 /// A single truncation retry may double the request, never beyond this bound.
 const AGENTIC_LEAD_TRUNCATION_RETRY_CEILING: u64 = 32_768;
 
@@ -11751,6 +11759,7 @@ async fn compile_environment_for_request(
     config: &factory_native::lead::ProjectConfig,
     revision: u32,
     risk_class: &str,
+    model_environment_proposal: Option<factory_native::planning::environment::EnvironmentProposal>,
 ) -> Result<factory_native::planning::environment::EnvironmentPlan, Response> {
     use factory_native::planning::environment::{
         CompileEnvironmentInput, EnvironmentBlocker, compile_environment_plan,
@@ -11856,6 +11865,25 @@ async fn compile_environment_for_request(
             return Ok(blocked);
         }
     };
+    // A greenfield project can only receive a concrete environment from an
+    // untrusted model proposal. The recorded Lead planning proposal is
+    // preferred; a model-selected stack may carry a fallback proposal when an
+    // older assessment has none. Neither overrides explicit request constraints
+    // or committed conventions; the existing compiler validates and freezes the
+    // merged plan, and the Lead environment review still approves it.
+    let lead_environment_proposal = app
+        .db
+        .lead_proposal(&record.lead_request_id)
+        .await
+        .ok()
+        .and_then(|record| {
+            serde_json::from_str::<factory_native::lead::LeadPlanProposal>(&record.proposal_json)
+                .ok()
+        })
+        .and_then(|proposal| proposal.environment_proposal);
+    if let Some(proposal) = lead_environment_proposal.or(model_environment_proposal) {
+        requirements.proposal = Some(proposal);
+    }
     if let Ok(raw) = std::env::var("FACTORY_ENVIRONMENT_FETCH_ALLOWLIST") {
         requirements.network.fetch_allowlist = raw
             .split(',')
@@ -11866,6 +11894,11 @@ async fn compile_environment_for_request(
     }
     if requirements.explicit_constraints.nixpkgs.is_none()
         && conventions.pins_named("nixpkgs").is_empty()
+        && requirements
+            .proposal
+            .as_ref()
+            .and_then(|proposal| proposal.nixpkgs.as_ref())
+            .is_none()
     {
         let descriptor = app.environment_builder().descriptor();
         if !descriptor.default_nixpkgs.trim().is_empty() {
@@ -11890,9 +11923,13 @@ async fn compile_environment_for_request(
                 file.path.eq_ignore_ascii_case("flake.lock")
                     || file.path.eq_ignore_ascii_case("devenv.lock")
             });
-            if plan.source
+            // A plan with selected packages always requires builder resolution:
+            // lock files alone do not prove the package version/licence claims.
+            let requires_package_verification = !plan.packages.is_empty();
+            if (plan.source
                 == factory_native::planning::environment::EnvironmentPlanSource::Generated
-                && !has_lock
+                && !has_lock)
+                || requires_package_verification
             {
                 match resolve_generated_environment(app, &plan, Some(repository.as_path())).await {
                     Ok(resolved) => plan = resolved,
@@ -12508,9 +12545,23 @@ struct PlanningCompileConflict {
     options: Option<Value>,
 }
 
+#[derive(Debug)]
 enum PlanningCompileFailure {
     Conflict(PlanningCompileConflict),
     Internal(Error),
+}
+
+/// The deterministic stack decision plus an optional untrusted environment
+/// proposal produced by the same bounded stack-selection model call. The
+/// proposal is only a fallback when the recorded Lead plan did not already
+/// carry one.
+#[derive(Debug)]
+struct CompiledStackDecision {
+    decision: factory_native::planning::StackDecision,
+    /// Profile consumed by architecture, skills and DoD. It preserves the raw
+    /// triage evidence and adds the selected language/framework.
+    stack_profile: factory_native::agentic::StackProfile,
+    environment_proposal: Option<factory_native::planning::environment::EnvironmentProposal>,
 }
 
 impl From<Error> for PlanningCompileFailure {
@@ -12601,35 +12652,217 @@ async fn attach_dependency_plan(
     Ok(())
 }
 
+fn stack_selection_conflict(
+    code: &'static str,
+    message: impl Into<String>,
+    options: &[factory_native::planning::stack::StackSelectionOption],
+) -> PlanningCompileFailure {
+    PlanningCompileFailure::Conflict(PlanningCompileConflict {
+        code,
+        message: message.into(),
+        options: Some(json!(options)),
+    })
+}
+
+/// One bounded HYBRID stack decision: the Lead model selects exactly one
+/// deterministic Core option (or a language/framework that maps to one), and
+/// Core validates the catalog entry and project capability before use. A
+/// greenfield project may also receive a concrete environment proposal from the
+/// same call when the recorded Lead plan has none.
+async fn select_stack_option_with_model(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    config: &factory_native::lead::ProjectConfig,
+    options: &[factory_native::planning::stack::StackSelectionOption],
+) -> Result<
+    (
+        factory_native::planning::stack::StackSelectionOption,
+        Option<factory_native::planning::environment::EnvironmentProposal>,
+    ),
+    PlanningCompileFailure,
+> {
+    let profile = app
+        .db
+        .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+        .await
+        .map_err(PlanningCompileFailure::Internal)?;
+    let gateway = app.intake_assess_gateway(&profile).await.map_err(|error| {
+        stack_selection_conflict(
+            "STACK_SELECTION_MODEL_UNAVAILABLE",
+            format!("the frozen Lead route is unavailable: {error}"),
+            options,
+        )
+    })?;
+    match app.db.inference_envelope_for_request(&record.id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return Err(stack_selection_conflict(
+                "STACK_SELECTION_MODEL_UNAVAILABLE",
+                "a stack-selection model call requires an explicit request inference authorization",
+                options,
+            ));
+        }
+        Err(error) => return Err(PlanningCompileFailure::Internal(error)),
+    }
+    let grant = app
+        .db
+        .standing_delegation_v2(&record.delegation_id)
+        .await
+        .map_err(PlanningCompileFailure::Internal)?;
+    let schema = serde_json::to_string(&factory_native::model_output::stack_selection_schema())
+        .map_err(|error| {
+            PlanningCompileFailure::Internal(Error::Validation(format!(
+                "stack-selection schema encoding failed: {error}"
+            )))
+        })?;
+    let system_prompt = format!(
+        "You are the bounded Software Factory Stack Selector. Return ONLY one JSON object that \
+validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. \
+Choose exactly one deterministic option from the supplied list. Echo its optionId, language and \
+framework. You may omit optionId only when language and framework identify exactly one option. \
+Choose an option whose requiredCapability is present in the supplied project capabilities. Never \
+invent an option, language, framework, capability, path, package or command. If the selection \
+carries an environmentProposal, it must be concrete: an exact pinned nixpkgs revision (or omit \
+nixpkgs to use the builder's documented default), toolchains with exact versions, nixpkgs packages \
+with exact versions and SPDX license identifiers, and build/test/lint/format/typecheck/run commands \
+as argv vectors. There is no language default. Model output is advisory; Core validates the \
+selection against the deterministic catalog and the project's authorized capabilities.\n\nJSON \
+Schema:\n{schema}"
+    );
+    let user_prompt = serde_json::json!({
+        "objective": record.objective.chars().take(4_000).collect::<String>(),
+        "projectId": record.project_id,
+        "allowedPaths": config.allowed_paths,
+        "capabilities": config.capabilities,
+        "options": options,
+    })
+    .to_string();
+    let result = call_lead_model_with_truncation_retry(
+        &gateway,
+        &app.db,
+        &LeadModelCall {
+            principal_id: &grant.principal_id,
+            project_id: &record.project_id,
+            objective_id: &record.lead_request_id,
+            scope_id: &record.delegation_id,
+            purpose: "lead_stack_selection",
+            system_prompt: &system_prompt,
+            user_prompt: &user_prompt,
+            max_output_tokens: STACK_SELECTION_OUTPUT_TOKENS,
+        },
+    )
+    .await
+    .map_err(|error| {
+        stack_selection_conflict(
+            "STACK_SELECTION_MODEL_FAILED",
+            bounded_agentic_model_error(&error.to_string()),
+            options,
+        )
+    })?;
+    let selection = factory_native::model_output::decode_stack_selection(result.content.as_bytes())
+        .map_err(|error| {
+            stack_selection_conflict(
+                "STACK_SELECTION_MODEL_FAILED",
+                format!("the stack-selection model output is invalid: {error}"),
+                options,
+            )
+        })?;
+    let selected = factory_native::planning::stack::resolve_model_stack_selection(
+        options,
+        &selection,
+        &config.capabilities,
+    )
+    .map_err(|error| {
+        stack_selection_conflict("STACK_SELECTION_INVALID", error.to_string(), options)
+    })?;
+    if let Some(proposal) = &selection.environment_proposal {
+        proposal.validate().map_err(|error| {
+            stack_selection_conflict(
+                "STACK_SELECTION_INVALID",
+                format!("the model environment proposal is invalid: {error}"),
+                options,
+            )
+        })?;
+    }
+    let _ = app
+        .db
+        .record_event_once(
+            &format!("request:{}", record.id),
+            "stack.selection.model",
+            &format!(
+                "selected {} ({}/{}); reservation {}; provider {}; model {}",
+                selected.id,
+                selected.language,
+                selected.framework,
+                result.reservation_id,
+                result.provider,
+                result.model
+            ),
+        )
+        .await;
+    Ok((selected, selection.environment_proposal))
+}
+
 async fn compile_stack_decision(
     app: &App,
     record: &factory_native::db::IntakeRequestRecord,
     lane: factory_native::planning::PlanningLane,
     detected: &factory_native::agentic::StackProfile,
     config: &factory_native::lead::ProjectConfig,
-) -> Result<factory_native::planning::StackDecision, PlanningCompileFailure> {
+) -> Result<CompiledStackDecision, PlanningCompileFailure> {
     use factory_native::planning::DependencyStrategy;
     let repository = std::path::PathBuf::from(&config.repository);
-    let mut stack = match factory_native::planning::stack::build_stack_decision(
-        lane,
-        detected,
-        &factory_native::planning::route::UserPlanningConstraints::default(),
-        &record.objective,
-    ) {
-        Ok(stack) => stack,
-        Err(factory_native::planning::stack::StackBuildError::SelectionRequired { options }) => {
+    let (mut stack, stack_profile, environment_proposal) = if detected.languages.is_empty() {
+        let options = factory_native::planning::stack::selection_options(&record.objective);
+        if options.is_empty() {
             return Err(PlanningCompileFailure::Conflict(PlanningCompileConflict {
                 code: "STACK_SELECTION_REQUIRED",
-                message: "A greenfield request needs an explicit stack selection before planning."
-                    .into(),
+                message: "A greenfield request needs a stack selection before planning.".into(),
                 options: Some(json!(options)),
             }));
         }
-        Err(error) => {
-            return Err(PlanningCompileFailure::Internal(Error::Validation(
-                error.to_string(),
-            )));
-        }
+        let (selected, environment_proposal) =
+            select_stack_option_with_model(app, record, config, &options).await?;
+        let decision = factory_native::planning::stack::build_model_stack_decision(
+            lane,
+            detected,
+            &selected,
+            &options,
+            &record.objective,
+        )
+        .map_err(|error| PlanningCompileFailure::Internal(Error::Validation(error.to_string())))?;
+        let stack_profile = factory_native::planning::stack::selected_stack_profile(
+            detected,
+            &decision,
+            &record.objective,
+        );
+        (decision, stack_profile, environment_proposal)
+    } else {
+        let stack = match factory_native::planning::stack::build_stack_decision(
+            lane,
+            detected,
+            &factory_native::planning::route::UserPlanningConstraints::default(),
+            &record.objective,
+        ) {
+            Ok(stack) => stack,
+            Err(factory_native::planning::stack::StackBuildError::SelectionRequired {
+                options,
+            }) => {
+                return Err(PlanningCompileFailure::Conflict(PlanningCompileConflict {
+                    code: "STACK_SELECTION_REQUIRED",
+                    message:
+                        "A greenfield request needs an explicit stack selection before planning."
+                            .into(),
+                    options: Some(json!(options)),
+                }));
+            }
+            Err(error) => {
+                return Err(PlanningCompileFailure::Internal(Error::Validation(
+                    error.to_string(),
+                )));
+            }
+        };
+        (stack, detected.clone(), None)
     };
     let lockfile_sha256 = repository_file_sha256(&repository, &config.base_commit, "Cargo.lock");
     if stack.dependency_plan.strategy == DependencyStrategy::VendorCache
@@ -12644,7 +12877,11 @@ async fn compile_stack_decision(
         .validate(lane)
         .map_err(|error| PlanningCompileFailure::Internal(Error::Validation(error)))?;
     attach_dependency_plan(app, record, &stack, &repository, &config.base_commit).await?;
-    Ok(stack)
+    Ok(CompiledStackDecision {
+        decision: stack,
+        stack_profile,
+        environment_proposal,
+    })
 }
 
 async fn compile_skill_plan(
@@ -12759,7 +12996,7 @@ async fn repair_planning_artifacts(
     let stack_was_missing = missing_set.contains("STACK");
     let stack_decision = if stack_was_missing {
         match compile_stack_decision(app, record, lane, &context.stack, &config).await {
-            Ok(stack) => Some(stack),
+            Ok(stack) => Some(stack.decision),
             Err(PlanningCompileFailure::Conflict(conflict)) => {
                 return Err(planning_compile_conflict_response(conflict, missing));
             }
@@ -12806,6 +13043,16 @@ async fn repair_planning_artifacts(
         }
         Some(stack)
     };
+    let artifact_stack = stack_decision
+        .as_ref()
+        .map(|decision| {
+            factory_native::planning::stack::selected_stack_profile(
+                &context.stack,
+                decision,
+                &record.objective,
+            )
+        })
+        .unwrap_or_else(|| context.stack.clone());
 
     let documentation = if missing_set.contains("DOCUMENTATION") {
         let documentation =
@@ -12859,7 +13106,7 @@ async fn repair_planning_artifacts(
         let architecture = factory_native::planning::architecture::build_architecture_plan(
             &record.objective,
             graph,
-            &context.stack,
+            &artifact_stack,
         );
         architecture
             .validate()
@@ -12870,7 +13117,7 @@ async fn repair_planning_artifacts(
     };
 
     let skill_plan = if missing_set.contains("SKILL") {
-        match compile_skill_plan(app, record, &context.stack).await {
+        match compile_skill_plan(app, record, &artifact_stack).await {
             Ok(plan) => Some(plan),
             Err(PlanningCompileFailure::Conflict(conflict)) => {
                 return Err(planning_compile_conflict_response(conflict, missing));
@@ -12898,7 +13145,7 @@ async fn repair_planning_artifacts(
             .map_err(|error| api_error(Error::Validation(error)))?;
         let definition = factory_native::planning::dod::build_definition_of_done(
             lane,
-            &context.stack,
+            &artifact_stack,
             documentation.clone(),
             reviewer_plan,
         );
@@ -12965,7 +13212,7 @@ async fn persist_planning_plan(
     let architecture = factory_native::planning::architecture::build_architecture_plan(
         &record.objective,
         graph,
-        &context.stack,
+        &stack.stack_profile,
     );
     architecture
         .validate()
@@ -12974,7 +13221,7 @@ async fn persist_planning_plan(
     documentation
         .validate()
         .map_err(|error| api_error(Error::Validation(error)))?;
-    let skill_plan = match compile_skill_plan(app, record, &context.stack).await {
+    let skill_plan = match compile_skill_plan(app, record, &stack.stack_profile).await {
         Ok(plan) => plan,
         Err(PlanningCompileFailure::Conflict(conflict)) => {
             return Ok(planning_compile_conflict_value(conflict));
@@ -12987,7 +13234,7 @@ async fn persist_planning_plan(
         .map_err(|error| api_error(Error::Validation(error)))?;
     let dod = factory_native::planning::dod::build_definition_of_done(
         lane,
-        &context.stack,
+        &stack.stack_profile,
         documentation.clone(),
         reviewer_plan.clone(),
     );
@@ -13001,8 +13248,15 @@ async fn persist_planning_plan(
         Err(error) => return Err(api_error(error)),
     };
     let environment_risk = format!("{:?}", context.risk);
-    let _environment_plan =
-        compile_environment_for_request(app, record, &config, revision, &environment_risk).await?;
+    let _environment_plan = compile_environment_for_request(
+        app,
+        record,
+        &config,
+        revision,
+        &environment_risk,
+        stack.environment_proposal.clone(),
+    )
+    .await?;
     let now = chrono::Utc::now().to_rfc3339();
     let plan_bundle = json!({
         "schemaVersion": factory_native::planning::SCHEMA_VERSION,
@@ -13027,7 +13281,7 @@ async fn persist_planning_plan(
             &record.id,
             "STACK",
             revision,
-            &serde_json::to_string(&stack)
+            &serde_json::to_string(&stack.decision)
                 .map_err(|_| api_error(Error::Invalid("stack encoding")))?,
         )
         .await
@@ -13074,8 +13328,8 @@ async fn persist_planning_plan(
 
     let owner_required = context.assurance() >= factory_native::agentic::Assurance::Elevated
         || context.planning_signals.large
-        || stack.stack_change
-        || stack.autonomy_points > R0_AUTONOMY_POINTS
+        || stack.decision.stack_change
+        || stack.decision.autonomy_points > R0_AUTONOMY_POINTS
         || (lane == PlanningLane::FormalSpec
             && (context.planning_signals.public_contract
                 || context.planning_signals.data_or_schema
@@ -13102,7 +13356,7 @@ async fn persist_planning_plan(
             status,
             principal_id: principal,
             rationale,
-            points: stack.autonomy_points,
+            points: stack.decision.autonomy_points,
         })
         .await
         .map_err(api_error)?;
@@ -13151,7 +13405,7 @@ async fn persist_planning_plan(
         .map_err(api_error)?;
     Ok(json!({
         "plan": plan_record,
-        "stack": stack,
+        "stack": stack.decision,
         "architecture": architecture,
         "documentation": documentation,
         "skillPlan": skill_plan,
@@ -16780,7 +17034,7 @@ async fn assess_agentic_request(
     let schema = factory_native::model_output::agentic_triage_schema();
     let schema_sha256 = factory_native::model_output::agentic_triage_schema_sha256();
     let system_prompt = format!(
-        "You are the bounded Software Factory Semantic Assessor. Return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. You are read-only: you cannot use tools, write files, grant authority, choose tools or accept work. Determine the request kind, the recommended route, the assurance recommendation, the technology StackProfile, concrete file scope, risk signals, expected work units, knowledge/skill needs and explicit unknowns. Use deterministic evidence where supplied; do not invent a technology or a file. If a value is unknown, leave it empty or record it in unknowns. The StackProfile is advisory; Core applies deterministic route and assurance floors. The request kind must be INFORMATIONAL, AUDIT, CHANGE or REPAIR. Routes are NO_AGENT, DIRECT, DELEGATED, FORMAL_SPEC or REPAIR. Assurance is NONE, STANDARD, ELEVATED or CRITICAL.\n\nJSON Schema:\n{schema}"
+        "You are the bounded Software Factory Semantic Assessor. Return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. You are read-only: you cannot use tools, write files, grant authority, choose tools or accept work. Determine the request kind, the recommended route, the assurance recommendation, the technology StackProfile, concrete file scope, risk signals, expected work units, knowledge/skill needs and explicit unknowns. Use deterministic evidence where supplied. For an existing project, do not invent a technology or a file that is not evidenced. For a greenfield CHANGE whose deterministicStack is empty, you must propose a concrete StackProfile that fits the objective (languages, frameworks, runtimes, package managers, build tools and test frameworks) as an untrusted recommendation; Core validates it but does not select a language for the project. If no responsible selection is possible, leave the stack empty and record the exact missing decision in unknowns so Core asks the Owner instead. If a non-stack value is unknown, leave it empty or record it in unknowns. The StackProfile is advisory; Core applies deterministic route, assurance and stack-selection floors. The request kind must be INFORMATIONAL, AUDIT, CHANGE or REPAIR. Routes are NO_AGENT, DIRECT, DELEGATED, FORMAL_SPEC or REPAIR. Assurance is NONE, STANDARD, ELEVATED or CRITICAL.\n\nJSON Schema:\n{schema}"
     );
     let user_prompt = serde_json::json!({
         "objective": record.objective,
@@ -17810,6 +18064,10 @@ async fn assess_intake_request(
     if let Err(error) = app.db.begin_lead_assessment(&lead.id).await {
         return api_error(error);
     }
+    let greenfield = agentic_stack_for_project(&app, &record.project_id)
+        .await
+        .languages
+        .is_empty();
     let (assessment, proposal) = match factory_native::lead_model::assess(
         &gateway,
         &app.db,
@@ -17821,6 +18079,7 @@ async fn assess_intake_request(
             objective: &lead.objective,
             grant: &grant,
             now: chrono::Utc::now(),
+            greenfield,
         },
     )
     .await
@@ -28985,6 +29244,461 @@ mod tests {
 
         #[cfg(feature = "test-support")]
         #[derive(Clone)]
+        struct StackSelectionUpstreamState {
+            content: Arc<Mutex<String>>,
+            hits: Arc<Mutex<usize>>,
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn stack_selection_upstream(
+            content: Arc<Mutex<String>>,
+        ) -> (String, Arc<Mutex<usize>>) {
+            use axum::{Router, routing::post};
+            let hits = Arc::new(Mutex::new(0));
+            let state = StackSelectionUpstreamState {
+                content,
+                hits: hits.clone(),
+            };
+            async fn chat(
+                axum::extract::State(state): axum::extract::State<StackSelectionUpstreamState>,
+            ) -> axum::Json<Value> {
+                *state.hits.lock().unwrap() += 1;
+                axum::Json(json!({
+                    "choices": [{"message": {"content": state.content.lock().unwrap().clone()}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
+                }))
+            }
+            let app = Router::new()
+                .route("/chat/completions", post(chat))
+                .with_state(state);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            (url, hits)
+        }
+
+        #[cfg(feature = "test-support")]
+        fn empty_git_repository() -> (PathBuf, String) {
+            let repository = std::env::temp_dir().join(format!(
+                "factory-core-greenfield-repo-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir(&repository).unwrap();
+            for arguments in [
+                vec!["init", "-q"],
+                vec!["config", "user.name", "Fixture"],
+                vec!["config", "user.email", "fixture@example.invalid"],
+            ] {
+                assert!(
+                    std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&repository)
+                        .args(arguments)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            std::fs::write(repository.join("README.md"), "# Calculator\n").unwrap();
+            for arguments in [vec!["add", "--all"], vec!["commit", "-qm", "empty"]] {
+                assert!(
+                    std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&repository)
+                        .args(arguments)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            let base = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            (
+                repository,
+                String::from_utf8_lossy(&base.stdout).trim().to_owned(),
+            )
+        }
+
+        #[cfg(feature = "test-support")]
+        fn stack_selection_content(
+            option_id: &str,
+            language: &str,
+            framework: &str,
+            environment: Option<Value>,
+        ) -> String {
+            serde_json::to_string(&json!({
+                "optionId": option_id,
+                "language": language,
+                "framework": framework,
+                "rationale": "The bounded planner selects a deterministic option for this objective.",
+                "environmentProposal": environment,
+            }))
+            .unwrap()
+        }
+
+        #[cfg(feature = "test-support")]
+        fn calculator_environment_proposal() -> Value {
+            json!({
+                "nixpkgs": "github:NixOS/nixpkgs/2222222222222222222222222222222222222222",
+                "toolchains": [{
+                    "id": "rust",
+                    "version": "1.90.0",
+                    "source": "lead-proposal",
+                    "evidence": ["planner-stack-selection"]
+                }],
+                "packages": [{
+                    "name": "cargo",
+                    "version": "1.90.0",
+                    "license": "MIT",
+                    "source": "nixpkgs",
+                    "attr": "cargo",
+                    "sha256": "",
+                    "unfree": false,
+                    "attribution": "Cargo is MIT licensed."
+                }],
+                "commands": {
+                    "test": {
+                        "argv": ["cargo", "test"],
+                        "cwd": ".",
+                        "timeoutSecs": 300,
+                        "expectExit": 0
+                    }
+                }
+            })
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn create_calculator_intake(fixture: &Fixture, key: &str) -> String {
+            let (status, intake) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(json!({
+                    "project_id": fixture.project_id,
+                    "objective": "Build a calculator application. You choose the stack.",
+                    "execution_profile_id": fixture.profile.id,
+                    "mode": "REVIEW_PLAN",
+                    "idempotency_key": key,
+                    "authorized_micros": 1_000_000
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            intake["id"].as_str().unwrap().to_string()
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn project_config_with_capabilities(
+            fixture: &Fixture,
+            capabilities: Vec<factory_native::lead::Capability>,
+        ) -> factory_native::lead::ProjectConfig {
+            let config = fixture
+                .app
+                .db
+                .project_config(&fixture.project_id)
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .update_project_config(
+                    &fixture.project_id,
+                    &NewProjectConfig {
+                        expected_revision: config.revision,
+                        allowed_paths: config.allowed_paths,
+                        capabilities,
+                        quality_profile: config.quality_profile,
+                        active: true,
+                    },
+                )
+                .await
+                .unwrap()
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn greenfield_calculator_selects_and_uses_a_model_stack_without_operator_input() {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let content = Arc::new(Mutex::new(stack_selection_content(
+                "rust-service",
+                "rust",
+                "axum",
+                Some(calculator_environment_proposal()),
+            )));
+            let (url, hits) = stack_selection_upstream(content).await;
+            let key = environment_master_key();
+            let fixture = setup_with(Some(&key), &url, &url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let intake_id = create_calculator_intake(&fixture, "calculator-stack-selection").await;
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            let config = project_config_with_capabilities(
+                &fixture,
+                vec![
+                    factory_native::lead::Capability::RepositoryEdit,
+                    factory_native::lead::Capability::GenericToolchain,
+                ],
+            )
+            .await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&record.lead_request_id)
+                .await
+                .unwrap();
+            let compiled = compile_stack_decision(
+                &fixture.app,
+                &record,
+                factory_native::planning::PlanningLane::FormalSpec,
+                &factory_native::agentic::StackProfile::default(),
+                &config,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                compiled.decision.source,
+                factory_native::planning::StackSource::Model
+            );
+            assert_eq!(compiled.decision.selected, "rust-service");
+            assert!(compiled.decision.options.len() >= 2);
+            assert!(
+                compiled
+                    .decision
+                    .required_capabilities
+                    .iter()
+                    .any(|value| value == "rust")
+            );
+            assert!(compiled.environment_proposal.is_some());
+            assert_eq!(*hits.lock().unwrap(), 1);
+
+            // The selected stack must drive the other planning artifacts, not
+            // the empty triage profile.
+            let graph = factory_native::agentic::ValidatedWorkGraph {
+                units: vec![factory_native::agentic::PlannedWorkUnit {
+                    id: "calculator".into(),
+                    title: "Calculator".into(),
+                    objective: "Implement the calculator.".into(),
+                    depends_on: Vec::new(),
+                    paths: vec!["src".into()],
+                    acceptance: vec!["The calculator adds two numbers.".into()],
+                }],
+                assumptions: Vec::new(),
+                risks: Vec::new(),
+                topological_order: vec!["calculator".into()],
+                graph_sha256: "a".repeat(64),
+            };
+            let architecture = factory_native::planning::architecture::build_architecture_plan(
+                &record.objective,
+                &graph,
+                &compiled.stack_profile,
+            );
+            architecture.validate().unwrap();
+            assert!(
+                architecture.stack.iter().any(|value| value == "rust"),
+                "{architecture:?}"
+            );
+            let skill_plan = factory_native::planning::skills::build_skill_plan(
+                &compiled.stack_profile,
+                &[],
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .unwrap();
+            assert!(skill_plan.needs.iter().any(|value| value == "rust"));
+            let reviewer_plan = factory_native::planning::ReviewerPlan::for_lane(
+                factory_native::planning::PlanningLane::FormalSpec,
+                true,
+            );
+            let dod = factory_native::planning::dod::build_definition_of_done(
+                factory_native::planning::PlanningLane::FormalSpec,
+                &compiled.stack_profile,
+                factory_native::planning::DocumentationPlan::default(),
+                reviewer_plan,
+            );
+            dod.validate().unwrap();
+            assert!(
+                dod.project_checks
+                    .iter()
+                    .any(|check| check.id == "rust-test"),
+                "{dod:?}"
+            );
+
+            // The selected stack's proposal is the environment fallback when
+            // the recorded Lead plan has none. A generated greenfield plan is
+            // resolved by the builder port and remains CORE_VALIDATED until the
+            // Lead environment review approves it.
+            let (repository, base) = empty_git_repository();
+            let mut greenfield = config.clone();
+            greenfield.repository = repository.to_string_lossy().into_owned();
+            greenfield.base_commit = base;
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FakeEnvironmentBuilder));
+            let plan = compile_environment_for_request(
+                &fixture.app,
+                &record,
+                &greenfield,
+                1,
+                "R0",
+                compiled.environment_proposal.clone(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                plan.status,
+                factory_native::planning::environment::EnvironmentPlanStatus::CoreValidated
+            );
+            assert!(
+                plan.toolchains
+                    .iter()
+                    .any(|toolchain| { toolchain.id == "rust" && toolchain.version == "1.90.0" })
+            );
+            assert!(
+                plan.packages
+                    .iter()
+                    .any(|package| package.name == "cargo" && package.license == "MIT")
+            );
+            assert!(plan.files.iter().any(|file| file.path == "flake.nix"));
+            assert_eq!(
+                plan.require_lead_approval().unwrap_err().code,
+                factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentLeadApprovalRequired
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+            let _ = std::fs::remove_dir_all(repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn invalid_model_stack_selection_fails_closed() {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let content = Arc::new(Mutex::new(stack_selection_content(
+                "go-service",
+                "go",
+                "gin",
+                None,
+            )));
+            let (url, _hits) = stack_selection_upstream(content).await;
+            let key = environment_master_key();
+            let fixture = setup_with(Some(&key), &url, &url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let intake_id = create_calculator_intake(&fixture, "invalid-stack-selection").await;
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            let config = project_config_with_capabilities(
+                &fixture,
+                vec![
+                    factory_native::lead::Capability::RepositoryEdit,
+                    factory_native::lead::Capability::GenericToolchain,
+                ],
+            )
+            .await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&record.lead_request_id)
+                .await
+                .unwrap();
+            let failure = compile_stack_decision(
+                &fixture.app,
+                &record,
+                factory_native::planning::PlanningLane::FormalSpec,
+                &factory_native::agentic::StackProfile::default(),
+                &config,
+            )
+            .await
+            .unwrap_err();
+            match failure {
+                PlanningCompileFailure::Conflict(conflict) => {
+                    assert_eq!(conflict.code, "STACK_SELECTION_INVALID");
+                    assert!(conflict.options.is_some());
+                }
+                PlanningCompileFailure::Internal(error) => {
+                    panic!("unexpected internal error: {error:?}")
+                }
+            }
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn stack_selection_model_failure_is_typed() {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let content = Arc::new(Mutex::new("not a stack selection".to_string()));
+            let (url, _hits) = stack_selection_upstream(content).await;
+            let key = environment_master_key();
+            let fixture = setup_with(Some(&key), &url, &url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let intake_id =
+                create_calculator_intake(&fixture, "stack-selection-model-failure").await;
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            let config = project_config_with_capabilities(
+                &fixture,
+                vec![
+                    factory_native::lead::Capability::RepositoryEdit,
+                    factory_native::lead::Capability::GenericToolchain,
+                ],
+            )
+            .await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&record.lead_request_id)
+                .await
+                .unwrap();
+            let failure = compile_stack_decision(
+                &fixture.app,
+                &record,
+                factory_native::planning::PlanningLane::FormalSpec,
+                &factory_native::agentic::StackProfile::default(),
+                &config,
+            )
+            .await
+            .unwrap_err();
+            match failure {
+                PlanningCompileFailure::Conflict(conflict) => {
+                    assert_eq!(conflict.code, "STACK_SELECTION_MODEL_FAILED");
+                }
+                PlanningCompileFailure::Internal(error) => {
+                    panic!("unexpected internal error: {error:?}")
+                }
+            }
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[derive(Clone)]
         struct EnvironmentReviewUpstreamState {
             content: Arc<Mutex<String>>,
             hits: Arc<Mutex<usize>>,
@@ -29074,9 +29788,10 @@ mod tests {
                 .project_config(&record.project_id)
                 .await
                 .unwrap();
-            let plan = compile_environment_for_request(&fixture.app, &record, &config, 1, "R0")
-                .await
-                .unwrap();
+            let plan =
+                compile_environment_for_request(&fixture.app, &record, &config, 1, "R0", None)
+                    .await
+                    .unwrap();
             let forged = fixture
                 .router
                 .clone()
@@ -29216,11 +29931,34 @@ mod tests {
             {
                 Box::pin(async move {
                     use factory_native::planning::environment::{
-                        ENVIRONMENT_SCHEMA_VERSION, EnvironmentFile, EnvironmentFileOrigin,
-                        EnvironmentResolution,
+                        ClosureLicense, ENVIRONMENT_SCHEMA_VERSION, EnvironmentFile,
+                        EnvironmentFileOrigin, EnvironmentResolution, VerifiedPackage,
                     };
                     let content = "{\"nodes\":{\"nixpkgs\":{\"locked\":{\"owner\":\"NixOS\",\"repo\":\"nixpkgs\",\"rev\":\"2222222222222222222222222222222222222222\"}}}}"
                         .to_string();
+                    let packages = plan
+                        .packages
+                        .iter()
+                        .map(|package| {
+                            let attr = if package.attr.trim().is_empty() {
+                                package.name.trim().to_owned()
+                            } else {
+                                package.attr.trim().to_owned()
+                            };
+                            VerifiedPackage {
+                                name: package.name.clone(),
+                                attr: attr.clone(),
+                                store_path: format!(
+                                    "/nix/store/{}-{}",
+                                    "c".repeat(32),
+                                    package.name
+                                ),
+                                version: package.version.clone(),
+                                license: package.license.clone(),
+                                unfree: package.unfree,
+                            }
+                        })
+                        .collect();
                     Ok(EnvironmentResolution {
                         schema_version: ENVIRONMENT_SCHEMA_VERSION,
                         plan_sha256: plan.plan_sha256.clone(),
@@ -29234,6 +29972,14 @@ mod tests {
                         }],
                         nix_version: "2.28.3".into(),
                         devenv_version: "1.11.2".into(),
+                        packages,
+                        closure_licenses: vec![ClosureLicense {
+                            path: format!("/nix/store/{}-bash-5.2", "b".repeat(32)),
+                            name: "bash".into(),
+                            version: "5.2".into(),
+                            license: "GPL-3.0-or-later".into(),
+                            unfree: false,
+                        }],
                     })
                 })
             }
@@ -29464,6 +30210,7 @@ mod tests {
                 &config,
                 1,
                 "R0",
+                None,
             )
             .await
             {
@@ -29605,9 +30352,10 @@ mod tests {
                 .project_config(&record.project_id)
                 .await
                 .unwrap();
-            let plan = compile_environment_for_request(&fixture.app, &record, &config, 1, "R0")
-                .await
-                .unwrap();
+            let plan =
+                compile_environment_for_request(&fixture.app, &record, &config, 1, "R0", None)
+                    .await
+                    .unwrap();
             assert_eq!(
                 plan.status,
                 factory_native::planning::environment::EnvironmentPlanStatus::Blocked
@@ -29652,9 +30400,10 @@ mod tests {
                 .project_config(&record.project_id)
                 .await
                 .unwrap();
-            let plan = compile_environment_for_request(&fixture.app, &record, &config, 1, "R0")
-                .await
-                .unwrap();
+            let plan =
+                compile_environment_for_request(&fixture.app, &record, &config, 1, "R0", None)
+                    .await
+                    .unwrap();
             let plan_artifact = fixture
                 .app
                 .db

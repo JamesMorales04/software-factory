@@ -81,6 +81,27 @@ DENIED_SPDX: Final[frozenset[str]] = frozenset(
     }
 )
 
+# Closure-wide licensing accepts common copyleft licences that are not denied
+# by product policy, while still rejecting every unfree/denied/unknown package.
+CLOSURE_ALLOWED_SPDX: Final[frozenset[str]] = ALLOWED_SPDX | frozenset(
+    {
+        "GPL-2.0-only",
+        "GPL-2.0-or-later",
+        "GPL-3.0-only",
+        "GPL-3.0-or-later",
+        "LGPL-2.0-only",
+        "LGPL-2.0-or-later",
+        "BSD-4-Clause",
+        "curl",
+        "OpenSSL",
+        "PostgreSQL",
+        "NCSA",
+        "Public Domain",
+        "publicDomain",
+    }
+)
+MAX_CLOSURE_PACKAGES: Final[int] = 4096
+
 # Patterns that make a generated/project environment untrusted code instead of
 # a declarative environment. The sandbox is the enforcement boundary; these
 # checks are defence in depth and produce a typed blocker.
@@ -93,7 +114,18 @@ FORBIDDEN_NIX_PATTERNS: Final[tuple[tuple[re.Pattern[str], str, str], ...]] = (
     (re.compile(r"\b--impure\b"), "ENVIRONMENT_SANDBOX_DENIED", "--impure"),
     (re.compile(r"\bimpure\s*[=:]\s*true\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "impure=true"),
     (re.compile(r"\bimport\s+<nixpkgs>"), "ENVIRONMENT_PIN_MISSING", "import <nixpkgs>"),
-    (re.compile(r"\ballowUnfree\s*=\s*true\b"), "ENVIRONMENT_LICENSE_DENIED", "allowUnfree=true"),
+    # Reject every unfree-policy identifier, not just `allowUnfree = true`.
+    # This covers allowUnfreePredicate, permittedUnfreePackages,
+    # config.allowUnfree, nixpkgs.config.allowUnfree and equivalent forms.
+    (re.compile(r"unfree", re.IGNORECASE), "ENVIRONMENT_LICENSE_DENIED", "unfree policy"),
+    (re.compile(r"\bbuiltins\.getAttr\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "builtins.getAttr"),
+    # Dynamic attribute/config construction can rebuild an unfree policy from
+    # fragments that do not contain the literal identifier.
+    (re.compile(r"\bbuiltins\.listToAttrs\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "builtins.listToAttrs"),
+    (re.compile(r"\bbuiltins\.mapAttrs\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "builtins.mapAttrs"),
+    (re.compile(r"\bbuiltins\.fromJSON\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "builtins.fromJSON"),
+    (re.compile(r"\bbuiltins\.attrNames\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "builtins.attrNames"),
+    (re.compile(r"\bbuiltins\.functionArgs\b", re.IGNORECASE), "ENVIRONMENT_SANDBOX_DENIED", "builtins.functionArgs"),
     (re.compile(r"\bsandbox\s*=\s*false\b"), "ENVIRONMENT_SANDBOX_DENIED", "sandbox=false"),
     (re.compile(r"\bnixConfig\s*=\b"), "ENVIRONMENT_SANDBOX_DENIED", "flake nixConfig"),
     (re.compile(r"\bextra-substituters\b"), "ENVIRONMENT_NETWORK_DENIED", "extra substituter"),
@@ -103,6 +135,295 @@ FORBIDDEN_NIX_PATTERNS: Final[tuple[tuple[re.Pattern[str], str, str], ...]] = (
     (re.compile(r"\b(?:builtins\.)?fetchurl\b"), "ENVIRONMENT_PIN_MISSING", "fetchurl"),
     (re.compile(r"\b(?:builtins\.)?fetchTree\b"), "ENVIRONMENT_PIN_MISSING", "fetchTree"),
 )
+
+def _is_identifier_char(character: str) -> bool:
+    return character.isascii() and (character.isalnum() or character in "_-'")
+
+
+def _config_assignment_offsets(ast: str) -> list[int]:
+    """Find `config =` assignments outside string literals in a parsed AST."""
+    offsets: list[int] = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(ast):
+        character = ast[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+            index += 1
+            continue
+        if ast.startswith("config", index) and (
+            index == 0 or not _is_identifier_char(ast[index - 1])
+        ):
+            boundary = index + len("config")
+            if boundary >= len(ast) or not _is_identifier_char(ast[boundary]):
+                cursor = boundary
+                while cursor < len(ast) and ast[cursor].isspace():
+                    cursor += 1
+                if cursor < len(ast) and ast[cursor] == "=":
+                    offsets.append(cursor + 1)
+        index += 1
+    return offsets
+
+
+def _expression_end(ast: str, start: int) -> int:
+    """Return the end of the balanced expression beginning at `start`."""
+    depth = 0
+    in_string = False
+    escaped = False
+    seen = False
+    for index in range(start, len(ast)):
+        character = ast[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+            seen = True
+            continue
+        if character in "([{":
+            depth += 1
+            seen = True
+            continue
+        if character in ")]}":
+            if depth == 0:
+                return index
+            depth -= 1
+            if depth == 0:
+                return index + 1
+            continue
+        if depth == 0 and seen and character in ",;":
+            return index
+        if depth == 0 and character == "}":
+            return index
+        if not character.isspace():
+            seen = True
+    return len(ast)
+
+
+def _matching_delimiter(text: str, start: int) -> int:
+    opening = text[start]
+    closing = {"(": ")", "[": "]", "{": "}"}[opening]
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        character = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+            continue
+        if character == opening:
+            depth += 1
+        elif character == closing:
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
+def _strip_outer_parens(expression: str) -> str:
+    expression = expression.strip()
+    while expression.startswith("(") and _matching_delimiter(expression, 0) == len(
+        expression
+    ) - 1:
+        expression = expression[1:-1].strip()
+    return expression
+
+
+def _is_literal_attrset(expression: str) -> bool:
+    expression = expression.strip()
+    return (
+        expression.startswith("{")
+        and _matching_delimiter(expression, 0) == len(expression) - 1
+    )
+
+
+def _split_top_level_merges(expression: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    index = 0
+    while index < len(expression):
+        character = expression[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+            index += 1
+            continue
+        if character in "([{":
+            depth += 1
+        elif character in ")]}":
+            depth -= 1
+        elif (
+            depth == 0
+            and character == "/"
+            and index + 1 < len(expression)
+            and expression[index + 1] == "/"
+        ):
+            parts.append(expression[start:index])
+            start = index + 2
+            index += 1
+        index += 1
+    parts.append(expression[start:])
+    return parts
+
+
+def reject_dynamic_config_ast(ast: str, filename: str) -> None:
+    """Reject variable/alias config and dynamic keys in every `config =`.
+
+    The input is the normalised AST from `nix-instantiate --parse`. The config
+    value must be a literal attrset or a merge of literal attrsets. A let-bound
+    variable or function that builds the attrset elsewhere is not followed and
+    fails closed, because alias resolution in a textual AST is not robust.
+    """
+    search_from = 0
+    while True:
+        offsets = [
+            offset
+            for offset in _config_assignment_offsets(ast)
+            if offset >= search_from
+        ]
+        if not offsets:
+            return
+        start = offsets[0]
+        end = _expression_end(ast, start)
+        expression = _strip_outer_parens(ast[start:end])
+        parts = _split_top_level_merges(expression)
+        if any(not _is_literal_attrset(part) for part in parts):
+            fail(
+                "ENVIRONMENT_SANDBOX_DENIED",
+                f"{filename} uses a non-literal nixpkgs config expression; use a literal attrset or a merge of literal attrsets",
+            )
+        if any('"${' in part for part in parts):
+            fail(
+                "ENVIRONMENT_SANDBOX_DENIED",
+                f"{filename} uses a dynamic attribute key in nixpkgs config",
+            )
+        search_from = end if end > start else start + 1
+
+
+def _argument_span(ast: str, start: int) -> int:
+    """Return the end of one function-application argument."""
+    index = start
+    while index < len(ast) and ast[index].isspace():
+        index += 1
+    if index >= len(ast):
+        return index
+    if ast[index] in "([{":
+        closing = _matching_delimiter(ast, index)
+        return len(ast) if closing < 0 else closing + 1
+    while index < len(ast) and not ast[index].isspace() and ast[index] not in ")]},;":
+        index += 1
+    return index
+
+
+def reject_computed_nixpkgs_import(ast: str, filename: str) -> None:
+    """Require every `import nixpkgs <args>` to use literal/static arguments.
+
+    This closes computed import-argument shapes such as
+    `import nixpkgs { ${configKey} = settings; }` and
+    `let args = { config = ...; }; in import nixpkgs args`, which would
+    otherwise evade a scan that only looks for literal `config =` keys.
+    Ordinary `devShells.${system}` is not an import argument and is unaffected.
+    Directly aliasing `import` itself (`let f = import; in f nixpkgs ...`) is
+    rejected; arbitrary higher-order functions that conceal `import` remain
+    outside the supported static subset.
+    """
+    if re.search(r"\bimport\s*(?:;|\bin\b)", ast):
+        fail(
+            "ENVIRONMENT_SANDBOX_DENIED",
+            f"{filename} aliases import; committed Nix may only call import nixpkgs directly",
+        )
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(ast):
+        character = ast[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+            index += 1
+            continue
+        if ast.startswith("import", index) and (
+            index == 0 or not _is_identifier_char(ast[index - 1])
+        ):
+            boundary = index + len("import")
+            if boundary < len(ast) and _is_identifier_char(ast[boundary]):
+                index += 1
+                continue
+            cursor = boundary
+            while cursor < len(ast) and ast[cursor].isspace():
+                cursor += 1
+            if not ast.startswith("nixpkgs", cursor):
+                index += 1
+                continue
+            target_end = cursor + len("nixpkgs")
+            if target_end < len(ast) and _is_identifier_char(ast[target_end]):
+                index += 1
+                continue
+            argument_start = target_end
+            while argument_start < len(ast) and ast[argument_start].isspace():
+                argument_start += 1
+            if argument_start >= len(ast) or ast[argument_start] in ")],;":
+                index = target_end
+                continue
+            argument_end = _argument_span(ast, argument_start)
+            argument = _strip_outer_parens(ast[argument_start:argument_end])
+            parts = _split_top_level_merges(argument)
+            if any(not _is_literal_attrset(part) for part in parts):
+                fail(
+                    "ENVIRONMENT_SANDBOX_DENIED",
+                    f"{filename} passes a non-literal/aliased argument to import nixpkgs; use a literal attrset or a merge of literal attrsets",
+                )
+            if any('"${' in part for part in parts):
+                fail(
+                    "ENVIRONMENT_SANDBOX_DENIED",
+                    f"{filename} uses a dynamic attribute name in the import nixpkgs argument",
+                )
+            index = argument_end
+            continue
+        index += 1
+
 
 INPUT_URL = re.compile(r"\binputs(?:\.[A-Za-z0-9_.-]+)*\.url\s*=\s*[\"']([^\"']+)[\"']")
 YAML_INPUT_URL = re.compile(r"^\s*url:\s*[\"']?([^\"'\s]+)[\"']?\s*$", re.MULTILINE)
@@ -327,6 +648,10 @@ def validate_resolution_plan(
     validate_sandbox(nix.get("sandbox"))
     resources = validate_resources(plan.get("resources"))
     validate_network(plan.get("network"))
+    for package in plan.get("packages", []):
+        if not isinstance(package, dict):
+            fail("ENVIRONMENT_PLAN_INVALID", "a package entry is not an object")
+        validate_package_source(package)
     files = validate_environment_files(plan, source_workspace)
     validate_workspace_environment_overrides(source_workspace)
     validate_workspace_paths(source_workspace)
@@ -744,6 +1069,86 @@ def validate_license_expression(value: str) -> None:
     fail("ENVIRONMENT_LICENSE_UNKNOWN", f"the license expression {value} is unknown")
 
 
+def _closure_license_known(value: str) -> bool:
+    if value in DENIED_SPDX:
+        return False
+    if value in CLOSURE_ALLOWED_SPDX:
+        return True
+    normalized = (
+        value.replace("(", " ")
+        .replace(")", " ")
+        .replace(" AND ", " ")
+        .replace(" OR ", " ")
+        .replace(" WITH ", " ")
+    )
+    atoms = normalized.split()
+    return bool(atoms) and all(
+        atom in CLOSURE_ALLOWED_SPDX or atom.startswith("LLVM-exception")
+        for atom in atoms
+    )
+
+
+def validate_closure_licenses(entries: Any) -> list[dict[str, Any]]:
+    """Fail closed on any unfree, denied or unknown package in the realised
+    environment closure. This evidence comes from the builder's independent
+    closure metadata evaluation, not from the Core plan's package claims."""
+    entries = _require_list(entries, "closure license entries")
+    if len(entries) > MAX_CLOSURE_PACKAGES:
+        fail("ENVIRONMENT_LICENSE_UNKNOWN", "the environment closure exceeds its package bound")
+    observed: list[dict[str, Any]] = []
+    for entry in entries:
+        entry = _require_mapping(entry, "closure license entry")
+        path = _require_str(entry.get("path"), "closure license path", 512)
+        if not path.startswith("/nix/store/"):
+            fail("ENVIRONMENT_LICENSE_UNKNOWN", "a closure license path is not a Nix store path")
+        name = _require_str(entry.get("name"), "closure license name", 200)
+        version = _require_str(entry.get("version"), "closure license version", 128)
+        license_value = _require_str(entry.get("license"), "closure license expression", 200)
+        unfree = _require_bool(entry.get("unfree"), "closure license unfree")
+        if unfree:
+            fail(
+                "ENVIRONMENT_UNFREE_REQUIRES_OWNER",
+                f"transitive closure package {name} {version} is unfree",
+            )
+        if license_value in DENIED_SPDX:
+            fail(
+                "ENVIRONMENT_LICENSE_DENIED",
+                f"transitive closure package {name} {version} uses denied license {license_value}",
+            )
+        if not _closure_license_known(license_value):
+            fail(
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                f"transitive closure package {name} {version} has unknown license {license_value}",
+            )
+        observed.append(
+            {
+                "path": path,
+                "name": name,
+                "version": version,
+                "license": license_value,
+                "unfree": unfree,
+            }
+        )
+    return observed
+
+
+PACKAGE_ATTR = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$")
+
+
+def validate_package_source(package: dict[str, Any]) -> None:
+    """Require the exact pinned nixpkgs attribute, not an opaque suffix."""
+    name = str(package.get("name", "")).strip()
+    attr = str(package.get("attr", "")).strip() or name
+    if not name or len(attr) > 128 or not PACKAGE_ATTR.fullmatch(attr):
+        fail("ENVIRONMENT_PLAN_INVALID", "a package nix attribute is not a bounded dotted identifier")
+    source = str(package.get("source", ""))
+    if source not in ("nixpkgs", f"nixpkgs:{attr}"):
+        fail(
+            "ENVIRONMENT_PIN_MISSING",
+            f"package {name} source must be exactly nixpkgs or nixpkgs:{attr}",
+        )
+
+
 def validate_license_inventory(
     spec: dict[str, Any],
     plan: dict[str, Any],
@@ -787,6 +1192,7 @@ def validate_license_inventory(
         name = str(package.get("name", ""))
         version = str(package.get("version", ""))
         license_value = str(package.get("license", ""))
+        validate_package_source(package)
         validate_license_expression(license_value)
         if package.get("unfree"):
             matching = [

@@ -109,6 +109,7 @@ def build_sbom(
     spec: dict[str, Any],
     plan: dict[str, Any],
     manifest: list[dict[str, Any]],
+    closure_licenses: list[dict[str, Any]] | None = None,
     nix_version: str,
     devenv_version: str,
 ) -> dict[str, Any]:
@@ -164,20 +165,36 @@ def build_sbom(
                 attribution=str(selected.get("attribution", "")),
             )
         )
+    closure_by_path = {
+        str(entry.get("path", "")): entry
+        for entry in (closure_licenses or [])
+        if isinstance(entry, dict)
+    }
     for entry in manifest:
         path = str(entry.get("path", ""))
         name, version = _split_store_path(path)
         if not name:
             continue
+        observed = closure_by_path.get(path, {})
+        observed_name = str(observed.get("name", "")).strip()
+        observed_version = str(observed.get("version", "")).strip()
+        observed_license = str(observed.get("license", "")).strip()
+        if observed_name:
+            name = observed_name
+        if observed_version:
+            version = observed_version
         components.append(
             _component(
                 name=name,
                 version=version,
-                license_value="NOASSERTION",
+                license_value=observed_license or "NOASSERTION",
                 scope="excluded",
                 sha256="",
                 attribution=(
-                    "Transitive Nix closure entry recorded for SBOM provenance; "
+                    "Transitive Nix closure entry with builder-observed package "
+                    "metadata; not a License Gate approval."
+                    if observed_license
+                    else "Transitive Nix closure entry recorded for SBOM provenance; "
                     "not a License Gate approval."
                 ),
                 purl=None,

@@ -1452,6 +1452,7 @@ impl Database {
                         | "agentic_planner"
                         | "agentic_spec_manager"
                         | "lead_environment_review"
+                        | "lead_stack_selection"
                 );
                 if state != "ASSESSING" && !bounded_agentic_purpose {
                     return Err(Error::Forbidden(

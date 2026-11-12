@@ -397,6 +397,7 @@ mod tests {
                 acceptance_criteria: Vec::new(),
                 negative_cases: Vec::new(),
             }],
+            environment_proposal: None,
         }
     }
 

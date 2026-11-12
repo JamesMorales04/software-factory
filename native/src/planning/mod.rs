@@ -396,6 +396,10 @@ impl Default for DependencyPlan {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ArchitecturePlan {
     pub context: String,
+    /// The selected stack language/framework projection. Defaulted for older
+    /// artifacts; new plans record the model- or owner-selected stack here.
+    #[serde(default)]
+    pub stack: Vec<String>,
     #[serde(default)]
     pub components: Vec<String>,
     #[serde(default)]
@@ -419,6 +423,7 @@ pub struct ArchitecturePlan {
 impl ArchitecturePlan {
     pub fn validate(&self) -> Result<(), String> {
         bounded_text("architecture context", &self.context, MAX_TEXT_CHARS)?;
+        bounded_list("architecture stack", &self.stack, MAX_LIST_ITEMS)?;
         if self.components.is_empty() || self.components.len() > MAX_LIST_ITEMS {
             return Err("architecture requires bounded components".into());
         }

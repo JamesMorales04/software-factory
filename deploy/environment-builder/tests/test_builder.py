@@ -29,11 +29,13 @@ from environment_builder.policy import (  # noqa: E402
     EnvironmentFile,
     core_entries_sha256,
     validate_check,
+    validate_closure_licenses,
     validate_fetch_policy,
     validate_license_expression,
     validate_license_inventory,
     validate_network,
     validate_nix_constructs,
+    validate_package_source,
     validate_resources,
     validate_sandbox,
     validate_sbom_binding,
@@ -166,6 +168,505 @@ class PolicyTests(unittest.TestCase):
             )
         self.assertEqual(raised.exception.code, "ENVIRONMENT_PIN_MISSING")
 
+    def test_every_unfree_policy_form_is_rejected(self) -> None:
+        for content in [
+            "config.allowUnfree = true;",
+            "allowUnfree = (true);",
+            "allowUnfreePredicate = _: true;",
+            "permittedUnfreePackages = [ \"nixpkgs.hello\" ];",
+            "nixpkgs.config.allowUnfree = true;",
+            "config.${builtins.getAttr (\"allow\" + \"Unfree\") { allowUnfree = true; }} = true;",
+            "let allow = \"allowUn\" + \"freePredicate\"; in import nixpkgs { config = builtins.listToAttrs [ { name = allow; value = _: true; } ]; }",
+        ]:
+            with self.assertRaises(BuilderError) as raised:
+                validate_nix_constructs([env_file("flake.nix", content)])
+            self.assertIn(
+                raised.exception.code,
+                ("ENVIRONMENT_LICENSE_DENIED", "ENVIRONMENT_SANDBOX_DENIED"),
+                content,
+            )
+
+    def test_builder_metadata_rejects_licence_or_version_lies(self) -> None:
+        plan = {
+            "packages": [
+                {
+                    "name": "ripgrep",
+                    "version": "14.1.1",
+                    "license": "MIT",
+                    "source": "nixpkgs",
+                    "attr": "ripgrep",
+                    "unfree": False,
+                }
+            ]
+        }
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            for observed, expected_code in [
+                (
+                    {
+                        "name": "ripgrep",
+                        "attr": "ripgrep",
+                        "storePath": "/nix/store/" + "c" * 32 + "-ripgrep-14.1.1",
+                        "version": "14.1.1",
+                        "license": "Apache-2.0",
+                        "unfree": False,
+                    },
+                    "ENVIRONMENT_LICENSE_UNKNOWN",
+                ),
+                (
+                    {
+                        "name": "ripgrep",
+                        "attr": "ripgrep",
+                        "storePath": "/nix/store/" + "c" * 32 + "-ripgrep-14.1.1",
+                        "version": "0.0.1",
+                        "license": "MIT",
+                        "unfree": False,
+                    },
+                    "ENVIRONMENT_PIN_MISSING",
+                ),
+            ]:
+                with mock.patch(
+                    "environment_builder.cli.nix_eval_json", return_value=[observed]
+                ):
+                    with self.assertRaises(BuilderError) as raised:
+                        cli._package_metadata(
+                            "github:NixOS/nixpkgs/" + "a" * 40,
+                            plan,
+                            {},
+                            30,
+                            log,
+                        )
+                self.assertEqual(raised.exception.code, expected_code)
+        finally:
+            log.close()
+
+    def test_internal_xgcc_exception_requires_exact_identity(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        real_path = "/nix/store/16hvpw4b3r05girazh4rnwbw0jgjkb4l-xgcc-14.3.0-libgcc"
+        real_driver = "/nix/store/p8vpplfq13sjvxxvcfswp8p2rajji7yh-xgcc-14.3.0.drv"
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            with mock.patch("environment_builder.cli.nix_eval_json", return_value=[]):
+                entries = cli._closure_license_entries(
+                    {"nix": {"nixpkgs": pin}},
+                    [{"path": real_path, "deriver": real_driver}],
+                    {},
+                    30,
+                    log,
+                )
+            self.assertEqual(entries[0]["name"], "xgcc")
+            self.assertEqual(entries[0]["license"], "GPL-3.0-or-later")
+
+            fabricated = "/nix/store/" + "f" * 32 + "-xgcc-1.0"
+            with mock.patch("environment_builder.cli.nix_eval_json", return_value=[]):
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(
+                        {"nix": {"nixpkgs": pin}},
+                        [{"path": fabricated, "deriver": "/nix/store/" + "e" * 32 + "-xgcc-1.0.drv"}],
+                        {},
+                        30,
+                        log,
+                    )
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+        finally:
+            log.close()
+
+    def test_committed_environment_uses_the_devenv_package_profile(self) -> None:
+        workspace = Path(tempfile.mkdtemp())
+        (workspace / ".devenv").mkdir()
+        target = "/nix/store/" + "a" * 32 + "-devenv-profile"
+        (workspace / ".devenv" / "profile").symlink_to(target)
+        self.assertEqual(
+            cli._environment_profile(workspace, workspace / "run"), target
+        )
+
+    def test_committed_substrate_closure_entries_require_exact_reviewed_identities(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        reviewed = [
+            (
+                "/nix/store/aiijyyiz8mrml76mr1kvx0r62aw8ccbn-devenv-1.11.2.drv",
+                "/nix/store/mxi4r8qi2y79pybxyfzlqg5i8hl5a910-devenv-1.11.2",
+                "devenv",
+                "Apache-2.0",
+            ),
+            (
+                "/nix/store/dzwdvpqgiv9ja73r6pfnkf4gdjk34x3n-nix-2.28.5.drv",
+                "/nix/store/mxafjxh0amr24d2gb7n3km6hljj79qsj-nix-2.28.5",
+                "nix",
+                "LGPL-2.1-only",
+            ),
+            (
+                "/nix/store/10jdyhddq82xfyfyrid403bdfsyq2l00-githooks-3.0.4.drv",
+                "/nix/store/7s93k2darc8ba3n36j17dafzw7z165ck-githooks-3.0.4",
+                "githooks",
+                "MIT",
+            ),
+            ("", "/nix/store/3p306srz83h9z9v0ma9xcxb8y8cdxkxj-source", "nixpkgs", "MIT"),
+            (
+                "",
+                "/nix/store/q8g9dljvn01w9fn5ih0yam13z96lxfa2-source",
+                "git-hooks.nix",
+                "MIT",
+            ),
+        ]
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            for deriver, path, name, license_value in reviewed:
+                with mock.patch(
+                    "environment_builder.cli.nix_eval_json", return_value=[]
+                ):
+                    entries = cli._closure_license_entries(
+                        {"nix": {"nixpkgs": pin}},
+                        [{"path": path, "deriver": deriver}],
+                        {},
+                        30,
+                        log,
+                    )
+                self.assertEqual(entries[0]["name"], name)
+                self.assertEqual(entries[0]["license"], license_value)
+
+            for fabricate in [
+                "/nix/store/" + "f" * 32 + "-devenv-1.0",
+                "/nix/store/" + "f" * 32 + "-nix-1.0",
+                "/nix/store/" + "f" * 32 + "-nixpkgs-1.0",
+                "/nix/store/" + "f" * 32 + "-git-hooks-1.0",
+            ]:
+                with mock.patch(
+                    "environment_builder.cli.nix_eval_json", return_value=[]
+                ):
+                    with self.assertRaises(BuilderError) as raised:
+                        cli._closure_license_entries(
+                            {"nix": {"nixpkgs": pin}},
+                            [{"path": fabricate, "deriver": "/nix/store/fabricated.drv"}],
+                            {},
+                            30,
+                            log,
+                        )
+                self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+        finally:
+            log.close()
+
+    def test_fabricated_sh_package_with_deriver_fails_closed(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            with mock.patch(
+                "environment_builder.cli.nix_eval_json", return_value=[]
+            ) as evaluate:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(
+                        {"nix": {"nixpkgs": pin}},
+                        [
+                            {
+                                "path": "/nix/store/" + "e" * 32 + "-concealed-package.sh",
+                                "deriver": "/nix/store/concealed-package.drv",
+                            }
+                        ],
+                        {},
+                        30,
+                        log,
+                    )
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+            evaluate.assert_called_once()
+        finally:
+            log.close()
+
+    def test_strip_sh_helper_without_deriver_is_not_a_package(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            with mock.patch(
+                "environment_builder.cli.nix_eval_json", return_value=[]
+            ) as evaluate:
+                entries = cli._closure_license_entries(
+                    {"nix": {"nixpkgs": pin}},
+                    [
+                        {
+                            "path": "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
+                            "deriver": None,
+                        }
+                    ],
+                    {},
+                    30,
+                    log,
+                )
+            self.assertEqual(entries, [])
+            evaluate.assert_not_called()
+        finally:
+            log.close()
+
+    def test_unreviewed_deriverless_closure_path_fails_closed(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            with mock.patch(
+                "environment_builder.cli.nix_eval_json", return_value=[]
+            ) as evaluate:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(
+                        {"nix": {"nixpkgs": pin}},
+                        [
+                            {
+                                "path": "/nix/store/" + "f" * 32 + "-unknown-source",
+                                "deriver": None,
+                            }
+                        ],
+                        {},
+                        30,
+                        log,
+                    )
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+            evaluate.assert_not_called()
+        finally:
+            log.close()
+
+    def test_closure_audit_excludes_only_the_exact_devshell_wrapper(self) -> None:
+        root = "/nix/store/" + "a" * 32 + "-devshell"
+        package = "/nix/store/" + "b" * 32 + "-bash-5.2"
+        unknown = "/nix/store/" + "c" * 32 + "-mystery-1.0"
+        manifest = [
+            {"path": root, "deriver": "/nix/store/root.drv"},
+            {"path": package, "deriver": "/nix/store/bash.drv"},
+        ]
+        plan = {"nix": {"nixpkgs": "github:NixOS/nixpkgs/" + "d" * 40}}
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        observed = {
+            "path": package,
+            "name": "bash",
+            "version": "5.2",
+            "license": "GPL-3.0-or-later",
+            "unfree": False,
+        }
+        try:
+            with mock.patch(
+                "environment_builder.cli.nix_eval_json", return_value=[observed]
+            ):
+                entries = cli._closure_license_entries(
+                    plan, manifest, {}, 30, log, exclude={root}
+                )
+            self.assertEqual([entry["path"] for entry in entries], [package])
+
+            # An arbitrary unknown package output is not silently excluded.
+            manifest.append({"path": unknown, "deriver": "/nix/store/mystery.drv"})
+            with mock.patch(
+                "environment_builder.cli.nix_eval_json", return_value=[observed]
+            ):
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(
+                        plan, manifest, {}, 30, log, exclude={root}
+                    )
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+        finally:
+            log.close()
+
+    def test_committed_dynamic_config_ast_is_rejected(self) -> None:
+        from environment_builder.util import sha256_text
+
+        # Normalised `nix-instantiate --parse` ASTs: direct, merged, long
+        # whitespace and a nested `let` between the merge and the dynamic key.
+        rejected_asts = [
+            '{ outputs = ({ nixpkgs }: import nixpkgs { config = { "${key}" = (_: true); }; }); }',
+            '{ outputs = ({ nixpkgs }: import nixpkgs { config = ({ } // { "${key}" = (_: true); }); }); }',
+            '{ outputs = ({ nixpkgs }: import nixpkgs { config = ({ } // (let x = 1; in { "${key}" = (_: true); })); }); }',
+            '{ outputs = ({ nixpkgs }: let settings = { "${allow}" = (_: true); }; in import nixpkgs { config = settings; }); }',
+        ]
+        from environment_builder.policy import (
+            reject_computed_nixpkgs_import,
+            reject_dynamic_config_ast,
+        )
+
+        for ast in rejected_asts:
+            with self.assertRaises(BuilderError) as raised:
+                reject_dynamic_config_ast(ast, "flake.nix")
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
+
+        rejected_import_asts = [
+            '{ outputs = ({ nixpkgs }: let configKey = ("con" + "fig"); settings = { "${allow}" = (_: true); }; in (import nixpkgs { "${configKey}" = settings; })); }',
+            '{ outputs = ({ nixpkgs }: let args = { config = { allowUnfree = false; }; }; in (import nixpkgs args)); }',
+            '{ outputs = ({ nixpkgs }: import nixpkgs ({} // { "${key}" = (_: true); })); }',
+            '{ outputs = ({ nixpkgs }: let f = import; in (f nixpkgs { config = { allowUnfree = false; }; })); }',
+        ]
+        for ast in rejected_import_asts:
+            with self.assertRaises(BuilderError) as raised:
+                reject_computed_nixpkgs_import(ast, "flake.nix")
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
+
+        accepted_import_asts = [
+            '{ outputs = ({ nixpkgs }: import nixpkgs { config = { allowUnfree = false; }; }); }',
+            '{ outputs = ({ nixpkgs }: import nixpkgs { overlays = [ ]; }); }',
+            '{ outputs = ({ nixpkgs }: let system = "x86_64-linux"; pkgs = import nixpkgs { inherit system; }; in { devShells = { "${system}" = { default = (pkgs.mkShell { }); }; }; }); }',
+        ]
+        for ast in accepted_import_asts:
+            reject_dynamic_config_ast(ast, "flake.nix")
+            reject_computed_nixpkgs_import(ast, "flake.nix")
+
+        conventional_ast = (
+            '{ outputs = ({ nixpkgs }: let system = "x86_64-linux"; '
+            'pkgs = import nixpkgs { inherit system; }; in '
+            '{ devShells = { "${system}" = { default = (pkgs.mkShell { }); }; }; }); }'
+        )
+        reject_dynamic_config_ast(conventional_ast, "flake.nix")
+        reject_computed_nixpkgs_import(conventional_ast, "flake.nix")
+        reject_dynamic_config_ast(
+            '{ outputs = ({ nixpkgs }: import nixpkgs { config = { allowUnfree = false; }; }); }',
+            "flake.nix",
+        )
+
+        raw = (
+            "let key = \"allowUn\" + \"freePredicate\"; "
+            "in import nixpkgs { config = {} // "
+            + " " * 4000
+            + " (let x = 1; in { ${key} = _: true; }); }"
+        )
+        file = EnvironmentFile("flake.nix", sha256_text(raw), "PROJECT", raw)
+        with mock.patch(
+            "environment_builder.cli.nix_parse", return_value=rejected_asts[2]
+        ) as parse:
+            with self.assertRaises(BuilderError) as raised:
+                cli.validate_nix_config_ast([file])
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
+        parse.assert_called_once()
+
+        alias_raw = (
+            'let allow = "allowUn" + "freePredicate"; '
+            'settings = { ${allow} = _: true; }; '
+            'in import nixpkgs { config = settings; }'
+        )
+        alias_file = EnvironmentFile(
+            "flake.nix", sha256_text(alias_raw), "PROJECT", alias_raw
+        )
+        with mock.patch(
+            "environment_builder.cli.nix_parse", return_value=rejected_asts[3]
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                cli.validate_nix_config_ast([alias_file])
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
+
+        computed_key_raw = (
+            'let configKey = "con" + "fig"; '
+            'allow = "allowUn" + "freePredicate"; '
+            'settings = { ${allow} = _: true; }; '
+            'in import nixpkgs { ${configKey} = settings; }'
+        )
+        computed_file = EnvironmentFile(
+            "flake.nix", sha256_text(computed_key_raw), "PROJECT", computed_key_raw
+        )
+        with mock.patch(
+            "environment_builder.cli.nix_parse",
+            return_value=rejected_import_asts[0],
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                cli.validate_nix_config_ast([computed_file])
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
+
+        conventional = (
+            "outputs = { self, nixpkgs }: "
+            "let system = \"x86_64-linux\"; in "
+            "{ devShells.${system}.default = nixpkgs.legacyPackages.${system}.mkShell { }; };"
+        )
+        validate_nix_constructs(
+            [EnvironmentFile("flake.nix", sha256_text(conventional), "PROJECT", conventional)]
+        )
+
+    def test_command_check_rejects_shell_builtins_and_accepts_real_binary(self) -> None:
+        script = (
+            'p=$(command -v "$1") || exit 1; '
+            'case "$p" in /*) ;; *) exit 1;; esac; '
+            'test -x "$p" && printf "%s" "$p"'
+        )
+        for executable, expected in [("source", False), ("sh", True)]:
+            result = subprocess.run(
+                ["sh", "-c", script, "sh", executable],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode == 0, expected, executable)
+
+    def test_package_metadata_uses_the_plan_pin_not_a_workspace_flake(self) -> None:
+        pin = "github:NixOS/nixpkgs/" + "a" * 40
+        expression = cli._package_metadata_expression(
+            pin, [{"name": "ripgrep", "attr": "ripgrep"}]
+        )
+        self.assertIn(pin, expression)
+        self.assertNotIn("path:", expression)
+        closure = cli._closure_metadata_expression(
+            pin, ["/nix/store/" + "b" * 32 + "-bash-5.2"]
+        )
+        self.assertIn(pin, closure)
+        self.assertIn("/nix/store/" + "b" * 32 + "-bash-5.2", closure)
+
+    def test_closure_license_policy_rejects_unfree_denied_and_unknown(self) -> None:
+        base = {
+            "path": "/nix/store/" + "a" * 32 + "-bash-5.2",
+            "name": "bash",
+            "version": "5.2",
+            "license": "GPL-3.0-or-later",
+            "unfree": False,
+        }
+        self.assertEqual(validate_closure_licenses([base])[0]["name"], "bash")
+        for change, code in [
+            ({"unfree": True}, "ENVIRONMENT_UNFREE_REQUIRES_OWNER"),
+            ({"license": "AGPL-3.0-only"}, "ENVIRONMENT_LICENSE_DENIED"),
+            ({"license": "NOASSERTION"}, "ENVIRONMENT_LICENSE_UNKNOWN"),
+            ({"license": "Unknown-Proprietary"}, "ENVIRONMENT_LICENSE_UNKNOWN"),
+        ]:
+            entry = {**base, **change}
+            with self.assertRaises(BuilderError) as raised:
+                validate_closure_licenses([entry])
+            self.assertEqual(raised.exception.code, code, change)
+
+    def test_missing_command_executable_is_rejected(self) -> None:
+        plan = {"commands": {"test": {"argv": ["cargo", "test"]}}}
+        with mock.patch(
+            "environment_builder.cli.check_command_available",
+            return_value=(False, "not found"),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                cli._verify_command_executables(
+                    Path("/tmp"),
+                    Path("/tmp"),
+                    plan,
+                    offline=True,
+                    resources={"timeoutSecs": 30},
+                    timeout=30,
+                    proxy=None,
+                )
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_PLAN_INVALID")
+        with mock.patch(
+            "environment_builder.cli.check_command_available",
+            return_value=(True, "/nix/store/cargo"),
+        ):
+            cli._verify_command_executables(
+                Path("/tmp"),
+                Path("/tmp"),
+                plan,
+                offline=True,
+                resources={"timeoutSecs": 30},
+                timeout=30,
+                proxy=None,
+            )
+
+    def test_package_source_must_name_the_exact_validated_attribute(self) -> None:
+        validate_package_source(
+            {"name": "nodejs", "attr": "nodejs_22", "source": "nixpkgs:nodejs_22"}
+        )
+        validate_package_source({"name": "ripgrep", "source": "nixpkgs"})
+        for package in [
+            {"name": "nodejs", "attr": "nodejs_22", "source": "nixpkgs:other"},
+            {"name": "nodejs", "attr": "nodejs_22", "source": "cargo"},
+            {"name": "nodejs", "attr": "bad attr", "source": "nixpkgs"},
+        ]:
+            with self.assertRaises(BuilderError):
+                validate_package_source(package)
+
     def test_pinned_fetch_is_allowed(self) -> None:
         validate_nix_constructs(
             [
@@ -190,7 +691,13 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_DENIED")
 
     def test_unfree_without_override_is_rejected(self) -> None:
-        package = {"name": "proprietary", "version": "1.0", "license": "MIT", "unfree": True}
+        package = {
+            "name": "proprietary",
+            "version": "1.0",
+            "license": "MIT",
+            "source": "nixpkgs",
+            "unfree": True,
+        }
         plan = {
             "packages": [package],
             "licenseInventory": license_inventory([package]),
@@ -200,7 +707,13 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "ENVIRONMENT_UNFREE_REQUIRES_OWNER")
 
     def test_unfree_with_exact_override_is_allowed(self) -> None:
-        package = {"name": "proprietary", "version": "1.0", "license": "MIT", "unfree": True}
+        package = {
+            "name": "proprietary",
+            "version": "1.0",
+            "license": "MIT",
+            "source": "nixpkgs",
+            "unfree": True,
+        }
         override = {
             "id": "override-1",
             "package": "proprietary",

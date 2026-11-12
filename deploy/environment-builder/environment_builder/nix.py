@@ -14,6 +14,7 @@ import re
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -124,6 +125,7 @@ def _run_bounded_capture(
     failure_code: str,
     stdout_limit: int,
     stderr_limit: int,
+    cwd: Path | None = None,
 ) -> tuple[int, bytes, bytes, bool, bool]:
     """Run one process while bounding both captured streams."""
     import threading
@@ -131,6 +133,7 @@ def _run_bounded_capture(
     try:
         process = subprocess.Popen(
             argv,
+            cwd=str(cwd) if cwd is not None else None,
             env=environment_without_secrets(env),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -193,6 +196,83 @@ def _tool_version(argv: list[str], pattern: re.Pattern[str], label: str) -> str:
     if returncode != 0 or match is None:
         fail("ENVIRONMENT_BUILDER_UNAVAILABLE", f"{label} did not report a pinned version")
     return match.group(1)
+
+
+def nix_eval_json(
+    expression: str,
+    *,
+    env: dict[str, str],
+    timeout: int,
+    log: BuildLog,
+    failure_code: str = "ENVIRONMENT_PIN_MISSING",
+) -> Any:
+    """Evaluate one bounded pure Nix expression and return decoded JSON."""
+    argv = ["nix", "eval", "--json", "--expr", expression]
+    returncode, stdout, stderr, stdout_truncated, stderr_truncated = _run_bounded_capture(
+        argv,
+        timeout=timeout,
+        env=env,
+        failure_code=failure_code,
+        stdout_limit=MAX_CLOSURE_OUTPUT_BYTES,
+        stderr_limit=MAX_TOOL_OUTPUT_BYTES,
+    )
+    rendered = stdout.decode("utf-8", errors="replace")
+    diagnostics = stderr.decode("utf-8", errors="replace")
+    log.write(f"$ nix eval --json --expr <package metadata>\n{rendered}{diagnostics}")
+    if stdout_truncated or stderr_truncated:
+        fail(failure_code, "package metadata evaluation output exceeds its bound")
+    if returncode != 0:
+        fail(
+            failure_code,
+            f"package metadata evaluation failed: {tail(diagnostics) or tail(rendered)}",
+        )
+    try:
+        return json.loads(rendered)
+    except json.JSONDecodeError as error:
+        fail(failure_code, f"package metadata evaluation returned invalid JSON: {error}")
+
+
+def nix_parse(content: str, *, filename: str, timeout: int = 60) -> str:
+    """Parse one Nix file with `nix-instantiate --parse` and return its AST.
+
+    Parsing is a real Nix parser, not a text heuristic. A file with free
+    variables is not a complete expression and fails closed.
+    """
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".nix", prefix="factory-parse-", delete=False, encoding="utf-8"
+    )
+    path = Path(handle.name)
+    try:
+        handle.write(content)
+        handle.close()
+        returncode, stdout, stderr, stdout_truncated, stderr_truncated = (
+            _run_bounded_capture(
+                ["nix-instantiate", "--parse", str(path)],
+                timeout=timeout,
+                env=dict(os.environ),
+                failure_code="ENVIRONMENT_PLAN_INVALID",
+                stdout_limit=MAX_CLOSURE_OUTPUT_BYTES,
+                stderr_limit=MAX_TOOL_OUTPUT_BYTES,
+            )
+        )
+        diagnostics = stderr.decode("utf-8", errors="replace")
+        if stdout_truncated or stderr_truncated:
+            fail("ENVIRONMENT_PLAN_INVALID", f"{filename} parse output exceeds its bound")
+        if returncode != 0:
+            fail(
+                "ENVIRONMENT_PLAN_INVALID",
+                f"{filename} does not parse as Nix: {tail(diagnostics, 2_000)}",
+            )
+        return stdout.decode("utf-8", errors="replace")
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        try:
+            handle.close()
+        except (OSError, ValueError):
+            pass
 
 
 def nix_version() -> str:
@@ -403,9 +483,12 @@ def child_environment(
     return env
 
 
-def closure_manifest(root: str) -> list[dict[str, Any]]:
+def closure_manifest(root: str | list[str]) -> list[dict[str, Any]]:
+    roots = [root] if isinstance(root, str) else list(root)
+    if not roots:
+        return []
     returncode, stdout, stderr, stdout_truncated, _stderr_truncated = _run_bounded_capture(
-        ["nix", "path-info", "--json", "--recursive", "--offline", root],
+        ["nix", "path-info", "--json", "--recursive", "--offline", *roots],
         timeout=300,
         env=dict(os.environ),
         failure_code="ENVIRONMENT_BUILD_FAILED",
@@ -432,6 +515,7 @@ def closure_manifest(root: str) -> list[dict[str, Any]]:
                 "path": path,
                 "narHash": str(info.get("narHash", "")),
                 "narSize": int(info.get("narSize", 0) or 0),
+                "deriver": str(info.get("deriver") or ""),
             }
         )
     return manifest
@@ -474,6 +558,59 @@ def _environment_command(workspace: Path, argv: list[str], *, offline: bool) -> 
         command.append("--offline")
     command.extend([".#default", "--command", *argv])
     return command
+
+
+def check_command_available(
+    workspace: Path,
+    cache: Path,
+    executable: str,
+    *,
+    offline: bool,
+    resources: dict[str, int],
+    timeout: int,
+    proxy: str | None = None,
+) -> tuple[bool, str]:
+    """Check that the realised devShell provides an executable.
+
+    The argv vector passes the executable as `$1`; it is never interpolated
+    into shell source.
+    """
+    env = child_environment(
+        workspace,
+        cache,
+        offline=offline,
+        resources=resources,
+        proxy=proxy,
+    )
+    argv = _environment_command(
+        workspace,
+        [
+            "sh",
+            "-c",
+            'p=$(command -v "$1") || exit 1; '
+            'case "$p" in /*) ;; *) exit 1;; esac; '
+            'test -x "$p" && printf "%s" "$p"',
+            "sh",
+            executable,
+        ],
+        offline=offline,
+    )
+    returncode, stdout, stderr, stdout_truncated, stderr_truncated = _run_bounded_capture(
+        argv,
+        cwd=workspace,
+        timeout=timeout,
+        env=env,
+        failure_code="ENVIRONMENT_PLAN_INVALID",
+        stdout_limit=MAX_TOOL_OUTPUT_BYTES,
+        stderr_limit=MAX_TOOL_OUTPUT_BYTES,
+    )
+    output = (
+        stdout.decode("utf-8", errors="replace")
+        + stderr.decode("utf-8", errors="replace")
+    )
+    if stdout_truncated or stderr_truncated:
+        return False, tail(output, 2_000)
+    return returncode == 0 and bool(stdout.strip()), tail(output, 2_000)
 
 
 def realize_environment(

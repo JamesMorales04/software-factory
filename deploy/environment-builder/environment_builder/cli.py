@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -22,11 +23,14 @@ from .disk import DiskBudget, builder_disk_budget
 from .errors import BuilderError, fail
 from .nix import (
     BuildLog,
+    check_command_available,
     child_environment,
     closure_manifest,
     closure_manifest_sha256,
     devenv_version,
     environment_digest,
+    nix_eval_json,
+    nix_parse,
     nix_version,
     prepare_workspace,
     realize_environment,
@@ -36,13 +40,18 @@ from .nix import (
 )
 from .policy import (
     MAX_ENVIRONMENT_FILE_BYTES,
+    NIXPKGS_PREFIX,
+    reject_computed_nixpkgs_import,
+    reject_dynamic_config_ast,
     validate_check,
+    validate_closure_licenses,
     validate_environment_digest,
     validate_fetch_policy,
     validate_environment_files,
     validate_license_inventory,
     validate_lock_pins,
     validate_nix_constructs,
+    validate_package_source,
     validate_resolution_plan,
     validate_resources,
     validate_sandbox,
@@ -123,6 +132,16 @@ def _workspace(request: dict[str, Any], explicit: str | None) -> Path:
     return path
 
 
+def validate_nix_config_ast(files: list[Any]) -> None:
+    """Parse every Nix file and reject dynamic nixpkgs config attrset keys."""
+    for file in files:
+        if not file.path.endswith(".nix"):
+            continue
+        ast = nix_parse(file.content, filename=file.path)
+        reject_dynamic_config_ast(ast, file.path)
+        reject_computed_nixpkgs_import(ast, file.path)
+
+
 def _validate_request(
     request: dict[str, Any],
     source_workspace: Path,
@@ -144,6 +163,7 @@ def _validate_request(
     validate_workspace_environment_overrides(source_workspace)
     validate_workspace_paths(source_workspace)
     validate_nix_constructs(files)
+    validate_nix_config_ast(files)
     validate_lock_pins(files, plan, spec)
     validate_secrets(files, dict(os.environ))
     validate_license_inventory(spec, plan)
@@ -249,7 +269,57 @@ def build(args: argparse.Namespace) -> int:
                 disk_budget=disk_budget,
             )
             disk_budget.check()
+            _verify_command_executables(
+                build_workspace,
+                run_dir,
+                plan,
+                offline=phase == "build",
+                resources=resources,
+                timeout=resources["timeoutSecs"],
+                proxy=proxy if phase == "fetch" else None,
+            )
             manifest = closure_manifest(root)
+            package_metadata = _package_metadata(
+                str(plan["nix"]["nixpkgs"]),
+                plan,
+                child_environment(
+                    build_workspace,
+                    run_dir,
+                    offline=phase == "build",
+                    resources=resources,
+                    proxy=proxy if phase == "fetch" else None,
+                ),
+                resources["timeoutSecs"],
+                log,
+            )
+            if plan.get("source") == "GENERATED":
+                license_manifest = (
+                    closure_manifest(
+                        [str(package["storePath"]) for package in package_metadata]
+                    )
+                    if package_metadata
+                    else []
+                )
+                exclude_paths: set[str] = set()
+            else:
+                profile = _environment_profile(build_workspace, run_dir)
+                license_root = profile or root
+                license_manifest = closure_manifest(license_root)
+                exclude_paths = {license_root}
+            closure_licenses = _closure_license_entries(
+                plan,
+                license_manifest,
+                child_environment(
+                    build_workspace,
+                    run_dir,
+                    offline=phase == "build",
+                    resources=resources,
+                    proxy=proxy if phase == "fetch" else None,
+                ),
+                resources["timeoutSecs"],
+                log,
+                exclude=exclude_paths,
+            )
             output_sha = environment_digest(
                 spec["specSha256"], spec["platform"], root, manifest, frozen_sbom_sha256
             )
@@ -276,6 +346,7 @@ def build(args: argparse.Namespace) -> int:
             spec=spec,
             plan=plan,
             manifest=manifest,
+            closure_licenses=closure_licenses,
             nix_version=actual_nix,
             devenv_version=_actual_versions()[1],
         )
@@ -295,6 +366,10 @@ def build(args: argparse.Namespace) -> int:
         )
         inventory = license_inventory_copy(plan)
         write_json(run_dir / "license-inventory.json", inventory)
+        write_json(
+            run_dir / "closure-license-inventory.json",
+            {"entries": closure_licenses, "count": len(closure_licenses)},
+        )
         write_json(run_dir / "closure.json", {"entries": manifest, "count": len(manifest)})
         disk_budget.check()
         attestation = observe_attestation(
@@ -376,6 +451,458 @@ def _resolution_file(workspace: Path, name: str, origin: str) -> dict[str, Any]:
     }
 
 
+def _nixpkgs_expression_prefix(nixpkgs_pin: str) -> str:
+    return (
+        f"""let
+  pkgs = import (builtins.getFlake {json.dumps(nixpkgs_pin)}).outPath {{ system = {json.dumps(DEFAULT_PLATFORM)}; }};
+  lib = pkgs.lib;
+"""
+    )
+
+
+def _package_metadata_expression(nixpkgs_pin: str, entries: list[dict[str, str]]) -> str:
+    """Build a pure Nix expression that reads exact package metadata from the
+    plan's pinned nixpkgs, never from a workspace flake. This supports
+    Devenv-only projects that have no flake.nix.
+
+    Package names and attributes are JSON data, never interpolated as Nix
+    source.
+    """
+    packages_json = json.dumps(entries)
+    return (
+        _nixpkgs_expression_prefix(nixpkgs_pin)
+        + f"""  packages = builtins.fromJSON {json.dumps(packages_json)};"""
+        + """
+  licenseOf = p:
+    if (p ? meta) && (p.meta ? license) then
+      (if builtins.isList p.meta.license then
+        builtins.concatStringsSep " AND " (map (l: if builtins.isAttrs l then (l.spdxId or l.shortName or "") else "") p.meta.license)
+       else if builtins.isAttrs p.meta.license then (p.meta.license.spdxId or p.meta.license.shortName or "")
+       else "")
+    else "";
+  unfreeOf = p:
+    if (p ? meta) && (p.meta ? unfree) then p.meta.unfree
+    else if (p ? meta) && (p.meta ? license) then
+      (if builtins.isList p.meta.license then
+        !(lib.all (l: if builtins.isAttrs l then (l.free or true) else true) p.meta.license)
+       else if builtins.isAttrs p.meta.license then !(p.meta.license.free or true)
+       else false)
+    else false;
+in map (entry:
+  let pkg = lib.attrByPath (lib.splitString "." entry.attr) (throw "unknown package attribute") pkgs;
+  in {
+    name = entry.name;
+    attr = entry.attr;
+    storePath = pkg.outPath;
+    version = pkg.version or "";
+    license = licenseOf pkg;
+    unfree = unfreeOf pkg;
+  }) packages
+"""
+    )
+
+
+def _package_metadata(
+    nixpkgs_pin: str,
+    plan: dict[str, Any],
+    environment: dict[str, str],
+    timeout: int,
+    log: BuildLog,
+) -> list[dict[str, Any]]:
+    selected = plan.get("packages", [])
+    if not selected:
+        return []
+    entries: list[dict[str, str]] = []
+    claims: list[dict[str, Any]] = []
+    for package in selected:
+        if not isinstance(package, dict):
+            fail("ENVIRONMENT_PLAN_INVALID", "a package entry is not an object")
+        validate_package_source(package)
+        name = str(package.get("name", "")).strip()
+        attr = str(package.get("attr", "")).strip() or name
+        entries.append({"name": name, "attr": attr})
+        claims.append(
+            {
+                "version": str(package.get("version", "")),
+                "license": str(package.get("license", "")),
+                "unfree": bool(package.get("unfree", False)),
+            }
+        )
+    observed = nix_eval_json(
+        _package_metadata_expression(nixpkgs_pin, entries),
+        env=environment,
+        timeout=timeout,
+        log=log,
+        failure_code="ENVIRONMENT_PIN_MISSING",
+    )
+    if not isinstance(observed, list) or len(observed) != len(entries):
+        fail(
+            "ENVIRONMENT_PLAN_INVALID",
+            "the package metadata evaluation did not return every selected package",
+        )
+    result: list[dict[str, Any]] = []
+    for raw, expected, claim in zip(observed, entries, claims, strict=True):
+        if not isinstance(raw, dict):
+            fail("ENVIRONMENT_PLAN_INVALID", "package metadata is not an object")
+        name = raw.get("name")
+        attr = raw.get("attr")
+        out_path = raw.get("storePath")
+        version = raw.get("version")
+        license_value = raw.get("license")
+        unfree = raw.get("unfree")
+        if (
+            not isinstance(name, str)
+            or not isinstance(attr, str)
+            or not isinstance(out_path, str)
+            or not out_path.startswith("/nix/store/")
+            or not isinstance(version, str)
+            or not isinstance(license_value, str)
+            or not isinstance(unfree, bool)
+        ):
+            fail("ENVIRONMENT_PLAN_INVALID", "package metadata has an invalid shape")
+        if name != expected["name"] or attr != expected["attr"]:
+            fail("ENVIRONMENT_PLAN_INVALID", "package metadata identity does not match the plan")
+        if version != claim["version"]:
+            fail(
+                "ENVIRONMENT_PIN_MISSING",
+                f"package {name} version does not match the independently observed metadata",
+            )
+        if license_value != claim["license"]:
+            fail(
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                f"package {name} license does not match the independently observed metadata",
+            )
+        if unfree != claim["unfree"]:
+            fail(
+                "ENVIRONMENT_UNFREE_REQUIRES_OWNER",
+                f"package {name} unfree state does not match the independently observed metadata",
+            )
+        result.append(
+            {
+                "name": name,
+                "attr": attr,
+                "storePath": out_path,
+                "version": version,
+                "license": license_value,
+                "unfree": unfree,
+            }
+        )
+    return result
+
+
+def _closure_metadata_expression(
+    nixpkgs_pin: str, closure_paths: list[str]
+) -> str:
+    wanted_json = json.dumps(closure_paths)
+    return (
+        _nixpkgs_expression_prefix(nixpkgs_pin)
+        + f"""  wanted = builtins.fromJSON {json.dumps(wanted_json)};
+  licenseOf = p:
+    if (p ? meta) && (p.meta ? license) then
+      (if builtins.isList p.meta.license then
+        builtins.concatStringsSep " AND " (map (l: if builtins.isAttrs l then (l.spdxId or l.shortName or "") else "") p.meta.license)
+       else if builtins.isAttrs p.meta.license then (p.meta.license.spdxId or p.meta.license.shortName or "")
+       else "")
+    else "";
+  unfreeOf = p:
+    if (p ? meta) && (p.meta ? unfree) then p.meta.unfree
+    else if (p ? meta) && (p.meta ? license) then
+      (if builtins.isList p.meta.license then
+        !(lib.all (l: if builtins.isAttrs l then (l.free or true) else true) p.meta.license)
+       else if builtins.isAttrs p.meta.license then !(p.meta.license.free or true)
+       else false)
+    else false;
+  names = builtins.attrNames pkgs;
+  candidates = builtins.concatMap
+    (name:
+      let attempt = builtins.tryEval pkgs.${{name}};
+      in if attempt.success && builtins.isAttrs attempt.value then [ attempt.value ] else [])
+    names;
+  candidatesWithUnwrapped = builtins.concatMap
+    (p:
+      if (p ? unwrapped) && builtins.isAttrs p.unwrapped && (p.unwrapped ? outPath)
+      then [ p p.unwrapped ] else [ p ])
+    candidates;
+in map (p: {{
+    path = p.outPath;
+    outputPaths = if p ? outputs then map (name: p.${{name}}.outPath) p.outputs else [ p.outPath ];
+    drvPath = p.drvPath or "";
+    name = p.pname or p.name or "";
+    version = p.version or "";
+    license = licenseOf p;
+    unfree = unfreeOf p;
+  }})
+  (builtins.filter
+    (p:
+      let attempt = builtins.tryEval (
+        (p ? outPath) && lib.any
+          (output: builtins.elem output wanted)
+          (if p ? outputs then map (name: p.${{name}}.outPath) p.outputs else [ p.outPath ])
+      );
+      in attempt.success && attempt.value)
+    candidatesWithUnwrapped)
+"""
+    )
+
+
+def _verify_command_executables(
+    workspace: Path,
+    cache: Path,
+    plan: dict[str, Any],
+    *,
+    offline: bool,
+    resources: dict[str, int],
+    timeout: int,
+    proxy: str | None,
+) -> None:
+    commands = plan.get("commands", {})
+    if not isinstance(commands, dict):
+        fail("ENVIRONMENT_PLAN_INVALID", "plan commands are not an object")
+    checked: set[str] = set()
+    for name, command in sorted(commands.items()):
+        if not isinstance(command, dict):
+            fail("ENVIRONMENT_PLAN_INVALID", f"command {name} is not an object")
+        argv = command.get("argv")
+        if not isinstance(argv, list) or not argv:
+            fail("ENVIRONMENT_PLAN_INVALID", f"command {name} has no argv vector")
+        executable = argv[0]
+        if isinstance(executable, str) and executable in checked:
+            continue
+        if (
+            not isinstance(executable, str)
+            or not executable
+            or "/" in executable
+            or "\\" in executable
+        ):
+            fail(
+                "ENVIRONMENT_PLAN_INVALID",
+                f"command {name} must name a bounded executable without a path",
+            )
+        checked.add(executable)
+        available, detail = check_command_available(
+            workspace,
+            cache,
+            executable,
+            offline=offline,
+            resources=resources,
+            timeout=min(timeout, 120),
+            proxy=proxy,
+        )
+        if not available:
+            fail(
+                "ENVIRONMENT_PLAN_INVALID",
+                f"command {name} executable {executable!r} is not provided by the realised environment: {detail}",
+            )
+
+
+# Exact reviewed internal bootstrap identity keyed by pinned nixpkgs, derivation
+# and output path. A name-only `xgcc` exception would accept a fabricated store
+# path; this map does not. Any other unobserved closure path fails closed.
+REVIEWED_INTERNAL_CLOSURE_IDENTITIES: dict[
+    str, dict[tuple[str, str], dict[str, Any]]
+] = {
+    "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d": {
+        (
+            "/nix/store/p8vpplfq13sjvxxvcfswp8p2rajji7yh-xgcc-14.3.0.drv",
+            "/nix/store/16hvpw4b3r05girazh4rnwbw0jgjkb4l-xgcc-14.3.0-libgcc",
+        ): {
+            "name": "xgcc",
+            "version": "14.3.0-libgcc",
+            "license": "GPL-3.0-or-later",
+            "unfree": False,
+        }
+    }
+}
+# Exact reviewed substrate identities. A name-only match is never accepted.
+# These are tied to the current pinned nixpkgs and Devenv lock revisions; a pin
+# change fails closed until a new identity is reviewed.
+REVIEWED_SUBSTRATE_IDENTITIES: dict[
+    str, dict[tuple[str, str], dict[str, Any]]
+] = {
+    "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d": {
+        (
+            "/nix/store/aiijyyiz8mrml76mr1kvx0r62aw8ccbn-devenv-1.11.2.drv",
+            "/nix/store/mxi4r8qi2y79pybxyfzlqg5i8hl5a910-devenv-1.11.2",
+        ): {"name": "devenv", "version": "1.11.2", "license": "Apache-2.0"},
+        (
+            "/nix/store/dzwdvpqgiv9ja73r6pfnkf4gdjk34x3n-nix-2.28.5.drv",
+            "/nix/store/mxafjxh0amr24d2gb7n3km6hljj79qsj-nix-2.28.5",
+        ): {"name": "nix", "version": "2.28.5", "license": "LGPL-2.1-only"},
+        (
+            "/nix/store/dzwdvpqgiv9ja73r6pfnkf4gdjk34x3n-nix-2.28.5.drv",
+            "/nix/store/0nrwky0a12lwjvjcx3if3gv2bni2fjmx-nix-2.28.5-man",
+        ): {"name": "nix", "version": "2.28.5", "license": "LGPL-2.1-only"},
+        (
+            "/nix/store/dzwdvpqgiv9ja73r6pfnkf4gdjk34x3n-nix-2.28.5.drv",
+            "/nix/store/cak7gm7n4a78ikgna0q6d1l4028n2nnz-nix-2.28.5-dev",
+        ): {"name": "nix", "version": "2.28.5", "license": "LGPL-2.1-only"},
+        (
+            "/nix/store/10jdyhddq82xfyfyrid403bdfsyq2l00-githooks-3.0.4.drv",
+            "/nix/store/7s93k2darc8ba3n36j17dafzw7z165ck-githooks-3.0.4",
+        ): {"name": "githooks", "version": "3.0.4", "license": "MIT"},
+        (
+            "",
+            "/nix/store/3p306srz83h9z9v0ma9xcxb8y8cdxkxj-source",
+        ): {"name": "nixpkgs", "version": "source", "license": "MIT"},
+        (
+            "",
+            "/nix/store/q8g9dljvn01w9fn5ih0yam13z96lxfa2-source",
+        ): {"name": "git-hooks.nix", "version": "source", "license": "MIT"},
+        (
+            "",
+            "/nix/store/00av8zvvlwqh6l41kqlfq5n67mv10pfj-source/src/modules",
+        ): {"name": "devenv", "version": "source", "license": "Apache-2.0"},
+        (
+            "unknown-deriver",
+            "/nix/store/xlg2s2hdngc2gjb6kfwac1g7b4q2pcg5-nix-2.28.3",
+        ): {"name": "nix", "version": "2.28.3", "license": "LGPL-2.1-only"},
+    }
+}
+# Exact reviewed deriver-less helper identities. Devenv materialises strip.sh
+# without a deriver; any other deriver-less path fails closed.
+REVIEWED_DERIVERLESS_HELPERS: frozenset[str] = frozenset(
+    {
+        "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
+    }
+)
+STORE_NAME_VERSION = re.compile(r"^([A-Za-z0-9_+.-]+?)-(\d.*)$")
+
+
+def _environment_profile(workspace: Path, run_dir: Path) -> str | None:
+    """Return the exact realised package profile for a committed environment.
+
+    Devenv exposes the actual package profile at `.devenv/profile`; a flake
+    `nix develop` writes the profile to the run directory. Auditing the profile
+    closure avoids treating Devenv's shell-wrapper files as nixpkgs packages.
+    """
+    for candidate in (workspace / ".devenv" / "profile", run_dir / "profile"):
+        if candidate.exists() or candidate.is_symlink():
+            resolved = candidate.resolve()
+            if str(resolved).startswith("/nix/store/"):
+                return str(resolved)
+    return None
+
+
+def _reviewed_internal_closure_license(
+    pin: str, path: str, deriver: str
+) -> dict[str, Any] | None:
+    identity = REVIEWED_INTERNAL_CLOSURE_IDENTITIES.get(pin, {}).get((deriver, path))
+    if identity is None:
+        return None
+    return {"path": path, **identity}
+
+
+def _reviewed_substrate_identity(
+    pin: str, path: str, deriver: str
+) -> dict[str, Any] | None:
+    identity = REVIEWED_SUBSTRATE_IDENTITIES.get(pin, {}).get((deriver, path))
+    if identity is None:
+        return None
+    return {"path": path, **identity, "unfree": False}
+
+
+def _closure_license_entries(
+    plan: dict[str, Any],
+    manifest: list[dict[str, Any]],
+    environment: dict[str, str],
+    timeout: int,
+    log: BuildLog,
+    *,
+    exclude: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    pin = str(plan.get("nix", {}).get("nixpkgs", ""))
+    if not pin.startswith(NIXPKGS_PREFIX):
+        fail("ENVIRONMENT_PIN_MISSING", "the plan has no pinned nixpkgs for closure verification")
+    substrate_entries: list[dict[str, Any]] = []
+    paths: set[str] = set()
+    for entry in manifest:
+        if not isinstance(entry, dict):
+            continue
+        path = str(entry.get("path", ""))
+        if path in (exclude or set()):
+            continue
+        deriver_value = entry.get("deriver")
+        deriver = str(deriver_value).strip() if deriver_value is not None else ""
+        substrate = _reviewed_substrate_identity(pin, path, deriver)
+        if substrate is not None:
+            substrate_entries.append(substrate)
+            continue
+        if not deriver:
+            if path in REVIEWED_DERIVERLESS_HELPERS:
+                continue
+            fail(
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                f"deriver-less closure path is not a reviewed helper: {path}",
+            )
+        if path:
+            paths.add(path)
+    ordered_paths = sorted(paths)
+    if not ordered_paths:
+        return validate_closure_licenses(substrate_entries)
+    observed = nix_eval_json(
+        _closure_metadata_expression(pin, ordered_paths),
+        env=environment,
+        timeout=timeout,
+        log=log,
+        failure_code="ENVIRONMENT_LICENSE_UNKNOWN",
+    )
+    if not isinstance(observed, list):
+        fail("ENVIRONMENT_LICENSE_UNKNOWN", "closure metadata evaluation did not return a list")
+    observed_entries = [entry for entry in observed if isinstance(entry, dict)]
+    by_path: dict[str, dict[str, Any]] = {}
+    for entry in observed_entries:
+        output_paths = entry.get("outputPaths")
+        if not isinstance(output_paths, list):
+            output_paths = [entry.get("path", "")]
+        for output_path in output_paths:
+            by_path[str(output_path)] = entry
+    by_deriver = {
+        str(entry.get("drvPath", "")): entry
+        for entry in observed_entries
+        if str(entry.get("drvPath", "")).strip()
+    }
+    manifest_by_path = {
+        str(entry.get("path", "")): entry
+        for entry in manifest
+        if isinstance(entry, dict)
+    }
+    resolved: list[dict[str, Any]] = []
+    for path in ordered_paths:
+        observed_entry = by_path.get(path)
+        if observed_entry is None:
+            # A package may expose several outputs (for example libgcc) that
+            # are not the attribute's default outPath. They share the deriver
+            # and therefore the parent package's observed metadata.
+            deriver = str(manifest_by_path.get(path, {}).get("deriver", "")).strip()
+            observed_entry = by_deriver.get(deriver)
+        if observed_entry is None:
+            deriver = str(manifest_by_path.get(path, {}).get("deriver", "")).strip()
+            reviewed = _reviewed_internal_closure_license(pin, path, deriver)
+            if reviewed is not None:
+                resolved.append(reviewed)
+                continue
+            fail(
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                f"transitive closure path has no independently observed package metadata or reviewed identity: {path}",
+            )
+        name = str(observed_entry.get("name", ""))
+        version = str(observed_entry.get("version", ""))
+        if not version:
+            name_match = STORE_NAME_VERSION.match(name)
+            if name_match is not None:
+                name, version = name_match.group(1), name_match.group(2)
+        resolved.append(
+            {
+                "path": path,
+                "name": name,
+                "version": version,
+                "license": observed_entry.get("license"),
+                "unfree": observed_entry.get("unfree"),
+            }
+        )
+    return validate_closure_licenses(substrate_entries + resolved)
+
+
 def resolve(args: argparse.Namespace) -> int:
     request = _load_request(args.request)
     source_workspace = _workspace(request, args.workspace)
@@ -392,6 +919,7 @@ def resolve(args: argparse.Namespace) -> int:
             descriptor_digest=desc["digest"],
             descriptor_platform=desc["platform"],
         )
+        validate_nix_config_ast(files)
         validate_fetch_policy(request, plan, "resolve")
         network = request.get("fetchNetwork", "none")
         proxy = request.get("fetchProxy")
@@ -452,6 +980,48 @@ def resolve(args: argparse.Namespace) -> int:
                 "ENVIRONMENT_PIN_MISSING",
                 "the environment builder resolved no flake.lock or devenv.lock",
             )
+        # Freeze cannot happen until the builder has realised the exact
+        # environment and checked the actual closure's licenses.
+        root = realize_environment(
+            build_workspace,
+            run_dir,
+            offline=network == "none",
+            resources=resources,
+            timeout=timeout,
+            log=log,
+            proxy=proxy if isinstance(proxy, str) else None,
+            disk_budget=disk_budget,
+        )
+        package_metadata = _package_metadata(
+            str(plan["nix"]["nixpkgs"]), plan, environment, timeout, log
+        )
+        if plan.get("source") == "GENERATED":
+            # Audit the selected package outputs and their transitive package
+            # closure. The Core-generated devShell wrapper is not a nixpkgs
+            # package attribute and must not be part of this lookup.
+            roots = [str(package["storePath"]) for package in package_metadata]
+            closure_licenses = _closure_license_entries(
+                plan,
+                closure_manifest(roots) if roots else [],
+                environment,
+                timeout,
+                log,
+            )
+        else:
+            # A committed environment may carry packages in flake/devenv files
+            # that are not listed in the plan. Audit the realised package
+            # profile closure, not Devenv's shell-wrapper file closure, and
+            # exclude only the exact profile/root wrapper path.
+            profile = _environment_profile(build_workspace, run_dir)
+            closure_root = profile or root
+            closure_licenses = _closure_license_entries(
+                plan,
+                closure_manifest(closure_root),
+                environment,
+                timeout,
+                log,
+                exclude={closure_root},
+            )
         disk_budget.check()
         resolution = {
             "schemaVersion": SCHEMA_VERSION,
@@ -459,6 +1029,8 @@ def resolve(args: argparse.Namespace) -> int:
             "files": resolution_files,
             "nixVersion": actual_nix,
             "devenvVersion": actual_devenv,
+            "packages": package_metadata,
+            "closureLicenses": closure_licenses,
         }
         write_json(run_dir / "resolution.json", resolution)
         print(json.dumps(resolution, sort_keys=True))

@@ -158,6 +158,32 @@ Rules:
   A request to change any of these is a blocker/owner decision, not a plan edit.
 - The plan may propose files, but Core writes them only into an ephemeral staging
   area; the untrusted content is not executed during planning.
+- For a greenfield request the Lead planning model may carry a bounded,
+  untrusted `EnvironmentProposal` (exact nixpkgs pin or omitted builder default,
+  toolchains, nixpkgs packages with SPDX licences and argv commands). It fills
+  only missing fields after explicit request constraints and committed
+  conventions; it never enables `allowUnfree`, chooses a language by default,
+  grants capabilities or bypasses Core validation and the Lead review.
+- A model proposal may not supply Nix/devenv files. Core generates the
+  environment files from validated toolchains, packages and commands. A
+  non-empty proposal `files` map is `ENVIRONMENT_SANDBOX_DENIED`.
+- A selected package `source` is exactly `nixpkgs` or
+  `nixpkgs:<the exact validated dotted attr>`; any other suffix is
+  `ENVIRONMENT_PIN_MISSING`.
+- Before freeze, the builder independently evaluates every selected package's
+  exact pinned nixpkgs attribute and returns version, SPDX licence and unfree
+  metadata. Core requires exact coverage and rejects missing or mismatched
+  claims; a package plan without verified metadata cannot freeze.
+- Resolution realises the exact environment and independently verifies the
+  **actual closure**, including transitive packages. Any unfree, denied or
+  unknown closure licence fails closed. The builder also verifies each planned
+  command executable exists in the realised devShell.
+- When semantic triage and deterministic detection leave the stack empty, one
+  bounded Lead-route model call selects an exact deterministic stack option;
+  Core validates the option and its required project capability and records a
+  `MODEL` stack decision. Unknown, empty or unauthorized selections fail closed
+  with a typed `STACK_SELECTION_*` planning failure. The selected stack profile
+  drives the architecture, skill and Definition of Done artifacts.
 
 ## 5. Lead approval and Core freeze
 
