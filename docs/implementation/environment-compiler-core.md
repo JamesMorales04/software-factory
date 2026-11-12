@@ -88,12 +88,16 @@ per-language table. Instead:
    concrete `environmentProposal` with at least one toolchain or package and
    argv commands; a missing, null or empty proposal fails closed with
    `STACK_ENVIRONMENT_REQUIRED` and is never synthesized from a per-language
-   default. Core also checks that at least one proposal toolchain id, package
-   name/attr or command runtime covers the selected language/framework using
-   the normalized aliases (`nodejs`/`node`/`typescript`, `python3`/`python`,
-   `rustc`/`cargo`/`rust`, plus the catalog frameworks); a mismatched proposal
-   fails closed with `STACK_ENVIRONMENT_MISMATCH`. The selected option identity
-   is therefore validated before the environment compiler is called; no
+   default. Core also checks that the proposal covers the selected language and
+   the concrete framework using exact normalized alias tokens only
+   (`nodejs`/`node`/`typescript`/`javascript`/`npm`/`pnpm`/`yarn`/`bun`,
+   `python`/`python3`/`pip`/`pytest`, `rust`/`rustc`/`cargo`, and exact
+   catalog framework names). Toolchain ids, package names and exact attr
+   segments are inspected; for commands only `argv[0]` counts. Prefixes such as
+   `python-tools` and arbitrary arguments such as `echo npm` do not match. A
+   mismatch fails closed with `STACK_ENVIRONMENT_MISMATCH`. A generic/empty
+   framework requires language coverage only. The selected option identity is
+   therefore validated before the environment compiler is called; no
    separate stack-identity field is needed in the plan. The system prompt states that
    `rationale` is required, non-empty and one concise sentence of at most 500
    characters, and the provider-native JSON Schema advertises the matching
@@ -214,8 +218,10 @@ conflict value (`STACK_SELECTION_*`, `STACK_ENVIRONMENT_*`, `SKILL_PACK_*`,
 `PLAN_ARTIFACTS_REQUIRED`) and never claims a new revision. It compares the
 recompiled `STACK` decision with the previous revision; a changed selected stack
 or required capability set returns `PLAN_RECOMPILE_STACK_CHANGE_REQUIRES_OWNER`
-instead of auto-approving the change. The new environment requires Lead review
-again; approvals are never carried forward. A recompile that is still blocked
+instead of auto-approving the change, and dependency-plan attachment is deferred
+until after that comparison so a refused change cannot mutate the ActionSpec.
+The new environment requires Lead review again; approvals are never carried
+forward. A recompile that is still blocked
 returns the new blocked plan with its blockers, not a 500.
 
 ## 3. Typed failures

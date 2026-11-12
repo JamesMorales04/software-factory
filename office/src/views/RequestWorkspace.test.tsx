@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   cancelIntakeRequest: vi.fn(),
   repairCampaign: vi.fn(),
   getRequestTrace: vi.fn(),
+  getAgenticSpec: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -260,6 +261,10 @@ describe("RequestWorkspace", () => {
     mocks.approveIntakeRequest.mockReset().mockResolvedValue(awaiting);
     mocks.messageIntakeRequest.mockReset().mockResolvedValue(awaiting);
     mocks.cancelIntakeRequest.mockReset().mockResolvedValue(awaiting);
+    mocks.getAgenticSpec.mockReset().mockResolvedValue({
+      frozen: null,
+      draft: null,
+    });
     mocks.getRequestTrace.mockReset().mockResolvedValue({
       requestId: "request-1",
       run: null,

@@ -77,6 +77,7 @@ export function RequestWorkspace() {
   const [repairBusy, setRepairBusy] = useState(false);
   const [repairError, setRepairError] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState("");
+  const [authoredSpecFrozen, setAuthoredSpecFrozen] = useState(false);
   const messageKey = useRef(newIdempotencyKey());
 
   const load = useCallback(
@@ -107,6 +108,21 @@ export function RequestWorkspace() {
     },
     [requestId, t],
   );
+
+  useEffect(() => {
+    let active = true;
+    coreApi
+      .getAgenticSpec(requestId)
+      .then((spec) => {
+        if (active) setAuthoredSpecFrozen(Boolean(spec.frozen));
+      })
+      .catch(() => {
+        if (active) setAuthoredSpecFrozen(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [requestId]);
 
   useEffect(() => {
     setData(null);
@@ -832,12 +848,8 @@ export function RequestWorkspace() {
           <EnvironmentPanel
             environment={data.environment ?? null}
             requestId={data.id}
-            executionBound={Boolean(
-              data.campaignId ||
-                data.campaign ||
-                data.environment?.specSha256 ||
-                data.environment?.spec,
-            )}
+            executionBound={Boolean(data.campaignId || data.campaign)}
+            authoredSpecBound={authoredSpecFrozen}
             onEnvironmentUpdated={() => void load(true)}
             onPlanRecompiled={() => void load(true)}
           />

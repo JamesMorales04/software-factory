@@ -163,10 +163,11 @@ Rules:
   toolchains, nixpkgs packages with SPDX licences and argv commands). A
   greenfield stack selection must include a concrete proposal; a missing or
   empty one is `STACK_ENVIRONMENT_REQUIRED`. The proposal must cover the
-  selected language/framework with a matching toolchain id, package name/attr
-  or command runtime using the normalized aliases (`nodejs`/`node`/
-  `typescript`, `python3`/`python`, `rustc`/`cargo`/`rust`, plus catalog
-  frameworks); a mismatch is `STACK_ENVIRONMENT_MISMATCH`. It fills
+  selected language and concrete framework with exact normalized alias tokens:
+  toolchain ids, package names/exact attr segments, and `argv[0]` only for
+  commands. Prefixes such as `python-tools` and later arguments such as
+  `echo npm` do not match. A mismatch is `STACK_ENVIRONMENT_MISMATCH`; a
+  generic/empty framework requires language coverage only. It fills
   only missing fields after explicit request constraints and committed
   conventions; it never enables `allowUnfree`, chooses a language by default,
   grants capabilities or bypasses Core validation and the Lead review.
@@ -214,7 +215,11 @@ Rules:
   `STACK_ENVIRONMENT_*`, `SKILL_PACK_*`, `PLAN_ARTIFACTS_REQUIRED`) is returned
   as a typed conflict without claiming a new revision. A recompiled stack that
   changes its selected option or required capabilities returns
-  `PLAN_RECOMPILE_STACK_CHANGE_REQUIRES_OWNER`; it is not auto-approved.
+  `PLAN_RECOMPILE_STACK_CHANGE_REQUIRES_OWNER`; it is not auto-approved, and
+  dependency-plan attachment is deferred until after the comparison so a
+  refused change cannot mutate the ActionSpec. Office treats only an authored
+  AgenticSpec or Campaign as execution-bound; a retryable frozen environment
+  spec does not hide the recompile action.
 
 ## 5. Lead approval and Core freeze
 

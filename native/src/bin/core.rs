@@ -12857,6 +12857,7 @@ async fn compile_stack_decision(
     lane: factory_native::planning::PlanningLane,
     detected: &factory_native::agentic::StackProfile,
     config: &factory_native::lead::ProjectConfig,
+    attach_dependencies: bool,
 ) -> Result<CompiledStackDecision, PlanningCompileFailure> {
     use factory_native::planning::DependencyStrategy;
     let repository = std::path::PathBuf::from(&config.repository);
@@ -12924,7 +12925,9 @@ async fn compile_stack_decision(
     stack
         .validate(lane)
         .map_err(|error| PlanningCompileFailure::Internal(Error::Validation(error)))?;
-    attach_dependency_plan(app, record, &stack, &repository, &config.base_commit).await?;
+    if attach_dependencies {
+        attach_dependency_plan(app, record, &stack, &repository, &config.base_commit).await?;
+    }
     Ok(CompiledStackDecision {
         decision: stack,
         stack_profile,
@@ -13043,7 +13046,7 @@ async fn repair_planning_artifacts(
 
     let stack_was_missing = missing_set.contains("STACK");
     let stack_decision = if stack_was_missing {
-        match compile_stack_decision(app, record, lane, &context.stack, &config).await {
+        match compile_stack_decision(app, record, lane, &context.stack, &config, true).await {
             Ok(stack) => Some(stack.decision),
             Err(PlanningCompileFailure::Conflict(conflict)) => {
                 return Err(planning_compile_conflict_response(conflict, missing));
@@ -13252,16 +13255,36 @@ async fn persist_planning_plan(
         .await
         .map_err(api_error)?;
     let repository = PathBuf::from(&config.repository);
+    let precompiled = precompiled_stack.is_some();
     let stack = match precompiled_stack {
         Some(stack) => stack,
-        None => match compile_stack_decision(app, record, lane, &context.stack, &config).await {
-            Ok(stack) => stack,
+        None => {
+            match compile_stack_decision(app, record, lane, &context.stack, &config, true).await {
+                Ok(stack) => stack,
+                Err(PlanningCompileFailure::Conflict(conflict)) => {
+                    return Ok(planning_compile_conflict_value(conflict));
+                }
+                Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
+            }
+        }
+    };
+    if precompiled {
+        match attach_dependency_plan(
+            app,
+            record,
+            &stack.decision,
+            &repository,
+            &config.base_commit,
+        )
+        .await
+        {
+            Ok(()) => {}
             Err(PlanningCompileFailure::Conflict(conflict)) => {
                 return Ok(planning_compile_conflict_value(conflict));
             }
             Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
-        },
-    };
+        }
+    }
     let architecture = factory_native::planning::architecture::build_architecture_plan(
         &record.objective,
         graph,
@@ -15478,6 +15501,7 @@ async fn recompile_agentic_plan(
         context.planning_lane,
         &context.stack,
         &config,
+        false,
     )
     .await
     {
@@ -29900,6 +29924,15 @@ mod tests {
                     "sha256": "",
                     "unfree": false,
                     "attribution": "Cargo is MIT licensed."
+                }, {
+                    "name": "axum",
+                    "version": "0.8",
+                    "license": "MIT",
+                    "source": "nixpkgs",
+                    "attr": "axum",
+                    "sha256": "",
+                    "unfree": false,
+                    "attribution": "axum is MIT licensed."
                 }],
                 "commands": {
                     "test": {
@@ -30004,6 +30037,7 @@ mod tests {
                 factory_native::planning::PlanningLane::FormalSpec,
                 &factory_native::agentic::StackProfile::default(),
                 &config,
+                true,
             )
             .await
             .unwrap();
@@ -30165,6 +30199,7 @@ mod tests {
                 factory_native::planning::PlanningLane::FormalSpec,
                 &factory_native::agentic::StackProfile::default(),
                 &config,
+                true,
             )
             .await
             .unwrap_err();
@@ -30227,6 +30262,7 @@ mod tests {
                 factory_native::planning::PlanningLane::FormalSpec,
                 &factory_native::agentic::StackProfile::default(),
                 &config,
+                true,
             )
             .await
             .unwrap_err();
@@ -30284,6 +30320,7 @@ mod tests {
                 factory_native::planning::PlanningLane::FormalSpec,
                 &factory_native::agentic::StackProfile::default(),
                 &config,
+                true,
             )
             .await
             .unwrap_err();
@@ -31492,6 +31529,34 @@ mod tests {
                     Some(calculator_environment_proposal()),
                 ))
                 .await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let planning = factory_native::planning::DependencyPlan {
+                strategy: factory_native::planning::DependencyStrategy::VendorCache,
+                items: Vec::new(),
+                cache_ref: "vendor".into(),
+                sbom_ref: "artifacts/sbom.json".into(),
+                owner_approval: None,
+            };
+            let dependency_plan = factory_native::dependencies::from_frozen_planning(
+                &planning,
+                factory_native::dependencies::DependencyKind::Rust,
+                None,
+                "vendor",
+                "artifacts/sbom.json",
+            )
+            .unwrap()
+            .expect("vendor dependency plan");
+            fixture
+                .app
+                .db
+                .set_action_dependency_plan(
+                    &record.action_id,
+                    Some(&dependency_plan),
+                    true,
+                )
+                .await
+                .unwrap();
+            let before = fixture.app.db.action(&record.action_id).await.unwrap().spec;
             let (status, conflict) = send(
                 &fixture.router,
                 "POST",
@@ -31515,6 +31580,10 @@ mod tests {
                     .revision,
                 1
             );
+            let after = fixture.app.db.action(&record.action_id).await.unwrap().spec;
+            assert_eq!(after.dependency_plan, before.dependency_plan);
+            assert_eq!(after.dependencies_required, before.dependencies_required);
+            assert!(after.dependencies_required);
 
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);

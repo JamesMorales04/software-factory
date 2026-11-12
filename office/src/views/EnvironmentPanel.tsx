@@ -61,6 +61,7 @@ export function EnvironmentPanel({
   environment: environmentProp,
   requestId,
   executionBound = false,
+  authoredSpecBound = false,
   onReviewed,
   onEnvironmentUpdated,
   onPlanRecompiled,
@@ -68,6 +69,7 @@ export function EnvironmentPanel({
   environment: EnvironmentStateView | null | undefined;
   requestId?: string;
   executionBound?: boolean;
+  authoredSpecBound?: boolean;
   onReviewed?: (next: EnvironmentStateView) => void;
   onEnvironmentUpdated?: (next: EnvironmentStateView) => void;
   onPlanRecompiled?: () => void;
@@ -87,8 +89,7 @@ export function EnvironmentPanel({
 
   const plan = environment?.plan ?? null;
   const leadApproval = environment?.leadApproval ?? null;
-  const bound =
-    executionBound || Boolean(environment?.specSha256 || environment?.spec);
+  const bound = executionBound || authoredSpecBound;
   const canReview =
     Boolean(requestId) &&
     Boolean(plan) &&

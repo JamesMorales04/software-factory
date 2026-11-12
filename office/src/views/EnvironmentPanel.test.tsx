@@ -180,6 +180,7 @@ function state(
 function renderPanel(
   environment: EnvironmentStateView | null,
   executionBound = false,
+  authoredSpecBound = false,
 ) {
   return render(
     <I18nProvider initialLocale="en">
@@ -187,6 +188,7 @@ function renderPanel(
         environment={environment}
         requestId="request-1"
         executionBound={executionBound}
+        authoredSpecBound={authoredSpecBound}
       />
     </I18nProvider>,
   );
@@ -488,14 +490,28 @@ describe("EnvironmentPanel", () => {
     ).toBeTruthy();
   });
 
-  it("hides recompile when a frozen environment spec is bound", () => {
+  it("keeps recompile visible for a retryable frozen environment spec", () => {
     renderPanel(
       state({
         status: "FROZEN",
+        plan: {
+          ...plan,
+          toolchains: [],
+          packages: [],
+          commands: {},
+        },
         specSha256: "a".repeat(64),
         spec: null,
       }),
     );
+    expect(
+      screen.getByRole("button", { name: "Recompile environment" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Recompile plan" })).toBeTruthy();
+  });
+
+  it("hides recompile when an authored AgenticSpec is bound", () => {
+    renderPanel(state({ status: "FROZEN" }), false, true);
     expect(
       screen.queryByRole("button", { name: "Recompile environment" }),
     ).toBeNull();
