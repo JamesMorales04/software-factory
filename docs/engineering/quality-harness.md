@@ -41,7 +41,9 @@ The runner does not execute the real-Chromium Office journey. Run
 environment; the scenario runner must not start candidate build/browser code
 with the host environment. A run directory contains a `run.json` ownership
 marker; cleanup/`--fresh` refuse an unowned directory. `--allow-dirty` permits a
-diagnostic run but the manifest is `PARTIAL`, never `PASS`.
+diagnostic run but dirty provenance is sticky for the logical run and the
+manifest/summary are `PARTIAL`, never `PASS`. A clean resume of a dirty run
+cannot turn earlier evidence into `PASS`; use a fresh run directory.
 
 ## Stages
 

@@ -464,7 +464,10 @@ def main(argv: list[str]) -> int:
         state.set("provider", config.provider)
         state.set("github", config.github)
         state.set("browser", config.browser)
-        state.set("dirty", dirty)
+        # Dirty provenance is sticky for the whole logical run. A later clean
+        # resume cannot turn earlier dirty-stage evidence into PASS; use a fresh
+        # run directory for a clean candidate-bound run.
+        state.set("dirty", bool(state.get("dirty")) or dirty)
         state.save()
 
         context = Context(config=config, state=state, compose=compose, api=api)

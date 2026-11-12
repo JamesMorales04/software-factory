@@ -63,6 +63,13 @@ class CassetteTests(unittest.TestCase):
         with self.assertRaises(CassetteError):
             validate(payload)
 
+    def test_rejects_common_secret_field_names(self) -> None:
+        for key in ("client_secret", "aws_secret_access_key", "private_key"):
+            payload = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+            payload["turns"][0]["request"][key] = "opaque-credential-value"
+            with self.assertRaises(CassetteError, msg=key):
+                validate(payload)
+
     def test_rejects_github_pat_value(self) -> None:
         payload = json.loads(EXAMPLE.read_text(encoding="utf-8"))
         payload["turns"][0]["request"]["note"] = "github_pat_11AAABBBCCCDDDEEEFFF"

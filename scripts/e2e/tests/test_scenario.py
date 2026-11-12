@@ -23,6 +23,7 @@ from common import (  # noqa: E402
     ScenarioError,
     State,
     _validate_snapshot_index,
+    cleanup,
     ensure_dir,
     ensure_run_identity,
     free_port,
@@ -369,6 +370,22 @@ class ResumeBindingTests(unittest.TestCase):
                     scenario="compose-intake",
                     artifacts_dir="/tmp/artifacts",
                 )
+
+
+class CleanupTests(unittest.TestCase):
+    def test_cleanup_exception_is_a_failure_result(self) -> None:
+        class FailingCompose:
+            def down(self, *, volumes: bool):
+                raise ScenarioError("cleanup timeout")
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config_for("prepare", "summary", root=Path(directory))
+            config.keep = False
+            state = State.load_or_create(config.state_path)
+            ensure_run_identity(config, state)
+            result = cleanup(config, FailingCompose())
+            self.assertEqual(result["status"], "FAIL")
+            self.assertIn("cleanup timeout", result["stderr"])
 
 
 class PortTests(unittest.TestCase):

@@ -27,8 +27,11 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SECRET_KEYS = re.compile(
     r"^(authorization|proxy-authorization|cookie|set-cookie|password|secret|"
     r"credential|api[_-]?key|x[_-]?api[_-]?key|access[_-]?token|"
-    r"refresh[_-]?token|id[_-]?token|token|x[_-]?(auth|access|api|github|"
-    r"gitlab|token|key|secret)[a-z0-9_-]*)$",
+    r"refresh[_-]?token|id[_-]?token|token|client[_-]?secret|"
+    r"aws[_-]?secret[_-]?access[_-]?key|secret[_-]?access[_-]?key|"
+    r"private[_-]?key|signing[_-]?key|encryption[_-]?key|"
+    r"webhook[_-]?secret|session[_-]?key|master[_-]?key|"
+    r"x[_-]?(auth|access|api|github|gitlab|token|key|secret)[a-z0-9_-]*)$",
     re.IGNORECASE,
 )
 SECRET_VALUES = re.compile(

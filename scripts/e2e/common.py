@@ -938,15 +938,16 @@ def write_manifest(
     head = _git_output(config.root, ["rev-parse", "HEAD"])
     frozen = candidate_sha or state.get("candidate_sha") or head
     base = _git_output(config.root, ["merge-base", "HEAD", "origin/main"]) or head
-    dirty = bool(_git_output(config.root, ["status", "--porcelain"]))
+    live_dirty = bool(_git_output(config.root, ["status", "--porcelain"]))
+    dirty = live_dirty or state.get("dirty") is True
     head_changed = frozen != head
     if (
         status == "PASS"
         and cleanup_result is not None
-        and cleanup_result.get("status") == "FAIL"
+        and cleanup_result.get("status") not in {"PASS", "KEPT"}
     ):
         status = "FAIL"
-        error = error or "Compose cleanup failed"
+        error = error or f"Compose cleanup did not complete: {cleanup_result.get('status')}"
     if status == "PASS" and (head_changed or dirty):
         status = "FAIL"
         if head_changed:
@@ -1048,7 +1049,15 @@ def cleanup(config: Config, compose: Compose) -> dict[str, Any]:
     if not run_sentinel(config).is_file():
         log(f"refusing destructive cleanup: no run ownership marker in {config.run_dir}")
         return {"status": "SKIPPED", "detail": "missing run ownership marker"}
-    result = compose.down(volumes=True)
+    try:
+        result = compose.down(volumes=True)
+        status = "PASS" if result.returncode == 0 else "FAIL"
+        exit_code = result.returncode
+        stderr = tail(result.stderr) if result.returncode != 0 else ""
+    except ScenarioError as error:
+        status = "FAIL"
+        exit_code = 1
+        stderr = str(error)
     shutil.rmtree(config.git_dir, ignore_errors=True)
     shutil.rmtree(config.model_dir, ignore_errors=True)
     shutil.rmtree(config.run_dir / "tmp", ignore_errors=True)
@@ -1056,8 +1065,4 @@ def cleanup(config: Config, compose: Compose) -> dict[str, Any]:
         config.cookie_jar.unlink(missing_ok=True)
     except OSError:
         pass
-    return {
-        "status": "PASS" if result.returncode == 0 else "FAIL",
-        "exitCode": result.returncode,
-        "stderr": tail(result.stderr) if result.returncode != 0 else "",
-    }
+    return {"status": status, "exitCode": exit_code, "stderr": stderr}
