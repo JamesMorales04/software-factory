@@ -12667,6 +12667,27 @@ fn stack_selection_conflict(
     })
 }
 
+fn stack_selection_system_prompt(schema: &str) -> String {
+    format!(
+        "You are the bounded Software Factory Stack Selector. Return ONLY one JSON object that \
+validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. \
+Choose exactly one deterministic option from the supplied list. Echo its optionId, language and \
+framework. You may omit optionId only when language and framework identify exactly one option. \
+Choose an option whose requiredCapability is present in the supplied project capabilities. \
+Rationale is required: provide one concise single sentence of at most {max_rationale} characters \
+explaining why the selected deterministic option fits the objective and the supplied project \
+capabilities. Never invent an option, language, framework, capability, path, package or command. If \
+the selection carries an environmentProposal, it must be concrete: an exact pinned nixpkgs revision \
+(or omit nixpkgs to use the builder's documented default), toolchains with exact versions, nixpkgs \
+packages with exact versions and SPDX license identifiers, and \
+build/test/lint/format/typecheck/run commands as argv vectors. There is no language default. Model \
+output is advisory; Core validates the selection against the deterministic catalog and the \
+project's authorized capabilities.\n\nJSON Schema:\n{schema}",
+        max_rationale = factory_native::planning::stack::MAX_SELECTION_RATIONALE_CHARS,
+        schema = schema
+    )
+}
+
 /// One bounded HYBRID stack decision: the Lead model selects exactly one
 /// deterministic Core option (or a language/framework that maps to one), and
 /// Core validates the catalog entry and project capability before use. A
@@ -12718,20 +12739,7 @@ async fn select_stack_option_with_model(
                 "stack-selection schema encoding failed: {error}"
             )))
         })?;
-    let system_prompt = format!(
-        "You are the bounded Software Factory Stack Selector. Return ONLY one JSON object that \
-validates against the JSON Schema below. Do not add prose, markdown, comments or unknown fields. \
-Choose exactly one deterministic option from the supplied list. Echo its optionId, language and \
-framework. You may omit optionId only when language and framework identify exactly one option. \
-Choose an option whose requiredCapability is present in the supplied project capabilities. Never \
-invent an option, language, framework, capability, path, package or command. If the selection \
-carries an environmentProposal, it must be concrete: an exact pinned nixpkgs revision (or omit \
-nixpkgs to use the builder's documented default), toolchains with exact versions, nixpkgs packages \
-with exact versions and SPDX license identifiers, and build/test/lint/format/typecheck/run commands \
-as argv vectors. There is no language default. Model output is advisory; Core validates the \
-selection against the deterministic catalog and the project's authorized capabilities.\n\nJSON \
-Schema:\n{schema}"
-    );
+    let system_prompt = stack_selection_system_prompt(&schema);
     let user_prompt = serde_json::json!({
         "objective": record.objective.chars().take(4_000).collect::<String>(),
         "projectId": record.project_id,
@@ -19268,6 +19276,23 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
     use serde_json::Value;
+
+    #[test]
+    fn stack_selection_prompt_states_the_rationale_bound() {
+        let schema = factory_native::model_output::stack_selection_schema();
+        let prompt = stack_selection_system_prompt(&serde_json::to_string(&schema).unwrap());
+        assert!(prompt.contains("Rationale is required"));
+        assert!(prompt.contains("single sentence"));
+        assert!(prompt.contains("at most 500 characters"));
+        assert_eq!(
+            schema["properties"]["rationale"]["maxLength"],
+            serde_json::json!(500)
+        );
+        assert_eq!(
+            schema["properties"]["rationale"]["minLength"],
+            serde_json::json!(1)
+        );
+    }
 
     fn test_reviewer_identities() -> factory_native::reviewer_identity::ReviewerIdentitySet {
         factory_native::reviewer_identity::ReviewerIdentitySet::from_material(vec![

@@ -84,7 +84,11 @@ per-language table. Instead:
    prompt supplies the objective, project config, allowed paths, authorized
    capabilities and the exact deterministic `selection_options` catalog. The
    typed output is `StackSelectionModel` (`optionId`, `language`, `framework`,
-   `rationale`, optional `environmentProposal`).
+   `rationale`, optional `environmentProposal`). The system prompt states that
+   `rationale` is required, non-empty and one concise sentence of at most 500
+   characters, and the provider-native JSON Schema advertises the matching
+   `minLength: 1`/`maxLength: 500` bound. An over-long rationale is rejected
+   rather than truncated or accepted.
 3. Core validates the returned id/language/framework against the catalog and
    the option's `requiredCapability` against the project capabilities. Unknown,
    empty, mismatched or unauthorized selections fail closed with
