@@ -399,6 +399,8 @@ describe("EnvironmentPanel", () => {
       screen.getByText("No successful build receipt recorded"),
     ).toBeTruthy();
     expect(screen.getByText("a".repeat(64))).toBeTruthy();
+  });
+
   it("recompiles a blocked environment only with an explicit rationale", async () => {
     const user = userEvent.setup();
     mocks.recompileAgenticEnvironment.mockResolvedValue(
@@ -407,7 +409,9 @@ describe("EnvironmentPanel", () => {
     renderPanel(
       state({
         status: "BLOCKED",
-        blockers: [{ code: "ENVIRONMENT_PIN_MISSING", message: "stale builder" }],
+        blockers: [
+          { code: "ENVIRONMENT_PIN_MISSING", message: "stale builder" },
+        ],
       }),
     );
     const trigger = screen.getByRole("button", {
@@ -495,9 +499,7 @@ describe("EnvironmentPanel", () => {
     await user.click(
       screen.getByRole("button", { name: "Recompile environment" }),
     );
-    expect(
-      await screen.findByText("The recompile failed."),
-    ).toBeTruthy();
+    expect(await screen.findByText("The recompile failed.")).toBeTruthy();
     expect(screen.getByText(plan.planSha256)).toBeTruthy();
   });
 });
