@@ -138,11 +138,42 @@ impl Database {
         generation: i64,
         now_ms: i64,
     ) -> Result<(String, String), Error> {
+        let (provider, model, _) = self
+            .assigned_provider_binding(worker_id, attempt_id, generation, now_ms)
+            .await?;
+        Ok((provider, model))
+    }
+
+    /// Return the exact provider-tool grant for a live Worker lease. Core uses
+    /// this before a mediated tool call so a Worker cannot widen its Campaign
+    /// authorization by calling the endpoint directly.
+    pub async fn assigned_provider_tools(
+        &self,
+        worker_id: &str,
+        attempt_id: &str,
+        generation: i64,
+        now_ms: i64,
+    ) -> Result<Vec<String>, Error> {
+        let (_, _, allowed_tools) = self
+            .assigned_provider_binding(worker_id, attempt_id, generation, now_ms)
+            .await?;
+        serde_json::from_str(&allowed_tools)
+            .map_err(|_| Error::Invalid("stored allowed tools encoding"))
+    }
+
+    async fn assigned_provider_binding(
+        &self,
+        worker_id: &str,
+        attempt_id: &str,
+        generation: i64,
+        now_ms: i64,
+    ) -> Result<(String, String, String), Error> {
         if worker_id.trim().is_empty() || attempt_id.trim().is_empty() || generation <= 0 {
             return Err(Error::Invalid("provider assignment identity"));
         }
-        let row: Option<(String, String)> = sqlx::query_as::query_as(
-            "SELECT COALESCE(ca.provider,''),COALESCE(ca.model,'')
+        let row: Option<(String, String, String)> = sqlx::query_as::query_as(
+            "SELECT COALESCE(ca.provider,''),COALESCE(ca.model,''),
+                    COALESCE(ca.allowed_tools_json,'[]')
              FROM attempts a
              JOIN runs r ON r.id=a.run_id
              JOIN campaigns c ON c.id=r.campaign_id
@@ -161,7 +192,7 @@ impl Database {
         .bind(now_ms)
         .fetch_optional(&self.pool)
         .await?;
-        let Some((provider, model)) = row else {
+        let Some((provider, model, allowed_tools)) = row else {
             return Err(Error::Forbidden(
                 "no live V2 authorized provider assignment for this Worker attempt".into(),
             ));
@@ -171,7 +202,7 @@ impl Database {
                 "provider assignment has no authorized route".into(),
             ));
         }
-        Ok((provider, model))
+        Ok((provider, model, allowed_tools))
     }
 
     pub async fn workers(&self) -> Result<Vec<WorkerSummary>, Error> {
@@ -413,6 +444,7 @@ impl Database {
             )),
             allowed_tools: serde_json::from_str(&allowed_tools)
                 .map_err(|_| Error::Invalid("stored allowed tools encoding"))?,
+            gateway_tools: Vec::new(),
             attempt_grant: String::new(),
             skills,
             environment,

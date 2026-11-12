@@ -305,6 +305,10 @@ pub struct WorkerAssignment {
     /// only and never dispatch under V2.
     pub execution_policy: Option<crate::execution_policy::FrozenExecutionPolicy>,
     pub allowed_tools: Vec<String>,
+    /// Role-filtered MCP gateway catalog. Core populates it at claim time; the
+    /// Worker never invents a gateway tool or connects to an MCP server.
+    #[serde(default)]
+    pub gateway_tools: Vec<crate::tool_gateway::GatewayToolSummary>,
     /// Populated by Core immediately before returning a claim. The database
     /// layer never invents or stores this capability.
     #[serde(default)]
@@ -1242,8 +1246,10 @@ pub use planning::{
 #[cfg(feature = "test-support")]
 pub use wave12_fixture::TRACE_RETRY_REQUEST as WAVE12_TRACE_RETRY_REQUEST;
 mod quality;
+mod tool_gateway;
 mod workers;
 mod workflow;
+pub use tool_gateway::ToolGatewayCallRecord;
 
 mod device_pairing;
 mod events;

@@ -7,7 +7,8 @@ import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { chromium } from "playwright-core";
+import AxeBuilder from "@axe-core/playwright";
+import { chromium } from "playwright";
 
 const root = resolve(import.meta.dirname, "../..");
 const targetDir = process.env.CARGO_TARGET_DIR || join(root, "target");
@@ -32,6 +33,7 @@ const repository = join(temp, "repo");
 const database = join(temp, "factory.sqlite");
 const enrollmentCodeFile = join(temp, "enrollment-code");
 const masterKeyFile = join(temp, "master-key");
+const gatewayConfig = join(temp, "tool-gateway.json");
 const workspace = join(temp, "workspaces");
 const supervisorWork = join(temp, "supervisor-work");
 const supervisorState = join(temp, "supervisor-state");
@@ -41,6 +43,31 @@ const processes = [];
 mkdirSync(repository, { recursive: true });
 mkdirSync(workspace, { recursive: true });
 writeFileSync(masterKeyFile, randomBytes(32).toString("hex"), { mode: 0o600 });
+writeFileSync(
+  gatewayConfig,
+  JSON.stringify({
+    maxCallsPerMinute: 60,
+    servers: [
+      {
+        transport: "http",
+        id: "context7",
+        endpoint: "https://mcp.context7.com/mcp",
+      },
+    ],
+    tools: [
+      {
+        id: "context7.query-docs",
+        server: "context7",
+        tool: "query-docs",
+        roles: ["IMPLEMENTER"],
+        readOnly: true,
+        timeoutSecs: 30,
+        maxResponseBytes: 262144,
+      },
+    ],
+  }),
+  { mode: 0o600 },
+);
 writeFileSync(
   enrollmentCodeFile,
   JSON.stringify({
@@ -135,6 +162,7 @@ try {
       FACTORY_PROJECTS_ROOT: process.env.FACTORY_PROJECTS_ROOT?.trim() || temp,
       FACTORY_LEAD_FIXTURE_ASSESSOR: "1",
       FACTORY_ENABLE_AUTONOMOUS_START: "1",
+      FACTORY_TOOL_GATEWAY_CONFIG: gatewayConfig,
     },
   });
   await waitFor(`${coreUrl}/health`);
@@ -200,7 +228,8 @@ try {
     executablePath,
     ...(launchArgs.length > 0 ? { args: launchArgs } : {}),
   });
-  const page = await browser.newPage();
+  const context = await browser.newContext();
+  const page = await context.newPage();
   const consoleErrors = [];
   const pageErrors = [];
   const notFound = [];
@@ -341,6 +370,38 @@ try {
   await page.getByRole("heading", { name: /Core-owned model calls/ }).waitFor();
   await page.getByRole("tab", { name: /Diagnostics/ }).click();
   await page.getByRole("heading", { name: "Service boundaries" }).waitFor();
+  await page.getByRole("heading", { name: "MCP tool gateway" }).waitFor();
+  await page.getByText("context7.query-docs").first().waitFor();
+  await page.getByText("Read-only").first().waitFor();
+  await page.getByText("No mediated MCP call has been recorded yet.").waitFor();
+  const accessibility = await new AxeBuilder({ page })
+    .include('[data-testid="tool-gateway-panel"]')
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+    .analyze();
+  const blocking = accessibility.violations.filter(
+    (violation) =>
+      violation.impact === "critical" || violation.impact === "serious",
+  );
+  assert.deepEqual(
+    blocking.map((violation) => violation.id),
+    [],
+    `Runtime MCP gateway accessibility violations: ${JSON.stringify(
+      blocking.map((violation) => ({
+        id: violation.id,
+        nodes: violation.nodes.map((node) => node.target),
+      })),
+    )}`,
+  );
+  if (process.env.FACTORY_EVIDENCE_DIR) {
+    mkdirSync(process.env.FACTORY_EVIDENCE_DIR, { recursive: true });
+    await page.screenshot({
+      path: join(
+        process.env.FACTORY_EVIDENCE_DIR,
+        "runtime-gateway-enabled-1440.png",
+      ),
+      fullPage: true,
+    });
+  }
   for (const width of [834, 390]) {
     await page.setViewportSize({ width, height: 900 });
     const viewport = await page.evaluate(() => ({
@@ -352,6 +413,15 @@ try {
       viewport.clientWidth,
       `Runtime diagnostics must not overflow the document at ${width}px`,
     );
+    if (width === 390 && process.env.FACTORY_EVIDENCE_DIR) {
+      await page.screenshot({
+        path: join(
+          process.env.FACTORY_EVIDENCE_DIR,
+          "runtime-gateway-enabled-390.png",
+        ),
+        fullPage: true,
+      });
+    }
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
 

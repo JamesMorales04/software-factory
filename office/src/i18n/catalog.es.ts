@@ -2368,6 +2368,36 @@ export const es: Catalog = {
   "runtime.telemetry.failedAttempts": "Intentos fallidos",
   "runtime.telemetry.note":
     "Un fallo del exportador es degradación de la telemetría, no estado autoritativo de Factory.",
+  "runtime.toolGateway.title": "Gateway de herramientas MCP",
+  "runtime.toolGateway.loading": "Cargando el estado del gateway…",
+  "runtime.toolGateway.disabledTitle": "El gateway MCP no está configurado",
+  "runtime.toolGateway.disabledDescription":
+    "Configura FACTORY_TOOL_GATEWAY_CONFIG en el despliegue de Core para habilitar herramientas MCP mediadas. Los agentes no pueden conectarse directamente a servidores MCP.",
+  "runtime.toolGateway.servers": "Servidores",
+  "runtime.toolGateway.tools": "Herramientas autorizadas",
+  "runtime.toolGateway.rate": "Límite de frecuencia",
+  "runtime.toolGateway.callsPerMinute":
+    "{count} llamadas/min por rol y herramienta",
+  "runtime.toolGateway.catalogTitle": "Catálogo y política de solo lectura",
+  "runtime.toolGateway.catalogLabel": "Catálogo del gateway MCP",
+  "runtime.toolGateway.catalogEmpty":
+    "Ninguna herramienta mediada está disponible para este rol.",
+  "runtime.toolGateway.tool": "Herramienta",
+  "runtime.toolGateway.policy": "Política",
+  "runtime.toolGateway.readOnly": "Solo lectura",
+  "runtime.toolGateway.mutating": "Mutable",
+  "runtime.toolGateway.recentTitle": "Llamadas recientes",
+  "runtime.toolGateway.recentEmpty":
+    "Todavía no se ha registrado ninguna llamada MCP mediada.",
+  "runtime.toolGateway.recentLabel": "Llamadas recientes al gateway MCP",
+  "runtime.toolGateway.time": "Fecha",
+  "runtime.toolGateway.decision": "Decisión",
+  "runtime.toolGateway.latency": "Latencia",
+  "runtime.toolGateway.bytes": "Bytes",
+  "runtime.toolGateway.allowed": "Permitida",
+  "runtime.toolGateway.denied": "Denegada",
+  "runtime.toolGateway.note":
+    "Cada llamada se filtra por el catálogo de roles de Core y se persiste con un digest de argumentos. Los endpoints, credenciales y argumentos crudos nunca se muestran.",
   "runtime.policy.title": "Política del entorno de ejecución",
   "runtime.policy.openSettings": "Abrir configuración",
   "runtime.policy.semanticReview": "Revisión semántica",

@@ -71,6 +71,16 @@ pub enum GatewayRole {
 }
 
 impl GatewayRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Implementer => "IMPLEMENTER",
+            Self::Repairer => "REPAIRER",
+            Self::Reviewer => "REVIEWER",
+            Self::Verifier => "VERIFIER",
+            Self::Planner => "PLANNER",
+        }
+    }
+
     pub fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_uppercase().as_str() {
             "IMPLEMENTER" => Some(Self::Implementer),
@@ -97,61 +107,97 @@ pub struct GatewayToolSpec {
     pub max_response_bytes: usize,
 }
 
-/// Immutable Core catalog: gateway tool id, MCP server id, exact MCP tool name
-/// and read-only classification. Configuration may select and grant roles for
-/// these identities but cannot invent an identity, remap a server, or rename
-/// the downstream MCP tool.
-const KNOWN_TOOLS: &[(&str, &str, &str, bool)] = &[
-    (
-        "context7.resolve-library-id",
-        "context7",
-        "resolve-library-id",
-        true,
-    ),
-    ("context7.query-docs", "context7", "query-docs", true),
-    (
-        "playwright.browser_snapshot",
-        "playwright",
-        "browser_snapshot",
-        true,
-    ),
-    (
-        "playwright.browser_take_screenshot",
-        "playwright",
-        "browser_take_screenshot",
-        true,
-    ),
-    (
-        "playwright.browser_close",
-        "playwright",
-        "browser_close",
-        false,
-    ),
-    ("github.issue_read", "github-read", "issue_read", true),
-    (
-        "github.pull_request_read",
-        "github-read",
-        "pull_request_read",
-        true,
-    ),
-    (
-        "github.get_file_contents",
-        "github-read",
-        "get_file_contents",
-        true,
-    ),
-    ("github.search_code", "github-read", "search_code", true),
+/// Immutable Core catalog: gateway tool id, MCP server id, exact MCP tool name,
+/// read-only classification and a bounded argument hint for the provider prompt.
+/// Configuration may select and grant roles for these identities but cannot
+/// invent an identity, remap a server, or rename the downstream MCP tool.
+#[derive(Debug, Clone, Copy)]
+struct KnownTool {
+    id: &'static str,
+    server: &'static str,
+    tool: &'static str,
+    read_only: bool,
+    hint: &'static str,
+}
+
+const KNOWN_TOOLS: &[KnownTool] = &[
+    KnownTool {
+        id: "context7.resolve-library-id",
+        server: "context7",
+        tool: "resolve-library-id",
+        read_only: true,
+        hint: "{\"libraryName\": string, \"query\": string}",
+    },
+    KnownTool {
+        id: "context7.query-docs",
+        server: "context7",
+        tool: "query-docs",
+        read_only: true,
+        hint: "{\"libraryId\": \"/org/project\", \"query\": string}",
+    },
+    KnownTool {
+        id: "playwright.browser_snapshot",
+        server: "playwright",
+        tool: "browser_snapshot",
+        read_only: true,
+        hint: "{}",
+    },
+    KnownTool {
+        id: "playwright.browser_take_screenshot",
+        server: "playwright",
+        tool: "browser_take_screenshot",
+        read_only: true,
+        hint: "{}",
+    },
+    KnownTool {
+        id: "playwright.browser_close",
+        server: "playwright",
+        tool: "browser_close",
+        read_only: false,
+        hint: "{}",
+    },
+    KnownTool {
+        id: "github.issue_read",
+        server: "github-read",
+        tool: "issue_read",
+        read_only: true,
+        hint: "{\"method\": \"get\"|\"list\", \"owner\": string, \"repo\": string, \"issue_number\": integer}",
+    },
+    KnownTool {
+        id: "github.pull_request_read",
+        server: "github-read",
+        tool: "pull_request_read",
+        read_only: true,
+        hint: "{\"method\": \"get\"|\"list\", \"owner\": string, \"repo\": string, \"pullNumber\": integer}",
+    },
+    KnownTool {
+        id: "github.get_file_contents",
+        server: "github-read",
+        tool: "get_file_contents",
+        read_only: true,
+        hint: "{\"owner\": string, \"repo\": string, \"path\": string}",
+    },
+    KnownTool {
+        id: "github.search_code",
+        server: "github-read",
+        tool: "search_code",
+        read_only: true,
+        hint: "{\"query\": string}",
+    },
 ];
 
-fn known_tool(id: &str) -> Option<(&'static str, &'static str, bool)> {
-    KNOWN_TOOLS
-        .iter()
-        .find(|(known, _, _, _)| *known == id)
-        .map(|(_, server, tool, read_only)| (*server, *tool, *read_only))
+fn known_tool(id: &str) -> Option<&'static KnownTool> {
+    KNOWN_TOOLS.iter().find(|known| known.id == id)
 }
 
 fn core_tool_is_read_only(tool: &GatewayToolSpec) -> bool {
-    known_tool(&tool.id).is_some_and(|(_, _, read_only)| read_only)
+    known_tool(&tool.id).is_some_and(|known| known.read_only)
+}
+
+fn role_allowed(spec: &GatewayToolSpec, role: GatewayRole) -> bool {
+    role != GatewayRole::Verifier
+        && spec.roles.contains(&role)
+        && (role != GatewayRole::Reviewer || core_tool_is_read_only(spec))
 }
 
 fn default_timeout() -> u64 {
@@ -403,22 +449,22 @@ impl GatewayConfig {
                     tool.id, tool.server
                 )));
             }
-            let Some((known_server, known_name, _)) = known_tool(&tool.id) else {
+            let Some(known) = known_tool(&tool.id) else {
                 return Err(GatewayError::Config(format!(
                     "tool {} is not in the immutable gateway catalog",
                     tool.id
                 )));
             };
-            if known_server != tool.server {
+            if known.server != tool.server {
                 return Err(GatewayError::Config(format!(
-                    "tool {} must use server {known_server}, not {}",
-                    tool.id, tool.server
+                    "tool {} must use server {}, not {}",
+                    tool.id, known.server, tool.server
                 )));
             }
-            if known_name != tool.tool {
+            if known.tool != tool.tool {
                 return Err(GatewayError::Config(format!(
-                    "tool {} must dispatch MCP tool {known_name}, not {}",
-                    tool.id, tool.tool
+                    "tool {} must dispatch MCP tool {}, not {}",
+                    tool.id, known.tool, tool.tool
                 )));
             }
             if tool.roles.is_empty() {
@@ -484,6 +530,62 @@ pub struct GatewayAuditRecord {
     pub duration_ms: u64,
     pub response_bytes: usize,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayToolSummary {
+    pub id: String,
+    pub server: String,
+    pub read_only: bool,
+    /// Short argument hint for the provider prompt. It is not a schema and the
+    /// gateway still validates the exact MCP call at its boundary.
+    pub hint: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayServerSummary {
+    pub id: String,
+    pub transport: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayStatus {
+    pub enabled: bool,
+    pub servers: Vec<GatewayServerSummary>,
+    pub tools: Vec<GatewayToolSummary>,
+    pub max_calls_per_minute: usize,
+}
+
+impl GatewayStatus {
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            servers: Vec::new(),
+            tools: Vec::new(),
+            max_calls_per_minute: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerToolGatewayRequest {
+    pub worker_id: String,
+    pub attempt_id: String,
+    pub generation: i64,
+    pub tool: String,
+    #[serde(default)]
+    pub arguments: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerToolGatewayResponse {
+    pub tool: String,
+    pub content: Value,
 }
 
 #[derive(Debug, Default)]
@@ -1059,6 +1161,12 @@ pub struct GatewayOutcome {
     pub audit: GatewayAuditRecord,
 }
 
+#[derive(Debug)]
+pub struct GatewayCallReport {
+    pub outcome: Result<GatewayOutcome, GatewayError>,
+    pub audit: GatewayAuditRecord,
+}
+
 pub struct ToolGateway {
     config: GatewayConfig,
     clients: BTreeMap<String, McpClient>,
@@ -1131,99 +1239,78 @@ impl ToolGateway {
         tool_id: &str,
         arguments: Value,
     ) -> Result<GatewayOutcome, GatewayError> {
+        self.call_audited(role, tool_id, arguments).await.outcome
+    }
+
+    /// Call a tool and return the exact audit record even when policy denies or
+    /// the transport fails. Core persists this record before returning the
+    /// result to a Worker.
+    pub async fn call_audited(
+        &self,
+        role: GatewayRole,
+        tool_id: &str,
+        arguments: Value,
+    ) -> GatewayCallReport {
         let started = Instant::now();
         let args_sha256 = arguments_sha256(&arguments);
         let spec = match self.config.tools.iter().find(|tool| tool.id == tool_id) {
             Some(spec) => spec.clone(),
             None => {
-                self.record(
+                return self.deny(
                     role,
                     tool_id,
                     &args_sha256,
                     started,
-                    "DENY",
-                    0,
-                    Some("unknown tool"),
+                    GatewayError::UnknownTool(tool_id.into()),
                 );
-                return Err(GatewayError::UnknownTool(tool_id.into()));
             }
         };
         // Dispatch the immutable Core identity, never the configured tool name.
-        let Some((_, mcp_tool_name, _)) = known_tool(&spec.id) else {
-            self.record(
+        let Some(known) = known_tool(&spec.id) else {
+            return self.deny(
                 role,
                 tool_id,
                 &args_sha256,
                 started,
-                "DENY",
-                0,
-                Some("tool identity is not in the Core catalog"),
+                GatewayError::UnknownTool(tool_id.into()),
             );
-            return Err(GatewayError::UnknownTool(tool_id.into()));
         };
-        if role == GatewayRole::Verifier
-            || !spec.roles.contains(&role)
-            || (role == GatewayRole::Reviewer && !core_tool_is_read_only(&spec))
-        {
-            self.record(
+        if !role_allowed(&spec, role) {
+            return self.deny(
                 role,
                 tool_id,
                 &args_sha256,
                 started,
-                "DENY",
-                0,
-                Some("role policy"),
+                GatewayError::Denied {
+                    role,
+                    tool: tool_id.into(),
+                },
             );
-            return Err(GatewayError::Denied {
-                role,
-                tool: tool_id.into(),
-            });
         }
         if let Err(error) = validate_arguments(&arguments) {
-            self.record(
-                role,
-                tool_id,
-                &args_sha256,
-                started,
-                "DENY",
-                0,
-                Some(&error.to_string()),
-            );
-            return Err(error);
+            return self.deny(role, tool_id, &args_sha256, started, error);
         }
         if let Err(error) = self.limiter.check(
             &format!("{role:?}:{tool_id}"),
             self.config.max_calls_per_minute,
         ) {
-            self.record(
-                role,
-                tool_id,
-                &args_sha256,
-                started,
-                "DENY",
-                0,
-                Some(&error.to_string()),
-            );
-            return Err(error);
+            return self.deny(role, tool_id, &args_sha256, started, error);
         }
         let client = match self.clients.get(&spec.server) {
             Some(client) => client,
             None => {
-                self.record(
+                return self.deny(
                     role,
                     tool_id,
                     &args_sha256,
                     started,
-                    "DENY",
-                    0,
-                    Some("server not configured"),
+                    GatewayError::NotConfigured,
                 );
-                return Err(GatewayError::NotConfigured);
             }
         };
         match client
             .call_tool(
-                mcp_tool_name,
+                known.tool,
                 arguments,
                 spec.timeout_secs.min(MAX_TIMEOUT_SECS),
                 spec.max_response_bytes.min(MAX_RESPONSE_BYTES),
@@ -1243,15 +1330,18 @@ impl ToolGateway {
                     response_bytes,
                     None,
                 );
-                Ok(GatewayOutcome {
-                    tool: tool_id.into(),
-                    server: spec.server,
-                    content,
+                GatewayCallReport {
+                    outcome: Ok(GatewayOutcome {
+                        tool: tool_id.into(),
+                        server: spec.server,
+                        content,
+                        audit: audit.clone(),
+                    }),
                     audit,
-                })
+                }
             }
             Err(error) => {
-                self.record(
+                let audit = self.record(
                     role,
                     tool_id,
                     &args_sha256,
@@ -1260,8 +1350,87 @@ impl ToolGateway {
                     0,
                     Some(&error.to_string()),
                 );
-                Err(error)
+                GatewayCallReport {
+                    outcome: Err(error),
+                    audit,
+                }
             }
+        }
+    }
+
+    fn deny(
+        &self,
+        role: GatewayRole,
+        tool: &str,
+        args_sha256: &str,
+        started: Instant,
+        error: GatewayError,
+    ) -> GatewayCallReport {
+        let audit = self.record(
+            role,
+            tool,
+            args_sha256,
+            started,
+            "DENY",
+            0,
+            Some(&error.to_string()),
+        );
+        GatewayCallReport {
+            outcome: Err(error),
+            audit,
+        }
+    }
+
+    /// Role-filtered catalog for a provider prompt. It never includes a tool
+    /// that `call` would deny for that role.
+    pub fn tools_for_role(&self, role: GatewayRole) -> Vec<GatewayToolSummary> {
+        self.config
+            .tools
+            .iter()
+            .filter(|spec| role_allowed(spec, role))
+            .filter_map(|spec| {
+                known_tool(&spec.id).map(|known| GatewayToolSummary {
+                    id: known.id.into(),
+                    server: known.server.into(),
+                    read_only: known.read_only,
+                    hint: known.hint.into(),
+                })
+            })
+            .collect()
+    }
+
+    pub fn status(&self) -> GatewayStatus {
+        GatewayStatus {
+            enabled: true,
+            servers: self
+                .config
+                .servers
+                .iter()
+                .map(|server| match server {
+                    GatewayServerConfig::Http { id, .. } => GatewayServerSummary {
+                        id: id.clone(),
+                        transport: "http".into(),
+                    },
+                    GatewayServerConfig::Stdio { id, .. } => GatewayServerSummary {
+                        id: id.clone(),
+                        transport: "stdio".into(),
+                    },
+                })
+                .collect(),
+            tools: self
+                .config
+                .tools
+                .iter()
+                .filter_map(|spec| {
+                    known_tool(&spec.id).map(|known| GatewayToolSummary {
+                        id: known.id.into(),
+                        server: known.server.into(),
+                        read_only: known.read_only,
+                        hint: known.hint.into(),
+                    })
+                })
+                .collect(),
+            max_calls_per_minute: self.config.max_calls_per_minute,
         }
     }
 
@@ -1346,14 +1515,7 @@ mod tests {
     #[test]
     fn denies_unknown_tools_and_disallowed_roles() {
         let gateway = test_gateway();
-        assert!(matches!(
-            gateway
-                .config
-                .tools
-                .iter()
-                .find(|tool| tool.id == "missing"),
-            None
-        ));
+        assert!(!gateway.config.tools.iter().any(|tool| tool.id == "missing"));
         assert!(matches!(
             gateway
                 .config
@@ -1675,6 +1837,38 @@ for line in sys.stdin:
         ));
         config.tools[0].timeout_secs = MAX_TIMEOUT_SECS;
         config.validate().expect("limits at the ceiling are valid");
+    }
+
+    #[tokio::test]
+    async fn role_catalog_matches_call_policy_and_denials_carry_audit() {
+        let gateway = ToolGateway::example().expect("gateway");
+        let implementer = gateway.tools_for_role(GatewayRole::Implementer);
+        assert!(
+            implementer
+                .iter()
+                .any(|tool| tool.id == "playwright.browser_close")
+        );
+        let reviewer = gateway.tools_for_role(GatewayRole::Reviewer);
+        assert!(
+            !reviewer
+                .iter()
+                .any(|tool| tool.id == "playwright.browser_close")
+        );
+        assert!(reviewer.iter().all(|tool| tool.read_only));
+        assert!(gateway.tools_for_role(GatewayRole::Verifier).is_empty());
+        assert!(gateway.status().enabled);
+        assert_eq!(gateway.status().tools.len(), 9);
+
+        let report = gateway
+            .call_audited(
+                GatewayRole::Verifier,
+                "context7.query-docs",
+                json!({"query": "x"}),
+            )
+            .await;
+        assert!(matches!(report.outcome, Err(GatewayError::Denied { .. })));
+        assert_eq!(report.audit.decision, "DENY");
+        assert_eq!(report.audit.role, GatewayRole::Verifier);
     }
 
     #[test]

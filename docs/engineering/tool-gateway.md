@@ -1,8 +1,10 @@
 # Core tool gateway
 
-**Status:** first implementation slice. Domain/policy/transport library and a
-development CLI are implemented. Worker/Office wiring is the next slice and is
-not yet claimed. This is not independent acceptance or an isolation boundary.
+**Status:** integrated Worker/Office slice. The domain/policy/transport
+library, development CLI, authenticated Core endpoint, durable Core audit,
+role-filtered Worker tool pack and Office diagnostics are implemented. No live
+MCP server call or independent acceptance is claimed, and this is not an
+isolation boundary.
 
 ## Why
 
@@ -12,23 +14,24 @@ Reviewer or Verifier creates tool sprawl, a second tool path and non-reproducibl
 evidence. The gateway keeps the useful capability and removes the bypass:
 
 ```text
-Worker / Reviewer / Verifier
-        │  typed gateway call
+Worker (Implementer)
+        │  authenticated gateway_call
         ▼
 Core Tool Gateway
   ├── curated catalog by role
   ├── argument bound / digest
   ├── per-role/tool rate limit
   ├── timeout and response bound
-  ├── audit (args digest, decision, latency, response size)
+  ├── SQLite audit bound to Worker/Attempt/generation
   └── MCP transport
         ├── HTTP  (Context7, GitHub read-only)
         └── stdio (Playwright MCP)
 ```
 
-MCP is an implementation detail behind the gateway. An agent never connects to a
-server directly. The Verifier has no gateway tools; its oracle remains the
-frozen candidate and checks.
+MCP is an implementation detail behind the gateway. A Worker never connects to a
+server directly. The current slice wires the Worker implementation path; the
+Reviewer and Verifier still have no gateway client, and the catalog rejects any
+Verifier grant. The Verifier's oracle remains the frozen candidate and checks.
 
 ## Catalog and roles
 
@@ -70,6 +73,14 @@ export GITHUB_MCP_TOKEN=...
 
 The gateway is **disabled** when `FACTORY_TOOL_GATEWAY_CONFIG` is unset. This is
 intentional: a missing MCP server must not silently become a different tool path.
+Model-backed intake adds `gateway_call` to the Campaign tool grant only when the
+gateway is configured; a direct Campaign authorization may request it
+explicitly. If a Campaign authorizes `gateway_call` but Core has no gateway, the
+claim fails closed instead of silently dropping the tool.
+
+The stdio child receives only the configured `env`. A deployment that runs
+Playwright MCP must supply its runtime `PATH`, `HOME` and
+`PLAYWRIGHT_BROWSERS_PATH`; secrets do not belong in that map.
 
 ## Development CLI
 
@@ -83,14 +94,26 @@ not the installed runtime and not authority.
 
 ## Policy and audit
 
-- Tool list is filtered by role before the model sees it (next Worker slice).
+- The Worker receives only the Implementer-filtered catalog in
+  `WorkerAssignment.gatewayTools`; the full catalog is never exposed to the
+  model or the Worker.
+- `gateway_call` is an authorizable provider tool. Core resolves the Worker
+  role as Implementer and binds the request to the Worker session, live
+  Attempt lease and generation.
 - Arguments are bounded and hashed; raw arguments are not written to audit.
-- The audit record contains role, tool, argument digest, decision, latency,
-  response bytes and error class.
-- The current audit log is bounded and in-memory. Durable audit/Office projection
-  is part of the next slice.
-- A transport error is returned to the caller and recorded; it is never a silent
-  `PASS`.
+- Every ALLOW/DENY is persisted in `tool_gateway_calls` with the argument
+  digest, decision, latency, response bytes, error class and exact
+  Worker/Attempt/generation binding. The in-memory log remains a bounded local
+  diagnostic view.
+- `GET /tool_gateway/status` is operator-authenticated and returns the catalog
+  plus recent durable calls. It never returns MCP endpoints, credentials or raw
+  arguments.
+- A transport error is returned to the caller and recorded; it is never a
+  silent `PASS`.
+- Audit persistence happens after the gateway decision and before the Worker
+  response. A persistence failure returns `500`, so a transport retry may repeat
+  a tool call. The current catalog contains read-only inspection and
+  browser-close operations; it has no arbitrary effectful MCP tool.
 
 ## Transport bounds
 
@@ -121,17 +144,27 @@ servers directly to agents:
 - [BRACE MCP gateway](https://braceframework.org/guides/mcp-gateway/) — registry, role filtering, fingerprint, budget and fail-closed call path.
 - [OWASP MCP Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/MCP_Security_Cheat_Sheet.html) — tool poisoning, rug pull, confused deputy, schema validation, isolation.
 
+## Worker and Office integration
+
+- `POST /worker/tool_gateway` accepts `workerId`, `attemptId`, `generation`,
+  `tool` and `arguments`; it requires the Worker session token, a live
+  TRUSTED_LOCAL_PROVIDER lease bound to the exact Attempt, and a Campaign grant
+  that explicitly includes `gateway_call`.
+- `gateway_call` is part of the compiled provider tool pack. The OpenCode tool
+  loop and the Codex dynamic-tool path both route it through the same Core
+  endpoint; `write_file`/`run_command` frozen-check semantics are unchanged.
+- Office Runtime → Diagnostics shows the enabled/disabled state, the
+  role-filtered catalog, read-only policy and recent durable call decisions.
+
 ## Next slice
 
-1. Persist the catalog/policy and audit in Core; expose health/diagnostics in
-   Office.
-2. Add an authenticated `/worker/tool_gateway` operation with worker session,
-   attempt, candidate and role binding.
-3. Add `gateway_call` to the compiled provider tool pack; keep `write_file`/
-   `run_command` frozen-check semantics unchanged.
-   The first browser slice should expose inspection only until a controlled
-   navigation/network boundary is tested with real browser evidence.
-4. Filter the tool list per role before the prompt; do not expose the full
-   catalog.
-5. Add replay cassettes for gateway calls so a browser/docs defect can become a
-   deterministic test.
+1. Wire the read-only Reviewer path to the same gateway with Reviewer-only
+   catalog filtering; keep the Verifier without gateway tools.
+2. Add replay cassettes and deterministic MCP fixtures for docs, GitHub and
+   browser inspection so a provider defect can be reproduced without a live
+   server.
+3. Add a controlled browser navigation/network boundary before exposing
+   navigation, click or type.
+4. Exercise live Context7, GitHub read-only and Playwright MCP calls in the
+   canonical container topology, including the stdio environment contract.
+5. Obtain independent browser and security review for the Worker/Office path.

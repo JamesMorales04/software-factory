@@ -64,6 +64,8 @@ pub enum ProviderAction {
         argv: Vec<String>,
         #[serde(default = "default_command_timeout")]
         timeout_secs: u64,
+        #[serde(default)]
+        arguments: Value,
     },
     Final {
         #[serde(default)]
@@ -331,6 +333,7 @@ mod tests {
                 content: String::new(),
                 argv: vec!["cargo".into(), "test".into()],
                 timeout_secs: 30,
+                arguments: Value::Null,
             }
         );
         let final_action =

@@ -55,6 +55,7 @@ struct App {
     lead_fixture_assessor: bool,
     lead_autonomous_start: bool,
     model_gateway: Option<factory_native::model_gateway::ModelGateway>,
+    tool_gateway: Option<factory_native::tool_gateway::ToolGateway>,
     master_key: Option<factory_native::provider_secrets::ProviderSecretKey>,
     github: factory_native::github::GitHubClient,
     github_sync: tokio::sync::Mutex<()>,
@@ -884,6 +885,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         lead_autonomous_start: env::var("FACTORY_ENABLE_AUTONOMOUS_START").ok().as_deref()
             == Some("1"),
         model_gateway: model_gateway_from_env()?,
+        tool_gateway: tool_gateway_from_env()?,
         master_key,
         github: factory_native::github::GitHubClient::from_env()?,
         github_sync: tokio::sync::Mutex::new(()),
@@ -1283,6 +1285,7 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/attempts", get(attempts))
         .route("/events", get(events))
         .route("/observability", get(observability_status))
+        .route("/tool_gateway/status", get(tool_gateway_status))
         .route("/provider/sessions", get(provider_sessions))
         .route("/model/calls/unresolved", get(unresolved_model_calls))
         .route("/model/calls", get(model_calls))
@@ -1597,6 +1600,7 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/attempts", get(attempts))
         .route("/events", get(events))
         .route("/observability", get(observability_status))
+        .route("/tool_gateway/status", get(tool_gateway_status))
         .route("/worker/register", post(register_worker))
         .route("/worker/claim", post(worker_claim))
         .route(
@@ -1621,6 +1625,7 @@ fn api_router(app: Arc<App>) -> Router {
             "/worker/provider_tool_event",
             post(worker_provider_tool_event),
         )
+        .route("/worker/tool_gateway", post(worker_tool_gateway))
         .route("/worker/provider_state", post(worker_provider_state))
         .route(
             "/worker/provider_turn_authorize",
@@ -1924,6 +1929,15 @@ impl App {
                 }),
         }
     }
+}
+
+fn tool_gateway_from_env()
+-> Result<Option<factory_native::tool_gateway::ToolGateway>, Box<dyn std::error::Error>> {
+    factory_native::tool_gateway::ToolGateway::from_env().map_err(
+        |error| -> Box<dyn std::error::Error> {
+            format!("tool gateway configuration is invalid: {error}").into()
+        },
+    )
 }
 
 fn model_gateway_from_env()
@@ -6675,9 +6689,13 @@ fn intake_execution_mode(mechanism: &str) -> &'static str {
     }
 }
 
-fn intake_allowed_tools(mechanism: &str) -> Vec<String> {
+fn intake_allowed_tools(mechanism: &str, gateway_enabled: bool) -> Vec<String> {
     if mechanism == "MODEL" {
-        vec!["run_command".into(), "write_file".into()]
+        let mut tools = vec!["run_command".into(), "write_file".into()];
+        if gateway_enabled {
+            tools.push("gateway_call".into());
+        }
+        tools
     } else {
         Vec::new()
     }
@@ -6859,11 +6877,14 @@ async fn inference_spending_value(app: &App, request_id: &str) -> Result<Value, 
     }))
 }
 
-fn decision_permissions_from_intake(context: &factory_native::db::IntakeApprovalContext) -> Value {
+fn decision_permissions_from_intake(
+    context: &factory_native::db::IntakeApprovalContext,
+    gateway_enabled: bool,
+) -> Value {
     json!({
         "execution_mode": intake_execution_mode(&context.mechanism),
         "allowed_paths": context.action_spec.allowed_paths,
-        "allowed_tools": intake_allowed_tools(&context.mechanism),
+        "allowed_tools": intake_allowed_tools(&context.mechanism, gateway_enabled),
         "delegation_id": context.grant.id,
         "route": {
             "provider": context.profile.roles.implementer.provider,
@@ -6998,7 +7019,9 @@ impl<'a> DecisionProjection<'a> {
                 .unwrap_or(Value::Null);
             let permissions = context
                 .as_ref()
-                .map(decision_permissions_from_intake)
+                .map(|context| {
+                    decision_permissions_from_intake(context, self.app.tool_gateway.is_some())
+                })
                 .or_else(|| proposal.as_ref().map(decision_permissions_from_proposal))
                 .unwrap_or(Value::Null);
             let change = proposal
@@ -8744,6 +8767,29 @@ async fn observability_status(State(app): State<Arc<App>>, headers: HeaderMap) -
     }
     Json(app.observability.status()).into_response()
 }
+async fn tool_gateway_status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let status = app
+        .tool_gateway
+        .as_ref()
+        .map(factory_native::tool_gateway::ToolGateway::status)
+        .unwrap_or_else(factory_native::tool_gateway::GatewayStatus::disabled);
+    let recent = match app.db.recent_tool_gateway_calls(50).await {
+        Ok(recent) => recent,
+        Err(error) => return api_error(error),
+    };
+    Json(json!({
+        "enabled": status.enabled,
+        "servers": status.servers,
+        "tools": status.tools,
+        "maxCallsPerMinute": status.max_calls_per_minute,
+        "recentCalls": recent,
+    }))
+    .into_response()
+}
+
 async fn register_worker(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -8782,14 +8828,30 @@ async fn worker_claim(
         )
         .await
     {
-        Ok(Some(mut assignment)) => match sign_assignment_grant(&app, &mut assignment) {
-            Ok(()) => Json(json!({
-                "dispatch_supported": true,
-                "assignment": assignment
-            }))
-            .into_response(),
-            Err(error) => api_error(error),
-        },
+        Ok(Some(mut assignment)) => {
+            if assignment
+                .allowed_tools
+                .iter()
+                .any(|tool| tool == "gateway_call")
+            {
+                let Some(gateway) = app.tool_gateway.as_ref() else {
+                    return api_error(Error::Unavailable(
+                        "Campaign authorizes gateway_call but the tool gateway is not configured"
+                            .into(),
+                    ));
+                };
+                assignment.gateway_tools =
+                    gateway.tools_for_role(factory_native::tool_gateway::GatewayRole::Implementer);
+            }
+            match sign_assignment_grant(&app, &mut assignment) {
+                Ok(()) => Json(json!({
+                    "dispatch_supported": true,
+                    "assignment": assignment
+                }))
+                .into_response(),
+                Err(error) => api_error(error),
+            }
+        }
         Ok(None) => Json(json!({
             "dispatch_supported": true,
             "assignment": null
@@ -9139,6 +9201,96 @@ async fn worker_provider_tool_event(
         Ok(record) => (StatusCode::CREATED, Json(record)).into_response(),
         Err(error) => api_error(error),
     }
+}
+
+async fn worker_tool_gateway(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<factory_native::tool_gateway::WorkerToolGatewayRequest>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let allowed_tools = match app
+        .db
+        .assigned_provider_tools(
+            &input.worker_id,
+            &input.attempt_id,
+            input.generation,
+            now_ms,
+        )
+        .await
+    {
+        Ok(allowed_tools) => allowed_tools,
+        Err(error) => return api_error(error),
+    };
+    if !allowed_tools.iter().any(|tool| tool == "gateway_call") {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(gateway) = app.tool_gateway.as_ref() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let report = gateway
+        .call_audited(
+            factory_native::tool_gateway::GatewayRole::Implementer,
+            &input.tool,
+            input.arguments,
+        )
+        .await;
+    if let Err(error) = app
+        .db
+        .record_tool_gateway_call(
+            &input.worker_id,
+            &input.attempt_id,
+            input.generation,
+            &report.audit,
+        )
+        .await
+    {
+        tracing::error!(%error, "tool gateway audit persistence failed");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    match report.outcome {
+        Ok(outcome) => Json(factory_native::tool_gateway::WorkerToolGatewayResponse {
+            tool: outcome.tool,
+            content: outcome.content,
+        })
+        .into_response(),
+        Err(error) => gateway_error_response(error),
+    }
+}
+
+fn gateway_error_response(error: factory_native::tool_gateway::GatewayError) -> Response {
+    use factory_native::tool_gateway::GatewayError;
+    let (status, message) = match error {
+        GatewayError::NotConfigured => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "tool gateway is not configured",
+        ),
+        GatewayError::UnknownTool(_) | GatewayError::Denied { .. } => {
+            (StatusCode::FORBIDDEN, "tool gateway denied the call")
+        }
+        GatewayError::InvalidArguments(_) => {
+            (StatusCode::BAD_REQUEST, "tool arguments are invalid")
+        }
+        GatewayError::RateLimited(_) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "tool gateway rate limit exceeded",
+        ),
+        GatewayError::ResponseTooLarge => (
+            StatusCode::BAD_GATEWAY,
+            "tool gateway response exceeded the bound",
+        ),
+        GatewayError::Transport(_) | GatewayError::InvalidResponse(_) => {
+            (StatusCode::BAD_GATEWAY, "tool gateway transport failed")
+        }
+        GatewayError::Config(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "tool gateway configuration error",
+        ),
+    };
+    (status, Json(json!({"error": message}))).into_response()
 }
 
 async fn worker_provider_cleanup(
@@ -10630,10 +10782,11 @@ fn build_intake_authorization(
     principal_id: &str,
     rationale: &str,
     monetary_envelope_id: &str,
+    gateway_enabled: bool,
 ) -> NewCampaignAuthorization {
     let route = &context.profile.roles.implementer;
     let execution_mode = intake_execution_mode(&context.mechanism);
-    let allowed_tools = intake_allowed_tools(&context.mechanism);
+    let allowed_tools = intake_allowed_tools(&context.mechanism, gateway_enabled);
     NewCampaignAuthorization {
         authorization_id: format!("intake-{}", context.intake.id),
         risk_class: "R0".into(),
@@ -17942,6 +18095,7 @@ async fn autonomous_start_intake(app: &Arc<App>, id: &str) -> Result<(), Error> 
         "lead-autopilot",
         "Autonomous R0 start under the owner-granted execution policy",
         factory_native::db::NO_BILLABLE_ENVELOPE,
+        app.tool_gateway.is_some(),
     );
     let expected = factory_native::db::ExpectedStartBinding::new(
         &context.lead.request_hash,
@@ -18981,6 +19135,7 @@ async fn approve_intake_request(
         &principal_id,
         &input.rationale,
         &monetary_envelope_id,
+        app.tool_gateway.is_some(),
     );
     let idempotency_key = input
         .idempotency_key
@@ -20461,6 +20616,7 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            tool_gateway: None,
             master_key: None,
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),
@@ -20562,6 +20718,7 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            tool_gateway: None,
             master_key: None,
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),
@@ -20779,6 +20936,7 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            tool_gateway: None,
             master_key: Some(master_key),
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),
@@ -20975,6 +21133,7 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            tool_gateway: None,
             master_key: None,
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),
@@ -21212,6 +21371,7 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            tool_gateway: None,
             master_key: None,
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),
@@ -21293,6 +21453,7 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start,
             model_gateway: None,
+            tool_gateway: None,
             master_key,
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),
@@ -21344,6 +21505,7 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            tool_gateway: None,
             master_key: None,
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),
@@ -22335,6 +22497,125 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_gateway_status_requires_operator_and_reports_disabled() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-tool-gateway-status-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let router = build_router(test_app(&path).await);
+        for bearer in [
+            None,
+            Some("Bearer wrong-token"),
+            Some("Bearer bootstrap-bootstrap-bootstrap-1234"),
+        ] {
+            let mut request = axum::http::Request::builder().uri("/tool_gateway/status");
+            if let Some(bearer) = bearer {
+                request = request.header("authorization", bearer);
+            }
+            assert_eq!(
+                router
+                    .clone()
+                    .oneshot(request.body(axum::body::Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::UNAUTHORIZED,
+                "{bearer:?}"
+            );
+        }
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/tool_gateway/status")
+                    .header("authorization", "Bearer operator-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["enabled"], false);
+        assert_eq!(body["tools"], json!([]));
+        assert_eq!(body["recentCalls"], json!([]));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn worker_tool_gateway_requires_a_session_and_live_assignment() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-worker-tool-gateway-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&path).await;
+        app.db
+            .register_worker_session(
+                "worker-tools",
+                "registration-key",
+                "bootstrap-bootstrap-bootstrap-1234",
+                "session-token-0123456789abcdef0123456789abcdef",
+            )
+            .await
+            .expect("worker session");
+        let router = build_router(app);
+        let body = json!({
+            "workerId": "worker-tools",
+            "attemptId": "missing-attempt",
+            "generation": 1,
+            "tool": "context7.query-docs",
+            "arguments": {"query": "x"}
+        })
+        .to_string();
+        for bearer in [
+            None,
+            Some("Bearer wrong-token"),
+            Some("Bearer bootstrap-bootstrap-bootstrap-1234"),
+        ] {
+            let mut request = axum::http::Request::builder()
+                .method("POST")
+                .uri("/worker/tool_gateway")
+                .header("content-type", "application/json");
+            if let Some(bearer) = bearer {
+                request = request.header("authorization", bearer);
+            }
+            assert_eq!(
+                router
+                    .clone()
+                    .oneshot(request.body(axum::body::Body::from(body.clone())).unwrap())
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::UNAUTHORIZED,
+                "{bearer:?}"
+            );
+        }
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/worker/tool_gateway")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        "Bearer session-token-0123456789abcdef0123456789abcdef",
+                    )
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn participant_routes_require_operator_credentials_and_validate_filters() {
         use tower::ServiceExt;
         let path = std::env::temp_dir().join(format!(
@@ -22613,6 +22894,7 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            tool_gateway: None,
             master_key: None,
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),
@@ -22669,6 +22951,7 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            tool_gateway: None,
             master_key: None,
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),
@@ -22980,6 +23263,7 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            tool_gateway: None,
             master_key: None,
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),
@@ -23220,6 +23504,7 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            tool_gateway: None,
             master_key: None,
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),
@@ -24100,6 +24385,7 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            tool_gateway: None,
             master_key: None,
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),

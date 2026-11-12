@@ -21,6 +21,7 @@ import {
   type ModelCallRecord,
   type ObservabilityStatus,
   type ProviderSession,
+  type ToolGatewayStatus,
   type WorkerSummary,
 } from "../coreApi";
 import { shortId } from "../format";
@@ -94,6 +95,9 @@ export function Runtime() {
   const [unresolvedCalls, setUnresolvedCalls] = useState<ModelCallRecord[]>([]);
   const [observability, setObservability] =
     useState<ObservabilityStatus | null>(null);
+  const [toolGateway, setToolGateway] = useState<ToolGatewayStatus | null>(
+    null,
+  );
   const [settings, setSettings] = useState<FactorySettings | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [workers, setWorkers] = useState<WorkerSummary[]>([]);
@@ -124,6 +128,7 @@ export function Runtime() {
       unresolved,
       telemetry,
       runtimeSettings,
+      gatewayStatus,
     ] = await Promise.all([
       coreApi.health(),
       coreApi.listWorkers(),
@@ -132,6 +137,7 @@ export function Runtime() {
       coreApi.listUnresolvedModelCalls(),
       coreApi.getObservability(),
       coreApi.getRuntimeSettings(),
+      coreApi.getToolGatewayStatus(),
     ]);
     setHealth(nextHealth);
     setWorkers(nextWorkers);
@@ -140,6 +146,7 @@ export function Runtime() {
     setUnresolvedCalls(unresolved);
     setObservability(telemetry);
     setSettings(runtimeSettings);
+    setToolGateway(gatewayStatus);
     setLastLoadedAt(new Date().toISOString());
     setLoaded(true);
     setError(null);
@@ -777,6 +784,141 @@ export function Runtime() {
                 <p className="muted">{t("runtime.telemetry.note")}</p>
               </>
             )}
+          </Panel>
+          <Panel data-testid="tool-gateway-panel">
+            <div className="section-heading">
+              <h2>{t("runtime.toolGateway.title")}</h2>
+              <StatusBadge
+                status={toolGateway?.enabled ? "ENABLED" : "DISABLED"}
+              />
+            </div>
+            {toolGateway === null ? (
+              <p className="muted">{t("runtime.toolGateway.loading")}</p>
+            ) : !toolGateway.enabled ? (
+              <EmptyState
+                title={t("runtime.toolGateway.disabledTitle")}
+                description={t("runtime.toolGateway.disabledDescription")}
+              />
+            ) : (
+              <>
+                <dl className="detail">
+                  <dt>{t("runtime.toolGateway.servers")}</dt>
+                  <dd>
+                    {toolGateway.servers
+                      .map((server) => `${server.id} (${server.transport})`)
+                      .join(", ") || t("common.none")}
+                  </dd>
+                  <dt>{t("runtime.toolGateway.tools")}</dt>
+                  <dd>{formatNumber(toolGateway.tools.length)}</dd>
+                  <dt>{t("runtime.toolGateway.rate")}</dt>
+                  <dd>
+                    {t("runtime.toolGateway.callsPerMinute", {
+                      count: formatNumber(toolGateway.maxCallsPerMinute),
+                    })}
+                  </dd>
+                </dl>
+                <h3>{t("runtime.toolGateway.catalogTitle")}</h3>
+                {toolGateway.tools.length === 0 ? (
+                  <p className="muted">
+                    {t("runtime.toolGateway.catalogEmpty")}
+                  </p>
+                ) : (
+                  <section
+                    className="table-responsive"
+                    aria-label={t("runtime.toolGateway.catalogLabel")}
+                  >
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>{t("runtime.toolGateway.tool")}</th>
+                          <th>{t("runtime.toolGateway.policy")}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {toolGateway.tools.map((tool) => (
+                          <tr key={tool.id}>
+                            <td data-label={t("runtime.toolGateway.tool")}>
+                              <code>{tool.id}</code>
+                              <div className="muted">
+                                {tool.server} · {tool.hint}
+                              </div>
+                            </td>
+                            <td data-label={t("runtime.toolGateway.policy")}>
+                              {tool.readOnly
+                                ? t("runtime.toolGateway.readOnly")
+                                : t("runtime.toolGateway.mutating")}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </section>
+                )}
+              </>
+            )}
+            {toolGateway?.enabled && toolGateway.recentCalls.length === 0 && (
+              <p className="muted">{t("runtime.toolGateway.recentEmpty")}</p>
+            )}
+            {toolGateway && toolGateway.recentCalls.length > 0 && (
+              <>
+                <h3>{t("runtime.toolGateway.recentTitle")}</h3>
+                <section
+                  className="table-responsive"
+                  aria-label={t("runtime.toolGateway.recentLabel")}
+                >
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>{t("runtime.toolGateway.time")}</th>
+                        <th>{t("runtime.toolGateway.tool")}</th>
+                        <th>{t("runtime.toolGateway.decision")}</th>
+                        <th>{t("runtime.toolGateway.latency")}</th>
+                        <th>{t("runtime.toolGateway.bytes")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {toolGateway.recentCalls.map((call) => (
+                        <tr key={call.callId}>
+                          <td data-label={t("runtime.toolGateway.time")}>
+                            {formatDate(call.createdAt)}
+                            <div className="muted">
+                              {call.workerId} · gen{" "}
+                              {formatNumber(call.generation)}
+                            </div>
+                          </td>
+                          <td data-label={t("runtime.toolGateway.tool")}>
+                            <code>{call.tool}</code>
+                            <div className="muted">{call.role}</div>
+                            {call.error && (
+                              <div className="error">{call.error}</div>
+                            )}
+                          </td>
+                          <td data-label={t("runtime.toolGateway.decision")}>
+                            <StatusBadge
+                              status={
+                                call.decision === "ALLOW" ? "PASS" : "DENIED"
+                              }
+                              label={
+                                call.decision === "ALLOW"
+                                  ? t("runtime.toolGateway.allowed")
+                                  : t("runtime.toolGateway.denied")
+                              }
+                            />
+                          </td>
+                          <td data-label={t("runtime.toolGateway.latency")}>
+                            {formatNumber(call.durationMs)} ms
+                          </td>
+                          <td data-label={t("runtime.toolGateway.bytes")}>
+                            {formatNumber(call.responseBytes)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </section>
+              </>
+            )}
+            <p className="muted">{t("runtime.toolGateway.note")}</p>
           </Panel>
           <Panel>
             <div className="section-heading">

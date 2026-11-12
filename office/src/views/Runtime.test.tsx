@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   listUnresolvedModelCalls: vi.fn(),
   getObservability: vi.fn(),
   getRuntimeSettings: vi.fn(),
+  getToolGatewayStatus: vi.fn(),
   resolveModelCall: vi.fn(),
 }));
 
@@ -91,6 +92,13 @@ describe("Runtime", () => {
       semanticReviewEnabled: false,
       updatedAt: "2026-10-27T10:00:00Z",
     });
+    mocks.getToolGatewayStatus.mockReset().mockResolvedValue({
+      enabled: false,
+      servers: [],
+      tools: [],
+      maxCallsPerMinute: 0,
+      recentCalls: [],
+    });
     mocks.resolveModelCall.mockReset().mockResolvedValue(undefined);
   });
 
@@ -127,6 +135,54 @@ describe("Runtime", () => {
       screen.getByRole("link", { name: "Abrir llamadas a modelos" }),
     ).toBeDefined();
     expect(document.documentElement.lang).toBe("es");
+  });
+
+  it("shows a configured MCP gateway catalog and durable recent calls", async () => {
+    mocks.getToolGatewayStatus.mockResolvedValue({
+      enabled: true,
+      servers: [{ id: "context7", transport: "http" }],
+      tools: [
+        {
+          id: "context7.query-docs",
+          server: "context7",
+          readOnly: true,
+          hint: '{"query": string}',
+        },
+      ],
+      maxCallsPerMinute: 60,
+      recentCalls: [
+        {
+          callId: "call-1",
+          workerId: "worker-1",
+          attemptId: "attempt-1",
+          generation: 1,
+          role: "IMPLEMENTER",
+          tool: "context7.query-docs",
+          argsSha256: "a".repeat(64),
+          decision: "ALLOW",
+          responseBytes: 128,
+          durationMs: 12,
+          error: null,
+          createdAt: "2026-10-27T10:00:00Z",
+        },
+      ],
+    });
+    renderRuntime("/runtime?tab=diagnostics");
+    await screen.findByRole("heading", { name: "MCP tool gateway" });
+    expect(screen.getAllByText("context7.query-docs").length).toBeGreaterThan(
+      0,
+    );
+    expect(screen.getByText("Read-only")).toBeDefined();
+    expect(screen.getByText("Allowed")).toBeDefined();
+    expect(screen.getByText("worker-1 · gen 1")).toBeDefined();
+  });
+
+  it("explains when the MCP gateway is not configured", async () => {
+    renderRuntime("/runtime?tab=diagnostics");
+    await screen.findByRole("heading", { name: "MCP tool gateway" });
+    expect(
+      screen.getByText("MCP tool gateway is not configured"),
+    ).toBeDefined();
   });
 
   it("deep-links directly to Diagnostics", async () => {
