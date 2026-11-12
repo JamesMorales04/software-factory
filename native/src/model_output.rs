@@ -484,12 +484,18 @@ mod tests {
             serde_json::json!(1)
         );
 
+        let required = schema["required"].as_array().unwrap();
+        assert!(
+            required.iter().any(|value| value == "environmentProposal"),
+            "the greenfield stack schema must require a concrete environment proposal"
+        );
+
         let selection = StackSelectionModel {
             option_id: "python-service".into(),
             language: "python".into(),
             framework: "fastapi".into(),
             rationale: "A calculator is a compact, testable Python service.".into(),
-            environment_proposal: Some(EnvironmentProposal {
+            environment_proposal: EnvironmentProposal {
                 nixpkgs: Some(
                     "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
                 ),
@@ -510,7 +516,7 @@ mod tests {
                     attribution: "Python is MIT licensed.".into(),
                 }],
                 ..EnvironmentProposal::default()
-            }),
+            },
         };
         let raw = serde_json::to_vec(&selection).unwrap();
         let decoded = decode_stack_selection(&raw).unwrap();

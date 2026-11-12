@@ -160,7 +160,9 @@ Rules:
   area; the untrusted content is not executed during planning.
 - For a greenfield request the Lead planning model may carry a bounded,
   untrusted `EnvironmentProposal` (exact nixpkgs pin or omitted builder default,
-  toolchains, nixpkgs packages with SPDX licences and argv commands). It fills
+  toolchains, nixpkgs packages with SPDX licences and argv commands). A
+  greenfield stack selection must include a concrete proposal; a missing or
+  empty one is `STACK_ENVIRONMENT_REQUIRED`. It fills
   only missing fields after explicit request constraints and committed
   conventions; it never enables `allowUnfree`, chooses a language by default,
   grants capabilities or bypasses Core validation and the Lead review.
@@ -191,6 +193,20 @@ Rules:
   `MODEL` stack decision. Unknown, empty or unauthorized selections fail closed
   with a typed `STACK_SELECTION_*` planning failure. The selected stack profile
   drives the architecture, skill and Definition of Done artifacts.
+- An authenticated operator may explicitly recompile the plan
+  (`POST /agentic/requests/{id}/plan/recompile`) or the environment
+  (`POST /agentic/requests/{id}/environment/recompile`) with an 8–2000
+  character rationale. Recompile is refused with a typed conflict when a
+  Campaign, run, attempt or authored specification is bound, or when the latest
+  plan review is `REJECTED`/`CHANGES_REQUESTED`; it is allowed for a
+  `BLOCKED`/`CORE_VALIDATED`/`FROZEN` environment only while execution is
+  unbound, including replacing an empty frozen environment before execution.
+  It creates a new immutable revision and never mutates the previous plan,
+  environment or spec rows. The audit event records the actor, rationale,
+  previous status/revision/spec hash and new revision/status. The new
+  environment requires Lead review again; no previous approval is carried
+  forward, and a still-blocked recompile returns the new blocked plan instead
+  of a 500.
 
 ## 5. Lead approval and Core freeze
 

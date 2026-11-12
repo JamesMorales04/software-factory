@@ -1284,6 +1284,17 @@ export function Director() {
                 <EnvironmentPanel
                   environment={detail.environment ?? null}
                   requestId={activeId}
+                  executionBound={Boolean(detail.lead.campaignId)}
+                  onEnvironmentUpdated={(next) =>
+                    setDetail((current) =>
+                      current ? { ...current, environment: next } : current,
+                    )
+                  }
+                  onPlanRecompiled={() => {
+                    void coreApi
+                      .getAgenticRequest(activeId)
+                      .then((next) => setDetail(next));
+                  }}
                 />
 
                 <Panel>

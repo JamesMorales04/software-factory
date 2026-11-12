@@ -550,6 +550,29 @@ export const es: Catalog = {
   "environment.blockers.title": "Bloqueos del entorno",
   "environment.constraints.action":
     "Añade restricciones explícitas de entorno (nixpkgs, paquetes, servicios, navegadores o recursos) a una nueva solicitud, o confirma un entorno de proyecto fijado.",
+  "environment.recompile.title": "Recompilar plan o entorno",
+  "environment.recompile.description":
+    "Crea una nueva revisión inmutable antes de que se vincule la ejecución. Las filas anteriores del plan, entorno y especificación no cambian; el nuevo entorno debe ser revisado de nuevo por el Lead.",
+  "environment.recompile.rationaleLabel": "Justificación del operador",
+  "environment.recompile.rationalePlaceholder":
+    "¿Por qué se requiere una nueva revisión?",
+  "environment.recompile.rationaleHelp":
+    "8–2000 caracteres. La justificación y las revisiones anterior/nueva se registran en la auditoría.",
+  "environment.recompile.planAction": "Recompilar plan",
+  "environment.recompile.environmentAction": "Recompilar entorno",
+  "environment.recompile.planHelp":
+    "Vuelve a ejecutar la selección de stack y recompila el plan, entorno, skills y DoD desde el WorkGraph guardado. No puede sustituir en silencio una especificación vinculada ni una Campaign en ejecución.",
+  "environment.recompile.environmentHelp":
+    "Recompila solo el entorno desde la propuesta de stack y las restricciones registradas. Los artefactos del plan no cambian.",
+  "environment.recompile.auditNote":
+    "Es una acción explícita del operador, no un reintento automático. Registra el estado/revisión/hash de especificación anterior y el actor.",
+  "environment.recompile.bound":
+    "Ya hay una Campaign o una especificación vinculada a esta solicitud. La recompilación se oculta porque no puede sustituir un entorno en ejecución ni una decisión del propietario.",
+  "environment.recompile.planSuccess":
+    "Se compiló una nueva revisión del plan. Revísala antes de ejecutar.",
+  "environment.recompile.environmentSuccess":
+    "Se compiló una nueva revisión del entorno. Requiere revisión del Lead antes de ejecutar.",
+  "environment.recompile.error": "La recompilación falló.",
   "environment.yes": "Sí",
   "environment.no": "No",
   "environment.detection.title": "Evidencia de detección",

@@ -7,6 +7,8 @@ import { EnvironmentPanel } from "./EnvironmentPanel";
 
 const mocks = vi.hoisted(() => ({
   reviewAgenticEnvironment: vi.fn(),
+  recompileAgenticEnvironment: vi.fn(),
+  recompileAgenticPlan: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -175,10 +177,17 @@ function state(
   };
 }
 
-function renderPanel(environment: EnvironmentStateView | null) {
+function renderPanel(
+  environment: EnvironmentStateView | null,
+  executionBound = false,
+) {
   return render(
     <I18nProvider initialLocale="en">
-      <EnvironmentPanel environment={environment} requestId="request-1" />
+      <EnvironmentPanel
+        environment={environment}
+        requestId="request-1"
+        executionBound={executionBound}
+      />
     </I18nProvider>,
   );
 }
@@ -188,6 +197,8 @@ describe("EnvironmentPanel", () => {
     localStorage.clear();
     document.documentElement.lang = "en";
     mocks.reviewAgenticEnvironment.mockReset();
+    mocks.recompileAgenticEnvironment.mockReset();
+    mocks.recompileAgenticPlan.mockReset();
   });
 
   it("shows a truthful empty state when no plan exists", () => {
@@ -388,6 +399,105 @@ describe("EnvironmentPanel", () => {
       screen.getByText("No successful build receipt recorded"),
     ).toBeTruthy();
     expect(screen.getByText("a".repeat(64))).toBeTruthy();
-    expect(screen.getByText(/A frozen spec is immutable/)).toBeTruthy();
+  it("recompiles a blocked environment only with an explicit rationale", async () => {
+    const user = userEvent.setup();
+    mocks.recompileAgenticEnvironment.mockResolvedValue(
+      state({ status: "CORE_VALIDATED" }),
+    );
+    renderPanel(
+      state({
+        status: "BLOCKED",
+        blockers: [{ code: "ENVIRONMENT_PIN_MISSING", message: "stale builder" }],
+      }),
+    );
+    const trigger = screen.getByRole("button", {
+      name: "Recompile environment",
+    });
+    expect((trigger as HTMLButtonElement).disabled).toBe(true);
+    await user.type(
+      screen.getByLabelText("Operator rationale"),
+      "Retry after the builder fix.",
+    );
+    expect((trigger as HTMLButtonElement).disabled).toBe(false);
+    await user.click(trigger);
+    await waitFor(() =>
+      expect(mocks.recompileAgenticEnvironment).toHaveBeenCalledWith(
+        "request-1",
+        { rationale: "Retry after the builder fix." },
+      ),
+    );
+    expect(
+      await screen.findByText(
+        "A new environment revision was compiled. It requires Lead review before execution.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("recompiles an empty frozen environment from the plan action", async () => {
+    const user = userEvent.setup();
+    const empty = state({
+      status: "FROZEN",
+      plan: {
+        ...plan,
+        toolchains: [],
+        packages: [],
+        commands: {},
+      },
+      planRevision: 1,
+    });
+    mocks.recompileAgenticPlan.mockResolvedValue({
+      plan: { requestId: "request-1" },
+      graph: null,
+      review: null,
+      artifacts: [],
+      environment: state({ status: "CORE_VALIDATED", planRevision: 2 }),
+      recompiled: true,
+      previousRevision: 1,
+      revision: 2,
+    });
+    renderPanel(empty);
+    await user.type(
+      screen.getByLabelText("Operator rationale"),
+      "The selected stack requires a Python environment.",
+    );
+    await user.click(screen.getByRole("button", { name: "Recompile plan" }));
+    await waitFor(() =>
+      expect(mocks.recompileAgenticPlan).toHaveBeenCalledWith("request-1", {
+        rationale: "The selected stack requires a Python environment.",
+      }),
+    );
+    expect(
+      await screen.findByText(
+        "A new plan revision was compiled. Review it before execution.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("hides recompile when a Campaign is bound", () => {
+    renderPanel(state({ status: "BLOCKED" }), true);
+    expect(
+      screen.queryByRole("button", { name: "Recompile environment" }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Recompile plan" })).toBeNull();
+    expect(
+      screen.getByText(/A Campaign or authored specification is already bound/),
+    ).toBeTruthy();
+  });
+
+  it("shows a recompile error without losing the environment", async () => {
+    const user = userEvent.setup();
+    mocks.recompileAgenticEnvironment.mockRejectedValue("builder unavailable");
+    renderPanel(state({ status: "BLOCKED" }));
+    await user.type(
+      screen.getByLabelText("Operator rationale"),
+      "Retry the blocked environment.",
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Recompile environment" }),
+    );
+    expect(
+      await screen.findByText("The recompile failed."),
+    ).toBeTruthy();
+    expect(screen.getByText(plan.planSha256)).toBeTruthy();
   });
 });

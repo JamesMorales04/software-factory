@@ -786,6 +786,7 @@ export function CampaignDetail() {
               <EnvironmentPanel
                 environment={detail.environment ?? null}
                 requestId={detail.environment?.plan?.requestId}
+                executionBound
               />
             </TabPanel>
           )}

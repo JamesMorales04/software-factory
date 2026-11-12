@@ -539,6 +539,29 @@ export const en = {
   "environment.blockers.title": "Environment blockers",
   "environment.constraints.action":
     "Add explicit environment constraints (nixpkgs, packages, services, browsers or resources) to a new request, or commit a pinned project environment.",
+  "environment.recompile.title": "Recompile plan or environment",
+  "environment.recompile.description":
+    "Create a new immutable revision before execution is bound. The previous plan, environment and spec rows remain unchanged; the new environment must be reviewed by the Lead again.",
+  "environment.recompile.rationaleLabel": "Operator rationale",
+  "environment.recompile.rationalePlaceholder":
+    "Why is a new revision required?",
+  "environment.recompile.rationaleHelp":
+    "8–2000 characters. The rationale and previous/new revisions are recorded in the audit log.",
+  "environment.recompile.planAction": "Recompile plan",
+  "environment.recompile.environmentAction": "Recompile environment",
+  "environment.recompile.planHelp":
+    "Re-runs stack selection and recompiles the plan, environment, skills and DoD from the stored WorkGraph. It cannot silently replace a bound specification or executing Campaign.",
+  "environment.recompile.environmentHelp":
+    "Recompiles only the environment from the current recorded stack proposal and request constraints. The plan artifacts remain unchanged.",
+  "environment.recompile.auditNote":
+    "This is an explicit operator action, not an automatic retry. It records the prior status/revision/spec hash and the actor.",
+  "environment.recompile.bound":
+    "A Campaign or authored specification is already bound to this request. Recompile is hidden because it cannot replace an executing environment or an owner decision.",
+  "environment.recompile.planSuccess":
+    "A new plan revision was compiled. Review it before execution.",
+  "environment.recompile.environmentSuccess":
+    "A new environment revision was compiled. It requires Lead review before execution.",
+  "environment.recompile.error": "The recompile failed.",
   "environment.yes": "Yes",
   "environment.no": "No",
   "environment.detection.title": "Detection evidence",

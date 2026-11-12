@@ -832,6 +832,9 @@ export function RequestWorkspace() {
           <EnvironmentPanel
             environment={data.environment ?? null}
             requestId={data.id}
+            executionBound={Boolean(data.campaignId || data.campaign)}
+            onEnvironmentUpdated={() => void load(true)}
+            onPlanRecompiled={() => void load(true)}
           />
           <RequestTrace requestId={data.id} />
 

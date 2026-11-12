@@ -235,7 +235,10 @@ silent fallback.
 
 An environment change is a stack change and follows the autonomy/risk policy in
 ADR-0039. A later environment revision never rewrites an already frozen spec or
-accepted evidence.
+accepted evidence. An authenticated operator may explicitly recompile a plan or
+environment with a bounded rationale only while execution is unbound; this
+creates a new immutable revision, audits the prior revision/spec hash and
+requires a fresh Lead review. A frozen environment is never mutated in place.
 
 ## Invariants
 

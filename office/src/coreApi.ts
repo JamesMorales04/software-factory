@@ -4380,6 +4380,25 @@ export const coreApi = {
       `/agentic/requests/${encodeURIComponent(id)}/environment/review`,
       { method: "POST", body: JSON.stringify(input) },
     ),
+  recompileAgenticEnvironment: (id: string, input: { rationale: string }) =>
+    request<EnvironmentStateView>(
+      `/agentic/requests/${encodeURIComponent(id)}/environment/recompile`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  recompileAgenticPlan: (id: string, input: { rationale: string }) =>
+    request<{
+      plan: PlanningArtifactRecord;
+      graph: AgenticWorkGraphRecord | null;
+      review: PlanReviewRecord | null;
+      artifacts: PlanningArtifactRecord[];
+      environment: EnvironmentStateView;
+      recompiled: boolean;
+      previousRevision: number;
+      revision: number;
+    }>(`/agentic/requests/${encodeURIComponent(id)}/plan/recompile`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   getRequestTrace: (id: string, limit?: number) => {
     const params = new URLSearchParams();
     if (limit !== undefined) params.set("limit", String(limit));

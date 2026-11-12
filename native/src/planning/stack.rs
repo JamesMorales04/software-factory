@@ -42,8 +42,9 @@ pub struct StackSelectionOption {
 /// Typed, untrusted stack-selection model output. `optionId` is the exact
 /// deterministic option; language and framework must agree with it. A model may
 /// also omit `optionId` and return a concrete language/framework that Core maps
-/// to exactly one option. The optional environment proposal is used only when
-/// the recorded Lead plan did not already carry one.
+/// to exactly one option. A greenfield selection must include a concrete
+/// environment proposal covering the selected language/framework; Core
+/// validates it with the existing environment compiler.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StackSelectionModel {
@@ -58,14 +59,15 @@ pub struct StackSelectionModel {
     /// characters so provider structured output advertises the exact policy.
     #[schemars(length(min = 1, max = MAX_SELECTION_RATIONALE_CHARS))]
     pub rationale: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment_proposal: Option<EnvironmentProposal>,
+    pub environment_proposal: EnvironmentProposal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StackSelectionError {
     #[error("the stack selection is empty or malformed: {0}")]
     Invalid(String),
+    #[error("the stack selection requires a concrete environment proposal: {0}")]
+    EnvironmentRequired(String),
     #[error("the stack selection {0:?} is not one of the deterministic options")]
     Unknown(String),
     #[error("the selected stack requires an unauthorized project capability: {0:?}")]
@@ -125,6 +127,27 @@ pub fn resolve_model_stack_selection(
     if !project_capabilities.contains(&selected.required_capability) {
         return Err(StackSelectionError::Unauthorized(
             selected.required_capability,
+        ));
+    }
+    selection
+        .environment_proposal
+        .validate()
+        .map_err(|error| StackSelectionError::Invalid(error.to_string()))?;
+    let proposal = &selection.environment_proposal;
+    if proposal.toolchains.is_empty() && proposal.packages.is_empty() {
+        return Err(StackSelectionError::EnvironmentRequired(
+            "the selection must name at least one toolchain or package".into(),
+        ));
+    }
+    if proposal.commands.is_empty() {
+        return Err(StackSelectionError::EnvironmentRequired(
+            "the selection must provide build/test/lint/format/typecheck/run commands".into(),
+        ));
+    }
+    if proposal.packages.iter().any(|package| package.unfree) {
+        return Err(StackSelectionError::EnvironmentRequired(
+            "a greenfield proposal cannot include an unfree package without an owner override"
+                .into(),
         ));
     }
     Ok(selected.clone())
@@ -492,6 +515,83 @@ mod tests {
         assert!(options.iter().any(|option| option.id == "python-service"));
     }
 
+    fn python_proposal() -> EnvironmentProposal {
+        use crate::planning::environment::{
+            CommandRequirement, PackageRequirement, ToolchainRequirement,
+        };
+        EnvironmentProposal {
+            toolchains: vec![ToolchainRequirement {
+                id: "python".into(),
+                version: "3.12.7".into(),
+                source: "stack-selection".into(),
+                evidence: vec!["selected python-service".into()],
+            }],
+            packages: vec![
+                PackageRequirement {
+                    name: "fastapi".into(),
+                    version: "0.115".into(),
+                    license: "MIT".into(),
+                    source: "nixpkgs".into(),
+                    attr: "python312Packages.fastapi".into(),
+                    sha256: String::new(),
+                    unfree: false,
+                    attribution: "FastAPI is MIT licensed.".into(),
+                },
+                PackageRequirement {
+                    name: "pytest".into(),
+                    version: "8".into(),
+                    license: "MIT".into(),
+                    source: "nixpkgs".into(),
+                    attr: "python312Packages.pytest".into(),
+                    sha256: String::new(),
+                    unfree: false,
+                    attribution: "pytest is MIT licensed.".into(),
+                },
+            ],
+            commands: std::collections::BTreeMap::from([(
+                "test".into(),
+                CommandRequirement {
+                    argv: vec!["python3".into(), "-m".into(), "pytest".into()],
+                    cwd: ".".into(),
+                    timeout_secs: 300,
+                    expect_exit: 0,
+                },
+            )]),
+            nixpkgs: Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into()),
+            ..EnvironmentProposal::default()
+        }
+    }
+
+    #[test]
+    fn greenfield_selection_requires_a_concrete_environment_proposal() {
+        let options = selection_options("Build a calculator application. You choose the stack.");
+        let missing = StackSelectionModel {
+            option_id: "python-service".into(),
+            language: "python".into(),
+            framework: "fastapi".into(),
+            rationale: "A small calculator is quickly testable as a Python service.".into(),
+            environment_proposal: EnvironmentProposal::default(),
+        };
+        assert!(matches!(
+            resolve_model_stack_selection(&options, &missing, &[Capability::GenericToolchain]),
+            Err(StackSelectionError::EnvironmentRequired(_))
+        ));
+
+        let mut no_commands = python_proposal();
+        no_commands.commands.clear();
+        let selection = StackSelectionModel {
+            option_id: "python-service".into(),
+            language: "python".into(),
+            framework: "fastapi".into(),
+            rationale: "A small calculator is quickly testable as a Python service.".into(),
+            environment_proposal: no_commands,
+        };
+        assert!(matches!(
+            resolve_model_stack_selection(&options, &selection, &[Capability::GenericToolchain]),
+            Err(StackSelectionError::EnvironmentRequired(_))
+        ));
+    }
+
     #[test]
     fn model_selection_resolves_an_exact_option_and_fails_closed() {
         let options = selection_options("Build a calculator application. You choose the stack.");
@@ -500,7 +600,7 @@ mod tests {
             language: "python".into(),
             framework: "fastapi".into(),
             rationale: "A small calculator is quickly testable as a Python service.".into(),
-            environment_proposal: None,
+            environment_proposal: python_proposal(),
         };
         let selected =
             resolve_model_stack_selection(&options, &selection, &[Capability::GenericToolchain])
@@ -512,7 +612,7 @@ mod tests {
             language: "go".into(),
             framework: "gin".into(),
             rationale: "A Go service is not in the deterministic catalog.".into(),
-            environment_proposal: None,
+            environment_proposal: python_proposal(),
         };
         assert!(matches!(
             resolve_model_stack_selection(&options, &unknown, &[Capability::GenericToolchain]),
@@ -524,7 +624,7 @@ mod tests {
             language: "python".into(),
             framework: "fastapi".into(),
             rationale: "A small calculator is quickly testable as a Python service.".into(),
-            environment_proposal: None,
+            environment_proposal: python_proposal(),
         };
         assert_eq!(
             resolve_model_stack_selection(&options, &unauthorized, &[Capability::RepositoryEdit])
@@ -537,7 +637,7 @@ mod tests {
             language: "rust".into(),
             framework: "axum".into(),
             rationale: "Mismatched fields must be rejected.".into(),
-            environment_proposal: None,
+            environment_proposal: python_proposal(),
         };
         assert!(matches!(
             resolve_model_stack_selection(&options, &mismatched, &[Capability::GenericToolchain]),
@@ -581,7 +681,7 @@ mod tests {
             language: "python".into(),
             framework: "fastapi".into(),
             rationale: "a".repeat(MAX_SELECTION_RATIONALE_CHARS),
-            environment_proposal: None,
+            environment_proposal: python_proposal(),
         };
         resolve_model_stack_selection(&options, &selection, &[Capability::GenericToolchain])
             .expect("a 500-character rationale is valid");

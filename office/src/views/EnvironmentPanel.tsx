@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Badge, type BadgeTone } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
+import { Textarea } from "../components/ui/Field";
 import { EmptyState, Panel } from "../components/ui/Surface";
 import {
   CoreApiError,
@@ -57,18 +58,32 @@ function errorMessage(cause: unknown, fallback: string): string {
 }
 
 export function EnvironmentPanel({
-  environment,
+  environment: environmentProp,
   requestId,
+  executionBound = false,
   onReviewed,
+  onEnvironmentUpdated,
+  onPlanRecompiled,
 }: {
   environment: EnvironmentStateView | null | undefined;
   requestId?: string;
+  executionBound?: boolean;
   onReviewed?: (next: EnvironmentStateView) => void;
+  onEnvironmentUpdated?: (next: EnvironmentStateView) => void;
+  onPlanRecompiled?: () => void;
 }) {
   const { t, formatDate } = useI18n();
-  const [busy, setBusy] = useState(false);
+  const [environment, setEnvironment] = useState(environmentProp);
+  const [busyAction, setBusyAction] = useState<
+    "review" | "environment" | "plan" | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [recompileRationale, setRecompileRationale] = useState("");
+
+  useEffect(() => {
+    setEnvironment(environmentProp);
+  }, [environmentProp]);
 
   const plan = environment?.plan ?? null;
   const leadApproval = environment?.leadApproval ?? null;
@@ -78,10 +93,27 @@ export function EnvironmentPanel({
     (environment?.status === "CORE_VALIDATED" ||
       environment?.status === "DRAFT") &&
     !leadApproval;
+  const environmentEmpty =
+    !plan || (plan.toolchains.length === 0 && plan.packages.length === 0);
+  const canRecompileEnvironment =
+    Boolean(requestId) &&
+    !executionBound &&
+    Boolean(plan) &&
+    (environment?.status === "BLOCKED" ||
+      environment?.status === "CORE_VALIDATED" ||
+      environment?.status === "FROZEN");
+  const canRecompilePlan =
+    Boolean(requestId) &&
+    !executionBound &&
+    (environmentEmpty ||
+      environment?.status === "BLOCKED" ||
+      environment?.status === "MISSING" ||
+      !environment);
+  const recompileReady = recompileRationale.trim().length >= 8;
 
   async function triggerReview() {
     if (!requestId || !plan) return;
-    setBusy(true);
+    setBusyAction("review");
     setError(null);
     setNotice(null);
     try {
@@ -89,13 +121,113 @@ export function EnvironmentPanel({
         planSha256: plan.planSha256,
         planRevision: plan.revision,
       });
+      setEnvironment(next);
       setNotice(t("environment.review.success"));
       onReviewed?.(next);
+      onEnvironmentUpdated?.(next);
     } catch (cause) {
       setError(errorMessage(cause, t("environment.review.error")));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
+  }
+
+  async function triggerEnvironmentRecompile() {
+    if (!requestId) return;
+    setBusyAction("environment");
+    setError(null);
+    setNotice(null);
+    try {
+      const next = await coreApi.recompileAgenticEnvironment(requestId, {
+        rationale: recompileRationale.trim(),
+      });
+      setEnvironment(next);
+      setNotice(t("environment.recompile.environmentSuccess"));
+      onEnvironmentUpdated?.(next);
+    } catch (cause) {
+      setError(errorMessage(cause, t("environment.recompile.error")));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function triggerPlanRecompile() {
+    if (!requestId) return;
+    setBusyAction("plan");
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await coreApi.recompileAgenticPlan(requestId, {
+        rationale: recompileRationale.trim(),
+      });
+      setEnvironment(result.environment);
+      setNotice(t("environment.recompile.planSuccess"));
+      onEnvironmentUpdated?.(result.environment);
+      onPlanRecompiled?.();
+    } catch (cause) {
+      setError(errorMessage(cause, t("environment.recompile.error")));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function renderRecompileSection() {
+    if (!requestId) return null;
+    if (!executionBound && !canRecompilePlan && !canRecompileEnvironment) {
+      return null;
+    }
+    return (
+      <div className="environment-recompile">
+        <h3 className="environment-heading">
+          {t("environment.recompile.title")}
+        </h3>
+        <p className="muted">{t("environment.recompile.description")}</p>
+        {executionBound ? (
+          <p className="ui-callout ui-callout--attention">
+            {t("environment.recompile.bound")}
+          </p>
+        ) : (
+          <>
+            <Textarea
+              label={t("environment.recompile.rationaleLabel")}
+              value={recompileRationale}
+              onChange={(event) => setRecompileRationale(event.target.value)}
+              placeholder={t("environment.recompile.rationalePlaceholder")}
+              help={t("environment.recompile.rationaleHelp")}
+              maxLength={2000}
+              rows={3}
+            />
+            <div className="environment-review-actions">
+              {canRecompilePlan && (
+                <Button
+                  busy={busyAction === "plan"}
+                  disabled={busyAction !== null || !recompileReady}
+                  onClick={() => void triggerPlanRecompile()}
+                >
+                  {t("environment.recompile.planAction")}
+                </Button>
+              )}
+              {canRecompileEnvironment && (
+                <Button
+                  variant="primary"
+                  busy={busyAction === "environment"}
+                  disabled={busyAction !== null || !recompileReady}
+                  onClick={() => void triggerEnvironmentRecompile()}
+                >
+                  {t("environment.recompile.environmentAction")}
+                </Button>
+              )}
+            </div>
+            <p className="muted">
+              {canRecompilePlan
+                ? t("environment.recompile.planHelp")
+                : t("environment.recompile.environmentHelp")}
+            </p>
+            <p className="muted">{t("environment.recompile.auditNote")}</p>
+          </>
+        )}
+      </div>
+    );
   }
 
   if (!environment) {
@@ -109,6 +241,17 @@ export function EnvironmentPanel({
           title={t("environment.emptyTitle")}
           description={t("environment.emptyDescription")}
         />
+        {renderRecompileSection()}
+        {error && (
+          <p className="ui-callout ui-callout--danger" role="alert">
+            {error}
+          </p>
+        )}
+        {notice && (
+          <p className="notice" role="status" aria-live="polite">
+            {notice}
+          </p>
+        )}
       </Panel>
     );
   }
@@ -150,11 +293,25 @@ export function EnvironmentPanel({
         </p>
       )}
 
+      {renderRecompileSection()}
+
       {!plan ? (
-        <EmptyState
-          title={t("environment.emptyTitle")}
-          description={t("environment.emptyDescription")}
-        />
+        <>
+          <EmptyState
+            title={t("environment.emptyTitle")}
+            description={t("environment.emptyDescription")}
+          />
+          {error && (
+            <p className="ui-callout ui-callout--danger" role="alert">
+              {error}
+            </p>
+          )}
+          {notice && (
+            <p className="notice" role="status" aria-live="polite">
+              {notice}
+            </p>
+          )}
+        </>
       ) : (
         <>
           <dl className="request-facts">
@@ -484,8 +641,8 @@ export function EnvironmentPanel({
               <div className="environment-review-actions">
                 <Button
                   variant="primary"
-                  busy={busy}
-                  disabled={busy}
+                  busy={busyAction === "review"}
+                  disabled={busyAction !== null}
                   onClick={() => void triggerReview()}
                 >
                   {t("environment.review.trigger")}

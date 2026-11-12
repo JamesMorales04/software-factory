@@ -1177,6 +1177,14 @@ fn office_api_router(app: Arc<App>) -> Router {
             "/agentic/requests/{id}/environment/review",
             post(review_agentic_environment),
         )
+        .route(
+            "/agentic/requests/{id}/environment/recompile",
+            post(recompile_agentic_environment),
+        )
+        .route(
+            "/agentic/requests/{id}/plan/recompile",
+            post(recompile_agentic_plan),
+        )
         .route("/agentic/requests/{id}/openspec", get(get_agentic_openspec))
         .route(
             "/agentic/requests/{id}/openspec/archive",
@@ -1486,6 +1494,14 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/agentic/requests/{id}/environment/review",
             post(review_agentic_environment),
+        )
+        .route(
+            "/agentic/requests/{id}/environment/recompile",
+            post(recompile_agentic_environment),
+        )
+        .route(
+            "/agentic/requests/{id}/plan/recompile",
+            post(recompile_agentic_plan),
         )
         .route("/agentic/requests/{id}/openspec", get(get_agentic_openspec))
         .route(
@@ -12433,7 +12449,18 @@ async fn environment_projection_for_request(
         .environment_plan_reviews(&record.id)
         .await
         .unwrap_or_default();
-    let spec = app.db.environment_spec_for_request(&record.id).await.ok();
+    let spec = app
+        .db
+        .environment_spec_for_request(&record.id)
+        .await
+        .ok()
+        .filter(|spec| {
+            // A frozen spec belongs to one immutable plan. A newer recompiled
+            // plan must not inherit the old spec or its approval.
+            stored
+                .as_ref()
+                .is_some_and(|stored| spec.spec.plan_sha256 == stored.plan.plan_sha256)
+        });
     let receipt = match &spec {
         Some(spec) => app
             .db
@@ -12676,13 +12703,14 @@ framework. You may omit optionId only when language and framework identify exact
 Choose an option whose requiredCapability is present in the supplied project capabilities. \
 Rationale is required: provide one concise single sentence of at most {max_rationale} characters \
 explaining why the selected deterministic option fits the objective and the supplied project \
-capabilities. Never invent an option, language, framework, capability, path, package or command. If \
-the selection carries an environmentProposal, it must be concrete: an exact pinned nixpkgs revision \
-(or omit nixpkgs to use the builder's documented default), toolchains with exact versions, nixpkgs \
-packages with exact versions and SPDX license identifiers, and \
-build/test/lint/format/typecheck/run commands as argv vectors. There is no language default. Model \
-output is advisory; Core validates the selection against the deterministic catalog and the \
-project's authorized capabilities.\n\nJSON Schema:\n{schema}",
+capabilities. A concrete environmentProposal is also required for this greenfield selection: it MUST \
+cover the selected language/framework with at least one toolchain or package (exact or numeric-prefix \
+versions), at least build/test/lint/format/typecheck/run commands as argv vectors where applicable, \
+bounded resources, and no unfree package. An exact pinned nixpkgs revision may be supplied; omit \
+nixpkgs to use the builder's documented default. Never invent an option, language, framework, \
+capability, path, package or command. There is no language default. Model output is advisory; Core \
+validates the selection and the environment proposal against the deterministic catalog, the \
+existing environment compiler and the project's authorized capabilities.\n\nJSON Schema:\n{schema}",
         max_rationale = factory_native::planning::stack::MAX_SELECTION_RATIONALE_CHARS,
         schema = schema
     )
@@ -12701,7 +12729,7 @@ async fn select_stack_option_with_model(
 ) -> Result<
     (
         factory_native::planning::stack::StackSelectionOption,
-        Option<factory_native::planning::environment::EnvironmentProposal>,
+        factory_native::planning::environment::EnvironmentProposal,
     ),
     PlanningCompileFailure,
 > {
@@ -12770,6 +12798,17 @@ async fn select_stack_option_with_model(
             options,
         )
     })?;
+    if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&result.content)
+        && raw
+            .get("environmentProposal")
+            .is_none_or(serde_json::Value::is_null)
+    {
+        return Err(stack_selection_conflict(
+            "STACK_ENVIRONMENT_REQUIRED",
+            "a greenfield stack selection must include a concrete environment proposal",
+            options,
+        ));
+    }
     let selection = factory_native::model_output::decode_stack_selection(result.content.as_bytes())
         .map_err(|error| {
             stack_selection_conflict(
@@ -12783,18 +12822,12 @@ async fn select_stack_option_with_model(
         &selection,
         &config.capabilities,
     )
-    .map_err(|error| {
-        stack_selection_conflict("STACK_SELECTION_INVALID", error.to_string(), options)
+    .map_err(|error| match error {
+        factory_native::planning::stack::StackSelectionError::EnvironmentRequired(message) => {
+            stack_selection_conflict("STACK_ENVIRONMENT_REQUIRED", message, options)
+        }
+        error => stack_selection_conflict("STACK_SELECTION_INVALID", error.to_string(), options),
     })?;
-    if let Some(proposal) = &selection.environment_proposal {
-        proposal.validate().map_err(|error| {
-            stack_selection_conflict(
-                "STACK_SELECTION_INVALID",
-                format!("the model environment proposal is invalid: {error}"),
-                options,
-            )
-        })?;
-    }
     let _ = app
         .db
         .record_event_once(
@@ -12813,7 +12846,6 @@ async fn select_stack_option_with_model(
         .await;
     Ok((selected, selection.environment_proposal))
 }
-
 async fn compile_stack_decision(
     app: &App,
     record: &factory_native::db::IntakeRequestRecord,
@@ -12847,7 +12879,7 @@ async fn compile_stack_decision(
             &decision,
             &record.objective,
         );
-        (decision, stack_profile, environment_proposal)
+        (decision, stack_profile, Some(environment_proposal))
     } else {
         let stack = match factory_native::planning::stack::build_stack_decision(
             lane,
@@ -13202,6 +13234,7 @@ async fn persist_planning_plan(
     record: &factory_native::db::IntakeRequestRecord,
     context: &AgenticTriageContext,
     graph: &factory_native::agentic::ValidatedWorkGraph,
+    environment_revision: Option<u32>,
 ) -> Result<Value, Response> {
     use factory_native::planning::route::{required_artifacts, required_reviewers};
     use factory_native::planning::{PlanningLane, R0_AUTONOMY_POINTS};
@@ -13259,11 +13292,12 @@ async fn persist_planning_plan(
         Err(error) => return Err(api_error(error)),
     };
     let environment_risk = format!("{:?}", context.risk);
+    let environment_revision = environment_revision.unwrap_or(revision);
     let _environment_plan = compile_environment_for_request(
         app,
         record,
         &config,
-        revision,
+        environment_revision,
         &environment_risk,
         stack.environment_proposal.clone(),
     )
@@ -13280,6 +13314,10 @@ async fn persist_planning_plan(
         "openspecRequired": factory_native::planning::route::openspec_required(lane),
         "planReviewRequired": factory_native::planning::route::plan_review_required(lane),
         "signals": context.planning_signals,
+        // Persist the exact untrusted environment proposal used by this plan
+        // revision so an operator environment recompile reuses the same input
+        // instead of re-running a paid stack-selection call.
+        "environmentProposal": stack.environment_proposal,
         "createdAt": now,
     });
     let plan_record = app
@@ -13849,7 +13887,8 @@ JSON Schema:
                 Ok(record) => record,
                 Err(error) => return api_error(error),
             };
-            let planning = match persist_planning_plan(&app, &record, &context, &graph).await {
+            let planning = match persist_planning_plan(&app, &record, &context, &graph, None).await
+            {
                 Ok(value) => value,
                 Err(response) => return response,
             };
@@ -15122,6 +15161,350 @@ async fn review_agentic_environment(
         Ok(value) => Json(value).into_response(),
         Err(error) => api_error(error),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct RecompileInput {
+    rationale: String,
+}
+
+fn recompile_rationale(input: &RecompileInput) -> Result<String, Box<Response>> {
+    let rationale = input.rationale.trim();
+    if rationale.chars().count() < 8
+        || rationale.chars().count() > 2_000
+        || rationale.chars().any(char::is_control)
+    {
+        return Err(Box::new(agentic_conflict(
+            "RECOMPILE_RATIONALE_REQUIRED",
+            "an explicit operator rationale of 8-2000 characters is required",
+        )));
+    }
+    Ok(rationale.to_owned())
+}
+
+/// A recompile replaces planning/environment revisions only while execution is
+/// unbound. An active Campaign, an authored specification or a rejected plan
+/// review is an owner/execution decision and is never silently replaced.
+async fn recompile_bound_conflict(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<Option<Response>, Box<Response>> {
+    let campaign_bound = record.campaign_id.is_some()
+        || app
+            .db
+            .campaigns()
+            .await
+            .map_err(api_error)?
+            .iter()
+            .any(|campaign| campaign.action_id == record.action_id);
+    if campaign_bound {
+        return Ok(Some(agentic_conflict(
+            "RECOMPILE_EXECUTION_BOUND",
+            "a Campaign is already bound to this request; a recompile cannot replace an executing environment or plan",
+        )));
+    }
+    match app.db.agentic_spec(&record.id).await {
+        Ok(spec) if spec.state == "FROZEN" => {
+            return Ok(Some(agentic_conflict(
+                "RECOMPILE_SPEC_BOUND",
+                "a frozen authored specification already binds this plan; a material change requires a new request or spec revision",
+            )));
+        }
+        Ok(_) => {}
+        Err(Error::NotFound) => {}
+        Err(error) => return Err(Box::new(api_error(error))),
+    }
+    match app.db.latest_plan_review(&record.id).await {
+        Ok(review) if matches!(review.status.as_str(), "REJECTED" | "CHANGES_REQUESTED") => {
+            return Ok(Some(agentic_conflict(
+                "RECOMPILE_REVIEW_BLOCKED",
+                "the latest plan review was rejected or requested changes; a recompile cannot replace that owner decision",
+            )));
+        }
+        Ok(_) => {}
+        Err(Error::NotFound) => {}
+        Err(error) => return Err(Box::new(api_error(error))),
+    }
+    Ok(None)
+}
+
+async fn stored_stack_environment_proposal(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Option<factory_native::planning::environment::EnvironmentProposal> {
+    let artifact = app
+        .db
+        .latest_planning_artifact(&record.id, "PLAN")
+        .await
+        .ok()?;
+    let value: Value = serde_json::from_str(&artifact.content_json).ok()?;
+    serde_json::from_value(value.get("environmentProposal")?.clone()).ok()
+}
+
+async fn recompile_agentic_environment(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<RecompileInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    if let Some(response) = match recompile_bound_conflict(&app, &record).await {
+        Ok(response) => response,
+        Err(response) => return *response,
+    } {
+        return response;
+    }
+    let rationale = match recompile_rationale(&input) {
+        Ok(rationale) => rationale,
+        Err(response) => return *response,
+    };
+    let config = match app.db.project_config(&record.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let previous = app.db.latest_environment_plan(&record.id).await.ok();
+    let previous_status = previous
+        .as_ref()
+        .map(|plan| plan.status.clone())
+        .unwrap_or_else(|| "MISSING".into());
+    let previous_revision = previous.as_ref().map(|plan| plan.revision).unwrap_or(0);
+    let previous_spec_sha256 = app
+        .db
+        .environment_spec_for_request(&record.id)
+        .await
+        .ok()
+        .map(|spec| spec.spec_sha256);
+    let revision = previous_revision.saturating_add(1).max(1);
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    let risk_class = format!("{:?}", context.risk);
+    let proposal = stored_stack_environment_proposal(&app, &record).await;
+    let plan = match compile_environment_for_request(
+        &app,
+        &record,
+        &config,
+        revision,
+        &risk_class,
+        proposal,
+    )
+    .await
+    {
+        Ok(plan) => plan,
+        Err(response) => return response,
+    };
+    let (actor, _) = authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let detail = json!({
+        "actor": actor,
+        "rationale": rationale,
+        "previousStatus": previous_status,
+        "previousRevision": previous_revision,
+        "previousSpecSha256": previous_spec_sha256,
+        "newRevision": plan.revision,
+        "newStatus": serde_json::to_value(plan.status).unwrap_or(Value::Null),
+    })
+    .to_string();
+    if let Err(error) = app
+        .db
+        .record_event_once(
+            &format!("request:{}", record.id),
+            "environment.plan.recompiled",
+            &detail,
+        )
+        .await
+    {
+        return api_error(error);
+    }
+    match environment_projection_for_request(&app, &record).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn recompile_agentic_plan(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<RecompileInput>,
+) -> Response {
+    use factory_native::agentic::{ValidatedWorkGraph, WorkGraphModel, validate_work_graph};
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    if let Some(response) = match recompile_bound_conflict(&app, &record).await {
+        Ok(response) => response,
+        Err(response) => return *response,
+    } {
+        return response;
+    }
+    let rationale = match recompile_rationale(&input) {
+        Ok(rationale) => rationale,
+        Err(response) => return *response,
+    };
+    let config = match app.db.project_config(&record.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let graph_record = match app.db.agentic_work_graph(&record.id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let stored_graph = match serde_json::from_str::<ValidatedWorkGraph>(&graph_record.graph_json) {
+        Ok(graph) => graph,
+        Err(_) => {
+            return agentic_conflict(
+                "PLAN_RECOMPILE_GRAPH_INVALID",
+                "the stored WorkGraph is not decodable; the plan cannot be recompiled deterministically",
+            );
+        }
+    };
+    let model = WorkGraphModel {
+        units: stored_graph.units.clone(),
+        assumptions: stored_graph.assumptions.clone(),
+        risks: stored_graph.risks.clone(),
+    };
+    let graph = match validate_work_graph(&model, &config.allowed_paths) {
+        Ok(graph) => graph,
+        Err(_) => {
+            return agentic_conflict(
+                "PLAN_RECOMPILE_GRAPH_INVALID",
+                "the stored WorkGraph does not validate against the current Project scope",
+            );
+        }
+    };
+    let stored_order =
+        match serde_json::from_str::<Vec<String>>(&graph_record.topological_order_json) {
+            Ok(order) => order,
+            Err(_) => {
+                return agentic_conflict(
+                    "PLAN_RECOMPILE_GRAPH_INVALID",
+                    "the stored WorkGraph order is not decodable",
+                );
+            }
+        };
+    if graph.graph_sha256 != graph_record.graph_sha256
+        || graph.graph_sha256 != stored_graph.graph_sha256
+        || graph.topological_order != stored_graph.topological_order
+        || graph.topological_order != stored_order
+    {
+        return agentic_conflict(
+            "PLAN_RECOMPILE_GRAPH_INVALID",
+            "the stored WorkGraph digest or order does not match its validated content",
+        );
+    }
+    let previous_plan = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
+        Ok(plan) => plan,
+        Err(Error::NotFound) => {
+            return agentic_conflict(
+                "PLAN_RECOMPILE_PLAN_MISSING",
+                "there is no recorded plan revision to recompile",
+            );
+        }
+        Err(error) => return api_error(error),
+    };
+    let previous_environment = app.db.latest_environment_plan(&record.id).await.ok();
+    let previous_environment_status = previous_environment
+        .as_ref()
+        .map(|plan| plan.status.clone())
+        .unwrap_or_else(|| "MISSING".into());
+    let previous_environment_revision = previous_environment
+        .as_ref()
+        .map(|plan| plan.revision)
+        .unwrap_or(0);
+    let previous_spec_sha256 = app
+        .db
+        .environment_spec_for_request(&record.id)
+        .await
+        .ok()
+        .map(|spec| spec.spec_sha256);
+    let next_environment_revision = previous_environment_revision
+        .saturating_add(1)
+        .max(previous_plan.revision.saturating_add(1));
+    let context = match agentic_triage_context(&app, &record).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    let planning = match persist_planning_plan(
+        &app,
+        &record,
+        &context,
+        &graph,
+        Some(next_environment_revision),
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    if planning.get("code").and_then(Value::as_str) == Some("PLAN_ARTIFACTS_REQUIRED") {
+        return (StatusCode::CONFLICT, Json(planning)).into_response();
+    }
+    let plan = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
+        Ok(plan) => plan,
+        Err(error) => return api_error(error),
+    };
+    let review = match app.db.latest_plan_review(&record.id).await {
+        Ok(review) => Some(review),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let artifacts = match app.db.planning_artifacts(&record.id).await {
+        Ok(artifacts) => artifacts,
+        Err(error) => return api_error(error),
+    };
+    let environment = match environment_projection_for_request(&app, &record).await {
+        Ok(environment) => environment,
+        Err(error) => return api_error(error),
+    };
+    let (actor, _) = authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let detail = json!({
+        "actor": actor,
+        "rationale": rationale,
+        "previousPlanRevision": previous_plan.revision,
+        "newPlanRevision": plan.revision,
+        "previousEnvironmentStatus": previous_environment_status,
+        "previousEnvironmentRevision": previous_environment_revision,
+        "previousSpecSha256": previous_spec_sha256,
+        "newEnvironmentStatus": environment["status"],
+        "newEnvironmentRevision": environment["planRevision"],
+    })
+    .to_string();
+    if let Err(error) = app
+        .db
+        .record_event_once(
+            &format!("request:{}", record.id),
+            "plan.recompiled",
+            &detail,
+        )
+        .await
+    {
+        return api_error(error);
+    }
+    Json(json!({
+        "plan": plan,
+        "graph": graph_record,
+        "review": review,
+        "artifacts": artifacts,
+        "environment": environment,
+        "recompiled": true,
+        "previousRevision": previous_plan.revision,
+        "revision": plan.revision,
+    }))
+    .into_response()
 }
 
 async fn get_agentic_findings(
@@ -24604,6 +24987,28 @@ mod tests {
             .await
         }
 
+        async fn enable_policy_for_project(
+            fixture: &Fixture,
+            project_id: &str,
+            project_config_hash: &str,
+            key: &str,
+        ) -> (StatusCode, Value) {
+            send(
+                &fixture.router,
+                "POST",
+                &format!("/projects/{project_id}/execution-policy"),
+                Some(json!({
+                    "execution_profile_id": fixture.profile.id,
+                    "expected_revision": fixture.profile.revision,
+                    "expected_revision_hash": fixture.profile.content_hash,
+                    "project_config_hash": project_config_hash,
+                    "acknowledge": true,
+                    "idempotency_key": key,
+                })),
+            )
+            .await
+        }
+
         async fn enable_autonomous_policy(
             fixture: &Fixture,
         ) -> (
@@ -29659,7 +30064,7 @@ mod tests {
                 "go-service",
                 "go",
                 "gin",
-                None,
+                Some(calculator_environment_proposal()),
             )));
             let (url, _hits) = stack_selection_upstream(content).await;
             let key = environment_master_key();
@@ -29701,6 +30106,68 @@ mod tests {
             match failure {
                 PlanningCompileFailure::Conflict(conflict) => {
                     assert_eq!(conflict.code, "STACK_SELECTION_INVALID");
+                    assert!(conflict.options.is_some());
+                }
+                PlanningCompileFailure::Internal(error) => {
+                    panic!("unexpected internal error: {error:?}")
+                }
+            }
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn missing_environment_proposal_is_a_typed_stack_conflict() {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let content = Arc::new(Mutex::new(stack_selection_content(
+                "python-service",
+                "python",
+                "fastapi",
+                None,
+            )));
+            let (url, _hits) = stack_selection_upstream(content).await;
+            let key = environment_master_key();
+            let fixture = setup_with(Some(&key), &url, &url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let intake_id =
+                create_calculator_intake(&fixture, "missing-environment-proposal").await;
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            let config = project_config_with_capabilities(
+                &fixture,
+                vec![
+                    factory_native::lead::Capability::RepositoryEdit,
+                    factory_native::lead::Capability::GenericToolchain,
+                ],
+            )
+            .await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&record.lead_request_id)
+                .await
+                .unwrap();
+            let failure = compile_stack_decision(
+                &fixture.app,
+                &record,
+                factory_native::planning::PlanningLane::FormalSpec,
+                &factory_native::agentic::StackProfile::default(),
+                &config,
+            )
+            .await
+            .unwrap_err();
+            match failure {
+                PlanningCompileFailure::Conflict(conflict) => {
+                    assert_eq!(conflict.code, "STACK_ENVIRONMENT_REQUIRED");
                     assert!(conflict.options.is_some());
                 }
                 PlanningCompileFailure::Internal(error) => {
@@ -30096,6 +30563,639 @@ mod tests {
                     })
                 })
             }
+        }
+
+        #[cfg(feature = "test-support")]
+        struct FailingEnvironmentBuilder;
+
+        #[cfg(feature = "test-support")]
+        impl factory_native::planning::environment::EnvironmentBuilder for FailingEnvironmentBuilder {
+            fn descriptor(
+                &self,
+            ) -> factory_native::planning::environment::EnvironmentBuilderDescriptor {
+                use factory_native::planning::environment::{
+                    ENVIRONMENT_POLICY_REVISION, EnvironmentBuilderDescriptor,
+                    EnvironmentBuilderStatus,
+                };
+                EnvironmentBuilderDescriptor {
+                    image: "factory/environment-builder".into(),
+                    digest: format!("sha256:{}", "a".repeat(64)),
+                    platform: "x86_64-linux".into(),
+                    policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                    default_nixpkgs:
+                        "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
+                    status: EnvironmentBuilderStatus::Ready,
+                }
+            }
+
+            fn resolve<'a>(
+                &'a self,
+                _plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _workspace: Option<&'a std::path::Path>,
+            ) -> factory_native::planning::environment::EnvironmentResolutionFuture<'a>
+            {
+                Box::pin(async {
+                    Err(factory_native::planning::environment::EnvironmentError::new(
+                        factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPinMissing,
+                        "the fixture builder is blocked before the fix",
+                    ))
+                })
+            }
+
+            fn build<'a>(
+                &'a self,
+                _spec: &'a factory_native::planning::environment::EnvironmentSpec,
+                _plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _workspace: Option<&'a std::path::Path>,
+            ) -> factory_native::planning::environment::EnvironmentBuilderFuture<'a> {
+                Box::pin(async {
+                    Err(factory_native::planning::environment::EnvironmentError::new(
+                        factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentBuildFailed,
+                        "the fixture builder cannot build",
+                    ))
+                })
+            }
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn bind_test_campaign(db_path: &std::path::Path, request_id: &str) {
+            use sqlx::connection::Connection as _;
+            use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection};
+            let options = SqliteConnectOptions::new().filename(db_path);
+            let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+            sqlx::query::query(
+                "INSERT OR IGNORE INTO campaigns(id,action_id,status,created_at)
+                 SELECT 'test-bound-campaign',action_id,'BLOCKED_AUTHORIZATION',?2
+                 FROM intake_requests WHERE id=?1",
+            )
+            .bind(request_id)
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(&mut connection)
+            .await
+            .unwrap();
+            sqlx::query::query(
+                "UPDATE intake_requests SET campaign_id='test-bound-campaign' WHERE id=?1",
+            )
+            .bind(request_id)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        }
+
+        #[cfg(feature = "test-support")]
+        fn python_calculator_environment_proposal() -> Value {
+            json!({
+                "nixpkgs": "github:NixOS/nixpkgs/2222222222222222222222222222222222222222",
+                "toolchains": [{
+                    "id": "python",
+                    "version": "3.12.7",
+                    "source": "stack-selection",
+                    "evidence": ["selected python-service"]
+                }],
+                "packages": [
+                    {
+                        "name": "fastapi",
+                        "version": "0.115",
+                        "license": "MIT",
+                        "source": "nixpkgs",
+                        "attr": "python312Packages.fastapi",
+                        "sha256": "",
+                        "unfree": false,
+                        "attribution": "FastAPI is MIT licensed."
+                    },
+                    {
+                        "name": "pytest",
+                        "version": "8",
+                        "license": "MIT",
+                        "source": "nixpkgs",
+                        "attr": "python312Packages.pytest",
+                        "sha256": "",
+                        "unfree": false,
+                        "attribution": "pytest is MIT licensed."
+                    }
+                ],
+                "commands": {
+                    "test": {
+                        "argv": ["python3", "-m", "pytest"],
+                        "cwd": ".",
+                        "timeoutSecs": 300,
+                        "expectExit": 0
+                    }
+                }
+            })
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn environment_recompile_creates_a_new_immutable_revision() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let (repository, base) = empty_git_repository();
+            let project = fixture
+                .app
+                .db
+                .register_project(&repository, "environment-recompile-project")
+                .await
+                .unwrap();
+            let config = fixture
+                .app
+                .db
+                .update_project_config(
+                    &project.id,
+                    &NewProjectConfig {
+                        expected_revision: 1,
+                        allowed_paths: vec!["src".into()],
+                        capabilities: vec![factory_native::lead::Capability::RepositoryEdit],
+                        quality_profile: factory_native::lead::QualityProfile::Generic,
+                        active: true,
+                    },
+                )
+                .await
+                .unwrap();
+            let (policy_status, _) = enable_policy_for_project(
+                &fixture,
+                &project.id,
+                &config.config_hash,
+                "environment-recompile-policy",
+            )
+            .await;
+            assert!(
+                matches!(policy_status, StatusCode::CREATED | StatusCode::OK),
+                "{policy_status}"
+            );
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FailingEnvironmentBuilder));
+            let (status, intake) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(json!({
+                    "project_id": project.id,
+                    "objective": "Add a Node.js utility.",
+                    "execution_profile_id": fixture.profile.id,
+                    "mode": "REVIEW_PLAN",
+                    "idempotency_key": "environment-recompile-request",
+                    "environment_constraints": {
+                        "packages": [{
+                            "name": "nodejs",
+                            "version": "22",
+                            "license": "MIT",
+                            "source": "nixpkgs",
+                            "attr": "nodejs_22",
+                            "sha256": "",
+                            "unfree": false,
+                            "attribution": "Node.js is MIT licensed."
+                        }]
+                    }
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            assert_eq!(config.base_commit, base);
+            let blocked =
+                compile_environment_for_request(&fixture.app, &record, &config, 1, "R0", None)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                blocked.status,
+                factory_native::planning::environment::EnvironmentPlanStatus::Blocked
+            );
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FakeEnvironmentBuilder));
+            let (status, projection) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/environment/recompile"),
+                Some(json!({"rationale": "The builder now resolves the package."})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{projection}");
+            assert_eq!(projection["status"], "CORE_VALIDATED", "{projection}");
+            assert_eq!(projection["planRevision"], 2);
+            assert!(
+                projection["plan"]["packages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|package| package["name"] == "nodejs")
+            );
+            let old = fixture
+                .app
+                .db
+                .environment_plan(&intake_id, 1)
+                .await
+                .unwrap();
+            assert_eq!(old.status, "BLOCKED");
+            assert_ne!(old.plan.plan_sha256, projection["planSha256"]);
+            let events = fixture.app.db.events().await.unwrap();
+            let audit = events
+                .iter()
+                .find(|event| event.kind == "environment.plan.recompiled")
+                .expect("recompile audit event");
+            assert!(audit.detail.contains("\"previousRevision\":1"));
+            assert!(audit.detail.contains("\"newRevision\":2"));
+            assert!(
+                audit
+                    .detail
+                    .contains("The builder now resolves the package.")
+            );
+
+            let unauthorized = fixture
+                .router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(format!(
+                            "/agentic/requests/{intake_id}/environment/recompile"
+                        ))
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            json!({"rationale": "Unauthorized recompile attempt."}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+            bind_test_campaign(&fixture.path, &intake_id).await;
+            let (status, conflict) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/environment/recompile"),
+                Some(json!({"rationale": "Try to replace a bound environment."})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+            assert_eq!(conflict["code"], "RECOMPILE_EXECUTION_BOUND");
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .latest_environment_plan(&intake_id)
+                    .await
+                    .unwrap()
+                    .revision,
+                2
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+            let _ = std::fs::remove_dir_all(repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn environment_recompile_still_blocked_returns_the_new_blocked_revision() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let (repository, _base) = empty_git_repository();
+            let project = fixture
+                .app
+                .db
+                .register_project(&repository, "environment-recompile-blocked-project")
+                .await
+                .unwrap();
+            let config = fixture
+                .app
+                .db
+                .update_project_config(
+                    &project.id,
+                    &NewProjectConfig {
+                        expected_revision: 1,
+                        allowed_paths: vec!["src".into()],
+                        capabilities: vec![factory_native::lead::Capability::RepositoryEdit],
+                        quality_profile: factory_native::lead::QualityProfile::Generic,
+                        active: true,
+                    },
+                )
+                .await
+                .unwrap();
+            let (policy_status, _) = enable_policy_for_project(
+                &fixture,
+                &project.id,
+                &config.config_hash,
+                "environment-recompile-blocked-policy",
+            )
+            .await;
+            assert!(matches!(
+                policy_status,
+                StatusCode::CREATED | StatusCode::OK
+            ));
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FailingEnvironmentBuilder));
+            let (status, intake) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(json!({
+                    "project_id": project.id,
+                    "objective": "Add a Node.js utility.",
+                    "execution_profile_id": fixture.profile.id,
+                    "mode": "REVIEW_PLAN",
+                    "idempotency_key": "environment-recompile-blocked-request",
+                    "environment_constraints": {
+                        "packages": [{
+                            "name": "nodejs",
+                            "version": "22",
+                            "license": "MIT",
+                            "source": "nixpkgs",
+                            "attr": "nodejs_22",
+                            "sha256": "",
+                            "unfree": false,
+                            "attribution": "Node.js is MIT licensed."
+                        }]
+                    }
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            let first =
+                compile_environment_for_request(&fixture.app, &record, &config, 1, "R0", None)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                first.status,
+                factory_native::planning::environment::EnvironmentPlanStatus::Blocked
+            );
+            let (status, projection) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/environment/recompile"),
+                Some(json!({"rationale": "Retry while the builder is still unavailable."})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{projection}");
+            assert_eq!(projection["status"], "BLOCKED", "{projection}");
+            assert_eq!(projection["planRevision"], 2);
+            assert!(!projection["blockers"].as_array().unwrap().is_empty());
+            let old = fixture
+                .app
+                .db
+                .environment_plan(&intake_id, 1)
+                .await
+                .unwrap();
+            assert_eq!(old.status, "BLOCKED");
+            assert_ne!(old.plan.plan_sha256, projection["planSha256"]);
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+            let _ = std::fs::remove_dir_all(repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn plan_recompile_replaces_an_empty_frozen_environment_before_execution() {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let content = Arc::new(Mutex::new(stack_selection_content(
+                "python-service",
+                "python",
+                "fastapi",
+                Some(python_calculator_environment_proposal()),
+            )));
+            let (url, _hits) = stack_selection_upstream(content).await;
+            let key = environment_master_key();
+            let fixture = setup_with(Some(&key), &url, &url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            let (repository, base) = empty_git_repository();
+            let project = fixture
+                .app
+                .db
+                .register_project(&repository, "plan-recompile-project")
+                .await
+                .unwrap();
+            let config = fixture
+                .app
+                .db
+                .update_project_config(
+                    &project.id,
+                    &NewProjectConfig {
+                        expected_revision: 1,
+                        allowed_paths: vec!["src".into()],
+                        capabilities: vec![
+                            factory_native::lead::Capability::RepositoryEdit,
+                            factory_native::lead::Capability::GenericToolchain,
+                        ],
+                        quality_profile: factory_native::lead::QualityProfile::Generic,
+                        active: true,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(config.base_commit, base);
+            let (policy_status, _) = enable_policy_for_project(
+                &fixture,
+                &project.id,
+                &config.config_hash,
+                "plan-recompile-policy",
+            )
+            .await;
+            assert!(
+                matches!(policy_status, StatusCode::CREATED | StatusCode::OK),
+                "{policy_status}"
+            );
+            let (status, intake) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(json!({
+                    "project_id": project.id,
+                    "objective": "Build a calculator application. You choose the stack.",
+                    "execution_profile_id": fixture.profile.id,
+                    "mode": "REVIEW_PLAN",
+                    "idempotency_key": "plan-recompile-request",
+                    "authorized_micros": 1_000_000
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&record.lead_request_id)
+                .await
+                .unwrap();
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FakeEnvironmentBuilder));
+            let graph = factory_native::agentic::validate_work_graph(
+                &factory_native::agentic::WorkGraphModel {
+                    units: vec![factory_native::agentic::PlannedWorkUnit {
+                        id: "calculator".into(),
+                        title: "Calculator".into(),
+                        objective: "Implement the calculator.".into(),
+                        depends_on: Vec::new(),
+                        paths: vec!["src".into()],
+                        acceptance: vec!["The calculator adds two numbers.".into()],
+                    }],
+                    assumptions: Vec::new(),
+                    risks: Vec::new(),
+                },
+                &config.allowed_paths,
+            )
+            .unwrap();
+            let digest = "a".repeat(64);
+            fixture
+                .app
+                .db
+                .save_agentic_work_graph(&factory_native::db::NewAgenticWorkGraph {
+                    request_id: &intake_id,
+                    graph: &graph,
+                    provider: "fixture",
+                    model: "fixture",
+                    schema_sha256: &digest,
+                    request_sha256: &digest,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    cost_micros: 0,
+                    usage_known: false,
+                })
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_planning_artifact(
+                    &intake_id,
+                    "PLAN",
+                    1,
+                    &json!({
+                        "schemaVersion": factory_native::planning::SCHEMA_VERSION,
+                        "planRevision": 1,
+                        "environmentProposal": null
+                    })
+                    .to_string(),
+                )
+                .await
+                .unwrap();
+            seed_core_test_environment(
+                &fixture.app.db,
+                &fixture.path,
+                &record.action_id,
+                &record.project_id,
+                &config.base_commit,
+                "R0",
+                Some(&intake_id),
+            )
+            .await
+            .unwrap();
+            let previous = fixture
+                .app
+                .db
+                .latest_environment_plan(&intake_id)
+                .await
+                .unwrap();
+            assert_eq!(previous.status, "FROZEN");
+            assert_eq!(previous.revision, 1);
+            let previous_hash = previous.plan.plan_sha256.clone();
+            let (status, recompiled) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan/recompile"),
+                Some(json!({
+                    "rationale": "The empty frozen environment cannot run the selected Python stack."
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{recompiled}");
+            assert_eq!(recompiled["revision"], 2);
+            assert_eq!(recompiled["environment"]["planRevision"], 2);
+            assert!(
+                recompiled["environment"]["plan"]["toolchains"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|toolchain| toolchain["id"] == "python"),
+                "{recompiled}"
+            );
+            assert!(
+                recompiled["environment"]["plan"]["packages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|package| package["name"] == "fastapi")
+            );
+            let old = fixture
+                .app
+                .db
+                .environment_plan(&intake_id, 1)
+                .await
+                .unwrap();
+            assert_eq!(old.status, "FROZEN");
+            assert_eq!(old.plan.plan_sha256, previous_hash);
+            let events = fixture.app.db.events().await.unwrap();
+            let audit = events
+                .iter()
+                .find(|event| event.kind == "plan.recompiled")
+                .expect("plan recompile audit event");
+            assert!(audit.detail.contains("\"previousPlanRevision\":1"));
+            assert!(audit.detail.contains("\"newPlanRevision\":2"));
+            assert!(
+                audit
+                    .detail
+                    .contains("\"previousEnvironmentStatus\":\"FROZEN\"")
+            );
+
+            bind_test_campaign(&fixture.path, &intake_id).await;
+            let (status, conflict) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan/recompile"),
+                Some(json!({"rationale": "Try to replace a bound plan."})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+            assert_eq!(conflict["code"], "RECOMPILE_EXECUTION_BOUND");
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .latest_planning_artifact(&intake_id, "PLAN")
+                    .await
+                    .unwrap()
+                    .revision,
+                2
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+            let _ = std::fs::remove_dir_all(repository);
         }
 
         #[tokio::test]
