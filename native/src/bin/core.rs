@@ -31549,11 +31549,7 @@ mod tests {
             fixture
                 .app
                 .db
-                .set_action_dependency_plan(
-                    &record.action_id,
-                    Some(&dependency_plan),
-                    true,
-                )
+                .set_action_dependency_plan(&record.action_id, Some(&dependency_plan), true)
                 .await
                 .unwrap();
             let before = fixture.app.db.action(&record.action_id).await.unwrap().spec;

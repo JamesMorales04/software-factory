@@ -220,7 +220,14 @@ def main(path: str) -> int:
         errors.append(message)
 
     missing = (
-        PERMANENT | {"init", "provider-bundle", "dependency-bundle", "runtime"}
+        PERMANENT
+        | {
+            "init",
+            "provider-bundle",
+            "dependency-bundle",
+            "environment-builder-bundle",
+            "runtime",
+        }
     ) - set(services)
     if missing:
         fail(f"missing services: {sorted(missing)}")
@@ -229,6 +236,7 @@ def main(path: str) -> int:
         "init",
         "provider-bundle",
         "dependency-bundle",
+        "environment-builder-bundle",
         "runtime",
     }
     if has_tailscale:
@@ -519,7 +527,12 @@ def main(path: str) -> int:
         if core_environment.get("FACTORY_OFFICE_ACCESS_BIND") is not None:
             fail("core: the Office listener must not bind a TCP port")
 
-    for name in ("init", "provider-bundle", "dependency-bundle"):
+    for name in (
+        "init",
+        "provider-bundle",
+        "dependency-bundle",
+        "environment-builder-bundle",
+    ):
         service = services.get(name, {})
         if service.get("network_mode") != "none":
             fail(f"{name}: one-shot initialization must use network_mode none")
@@ -540,7 +553,11 @@ def main(path: str) -> int:
         unexpected = as_set(service, "cap_add") - allowed_caps
         if unexpected:
             fail(f"{name}: unsupported one-shot capabilities {sorted(unexpected)}")
-        if name in {"provider-bundle", "dependency-bundle"}:
+        if name in {
+            "provider-bundle",
+            "dependency-bundle",
+            "environment-builder-bundle",
+        }:
             volumes = service.get("volumes") or []
             if len(volumes) != 1:
                 fail(f"{name}: exactly one image bundle mount is allowed")

@@ -392,6 +392,29 @@ class ComposePolicyTests(unittest.TestCase):
             "dependency-bundle: exactly one image bundle mount is allowed",
         )
 
+    def test_rejects_missing_or_networked_environment_builder_bundle(self):
+        self.assert_rejected(
+            lambda c: c["services"].pop("environment-builder-bundle"),
+            "missing services: ['environment-builder-bundle']",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["environment-builder-bundle"].__setitem__(
+                "network_mode", "bridge"
+            ),
+            "environment-builder-bundle: one-shot initialization must use network_mode none",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["environment-builder-bundle"]["volumes"].append(
+                {
+                    "type": "volume",
+                    "source": "factory-projects",
+                    "target": "/projects",
+                    "read_only": True,
+                }
+            ),
+            "environment-builder-bundle: exactly one image bundle mount is allowed",
+        )
+
     def test_rejects_reviewer_identity_or_cross_role_state(self):
         def wrong_principal(config):
             config["services"]["reviewer-security"]["environment"][
