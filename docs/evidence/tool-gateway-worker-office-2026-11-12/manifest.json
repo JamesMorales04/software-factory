@@ -1,0 +1,125 @@
+{
+  "schema": "factory.tool-gateway-worker-office.v1",
+  "recorded_at": "2026-11-12T22:55:00Z",
+  "result": "PASS (author-run Worker/Office gateway; not independent acceptance)",
+  "candidate_sha": "0465c446da7069d043be9cadade0e4b46c48d3b0",
+  "branch": "feat/tool-gateway",
+  "environment": {
+    "core": "factory-core development binary built from the candidate",
+    "supervisor": "factory-supervisor development binary built from the candidate",
+    "office": "Vite development server plus the repository Playwright Chromium",
+    "database": "disposable SQLite under a temporary directory",
+    "gateway": "real Core gateway configured with the Context7 HTTP catalog; no remote MCP call"
+  },
+  "browser_observation": {
+    "command": "FACTORY_EVIDENCE_DIR=docs/evidence/tool-gateway-worker-office-2026-11-12 node office/e2e-browser/rust-journey.mjs",
+    "result": "{\"ok\":true,\"journey\":\"office\"}",
+    "screenshots": [
+      "runtime-gateway-enabled-1440.png",
+      "runtime-gateway-enabled-390.png"
+    ],
+    "console": "No unexpected console or page errors were recorded by the journey.",
+    "axe": "Scoped WCAG 2.2 A/AA scan of [data-testid=tool-gateway-panel] returned no critical or serious violations."
+  },
+  "ui_matrix": [
+    {
+      "id": "UI-001",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "MCP tool gateway panel",
+      "expected": "Enabled badge and Core-backed gateway status are visible",
+      "evidence": "runtime-gateway-enabled-1440.png; journey heading/badge assertions",
+      "result": "PASS"
+    },
+    {
+      "id": "UI-002",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Enabled catalog summary",
+      "expected": "Server context7 (http), one authorized tool and the per-role rate limit render",
+      "evidence": "runtime-gateway-enabled-1440.png",
+      "result": "PASS"
+    },
+    {
+      "id": "UI-003",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Catalog row",
+      "expected": "context7.query-docs renders with its argument hint and Read-only policy",
+      "evidence": "runtime-gateway-enabled-1440.png",
+      "result": "PASS"
+    },
+    {
+      "id": "UI-004",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Empty recent calls",
+      "expected": "Explicit no-call text rather than invented history",
+      "evidence": "runtime-gateway-enabled-1440.png; journey text assertion",
+      "result": "PASS"
+    },
+    {
+      "id": "UI-005",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Responsive layout",
+      "expected": "No document overflow at 834 or 390 px; catalog stacks into labelled rows",
+      "evidence": "runtime-gateway-enabled-390.png; journey width assertions",
+      "result": "PASS"
+    },
+    {
+      "id": "UI-006",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Accessibility floor",
+      "expected": "No critical or serious axe violations inside the gateway panel",
+      "evidence": "journey scoped axe scan",
+      "result": "PASS"
+    },
+    {
+      "id": "UI-007",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Disabled state",
+      "expected": "Explicit not-configured empty state; no fake catalog or calls",
+      "evidence": "office/src/views/Runtime.test.tsx",
+      "result": "PASS (component); real-browser disabled state NOT_TESTED"
+    },
+    {
+      "id": "UI-008",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Populated recent calls",
+      "expected": "ALLOW/DENY, role, latency, bytes and bounded error render; endpoints and raw args are absent",
+      "evidence": "office/src/views/Runtime.test.tsx",
+      "result": "PASS (component); real-browser populated state NOT_TESTED"
+    },
+    {
+      "id": "UI-009",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Spanish labels",
+      "expected": "Panel title, states and table labels have Spanish catalog entries",
+      "evidence": "office/src/i18n/catalog.es.ts; i18n tests",
+      "result": "PASS (component)"
+    },
+    {
+      "id": "UI-010",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Keyboard/tab navigation",
+      "expected": "Diagnostics tab is selectable and reports aria-selected=true",
+      "evidence": "journey assertion",
+      "result": "PASS"
+    }
+  ],
+  "core_evidence": {
+    "operator_status_auth": "PASS (factory-core route test)",
+    "worker_session_auth": "PASS (factory-core route test)",
+    "live_attempt_binding": "PASS (missing live lease returns 403)",
+    "campaign_tool_grant": "PASS (assigned_provider_tools test plus static endpoint check; no live endpoint case)",
+    "durable_audit": "PASS (db::tool_gateway insert, order and immutable UPDATE/DELETE triggers)",
+    "immutable_identity": "PASS (tool_gateway role/server/MCP-name remap tests)",
+    "transport_bounds": "PASS (tool_gateway argument, response, timeout, rate-limit tests)",
+    "worker_tool_pack": "PASS (factory-worker tool grant and hidden-catalog tests)",
+    "provider_paths": "PASS (static inspection plus Worker tests); live OpenCode/Codex gateway turn NOT_TESTED"
+  },
+  "limitations": [
+    "No live Context7, GitHub read-only or Playwright MCP call was exercised.",
+    "The populated recent-call table and disabled state are component-tested, not real-browser tested.",
+    "No live Worker/Attempt reached the authenticated Core success path in this run.",
+    "The repository e2e_dispatch_negative and e2e_fixture_dispatch fixtures are stale relative to the environment compiler: they fail at campaign authorization with ENVIRONMENT_PLAN_REQUIRED before reaching gateway code. The environment check predates the branch base; this is reported as pre-existing BLOCKED, not a gateway failure.",
+    "No independent verifier, Quality Gate acceptance, live provider turn or security review was performed for this slice.",
+    "TRUSTED_LOCAL is not isolated or certified; browser navigation/click/type remain disabled until a controlled network boundary exists."
+  ]
+}
