@@ -9293,12 +9293,14 @@ async fn worker_tool_gateway(
 fn github_repository_scope(
     grant: &factory_native::db::AssignedProviderGrant,
 ) -> Option<(String, String)> {
-    let source = if grant.source_kind == "github" || grant.source_url.contains("github.com") {
-        &grant.source_url
-    } else {
-        &grant.remote_origin
-    };
-    factory_native::github::repository_coordinates_from_url(source)
+    match grant.source_kind.as_str() {
+        "github" => factory_native::github::repository_coordinates_from_url(&grant.source_url),
+        "git" => factory_native::github::repository_coordinates_from_url(&grant.source_url)
+            .or_else(|| {
+                factory_native::github::repository_coordinates_from_url(&grant.remote_origin)
+            }),
+        _ => factory_native::github::repository_coordinates_from_url(&grant.remote_origin),
+    }
 }
 
 fn github_arguments_match_scope(arguments: &Value, owner: &str, repo: &str) -> bool {
@@ -22578,13 +22580,23 @@ mod tests {
             github_repository_scope(&grant),
             Some(("acme".into(), "widgets".into()))
         );
+        let evil = factory_native::db::AssignedProviderGrant {
+            source_kind: "git".into(),
+            source_url: "https://evil.example/path/github.com/acme/widgets".into(),
+            remote_origin: String::new(),
+            ..grant.clone()
+        };
+        assert_eq!(github_repository_scope(&evil), None);
         let local = factory_native::db::AssignedProviderGrant {
             source_kind: "local".into(),
             source_url: String::new(),
-            remote_origin: "/tmp/widgets".into(),
+            remote_origin: "git@github.com:acme/widgets.git".into(),
             ..grant
         };
-        assert_eq!(github_repository_scope(&local), None);
+        assert_eq!(
+            github_repository_scope(&local),
+            Some(("acme".into(), "widgets".into()))
+        );
     }
 
     #[tokio::test]

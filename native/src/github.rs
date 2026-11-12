@@ -1671,16 +1671,31 @@ pub fn validate_repo_coordinates(owner: &str, repo: &str) -> Result<(), GitHubEr
 /// remote URL. Only a repository root is accepted; arbitrary subpaths and
 /// non-GitHub hosts return `None` so a gateway call fails closed.
 pub fn repository_coordinates_from_url(url: &str) -> Option<(String, String)> {
-    let value = url.trim().trim_end_matches('/');
-    let path = if let Some(rest) = value.strip_prefix("git@github.com:") {
-        rest
-    } else if let Some(rest) = value.strip_prefix("ssh://git@github.com/") {
-        rest
-    } else if let Some((_, rest)) = value.split_once("github.com/") {
-        rest
-    } else {
+    let value = url.trim();
+    if value.len() > 2_048 {
         return None;
-    };
+    }
+    if let Some(path) = value.strip_prefix("git@github.com:") {
+        return repository_from_path(path);
+    }
+    if let Some(path) = value.strip_prefix("ssh://git@github.com/") {
+        return repository_from_path(path);
+    }
+    let parsed = reqwest::Url::parse(value).ok()?;
+    if parsed.scheme() != "https"
+        || parsed.host_str() != Some("github.com")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return None;
+    }
+    repository_from_path(parsed.path())
+}
+
+fn repository_from_path(path: &str) -> Option<(String, String)> {
+    let path = path.trim_matches('/');
     let mut parts = path.split('/');
     let owner = parts.next()?.trim();
     let repo = parts.next()?.trim().trim_end_matches(".git");
@@ -3759,6 +3774,12 @@ mod tests {
             "https://gitlab.com/acme/widgets",
             "https://github.com/acme/widgets/tree/main",
             "https://github.com/acme",
+            "https://evil.example/path/github.com/acme/widgets",
+            "https://github.com.evil/acme/widgets",
+            "https://user:pass@github.com/acme/widgets",
+            "https://github.com/acme/widgets?tab=readme",
+            "https://github.com/acme/widgets#readme",
+            "http://github.com/acme/widgets",
             "",
         ] {
             assert_eq!(repository_coordinates_from_url(invalid), None, "{invalid}");

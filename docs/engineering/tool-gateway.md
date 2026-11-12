@@ -45,10 +45,12 @@ tool as read-only for Reviewer. Dispatch uses the immutable MCP name, not the
 configured one.
 
 GitHub tools are advertised only when the exact Project has a resolvable GitHub
-`owner/repo` (from its source URL or remote origin). Core requires the tool
-arguments' `owner` and `repo` to match that project repository; a missing or
-different repository is denied. `github.search_code` is not exposed because a
-free-form code search cannot be bound reliably to one repository; it returns
+`owner/repo` from a strict HTTPS or SSH GitHub URL (source URL for GitHub/git
+projects, remote origin for local projects). Unrecognized hosts, credentials,
+queries, fragments, subpaths and deceptive URLs fail closed. Core requires the
+tool arguments' `owner` and `repo` to match that project repository; a missing
+or different repository is denied. `github.search_code` is not exposed because
+a free-form code search cannot be bound reliably to one repository; it returns
 only with a server-side scoping contract.
 
 | Tool | Roles | Read-only |

@@ -67,7 +67,8 @@ authority model instead of creating a second one.
    name and read-only classification. Configuration may select roles, bounds and
    a trusted endpoint, but cannot invent an identity, remap a server, rename the
    MCP tool or relabel a mutating tool as read-only. GitHub tools are further
-   bound to the exact Project repository in Core; free-form code search is not
+   bound to the exact Project repository in Core after strict HTTPS/SSH host
+   parsing; unrecognized sources fail closed and free-form code search is not
    exposed.
 2. Support bounded HTTP MCP (Context7 and GitHub read-only) and stdio MCP
    (Playwright). The stdio child receives only its configured environment.
