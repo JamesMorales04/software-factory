@@ -105,8 +105,10 @@ per-language table. Instead:
    toolchains/packages/commands. Committed project files remain supported, and
    the generated-file validator rejects every `unfree` policy identifier,
    dynamic config construction (`listToAttrs`, `mapAttrs`, `getAttr`,
-   `fromJSON`, `attrNames`, `functionArgs`), impure evaluation, unpinned
-   fetches, secrets and unsafe sandbox/network constructs. The production
+   `fromJSON`, `attrNames`, `functionArgs`), dynamic attrset keys inside
+   `config`, impure evaluation, unpinned fetches, secrets and unsafe
+   sandbox/network constructs. Ordinary committed flake interpolation such as
+   `devShells.${system}` remains valid. The production
    `RequestEnvironmentConstraints` does not expose a `files` field.
 6. Precedence remains: explicit request `environmentConstraints`; committed
    conventions; CI/version evidence; the model proposal, which only fills
@@ -126,13 +128,16 @@ per-language table. Instead:
    closure**, including transitive packages. `EnvironmentResolution.closureLicenses`
    records builder-observed closure licence metadata; any unfree, denied or
    unknown closure package fails closed. Outputs of an observed package are
-   mapped by their exact output path or shared deriver; a small explicit
-   reviewed bootstrap mapping covers the internal `xgcc` compiler output. Any
-   other unobserved closure path fails closed. This check is independent of the
-   plan copy and of Nix text, so a constructed `allowUnfreePredicate` cannot
-   hide an unfree dependency. The builder also checks every plan command's
-   executable with `command -v` inside the realised devShell and fails closed
-   if it is missing.
+   mapped by their exact output path or shared deriver. The only non-nixpkgs
+   exception is the internal `xgcc` bootstrap output, bound to its exact pinned
+   nixpkgs revision, derivation path and output path; a name-only match is not
+   accepted. Substrate paths (`nix`, `devenv`, `nixpkgs`, `git-hooks`) are
+   identified by the package name parsed after the store hash and recorded with
+   their known licence entries. Any other unobserved closure path fails closed.
+   This check is independent of the plan copy and of Nix text, so a constructed
+   `allowUnfreePredicate` cannot hide an unfree dependency. The builder also
+   checks every plan command's executable with `command -v` inside the realised
+   devShell and fails closed if it is missing.
 9. The model-selected stack profile is the input to the architecture, skill and
    Definition of Done artifacts. The raw triage profile remains audit context;
    the architecture artifact records the selected stack explicitly. The Lead
@@ -266,7 +271,7 @@ before any assignment.
 - `cargo test -p factory-native --bin factory-runtime-broker` — 71 passed.
 - `cargo test -p factory-native --bin factory-supervisor` — 11 passed.
 - `python3 -W error::ResourceWarning -m unittest discover -s
-  deploy/environment-builder/tests` — 74 tests OK.
+  deploy/environment-builder/tests` — 76 tests OK.
 - `scripts/environment-builder-real-resolve-smoke.sh` — real Nix resolution
   against the pinned nixpkgs passed: `real-nix-resolve: PASS packages=1
   closure=24`.

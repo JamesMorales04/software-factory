@@ -235,6 +235,71 @@ class PolicyTests(unittest.TestCase):
         finally:
             log.close()
 
+    def test_internal_xgcc_exception_requires_exact_identity(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        real_path = "/nix/store/16hvpw4b3r05girazh4rnwbw0jgjkb4l-xgcc-14.3.0-libgcc"
+        real_driver = "/nix/store/p8vpplfq13sjvxxvcfswp8p2rajji7yh-xgcc-14.3.0.drv"
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            with mock.patch("environment_builder.cli.nix_eval_json", return_value=[]):
+                entries = cli._closure_license_entries(
+                    {"nix": {"nixpkgs": pin}},
+                    [{"path": real_path, "deriver": real_driver}],
+                    {},
+                    30,
+                    log,
+                )
+            self.assertEqual(entries[0]["name"], "xgcc")
+            self.assertEqual(entries[0]["license"], "GPL-3.0-or-later")
+
+            fabricated = "/nix/store/" + "f" * 32 + "-xgcc-1.0"
+            with mock.patch("environment_builder.cli.nix_eval_json", return_value=[]):
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(
+                        {"nix": {"nixpkgs": pin}},
+                        [{"path": fabricated, "deriver": "/nix/store/" + "e" * 32 + "-xgcc-1.0.drv"}],
+                        {},
+                        30,
+                        log,
+                    )
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+        finally:
+            log.close()
+
+    def test_substrate_closure_entries_use_reviewed_licenses(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        package = "/nix/store/" + "b" * 32 + "-bash-5.2"
+        manifest = [
+            {"path": "/nix/store/" + "1" * 32 + "-nix-2.28.3", "deriver": "/nix/store/nix.drv"},
+            {"path": "/nix/store/" + "2" * 32 + "-devenv-1.11.2", "deriver": "/nix/store/devenv.drv"},
+            {"path": "/nix/store/" + "3" * 32 + "-nixpkgs-24.11", "deriver": "/nix/store/nixpkgs.drv"},
+            {"path": "/nix/store/" + "4" * 32 + "-git-hooks.nix-1.0", "deriver": "/nix/store/git-hooks.drv"},
+            {"path": package, "deriver": "/nix/store/bash.drv"},
+        ]
+        observed = {
+            "path": package,
+            "name": "bash",
+            "version": "5.2",
+            "license": "GPL-3.0-or-later",
+            "unfree": False,
+        }
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            with mock.patch(
+                "environment_builder.cli.nix_eval_json", return_value=[observed]
+            ):
+                entries = cli._closure_license_entries(
+                    {"nix": {"nixpkgs": pin}}, manifest, {}, 30, log
+                )
+            names = sorted(entry["name"] for entry in entries)
+            self.assertEqual(
+                names, ["bash", "devenv", "git-hooks.nix", "nix", "nixpkgs"]
+            )
+        finally:
+            log.close()
+
     def test_closure_audit_excludes_only_the_exact_devshell_wrapper(self) -> None:
         root = "/nix/store/" + "a" * 32 + "-devshell"
         package = "/nix/store/" + "b" * 32 + "-bash-5.2"
@@ -289,6 +354,15 @@ class PolicyTests(unittest.TestCase):
         # Core-generated files keep their controlled interpolation.
         generated = EnvironmentFile("flake.nix", sha256_text(content), "GENERATED", content)
         validate_nix_constructs([generated])
+
+        conventional = (
+            "outputs = { self, nixpkgs }: "
+            "let system = \"x86_64-linux\"; in "
+            "{ devShells.${system}.default = nixpkgs.legacyPackages.${system}.mkShell { }; };"
+        )
+        validate_nix_constructs(
+            [EnvironmentFile("flake.nix", sha256_text(conventional), "PROJECT", conventional)]
+        )
 
     def test_command_check_rejects_shell_builtins_and_accepts_real_binary(self) -> None:
         script = (

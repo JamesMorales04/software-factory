@@ -135,6 +135,12 @@ FORBIDDEN_NIX_PATTERNS: Final[tuple[tuple[re.Pattern[str], str, str], ...]] = (
     (re.compile(r"\b(?:builtins\.)?fetchTree\b"), "ENVIRONMENT_PIN_MISSING", "fetchTree"),
 )
 
+# Dynamic attrset keys inside nixpkgs config can construct an unfree policy
+# from fragments. Ordinary flake interpolation such as devShells.${system} is
+# not affected.
+DYNAMIC_CONFIG_KEY = re.compile(
+    r"\b(?:nixpkgs\.)?config\s*=\s*\{[^{}]*\$\{", re.IGNORECASE | re.DOTALL
+)
 INPUT_URL = re.compile(r"\binputs(?:\.[A-Za-z0-9_.-]+)*\.url\s*=\s*[\"']([^\"']+)[\"']")
 YAML_INPUT_URL = re.compile(r"^\s*url:\s*[\"']?([^\"'\s]+)[\"']?\s*$", re.MULTILINE)
 YAML_BOOL = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*:\s*(true|false)\s*$", re.MULTILINE)
@@ -562,14 +568,13 @@ def validate_nix_constructs(files: Iterable[EnvironmentFile]) -> None:
     for file in files:
         if not file.path.endswith((".nix", ".yaml", ".yml")):
             continue
-        # Committed Nix is restricted to a safe subset: dynamic attrset keys and
-        # string interpolation can construct an unfree config without any
-        # forbidden literal. Core-generated files keep their controlled
-        # interpolation.
-        if file.origin == "PROJECT" and "${" in file.content:
+        # Committed Nix may use ordinary flake interpolation, but a dynamic
+        # attrset key inside nixpkgs config can construct an unfree policy from
+        # fragments. Core-generated files keep their controlled interpolation.
+        if file.origin == "PROJECT" and DYNAMIC_CONFIG_KEY.search(file.content):
             fail(
                 "ENVIRONMENT_SANDBOX_DENIED",
-                f"{file.path} uses dynamic interpolation in a committed Nix file",
+                f"{file.path} uses a dynamic attribute key in nixpkgs config",
             )
         for pattern, code, label in FORBIDDEN_NIX_PATTERNS:
             if pattern.search(file.content):

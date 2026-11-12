@@ -672,30 +672,65 @@ def _verify_command_executables(
             )
 
 
-# Explicitly reviewed internal bootstrap packages that are not exposed as
-# top-level nixpkgs attributes. Any other unobserved closure path fails closed.
-INTERNAL_CLOSURE_LICENSES: dict[str, str] = {
-    "xgcc": "GPL-3.0-or-later",
+# Exact reviewed internal bootstrap identity keyed by pinned nixpkgs, derivation
+# and output path. A name-only `xgcc` exception would accept a fabricated store
+# path; this map does not. Any other unobserved closure path fails closed.
+REVIEWED_INTERNAL_CLOSURE_IDENTITIES: dict[
+    str, dict[tuple[str, str], dict[str, Any]]
+] = {
+    "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d": {
+        (
+            "/nix/store/p8vpplfq13sjvxxvcfswp8p2rajji7yh-xgcc-14.3.0.drv",
+            "/nix/store/16hvpw4b3r05girazh4rnwbw0jgjkb4l-xgcc-14.3.0-libgcc",
+        ): {
+            "name": "xgcc",
+            "version": "14.3.0-libgcc",
+            "license": "GPL-3.0-or-later",
+            "unfree": False,
+        }
+    }
+}
+# Exact substrate identities are recorded with their known licenses instead of
+# being looked up in nixpkgs or silently skipped.
+SUBSTRATE_CLOSURE_LICENSES: dict[str, str] = {
+    "nix": "LGPL-2.1-only",
+    "devenv": "Apache-2.0",
+    "nixpkgs": "MIT",
+    "git-hooks": "MIT",
+    "git-hooks.nix": "MIT",
 }
 STORE_NAME = re.compile(r"^[a-z0-9]{32}-(.+)$")
 STORE_NAME_VERSION = re.compile(r"^([A-Za-z0-9_+.-]+?)-(\d.*)$")
 
 
-def _internal_closure_license(path: str) -> dict[str, Any] | None:
+def _store_name_version(path: str) -> tuple[str, str]:
     match = STORE_NAME.match(Path(path).name)
     if match is None:
-        return None
+        return Path(path).name, ""
     name_match = STORE_NAME_VERSION.match(match.group(1))
     if name_match is None:
+        return match.group(1), ""
+    return name_match.group(1), name_match.group(2)
+
+
+def _reviewed_internal_closure_license(
+    pin: str, path: str, deriver: str
+) -> dict[str, Any] | None:
+    identity = REVIEWED_INTERNAL_CLOSURE_IDENTITIES.get(pin, {}).get((deriver, path))
+    if identity is None:
         return None
-    name, version = name_match.group(1), name_match.group(2)
-    license_value = INTERNAL_CLOSURE_LICENSES.get(name)
+    return {"path": path, **identity}
+
+
+def _substrate_closure_license(path: str) -> dict[str, Any] | None:
+    name, version = _store_name_version(path)
+    license_value = SUBSTRATE_CLOSURE_LICENSES.get(name)
     if license_value is None:
         return None
     return {
         "path": path,
         "name": name,
-        "version": version,
+        "version": version or "pinned",
         "license": license_value,
         "unfree": False,
     }
@@ -713,7 +748,7 @@ def _closure_license_entries(
     pin = str(plan.get("nix", {}).get("nixpkgs", ""))
     if not pin.startswith(NIXPKGS_PREFIX):
         fail("ENVIRONMENT_PIN_MISSING", "the plan has no pinned nixpkgs for closure verification")
-    substrate = ("nix-", "devenv-", "nixpkgs-", "git-hooks-")
+    substrate_entries: list[dict[str, Any]] = []
     paths: set[str] = set()
     for entry in manifest:
         if not isinstance(entry, dict) or not str(entry.get("deriver", "")).strip():
@@ -721,16 +756,17 @@ def _closure_license_entries(
         path = str(entry.get("path", ""))
         if path in (exclude or set()):
             continue
-        basename = Path(path).name
-        # The Nix/devenv substrate licenses are recorded by the frozen
-        # inventory; they are not nixpkgs package outputs.
-        if basename.startswith(substrate):
+        store_name, _version = _store_name_version(path)
+        if store_name in SUBSTRATE_CLOSURE_LICENSES:
+            substrate = _substrate_closure_license(path)
+            if substrate is not None:
+                substrate_entries.append(substrate)
             continue
         if path:
             paths.add(path)
     ordered_paths = sorted(paths)
     if not ordered_paths:
-        return []
+        return validate_closure_licenses(substrate_entries)
     observed = nix_eval_json(
         _closure_metadata_expression(pin, ordered_paths),
         env=environment,
@@ -768,20 +804,21 @@ def _closure_license_entries(
             deriver = str(manifest_by_path.get(path, {}).get("deriver", "")).strip()
             observed_entry = by_deriver.get(deriver)
         if observed_entry is None:
-            internal = _internal_closure_license(path)
-            if internal is not None:
-                resolved.append(internal)
+            deriver = str(manifest_by_path.get(path, {}).get("deriver", "")).strip()
+            reviewed = _reviewed_internal_closure_license(pin, path, deriver)
+            if reviewed is not None:
+                resolved.append(reviewed)
                 continue
             fail(
                 "ENVIRONMENT_LICENSE_UNKNOWN",
-                f"transitive closure path has no independently observed package metadata: {path}",
+                f"transitive closure path has no independently observed package metadata or reviewed identity: {path}",
             )
         name = str(observed_entry.get("name", ""))
         version = str(observed_entry.get("version", ""))
         if not version:
-            name_version = STORE_NAME_VERSION.match(name)
-            if name_version is not None:
-                name, version = name_version.group(1), name_version.group(2)
+            name_match = STORE_NAME_VERSION.match(name)
+            if name_match is not None:
+                name, version = name_match.group(1), name_match.group(2)
         resolved.append(
             {
                 "path": path,
@@ -791,7 +828,7 @@ def _closure_license_entries(
                 "unfree": observed_entry.get("unfree"),
             }
         )
-    return validate_closure_licenses(resolved)
+    return validate_closure_licenses(substrate_entries + resolved)
 
 
 def resolve(args: argparse.Namespace) -> int:
