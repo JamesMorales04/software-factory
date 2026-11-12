@@ -995,6 +995,15 @@ fn content_review(technology: &str) -> Option<(&'static str, &'static [&'static 
                 "https://docs.python.org/3/tutorial/index.html :: The Python Tutorial",
             ][..],
         ),
+        "fastapi" => (
+            "FastAPI tutorial, response models, security and error-handling guidance.",
+            &[
+                "https://fastapi.tiangolo.com/tutorial/ :: Tutorial - User Guide",
+                "https://fastapi.tiangolo.com/tutorial/response-model/ :: Response Model",
+                "https://fastapi.tiangolo.com/tutorial/security/ :: Security",
+                "https://fastapi.tiangolo.com/tutorial/handling-errors/ :: Handling Errors",
+            ][..],
+        ),
         "pip" => (
             "pip requirements files and packaging installation guidance.",
             &[

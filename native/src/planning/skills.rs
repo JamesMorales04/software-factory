@@ -631,6 +631,43 @@ tauri = "2"
     }
 
     #[test]
+    fn fastapi_is_content_reviewed_and_plannable() {
+        let pack = builtin_skill_pack("fastapi").unwrap();
+        assert_eq!(pack.review_basis, SkillReviewBasis::ContentReviewed);
+        assert_eq!(pack.content_reviewed_at, BUILTIN_CONTENT_REVIEWED_AT);
+        assert_eq!(pack.review_after, BUILTIN_REVIEW_AFTER);
+        assert_eq!(pack.reviewed_sections.len(), 4);
+        assert!(!pack.is_stale(BUILTIN_CONTENT_REVIEWED_AT));
+
+        let stack = StackProfile {
+            languages: vec!["python".into()],
+            frameworks: vec!["fastapi".into()],
+            package_managers: vec!["pip".into()],
+            test_frameworks: vec!["pytest".into()],
+            ..StackProfile::default()
+        };
+        let plan = build_skill_plan(&stack, &[], BUILTIN_CONTENT_REVIEWED_AT).unwrap();
+        assert!(plan.needs.contains(&"fastapi".into()));
+        assert!(
+            plan.proposed
+                .iter()
+                .any(|pack| pack.technology == "fastapi")
+        );
+
+        // A source-only pack for the same technology still fails closed; the
+        // reviewed builtin is what makes the live plan plannable.
+        let mut source_only = pack.clone();
+        source_only.content_reviewed_at.clear();
+        source_only.review_after.clear();
+        source_only.review_scope.clear();
+        source_only.reviewed_sections.clear();
+        source_only.review_basis = SkillReviewBasis::SourceAvailabilityOnly;
+        assert!(source_only.validate().is_ok());
+        assert!(!source_only.is_content_reviewed());
+        assert!(source_only.is_stale(BUILTIN_CONTENT_REVIEWED_AT));
+    }
+
+    #[test]
     fn source_availability_alone_never_makes_a_pack_fresh() {
         let pack = builtin_skill_pack("angular").unwrap();
         assert_eq!(pack.review_basis, SkillReviewBasis::SourceAvailabilityOnly);

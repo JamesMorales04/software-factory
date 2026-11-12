@@ -229,7 +229,17 @@
           "httpStatus": 200
         }
       ],
-      "contentReview": null
+      "contentReview": {
+        "reviewedAt": "2026-11-09T00:00:00Z",
+        "reviewAfter": "2027-02-07T00:00:00Z",
+        "scope": "FastAPI tutorial, response models, security and error-handling guidance.",
+        "sections": [
+          "https://fastapi.tiangolo.com/tutorial/ :: Tutorial - User Guide",
+          "https://fastapi.tiangolo.com/tutorial/response-model/ :: Response Model",
+          "https://fastapi.tiangolo.com/tutorial/security/ :: Security",
+          "https://fastapi.tiangolo.com/tutorial/handling-errors/ :: Handling Errors"
+        ]
+      }
     },
     "flask": {
       "sourceCheckedAt": "2026-11-09T00:00:00Z",
