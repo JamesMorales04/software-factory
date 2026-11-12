@@ -1,0 +1,144 @@
+{
+  "maxCallsPerMinute": 60,
+  "servers": [
+    {
+      "transport": "http",
+      "id": "context7",
+      "endpoint": "https://mcp.context7.com/mcp"
+    },
+    {
+      "transport": "http",
+      "id": "github-read",
+      "endpoint": "https://api.githubcopilot.com/mcp/readonly",
+      "bearerEnv": "GITHUB_MCP_TOKEN"
+    },
+    {
+      "transport": "stdio",
+      "id": "playwright",
+      "command": ["npx", "-y", "@playwright/mcp@latest", "--isolated"],
+      "env": {}
+    }
+  ],
+  "tools": [
+    {
+      "id": "context7.resolve-library-id",
+      "server": "context7",
+      "tool": "resolve-library-id",
+      "roles": ["IMPLEMENTER", "REPAIRER", "PLANNER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144,
+      "allowedHosts": []
+    },
+    {
+      "id": "context7.query-docs",
+      "server": "context7",
+      "tool": "query-docs",
+      "roles": ["IMPLEMENTER", "REPAIRER", "PLANNER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144,
+      "allowedHosts": []
+    },
+    {
+      "id": "playwright.browser_navigate",
+      "server": "playwright",
+      "tool": "browser_navigate",
+      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144,
+      "allowedHosts": ["127.0.0.1", "localhost", "::1"]
+    },
+    {
+      "id": "playwright.browser_snapshot",
+      "server": "playwright",
+      "tool": "browser_snapshot",
+      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144,
+      "allowedHosts": []
+    },
+    {
+      "id": "playwright.browser_take_screenshot",
+      "server": "playwright",
+      "tool": "browser_take_screenshot",
+      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144,
+      "allowedHosts": []
+    },
+    {
+      "id": "playwright.browser_click",
+      "server": "playwright",
+      "tool": "browser_click",
+      "roles": ["IMPLEMENTER", "REPAIRER"],
+      "readOnly": false,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144,
+      "allowedHosts": []
+    },
+    {
+      "id": "playwright.browser_type",
+      "server": "playwright",
+      "tool": "browser_type",
+      "roles": ["IMPLEMENTER", "REPAIRER"],
+      "readOnly": false,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144,
+      "allowedHosts": []
+    },
+    {
+      "id": "playwright.browser_close",
+      "server": "playwright",
+      "tool": "browser_close",
+      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144,
+      "allowedHosts": []
+    },
+    {
+      "id": "github.issue_read",
+      "server": "github-read",
+      "tool": "issue_read",
+      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144,
+      "allowedHosts": []
+    },
+    {
+      "id": "github.pull_request_read",
+      "server": "github-read",
+      "tool": "pull_request_read",
+      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144,
+      "allowedHosts": []
+    },
+    {
+      "id": "github.get_file_contents",
+      "server": "github-read",
+      "tool": "get_file_contents",
+      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144,
+      "allowedHosts": []
+    },
+    {
+      "id": "github.search_code",
+      "server": "github-read",
+      "tool": "search_code",
+      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144,
+      "allowedHosts": []
+    }
+  ]
+}
