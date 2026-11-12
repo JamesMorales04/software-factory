@@ -291,6 +291,37 @@ fn exact_version(name: &str, value: &str) -> Result<(), EnvironmentError> {
     Ok(())
 }
 
+/// A package version may be an exact version or a numeric dotted prefix
+/// constraint such as `22` or `22.20`, resolved against the pinned nixpkgs to
+/// the exact observed version. Ranges, wildcards and malformed values fail
+/// closed before resolution.
+fn package_version_constraint(name: &str, value: &str) -> Result<(), EnvironmentError> {
+    let numeric = !value.is_empty()
+        && value.len() <= 64
+        && !value.chars().any(char::is_control)
+        && value.split('.').all(|segment| {
+            !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_digit())
+        });
+    if !numeric {
+        return Err(pin_missing(format!(
+            "{name} must be a non-empty exact version or a numeric dotted prefix constraint, not a range, wildcard or malformed value"
+        )));
+    }
+    Ok(())
+}
+
+/// The observed version satisfies a numeric prefix constraint only at a dot
+/// boundary; an exact version is also accepted.
+fn version_constraint_matches(constraint: &str, observed: &str) -> bool {
+    if package_version_constraint("version constraint", constraint).is_err() {
+        return false;
+    }
+    observed == constraint
+        || observed
+            .strip_prefix(constraint)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+}
+
 // ---------------------------------------------------------------------------
 // Committed conventions
 // ---------------------------------------------------------------------------
@@ -1244,7 +1275,7 @@ impl EnvironmentProposal {
         let mut package_names = BTreeSet::new();
         for package in &self.packages {
             bounded_text("proposal package name", &package.name, 200)?;
-            exact_version("proposal package version", &package.version)?;
+            package_version_constraint("proposal package version", &package.version)?;
             bounded_text("proposal package license", &package.license, 200)?;
             validate_license_expression(&package.license)?;
             validate_package_source(package)?;
@@ -2071,7 +2102,7 @@ impl EnvironmentPlan {
         let mut names = BTreeSet::new();
         for package in &self.packages {
             bounded_text("package name", &package.name, 200)?;
-            exact_version("package version", &package.version)?;
+            package_version_constraint("package version", &package.version)?;
             bounded_text("package license", &package.license, 200)?;
             validate_package_source(package)?;
             if !package.sha256.is_empty() && !is_sha256(&package.sha256) {
@@ -3922,7 +3953,13 @@ pub struct VerifiedPackage {
     /// package outputs, never from the Core-generated devShell wrapper.
     #[serde(default)]
     pub store_path: String,
+    /// Exact version observed in the pinned nixpkgs attribute. This is the
+    /// authoritative version for the closure audit, SBOM and frozen evidence.
     pub version: String,
+    /// The plan's original exact version or numeric dotted prefix constraint.
+    /// Empty is accepted only for a legacy exact-version resolution.
+    #[serde(default)]
+    pub version_constraint: String,
     pub license: String,
     pub unfree: bool,
 }
@@ -4044,6 +4081,12 @@ impl EnvironmentResolution {
             bounded_text("verified package name", &package.name, 200)?;
             validate_nix_attr_path(&package.attr)?;
             exact_version("verified package version", &package.version)?;
+            if !package.version_constraint.is_empty() {
+                package_version_constraint(
+                    "verified package version constraint",
+                    &package.version_constraint,
+                )?;
+            }
             bounded_text("verified package license", &package.license, 200)?;
             if observed
                 .insert((package.name.as_str(), package.attr.as_str()), package)
@@ -4083,11 +4126,28 @@ impl EnvironmentResolution {
                     package.name
                 )));
             }
-            if reported.version != package.version {
-                return Err(pin_missing(format!(
-                    "package {} version {} does not match the independently observed {}",
-                    package.name, package.version, reported.version
-                )));
+            if reported.version_constraint.is_empty() {
+                // A legacy resolution carries no constraint; only an exact
+                // version claim is acceptable.
+                if reported.version != package.version {
+                    return Err(pin_missing(format!(
+                        "package {} version {} does not match the independently observed {}",
+                        package.name, package.version, reported.version
+                    )));
+                }
+            } else {
+                if reported.version_constraint != package.version {
+                    return Err(pin_missing(format!(
+                        "package {} resolution constraint {} does not match the plan claim {}",
+                        package.name, reported.version_constraint, package.version
+                    )));
+                }
+                if !version_constraint_matches(&reported.version_constraint, &reported.version) {
+                    return Err(pin_missing(format!(
+                        "package {} observed version {} does not satisfy the constraint {}",
+                        package.name, reported.version, reported.version_constraint
+                    )));
+                }
             }
             if reported.license != package.license {
                 return Err(EnvironmentError::new(
@@ -5038,6 +5098,7 @@ mod tests {
                 attr: "ripgrep".into(),
                 store_path: format!("/nix/store/{}-ripgrep-14.1.1", "d".repeat(32)),
                 version: "14.1.1".into(),
+                version_constraint: "14.1.1".into(),
                 license: "MIT".into(),
                 unfree: false,
             }],
@@ -5087,6 +5148,147 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, EnvironmentBlockerCode::EnvironmentPinMissing);
+    }
+
+    #[test]
+    fn numeric_prefix_package_version_resolves_to_the_exact_observed_version() {
+        use crate::planning::environment::VerifiedPackage;
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        values.explicit_constraints.packages = vec![PackageRequirement {
+            name: "nodejs".into(),
+            version: "22".into(),
+            license: "MIT".into(),
+            source: "nixpkgs".into(),
+            attr: "nodejs_22".into(),
+            sha256: String::new(),
+            unfree: false,
+            attribution: "Node.js is MIT licensed.".into(),
+        }];
+        let mut plan = compile(&repository, &base, &values);
+        let content = "{\"nodes\":{}}".to_string();
+        plan.resolution = Some(EnvironmentResolution {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            plan_sha256: String::new(),
+            files: vec![EnvironmentFile {
+                path: "flake.lock".into(),
+                sha256: sha256_hex(content.as_bytes()),
+                origin: EnvironmentFileOrigin::Generated,
+                content: Some(content),
+            }],
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            packages: vec![VerifiedPackage {
+                name: "nodejs".into(),
+                attr: "nodejs_22".into(),
+                store_path: format!("/nix/store/{}-nodejs-22.20.0", "d".repeat(32)),
+                version: "22.20.0".into(),
+                version_constraint: "22".into(),
+                license: "MIT".into(),
+                unfree: false,
+            }],
+            closure_licenses: vec![closure_license()],
+        });
+        plan.refresh_hash();
+        plan.resolution.as_mut().unwrap().plan_sha256 = plan.plan_sha256.clone();
+        plan.validate(now()).unwrap();
+
+        let resolution = serde_json::to_value(plan.resolution.as_ref().unwrap()).unwrap();
+        assert_eq!(resolution["packages"][0]["version"], "22.20.0");
+        assert_eq!(resolution["packages"][0]["versionConstraint"], "22");
+
+        // The exact observed version must still satisfy the recorded
+        // constraint, and the constraint must match the plan claim.
+        plan.resolution.as_mut().unwrap().packages[0].version = "23.0.0".into();
+        plan.refresh_hash();
+        plan.resolution.as_mut().unwrap().plan_sha256 = plan.plan_sha256.clone();
+        assert_eq!(
+            plan.validate(now()).unwrap_err().code,
+            EnvironmentBlockerCode::EnvironmentPinMissing
+        );
+
+        plan.resolution.as_mut().unwrap().packages[0].version = "22.20.0".into();
+        plan.resolution.as_mut().unwrap().packages[0].version_constraint = "23".into();
+        plan.refresh_hash();
+        plan.resolution.as_mut().unwrap().plan_sha256 = plan.plan_sha256.clone();
+        assert_eq!(
+            plan.validate(now()).unwrap_err().code,
+            EnvironmentBlockerCode::EnvironmentPinMissing
+        );
+
+        // A legacy resolution with no constraint fails closed for a prefix.
+        plan.resolution.as_mut().unwrap().packages[0].version_constraint = String::new();
+        plan.refresh_hash();
+        plan.resolution.as_mut().unwrap().plan_sha256 = plan.plan_sha256.clone();
+        assert_eq!(
+            plan.validate(now()).unwrap_err().code,
+            EnvironmentBlockerCode::EnvironmentPinMissing
+        );
+    }
+
+    #[test]
+    fn verified_package_version_constraint_round_trips_and_is_optional() {
+        use crate::planning::environment::VerifiedPackage;
+        let value = serde_json::json!({
+            "name": "nodejs",
+            "attr": "nodejs_22",
+            "storePath": format!("/nix/store/{}-nodejs-22.20.0", "d".repeat(32)),
+            "version": "22.20.0",
+            "versionConstraint": "22",
+            "license": "MIT",
+            "unfree": false
+        });
+        let parsed: VerifiedPackage = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.version_constraint, "22");
+        let encoded = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(encoded["versionConstraint"], "22");
+
+        let legacy = serde_json::json!({
+            "name": "nodejs",
+            "attr": "nodejs_22",
+            "storePath": format!("/nix/store/{}-nodejs-22.20.0", "d".repeat(32)),
+            "version": "22.20.0",
+            "license": "MIT",
+            "unfree": false
+        });
+        let parsed_legacy: VerifiedPackage = serde_json::from_value(legacy).unwrap();
+        assert!(parsed_legacy.version_constraint.is_empty());
+
+        let schema = serde_json::to_value(schemars::schema_for!(VerifiedPackage)).expect("schema");
+        assert!(schema["properties"]["versionConstraint"].is_object());
+    }
+
+    #[test]
+    fn package_version_constraints_reject_ranges_and_wildcards() {
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        values.explicit_constraints.packages = vec![PackageRequirement {
+            name: "nodejs".into(),
+            version: "22".into(),
+            license: "MIT".into(),
+            source: "nixpkgs".into(),
+            attr: "nodejs_22".into(),
+            sha256: String::new(),
+            unfree: false,
+            attribution: "Node.js is MIT licensed.".into(),
+        }];
+        let mut plan = compile(&repository, &base, &values);
+        for version in ["22.x", "^22", "~22.20", ">=22", "", "22.", "v22", "22 .1"] {
+            plan.packages[0].version = version.into();
+            plan.refresh_hash();
+            assert_eq!(
+                plan.validate(now()).unwrap_err().code,
+                EnvironmentBlockerCode::EnvironmentPinMissing,
+                "{version}"
+            );
+        }
+        plan.packages[0].version = "22.20".into();
+        plan.refresh_hash();
+        plan.validate(now()).unwrap();
     }
 
     #[test]

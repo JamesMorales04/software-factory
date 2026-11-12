@@ -134,8 +134,13 @@ matter.
 Core must still, deterministically:
 
 - validate the schema, paths, commands, resource bounds and network policy;
-- resolve and pin every toolchain, package, flake input and lock digest;
-- run the License Gate and produce the SBOM/license inventory;
+- resolve and pin every toolchain, package, flake input and lock digest; a
+  package version may be an exact version or a numeric dotted prefix constraint
+  (`22`, `22.20`), resolved deterministically against the pinned nixpkgs to the
+  exact observed version;
+- run the License Gate and produce the SBOM/license inventory; the resolution
+  records the exact observed package version and the original constraint, and
+  there is no fallback to a different package, attribute or toolchain;
 - reject secrets, impure evaluation, unpinned fetches and forbidden Nix
   constructs;
 - bind the plan to the exact project/base commit/conventions hash;

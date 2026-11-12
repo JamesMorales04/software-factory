@@ -76,6 +76,7 @@ def _component(
     source: str = "",
     sha256: str = "",
     attribution: str = "",
+    version_constraint: str = "",
     purl: str | None = None,
 ) -> dict[str, Any]:
     component: dict[str, Any] = {
@@ -92,6 +93,10 @@ def _component(
             {"name": "factory:source", "value": source[:2_000]},
         ],
     }
+    if version_constraint:
+        component["properties"].append(
+            {"name": "factory:version-constraint", "value": version_constraint[:64]}
+        )
     if license_value == "NOASSERTION":
         component["licenses"] = []
         component["properties"].append(
@@ -110,6 +115,7 @@ def build_sbom(
     plan: dict[str, Any],
     manifest: list[dict[str, Any]],
     closure_licenses: list[dict[str, Any]] | None = None,
+    packages: list[dict[str, Any]] | None = None,
     nix_version: str,
     devenv_version: str,
 ) -> dict[str, Any]:
@@ -130,11 +136,21 @@ def build_sbom(
         for entry in plan.get("licenseInventory", {}).get("entries", [])
         if isinstance(entry, dict)
     }
+    observed_packages = {
+        (str(entry.get("name", "")).lower(), str(entry.get("attr", ""))): entry
+        for entry in (packages or [])
+        if isinstance(entry, dict)
+    }
     for package in plan.get("packages", []):
         if not isinstance(package, dict):
             continue
         name = str(package.get("name", ""))
-        version = str(package.get("version", ""))
+        constraint = str(package.get("version", ""))
+        attr = str(package.get("attr", "")).strip() or name
+        observed = observed_packages.get((name.lower(), attr), {})
+        # The builder-observed exact version is authoritative in the SBOM; the
+        # plan's value is retained only as the resolved version constraint.
+        version = str(observed.get("version", "")).strip() or constraint
         selected = plan_entries.get(name.lower(), {})
         components.append(
             _component(
@@ -145,6 +161,7 @@ def build_sbom(
                 source=str(package.get("source", "")),
                 sha256=str(package.get("sha256", "")),
                 attribution=str(package.get("attribution", "")),
+                version_constraint=constraint,
             )
         )
         if selected and selected.get("license") != package.get("license"):

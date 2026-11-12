@@ -30000,6 +30000,7 @@ mod tests {
                                     package.name
                                 ),
                                 version: package.version.clone(),
+                                version_constraint: package.version.clone(),
                                 license: package.license.clone(),
                                 unfree: package.unfree,
                             }

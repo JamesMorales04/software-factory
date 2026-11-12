@@ -37,6 +37,17 @@ lock files and rebinds `resolution.planSha256` to the final plan hash; the
 binding field is excluded from the plan content hash to avoid a circular hash,
 while the resolved file hashes and builder identity remain covered.
 
+Selected package versions may be an exact version (`22.20.0`) or a numeric
+dotted prefix constraint (`22`, `22.20`). The builder resolves the constraint
+against the plan's exact pinned nixpkgs attribute and records both facts in
+`resolution.json`: the exact observed `version` and the original
+`versionConstraint`. The observed version must equal the constraint or extend
+it at a dot boundary; ranges (`^22`, `~22.20`, `>=22`), wildcards (`22.x`) and
+empty/malformed versions fail `ENVIRONMENT_PIN_MISSING`. There is no fallback
+to a different package, attribute or toolchain. The exact observed version is
+authoritative in the SBOM, which also records `factory:version-constraint`; the
+frozen plan's version value is a constraint, not an exact patch pin.
+
 `deploy/factory-browser/Containerfile` builds a separate Chromium/Playwright
 runner. It contains the `factory-browser` binary, Node, `playwright-core` and
 Chromium, but not a project toolchain. Project Node/Playwright dependencies come
@@ -252,7 +263,8 @@ environment-check remains **NOT_TESTED** and is not claimed.
 exact cgroup limits, fetch-policy enforcement, protected path descendants,
 rootful-Podman rejection, wrapper nonzero-exit cleanup, runtime disk-budget
 enforcement, root/system mount-source attestation, bounded noisy-output capture
-and disk-overflow artifact purging (61 tests). The
+and disk-overflow artifact purging, plus exact/prefix version constraint
+matching and SBOM constraint recording (87 tests). The
 final `deploy/environment-builder/Containerfile` image was built and exercised
 under the unique WP1-B evidence tag
 `localhost/software-factory-environment-builder:wp1b-340fa54-r3`

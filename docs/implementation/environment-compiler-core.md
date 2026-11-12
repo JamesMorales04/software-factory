@@ -131,13 +131,21 @@ per-language table. Instead:
    sources, mismatched `nixpkgs:<attr>` suffixes, unsafe generated files and
    out-of-bound commands before any field is merged.
 7. `compile_environment_plan` re-pins, licenses, validates the sandbox/resources
-   and records package claims. Before freeze, Core requires builder resolution
-   for every generated plan and every plan with selected packages. The builder
+   and records package claims. A selected package version may be an exact
+   version or a numeric dotted prefix constraint (`22`, `22.20`); ranges,
+   wildcards and malformed values fail closed. Before freeze, Core requires
+   builder resolution for every generated plan and every plan with selected
+   packages. The builder
    evaluates `meta.version`/`meta.license`/`meta.unfree` for each exact pinned
    nixpkgs attribute in a bounded pure `nix eval` against the plan's pinned
    nixpkgs (so Devenv-only projects work); `EnvironmentResolution.packages`
-   carries the observed metadata. Core requires exact coverage and rejects a
-   missing, mismatched or unknown version, licence or unfree state.
+   carries the observed exact version and the original `versionConstraint`.
+   Core requires exact coverage and rejects a missing, mismatched or unknown
+   version, licence or unfree state; the observed exact version satisfies the
+   constraint only at a numeric dot boundary. The exact observed version is
+   authoritative for the closure audit and SBOM, which also records the
+   constraint. There is no fallback to another package, attribute or
+   toolchain.
 8. Resolution also realises the exact environment and inspects the **actual
    closure**, including transitive packages. Generated environments audit the
    selected package outputs; committed environments audit the realised package

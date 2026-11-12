@@ -347,6 +347,7 @@ def build(args: argparse.Namespace) -> int:
             plan=plan,
             manifest=manifest,
             closure_licenses=closure_licenses,
+            packages=package_metadata,
             nix_version=actual_nix,
             devenv_version=_actual_versions()[1],
         )
@@ -502,6 +503,32 @@ in map (entry:
     )
 
 
+VERSION_CONSTRAINT = re.compile(r"^[0-9]+(?:\.[0-9]+)*$")
+
+
+def version_constraint_matches(constraint: str, observed: str) -> bool:
+    """Accept an exact version or a numeric dotted prefix of the observed one.
+
+    A constraint such as ``22`` or ``22.20`` matches an observed ``22.20.0``
+    only at a dot boundary. Ranges, wildcards and malformed values never match.
+    """
+    if not VERSION_CONSTRAINT.fullmatch(constraint):
+        return False
+    if observed == constraint:
+        return True
+    return observed.startswith(constraint + ".")
+
+
+def _package_version_constraint(name: str, value: Any) -> str:
+    constraint = str(value)
+    if constraint != constraint.strip() or not VERSION_CONSTRAINT.fullmatch(constraint):
+        fail(
+            "ENVIRONMENT_PIN_MISSING",
+            f"package {name} version must be an exact version or a numeric dotted prefix constraint",
+        )
+    return constraint
+
+
 def _package_metadata(
     nixpkgs_pin: str,
     plan: dict[str, Any],
@@ -523,7 +550,7 @@ def _package_metadata(
         entries.append({"name": name, "attr": attr})
         claims.append(
             {
-                "version": str(package.get("version", "")),
+                "version": _package_version_constraint(name, package.get("version", "")),
                 "license": str(package.get("license", "")),
                 "unfree": bool(package.get("unfree", False)),
             }
@@ -562,10 +589,10 @@ def _package_metadata(
             fail("ENVIRONMENT_PLAN_INVALID", "package metadata has an invalid shape")
         if name != expected["name"] or attr != expected["attr"]:
             fail("ENVIRONMENT_PLAN_INVALID", "package metadata identity does not match the plan")
-        if version != claim["version"]:
+        if not version_constraint_matches(claim["version"], version):
             fail(
                 "ENVIRONMENT_PIN_MISSING",
-                f"package {name} version does not match the independently observed metadata",
+                f"package {name} version constraint {claim['version']} does not match the independently observed {version}",
             )
         if license_value != claim["license"]:
             fail(
@@ -583,6 +610,7 @@ def _package_metadata(
                 "attr": attr,
                 "storePath": out_path,
                 "version": version,
+                "versionConstraint": claim["version"],
                 "license": license_value,
                 "unfree": unfree,
             }
