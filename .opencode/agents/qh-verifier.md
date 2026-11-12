@@ -34,13 +34,16 @@ permissions:
     resource: "cargo test *"
     effect: allow
   - action: shell
-    resource: "cargo xtask *"
+    resource: "cargo xtask e2e scenario --doctor"
     effect: allow
   - action: shell
-    resource: "python3 scripts/e2e/*"
+    resource: "cargo xtask e2e scenario --list"
     effect: allow
   - action: shell
-    resource: "npm test *"
+    resource: "python3 scripts/e2e/scenario.py --doctor"
+    effect: allow
+  - action: shell
+    resource: "python3 scripts/e2e/scenario.py --list"
     effect: allow
   - action: shell
     resource: "npm run typecheck"

@@ -78,8 +78,9 @@ tool, unknown provider outcome or missing authorization is `BLOCKED`/
 - `diagnostics/` contains Compose/Podman state, service log tails and the latest
   Core projections. Secrets and raw prompts are not intentionally written.
 - `--snapshot` exports Compose volumes and an index; `--restore` imports them
-  before `start`. The index is validated for project, volume-name and archive
-  confinement before any destructive step. Snapshot/restore is best-effort and
+  before `start`. The index is validated for project, duplicate/unexpected
+  volume names and archive confinement before any destructive step; foreign
+  volume ownership is preflighted before `down -v`. Snapshot/restore is best-effort and
   must be verified; it is not a backup certification. Snapshots contain
   disposable E2E configuration/credentials and are written with private
   permissions; do not publish them.

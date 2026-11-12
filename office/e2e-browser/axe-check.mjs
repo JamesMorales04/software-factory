@@ -8,6 +8,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
+import { chromium } from "playwright";
 import { launchBrowser } from "./harness.mjs";
 
 const root = resolve(import.meta.dirname, "../..");

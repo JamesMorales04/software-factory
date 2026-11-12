@@ -36,6 +36,7 @@ from scenario import (  # noqa: E402
     _stage_slice,
     apply_saved_identity,
     completion_status,
+    validate_resume_binding,
 )
 
 
@@ -202,6 +203,20 @@ class RunOwnershipTests(unittest.TestCase):
             with self.assertRaises(ScenarioError):
                 _validate_snapshot_index(config, index)
 
+    def test_snapshot_rejects_duplicate_volumes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config_for("prepare", "summary", root=Path(directory))
+            index = {
+                "schema": "factory-e2e-volume-snapshot-v1",
+                "project": config.project,
+                "volumes": [
+                    {"name": f"{config.project}_data", "archive": "a.tar", "labels": {}},
+                    {"name": f"{config.project}_data", "archive": "b.tar", "labels": {}},
+                ],
+            }
+            with self.assertRaises(ScenarioError):
+                _validate_snapshot_index(config, index)
+
     def test_snapshot_rejects_archive_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = _config_for("prepare", "summary", root=Path(directory))
@@ -242,6 +257,37 @@ class ResumeIdentityTests(unittest.TestCase):
             state.save()
             with self.assertRaises(ScenarioError):
                 apply_saved_identity(config, state, "other-e2e", None)
+
+
+class ResumeBindingTests(unittest.TestCase):
+    def test_resume_rejects_a_new_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State.load_or_create(Path(directory) / "state.json")
+            state.set("candidate_sha", "a" * 40)
+            with self.assertRaises(ScenarioError):
+                validate_resume_binding(
+                    state,
+                    candidate_sha="b" * 40,
+                    provider="fixture",
+                    cassette_sha256=None,
+                    scenario="compose-intake",
+                    artifacts_dir="/tmp/artifacts",
+                )
+
+    def test_resume_rejects_provider_or_cassette_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State.load_or_create(Path(directory) / "state.json")
+            state.set("provider", "fixture")
+            state.set("cassette_sha256", "c" * 64)
+            with self.assertRaises(ScenarioError):
+                validate_resume_binding(
+                    state,
+                    candidate_sha="a" * 40,
+                    provider="cassette",
+                    cassette_sha256="d" * 64,
+                    scenario="compose-intake",
+                    artifacts_dir="/tmp/artifacts",
+                )
 
 
 class PortTests(unittest.TestCase):

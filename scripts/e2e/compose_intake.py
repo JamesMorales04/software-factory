@@ -67,13 +67,17 @@ def stage(name: str, description: str):
 
 
 def _git(cwd: Path, arguments: list[str]) -> str:
-    result = subprocess.run(
-        ["git", *arguments],
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ScenarioError(f"git {' '.join(arguments)} failed in {cwd}: {error}") from error
     if result.returncode != 0:
         raise ScenarioError(
             f"git {' '.join(arguments)} failed in {cwd}: {tail(result.stderr)}"
@@ -583,7 +587,10 @@ def restart(context: Context) -> None:
 
     wait_until(worker_ready, 60, "the Compose Worker re-registration")
     projects = context.api.get("/projects")
-    assert_in(json.dumps(projects), context.state.get("project_id"), "project persistence")
+    require(
+        any(project.get("id") == context.state.get("project_id") for project in projects),
+        "project persistence: the exact project id is missing",
+    )
     gate_payload = context.api.get(
         f"/quality/candidates/{context.state.get('candidate_id')}/gate"
     )
@@ -604,16 +611,16 @@ def restart(context: Context) -> None:
     receipts = context.api.get(
         f"/quality/candidates/{context.state.get('candidate_id')}/receipts"
     )
-    assert_in(
-        json.dumps(receipts, sort_keys=True),
-        context.state.get("verifier_receipt_id"),
-        "verifier receipt persistence",
+    verifier = next(
+        (receipt for receipt in receipts if receipt.get("receipt_id") == context.state.get("verifier_receipt_id")),
+        None,
     )
-    assert_in(
-        json.dumps(receipts, sort_keys=True),
-        context.state.get("reviewer_receipt_id"),
-        "reviewer receipt persistence",
+    reviewer = next(
+        (receipt for receipt in receipts if receipt.get("receipt_id") == context.state.get("reviewer_receipt_id")),
+        None,
     )
+    require(verifier is not None and verifier.get("role") == "verifier", "verifier receipt persistence")
+    require(reviewer is not None and reviewer.get("role") == "reviewer", "reviewer receipt persistence")
     context.state.set("restart_persistence", True)
     context.state.set("restarted_at", now_utc())
 

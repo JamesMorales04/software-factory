@@ -716,6 +716,7 @@ def _validate_snapshot_index(config: Config, index: dict[str, Any]) -> list[dict
         raise ScenarioError("snapshot index has no volumes")
     snapshot_root = config.snapshot_dir.resolve()
     validated: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for entry in entries:
         if not isinstance(entry, dict):
             raise ScenarioError("snapshot volume entry is not an object")
@@ -723,6 +724,9 @@ def _validate_snapshot_index(config: Config, index: dict[str, Any]) -> list[dict
         archive_name = entry.get("archive")
         if not isinstance(name, str) or not name or Path(name).name != name:
             raise ScenarioError(f"snapshot volume name is unsafe: {name!r}")
+        if name in seen:
+            raise ScenarioError(f"snapshot contains a duplicate volume: {name}")
+        seen.add(name)
         if not name.startswith(config.project):
             raise ScenarioError(f"snapshot volume {name!r} is not owned by {config.project!r}")
         if not isinstance(archive_name, str) or Path(archive_name).name != archive_name:
@@ -744,6 +748,26 @@ def restore_volumes(config: Config, compose: Compose) -> dict[str, Any]:
 
     index = read_json(config.snapshot_dir / "index.json")
     entries = _validate_snapshot_index(config, index)
+    # Preflight target names before removing anything. A same-name volume owned
+    # by this project is the disposable stack we are replacing; anything else is
+    # a foreign volume and must block the restore.
+    for entry in entries:
+        existing = _bounded_run(
+            ["podman", "volume", "inspect", entry["name"]],
+            cwd=config.root,
+            env=config.environment(),
+            timeout=30,
+        )
+        if existing.returncode == 0:
+            try:
+                labels = json.loads(existing.stdout)[0].get("Labels", {}) or {}
+            except (json.JSONDecodeError, IndexError, KeyError):
+                labels = {}
+            if labels.get("com.docker.compose.project") not in (None, config.project):
+                raise ScenarioError(
+                    f"refusing to replace foreign volume {entry['name']!r} "
+                    f"owned by {labels.get('com.docker.compose.project')!r}"
+                )
     compose.run(["down", "-v"], check=False, log_name="restore-down")
     for entry in entries:
         name = entry["name"]
@@ -931,13 +955,17 @@ def write_manifest(
 
 
 def _git_output(root: Path, arguments: list[str]) -> str:
-    result = subprocess.run(
-        ["git", *arguments],
-        cwd=root,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
     return result.stdout.strip() if result.returncode == 0 else "unknown"
 
 

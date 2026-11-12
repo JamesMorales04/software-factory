@@ -57,6 +57,12 @@ class CassetteTests(unittest.TestCase):
         with self.assertRaises(CassetteError):
             validate(payload)
 
+    def test_rejects_x_auth_token_header(self) -> None:
+        payload = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+        payload["turns"][0]["request"]["x-auth-token"] = "opaque-credential-value"
+        with self.assertRaises(CassetteError):
+            validate(payload)
+
     def test_rejects_github_pat_value(self) -> None:
         payload = json.loads(EXAMPLE.read_text(encoding="utf-8"))
         payload["turns"][0]["request"]["note"] = "github_pat_11AAABBBCCCDDDEEEFFF"

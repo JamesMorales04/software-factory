@@ -59,8 +59,8 @@ fi
 
 if [[ "${QUALITY_HARNESS_SKIP_A11Y:-0}" != "1" ]]; then
   log "Office automated accessibility floor"
-  a11y_port="${FACTORY_A11Y_PORT:-5199}"
-  a11y_log="${TMPDIR:-/tmp}/factory-quality-a11y-vite.log"
+  a11y_port="${FACTORY_A11Y_PORT:-$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
+  a11y_log="${TMPDIR:-/tmp}/factory-quality-a11y-vite-$$.log"
   npm run dev -- --port "$a11y_port" --strictPort >"$a11y_log" 2>&1 &
   a11y_pid=$!
   cleanup_a11y() {
@@ -70,7 +70,7 @@ if [[ "${QUALITY_HARNESS_SKIP_A11Y:-0}" != "1" ]]; then
   trap cleanup_a11y EXIT
   ready=0
   for _ in $(seq 1 100); do
-    if curl -fsS -o /dev/null "http://localhost:${a11y_port}/" 2>/dev/null; then
+    if curl -fsS "http://localhost:${a11y_port}/" 2>/dev/null | grep -q "@vite/client"; then
       ready=1
       break
     fi

@@ -230,6 +230,30 @@ def apply_saved_identity(
         config.scenario = state.get("scenario")
 
 
+def validate_resume_binding(
+    state: State,
+    *,
+    candidate_sha: str,
+    provider: str,
+    cassette_sha256: str | None,
+    scenario: str,
+    artifacts_dir: str,
+) -> None:
+    checks = (
+        ("candidate_sha", candidate_sha, "candidate"),
+        ("provider", provider, "provider"),
+        ("cassette_sha256", cassette_sha256, "cassette"),
+        ("scenario", scenario, "scenario"),
+        ("artifacts_dir", artifacts_dir, "artifacts path"),
+    )
+    for key, current, label in checks:
+        saved = state.get(key)
+        if saved is not None and saved != current:
+            raise ScenarioError(
+                f"resume {label} mismatch: run used {saved!r}, requested {current!r}"
+            )
+
+
 def completion_status(
     completed: set[str],
     summary_status: str | None,
@@ -259,6 +283,30 @@ def _git_status(root: Path) -> str:
     if result.returncode != 0:
         raise ScenarioError(f"git status failed: {result.stderr.strip()}")
     return result.stdout.strip()
+
+
+def _git_head(root: Path) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ScenarioError(f"git rev-parse failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def _file_sha256(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _fresh(config: Config) -> None:
@@ -308,18 +356,24 @@ def main(argv: list[str]) -> int:
             return 0 if result["ok"] else 1
 
         managed_root = Path(os.environ.get("FACTORY_E2E_ROOT", "/var/tmp/factory-e2e")).resolve()
-        if not config.run_dir.resolve().is_relative_to(managed_root):
+        run_dir_resolved = config.run_dir.resolve()
+        if run_dir_resolved == managed_root:
+            raise ScenarioError(
+                f"--run-dir must be a strict child of FACTORY_E2E_ROOT ({managed_root}), not the root itself"
+            )
+        if not run_dir_resolved.is_relative_to(managed_root):
             raise ScenarioError(
                 f"--run-dir must be under FACTORY_E2E_ROOT ({managed_root}); "
                 f"got {config.run_dir}. This prevents cleanup from targeting an unrelated directory."
             )
         ensure_dir(config.run_dir)
-        os.chmod(config.run_dir, 0o700)
 
         state_path = config.state_path
         state = State.load_or_create(state_path)
         if state_path.exists():
             apply_saved_identity(config, state, args.project, args.port)
+            if args.artifacts is None and state.get("artifacts_dir"):
+                config.artifacts_dir = Path(state.get("artifacts_dir"))
             compose = Compose(config)
             api = Api(config)
         else:
@@ -329,6 +383,7 @@ def main(argv: list[str]) -> int:
                     "omit it for the safe default"
                 )
         ensure_run_identity(config, state)
+        os.chmod(config.run_dir, 0o700)
         ensure_dir(config.artifacts_dir)
         ensure_dir(config.snapshot_dir)
         os.chmod(config.artifacts_dir, 0o700)
@@ -357,8 +412,21 @@ def main(argv: list[str]) -> int:
                 "the worktree is dirty; a candidate-bound run requires a clean tree. "
                 "Commit/stash the change or pass --allow-dirty for a non-PASS diagnostic run."
             )
+        head = _git_head(config.root)
+        cassette_sha = _file_sha256(config.cassette) if config.cassette else None
+        validate_resume_binding(
+            state,
+            candidate_sha=head,
+            provider=config.provider,
+            cassette_sha256=cassette_sha,
+            scenario=scenario_name,
+            artifacts_dir=str(config.artifacts_dir),
+        )
         state.set("run_id", config.run_id)
         state.set("scenario", scenario_name)
+        state.set("candidate_sha", head)
+        state.set("cassette_sha256", cassette_sha)
+        state.set("artifacts_dir", str(config.artifacts_dir))
         state.set("selected_stages", selected)
         state.set("project", config.project)
         state.set("port", config.port)
@@ -379,6 +447,12 @@ def main(argv: list[str]) -> int:
         for name in selected:
             started = time.monotonic()
             log(f"== {name}: {stage_description(name)}")
+            if name != "summary":
+                # Rerunning an upstream stage invalidates dependent evidence.
+                state.set("summary", None)
+                if name != "restart":
+                    state.set("restart_persistence", False)
+                state.save()
             try:
                 stage_function(name)(context)
             except Exception as error:  # noqa: BLE001 - one bounded failure surface
@@ -405,21 +479,30 @@ def main(argv: list[str]) -> int:
             _record_stage(state, name, started, "PASS")
             log(f"PASS {name} ({int((time.monotonic() - started) * 1000)}ms)")
 
-        completed = {
-            item["name"]
-            for item in state.get("stage_results", [])
-            if item.get("status") == "PASS"
-        }
+        latest: dict[str, str] = {}
+        for item in state.get("stage_results", []):
+            latest[item["name"]] = item.get("status", "FAIL")
+        completed = {name for name, status in latest.items() if status == "PASS"}
         all_required = completed.issuperset(set(stage_order()))
         summary_passed = (state.get("summary") or {}).get("status") == "PASS"
         restart_ok = state.get("restart_persistence") is True
+        final_head = _git_head(config.root)
+        final_dirty = bool(_git_status(config.root))
         status = completion_status(
             completed,
             (state.get("summary") or {}).get("status"),
             restart_ok,
-            dirty,
+            dirty or final_dirty,
         )
         snapshot_error: str | None = None
+        if final_head != state.get("candidate_sha"):
+            status = "FAIL"
+            snapshot_error = (
+                f"candidate changed during the run: started {state.get('candidate_sha')}, "
+                f"finished {final_head}"
+            )
+        elif final_dirty and not dirty:
+            snapshot_error = "worktree became dirty during the run; result is PARTIAL"
         if config.snapshot:
             try:
                 index = snapshot_volumes(config, compose)
