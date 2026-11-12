@@ -1,6 +1,6 @@
 # Core-mediated MCP tool gateway — Worker and Office slice
 
-**Candidate:** `0465c446da7069d043be9cadade0e4b46c48d3b0`  
+**Candidate:** `cf455c239c8f8356e134ed14154827585014c88c`  
 **Branch:** `feat/tool-gateway`  
 **Date:** 2026-11-12  
 **Evidence level:** implementer self-test. Not independent verification,
@@ -60,6 +60,7 @@ still checks document overflow and page-level rendering.
 | Live Attempt binding | A registered Worker without the exact live lease/generation receives `403` | `factory-core` route test | PASS |
 | Durable audit | ALLOW/DENY row carries Worker/Attempt/generation and argument digest; UPDATE/DELETE are rejected by triggers | `db::tool_gateway` test | PASS |
 | Immutable identity | Unknown ids, server remaps, MCP-name remaps and role escalation are rejected | `tool_gateway` tests | PASS |
+| GitHub repository scope | GitHub tools require the exact Project owner/repo; mismatched/missing repositories are denied; `search_code` is not exposed | Core scope tests + code inspection | PASS (static/unit); live multi-repo token `NOT_TESTED` |
 | Transport bounds | Args ≤ 64 KiB; response ≤ 256 KiB; timeout ≤ 300 s; rate limit per role/tool | `tool_gateway` tests | PASS |
 | Worker tool pack | `gateway_call` is accepted, requires `write_file`, and is hidden when the assignment has no catalog | `factory-worker` tests | PASS |
 | Provider paths | OpenCode and Codex both route `gateway_call` through the same Core endpoint | Code inspection + Worker tests | PASS (static) |
