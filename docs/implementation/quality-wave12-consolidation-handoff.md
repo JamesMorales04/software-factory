@@ -9,7 +9,7 @@ verified, and the remaining work. It does not replace the
 [capability registry](../product/capabilities.yaml).
 
 - **Consolidation branch:** `fix/environment-recompile`
-- **Runtime candidate:** `999170c3d622b71ad2a3599670e1cb56e35fe07f`
+- **Runtime candidate:** `9b2345b6ac2ad14424b57afc58d39e13eeddb5ca`
 - **Docs-only commit after the runtime candidate:** this handoff. It does not
   change runtime code, Compose, migrations, tests or evidence claims.
 - **Base:** `main` at `5d2ade627e06d881e56ac60a225b47884ed0bd5a`
@@ -50,7 +50,7 @@ packages are:
 
 | Area | Status | Main evidence |
 | --- | --- | --- |
-| WP0 contracts, schema, migrations | Implemented | `native/src/planning/contracts.rs`, migrations `0060`–`0078` |
+| WP0 contracts, schema, migrations | Implemented | `native/src/planning/contracts.rs`, migrations through `0078` (with documented gaps) |
 | WP1 durable workflow/outbox | Implemented | workflow/checkpoint/idempotency tests, restart recovery |
 | WP2 planning route/Planner/Spec Manager | Implemented | deterministic lanes, mandatory plan review, bounded auto-approval |
 | WP3 stack/architecture/docs/skills | Implemented | stack precedence, skill packs, refresh scheduler, Office Skills |
@@ -62,7 +62,7 @@ packages are:
 | WP9 reviewer fleet/Gate | Implemented | six identities, role coverage, exact assignments |
 | WP10 Office plan review | Implemented | Director/Request plan, environment, finding and trace surfaces |
 | WP11 observability/trace | Implemented | bounded trace, replay, redaction, alerts |
-| WP12 tests/chaos/browser | Implemented and run | deterministic acceptance 20/20, Chromium matrix 39/39 |
+| WP12 tests/chaos/browser | Implemented and run | deterministic acceptance 20/20 on this candidate; Chromium matrix 39/39 on the WP12 integration candidate, not rerun after the environment work |
 | Risk-tiered delivery | Implemented | R0 auto, R1 opt-in, R2/R3 manual, incidents, final source |
 | Issue-linked lifecycle | Implemented | frozen links, derived states, comment/close receipts |
 | Agnostic environment compiler | Implemented | conventions, plan/spec, Lead review, licence gate, freeze |
@@ -81,15 +81,20 @@ packages are:
 - `999170c` fixes the Compose interpolation of the Core builder-digest wait
   loop, widens the bounded wait, adds `raw.githubusercontent.com` to the Nix
   fetch allowlist, and corrects the stale builder-allowlist documentation.
-- The final consolidation commit adds a scoped repo-hygiene exemption for Go
-  command data in the language-pack catalog while continuing to reject Go
-  invocations in Factory runtime code, and normalizes the already-rendered
-  Compose config in the acceptance harness without re-interpolating escaped
-  shell variables.
+- `9b2345b` restores the deterministic dispatch and negative E2E suites under
+  the environment binding: test-support binaries apply the fixture binding and
+  use the generic check path when no real environment execution row exists,
+  while production and unit tests still fail closed; legacy candidates with no
+  frozen reviewer role requirement accept role receipts; fixture verifier and
+  reviewer principals align with the configured quality identity.
+- `823c1a8` adds a scoped repo-hygiene exemption for Go command data in the
+  language-pack catalog while continuing to reject Go invocations in Factory
+  runtime code, and normalizes the already-rendered Compose config in the
+  acceptance harness without re-interpolating escaped shell variables.
 
 ## 3. Verification actually run
 
-On the exact clean candidate `999170c`:
+On the exact clean candidate `9b2345b`:
 
 ```text
 scripts/quality-wave12-acceptance.sh --require-clean
@@ -117,6 +122,24 @@ verifier 11, architecture check 8, repo hygiene 7, and the remaining bins)
 cargo test -p factory-native --features test-support --bin factory-core
 92 passed; 0 failed
 
+cargo test -p factory-native --features test-support --bin factory-worker
+34 passed; 0 failed
+
+cargo test -p factory-native --features test-support --bin factory-verifier
+11 passed; 0 failed
+
+cargo xtask e2e recovery
+1 passed; 0 failed
+
+cargo xtask e2e dispatch
+12 passed; 0 failed
+
+cargo xtask e2e negatives
+5 passed; 0 failed
+
+cargo xtask e2e provider
+1 passed; 0 failed
+
 cargo clippy -p factory-native --all-targets --all-features -- -D warnings
 clean
 
@@ -140,6 +163,18 @@ The four ignored library tests are opt-in real-Podman tests. They are
 - It does not prove a real Nix/devenv build or check in the installed stack.
 - It does not prove a real multi-reviewer Campaign or real GitHub delivery.
 - It does not prove every Office route, locale or viewport.
+
+### Known dependency blocker
+
+`cargo audit --file Cargo.lock` fails only `RUSTSEC-2026-0459` /
+`CVE-2026-119375` (`libsqlite3-sys` 0.30.1 via sqlx 0.8.6). The patched
+`libsqlite3-sys` 0.39.x cannot be selected because sqlx 0.8.6 and 0.9.0 require
+`libsqlite3-sys <0.38.0`. The owner decision in
+[RUSTSEC-2026-0459](../security/RUSTSEC-2026-0459-sqlite-wait.md) is to wait for
+a patched sqlx release and keep the audit gate unsuppressed. The `rust` and
+`container-dev` CI jobs therefore fail at the audit step. This is a known
+temporary dependency blocker, not a clean audit or a security certification.
+Do not add a permanent audit ignore without a new owner decision.
 
 ## 4. What remains
 
@@ -275,9 +310,12 @@ COMPOSE_CONFIG_JSON=/tmp/compose.json python3 .github/scripts/test_check_compose
 ## 8. Delivery state
 
 - Branch: `fix/environment-recompile`
-- Runtime candidate: `999170c3d622b71ad2a3599670e1cb56e35fe07f`
-- PR: created from this branch against `main`; merge only after the PR checks
-  pass and the exact head is re-verified.
+- Runtime candidate: `9b2345b6ac2ad14424b57afc58d39e13eeddb5ca`
+- PR: `#97` against `main`; merge only after the PR checks pass and the exact
+  head is re-verified.
 - Merge method: merge commit, preserving the work-package history.
+- Known blocker: `RUSTSEC-2026-0459` keeps the `cargo audit` step failing by
+  owner decision; the `rust` and `container-dev` jobs are expected to stop
+  there. This is not a clean audit.
 - Post-merge: rerun the deterministic harness on `main` and record the merge
   commit; the merge is not deployment or independent acceptance.
