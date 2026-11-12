@@ -29,13 +29,14 @@ SECRET_KEYS = re.compile(
     r"credential|api[_-]?key|x[_-]?api[_-]?key|access[_-]?token|"
     r"refresh[_-]?token|id[_-]?token|token|client[_-]?secret|"
     r"aws[_-]?secret[_-]?access[_-]?key|secret[_-]?access[_-]?key|"
-    r"private[_-]?key|signing[_-]?key|encryption[_-]?key|"
+    r"private[_-]?key[a-z0-9_-]*|signing[_-]?key|encryption[_-]?key|"
     r"webhook[_-]?secret|session[_-]?key|master[_-]?key|"
     r"x[_-]?(auth|access|api|github|gitlab|token|key|secret)[a-z0-9_-]*)$",
     re.IGNORECASE,
 )
 SECRET_VALUES = re.compile(
-    r"(bearer\s+[a-z0-9._~+/=-]{12,}|sk-[a-z0-9]{12,}|gh[pousr]_[a-z0-9]{12,}|"
+    r"(-----BEGIN [A-Z ]*PRIVATE KEY-----|bearer\s+[a-z0-9._~+/=-]{12,}|"
+    r"sk-[a-z0-9]{12,}|gh[pousr]_[a-z0-9]{12,}|"
     r"github_pat_[a-z0-9_]{20,}|glpat-[a-z0-9_-]{20,}|xox[baprs]-[a-z0-9-]{10,}|"
     r"AKIA[0-9A-Z]{16})",
     re.IGNORECASE,

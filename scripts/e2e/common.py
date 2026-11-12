@@ -335,8 +335,8 @@ class Compose:
             )
         except subprocess.TimeoutExpired as error:
             raise ScenarioError(f"command timed out after {self.config.timeout}s: {rendered}") from error
-        except FileNotFoundError as error:
-            raise ScenarioError(f"command is not installed: {command[0]}") from error
+        except OSError as error:
+            raise ScenarioError(f"command failed to start ({command[0]}): {error}") from error
         elapsed = time.monotonic() - started
         with self.log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"\n$ {rendered}\n{tail(result.stdout)}\n{tail(result.stderr)}\n")
@@ -1054,7 +1054,7 @@ def cleanup(config: Config, compose: Compose) -> dict[str, Any]:
         status = "PASS" if result.returncode == 0 else "FAIL"
         exit_code = result.returncode
         stderr = tail(result.stderr) if result.returncode != 0 else ""
-    except ScenarioError as error:
+    except (ScenarioError, OSError) as error:
         status = "FAIL"
         exit_code = 1
         stderr = str(error)

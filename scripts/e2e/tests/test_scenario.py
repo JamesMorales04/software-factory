@@ -376,7 +376,7 @@ class CleanupTests(unittest.TestCase):
     def test_cleanup_exception_is_a_failure_result(self) -> None:
         class FailingCompose:
             def down(self, *, volumes: bool):
-                raise ScenarioError("cleanup timeout")
+                raise PermissionError("cleanup permission denied")
 
         with tempfile.TemporaryDirectory() as directory:
             config = _config_for("prepare", "summary", root=Path(directory))
@@ -385,7 +385,7 @@ class CleanupTests(unittest.TestCase):
             ensure_run_identity(config, state)
             result = cleanup(config, FailingCompose())
             self.assertEqual(result["status"], "FAIL")
-            self.assertIn("cleanup timeout", result["stderr"])
+            self.assertIn("permission denied", result["stderr"])
 
 
 class PortTests(unittest.TestCase):

@@ -70,6 +70,14 @@ class CassetteTests(unittest.TestCase):
             with self.assertRaises(CassetteError, msg=key):
                 validate(payload)
 
+    def test_rejects_pem_private_key(self) -> None:
+        payload = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+        payload["turns"][0]["request"]["private_key_pem"] = (
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----"
+        )
+        with self.assertRaises(CassetteError):
+            validate(payload)
+
     def test_rejects_github_pat_value(self) -> None:
         payload = json.loads(EXAMPLE.read_text(encoding="utf-8"))
         payload["turns"][0]["request"]["note"] = "github_pat_11AAABBBCCCDDDEEEFFF"
