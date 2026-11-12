@@ -1,8 +1,8 @@
 {
   "schema": "factory.tool-gateway-worker-office.v1",
-  "recorded_at": "2026-11-12T23:20:00Z",
+  "recorded_at": "2026-11-12T23:30:00Z",
   "result": "PASS (author-run Worker/Office gateway; not independent acceptance)",
-  "candidate_sha": "cf455c239c8f8356e134ed14154827585014c88c",
+  "candidate_sha": "e8c82adba63afd71b9da839313ff3fb122da41ec",
   "branch": "feat/tool-gateway",
   "environment": {
     "core": "factory-core development binary built from the candidate",
@@ -110,7 +110,7 @@
     "campaign_tool_grant": "PASS (assigned_provider_tools test plus static endpoint check; no live endpoint case)",
     "durable_audit": "PASS (db::tool_gateway insert, order and immutable UPDATE/DELETE triggers)",
     "immutable_identity": "PASS (tool_gateway role/server/MCP-name remap tests)",
-    "github_repository_scope": "PASS (exact owner/repo parser and argument-scope tests); a live multi-repository token test remains NOT_TESTED",
+    "github_repository_scope": "PASS (strict HTTPS/SSH host parser, deceptive-host rejection, exact owner/repo argument matching and DB grant tests); a live multi-repository token test remains NOT_TESTED",
     "transport_bounds": "PASS (tool_gateway argument, response, timeout, rate-limit tests)",
     "worker_tool_pack": "PASS (factory-worker tool grant and hidden-catalog tests)",
     "provider_paths": "PASS (static inspection plus Worker tests); live OpenCode/Codex gateway turn NOT_TESTED"
