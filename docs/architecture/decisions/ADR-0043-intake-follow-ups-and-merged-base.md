@@ -100,7 +100,12 @@ at the exact merge commit and any required post-merge check passed, Core writes 
 new Project config revision whose base commit is that merge commit. The write is:
 
 - idempotent for the same merge commit;
-- guarded by the expected config revision;
+- monotonic: the merge commit must descend from the current base;
+- returned already-advanced without a write when the current base is the same
+  commit or already descends from the merge;
+- refused when the merge is an older ancestor or diverges from the current base;
+- guarded by the expected config revision **and** exact expected current base,
+  with the ancestry check repeated after every optimistic-concurrency conflict;
 - refused for a non-default branch;
 - recorded as an append-only `project.base_advanced` event;
 - never performed for a blocked, failed, reverted or other-branch delivery.

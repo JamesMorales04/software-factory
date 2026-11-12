@@ -141,19 +141,29 @@ impl Database {
 
     /// Advance the Project base to the exact merge commit that a Factory
     /// delivery recorded on the protected default branch. The write is a new
-    /// versioned project-config revision with a fencing revision guard and an
-    /// audit event; it never rewrites a historical revision or accepts a
+    /// versioned project-config revision with a fencing revision/base guard and
+    /// an audit event; it never rewrites a historical revision or accepts a
     /// non-default branch. A duplicate call for the same merge is idempotent
     /// and leaves the revision unchanged.
+    ///
+    /// The caller must have proved Git ancestry first: this method cannot prove
+    /// that `merge_commit_sha` descends from `expected_base_commit`. It does
+    /// require the exact expected base, so a concurrent advancement cannot be
+    /// overwritten with an older merge.
     pub async fn advance_project_base_after_merged_delivery(
         &self,
         project_id: &str,
         merge_commit_sha: &str,
         default_branch: &str,
         expected_config_revision: u32,
+        expected_base_commit: &str,
     ) -> Result<ProjectConfig, Error> {
         if merge_commit_sha.len() != 40
             || !merge_commit_sha
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            || expected_base_commit.len() != 40
+            || !expected_base_commit
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit())
             || default_branch.trim().is_empty()
@@ -162,6 +172,7 @@ impl Database {
             return Err(Error::Invalid("merged delivery base"));
         }
         let merge_commit_sha = merge_commit_sha.to_ascii_lowercase();
+        let expected_base_commit = expected_base_commit.to_ascii_lowercase();
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let current = match load_project_config(&mut transaction, project_id).await {
@@ -175,6 +186,12 @@ impl Database {
         if current.base_commit.eq_ignore_ascii_case(&merge_commit_sha) {
             transaction.commit().await?;
             return Ok(current);
+        }
+        if !current
+            .base_commit
+            .eq_ignore_ascii_case(&expected_base_commit)
+        {
+            return Err(Error::Conflict("project base is stale"));
         }
         if current.revision != expected_config_revision {
             return Err(Error::Conflict("project config revision is stale"));
@@ -203,11 +220,17 @@ impl Database {
                 "merged delivery did not target the Project default branch",
             ));
         }
-        sqlx::query::query("UPDATE projects SET base_commit=?1 WHERE id=?2")
-            .bind(&merge_commit_sha)
-            .bind(project_id)
-            .execute(&mut *transaction)
-            .await?;
+        let changed =
+            sqlx::query::query("UPDATE projects SET base_commit=?1 WHERE id=?2 AND base_commit=?3")
+                .bind(&merge_commit_sha)
+                .bind(project_id)
+                .bind(&expected_base_commit)
+                .execute(&mut *transaction)
+                .await?
+                .rows_affected();
+        if changed != 1 {
+            return Err(Error::Conflict("project base changed during advancement"));
+        }
         let mut next = current;
         next.revision = next
             .revision
@@ -461,7 +484,13 @@ mod tests {
         let merge = "e".repeat(40);
         let initial = db.project_config("project").await.unwrap();
         let advanced = db
-            .advance_project_base_after_merged_delivery("project", &merge, "main", initial.revision)
+            .advance_project_base_after_merged_delivery(
+                "project",
+                &merge,
+                "main",
+                initial.revision,
+                &initial.base_commit,
+            )
             .await
             .unwrap();
         assert_eq!(advanced.revision, 2);
@@ -477,7 +506,7 @@ mod tests {
         // Replaying the same exact merge is idempotent and does not append a
         // second config revision.
         let replay = db
-            .advance_project_base_after_merged_delivery("project", &merge, "main", 999)
+            .advance_project_base_after_merged_delivery("project", &merge, "main", 999, &merge)
             .await
             .unwrap();
         assert_eq!(replay.revision, 2);
@@ -488,7 +517,8 @@ mod tests {
                 "project",
                 &"f".repeat(40),
                 "release",
-                advanced.revision
+                advanced.revision,
+                &advanced.base_commit,
             )
             .await,
             Err(Error::Conflict(_))
@@ -500,7 +530,21 @@ mod tests {
                 "project",
                 &"f".repeat(40),
                 "main",
-                initial.revision
+                initial.revision,
+                &advanced.base_commit,
+            )
+            .await,
+            Err(Error::Conflict(_))
+        ));
+        // A stale base expectation is refused even when the revision happens
+        // to match; the conditional update is the final fence.
+        assert!(matches!(
+            db.advance_project_base_after_merged_delivery(
+                "project",
+                &"f".repeat(40),
+                "main",
+                advanced.revision,
+                &initial.base_commit,
             )
             .await,
             Err(Error::Conflict(_))
