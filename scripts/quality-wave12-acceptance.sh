@@ -259,10 +259,14 @@ compose_json() {
   if [[ -n "$profile" ]]; then
     compose_args=(--profile "$profile")
   fi
+  # The input is already rendered by `podman compose config`. Re-interpolating
+  # it would turn an escaped `$$i` into an empty value; normalize only.
   if command -v docker-compose >/dev/null 2>&1; then
-    docker-compose "${compose_args[@]}" -f "$input" config --format json >"$output"
+    docker-compose "${compose_args[@]}" -f "$input" config --no-interpolate \
+      --format json >"$output"
   elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-    docker compose "${compose_args[@]}" -f "$input" config --format json >"$output"
+    docker compose "${compose_args[@]}" -f "$input" config --no-interpolate \
+      --format json >"$output"
   else
     return 127
   fi

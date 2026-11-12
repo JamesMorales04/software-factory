@@ -126,6 +126,7 @@ fn scan(root: &Path) -> Result<Vec<Finding>, String> {
         // This exact file contains diagnostic vocabulary and fixtures; its path remains checked.
         if !is_hygiene_scanner(&relative)
             && !is_immutable_reference(&relative)
+            && !is_language_pack_catalog(&relative)
             && contains_go_invocation(&text)
         {
             findings.push(Finding {
@@ -179,6 +180,13 @@ fn is_workflow(path: &Path) -> bool {
 
 fn is_hygiene_scanner(path: &Path) -> bool {
     path == Path::new("native/src/bin/repo_hygiene.rs")
+}
+
+/// The language-pack catalog is data describing how to check arbitrary target
+/// projects, not a Factory runtime dependency. It must be able to name Go
+/// commands without reintroducing Go into the Factory itself.
+fn is_language_pack_catalog(path: &Path) -> bool {
+    path == Path::new("native/src/planning/skills/catalog.rs")
 }
 
 fn is_markdown(path: &Path) -> bool {
@@ -364,6 +372,26 @@ mod tests {
         assert!(paths.contains(&"scripts/build.sh"));
         assert!(paths.contains(&"core/internal/paseo/adapter.go"));
         assert!(paths.contains(&".github/workflows/legacy.yml"));
+    }
+
+    #[test]
+    fn language_pack_catalog_go_commands_are_data_not_factory_runtime() {
+        let repo = Repo::new();
+        repo.add(
+            "native/src/planning/skills/catalog.rs",
+            "&[\"go test ./...\"]\n",
+        );
+        repo.add(
+            "native/src/runtime.rs",
+            "const CHECK: &str = \"go test ./...\";\n",
+        );
+        let findings = repo.scan();
+        let paths: Vec<&str> = findings
+            .iter()
+            .map(|finding| finding.path.as_str())
+            .collect();
+        assert!(!paths.contains(&"native/src/planning/skills/catalog.rs"));
+        assert!(paths.contains(&"native/src/runtime.rs"));
     }
 
     #[test]

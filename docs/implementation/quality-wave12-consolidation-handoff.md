@@ -81,6 +81,11 @@ packages are:
 - `999170c` fixes the Compose interpolation of the Core builder-digest wait
   loop, widens the bounded wait, adds `raw.githubusercontent.com` to the Nix
   fetch allowlist, and corrects the stale builder-allowlist documentation.
+- The final consolidation commit adds a scoped repo-hygiene exemption for Go
+  command data in the language-pack catalog while continuing to reject Go
+  invocations in Factory runtime code, and normalizes the already-rendered
+  Compose config in the acceptance harness without re-interpolating escaped
+  shell variables.
 
 ## 3. Verification actually run
 

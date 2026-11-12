@@ -83,14 +83,14 @@ fn stack_checks(stack: &StackProfile) -> Vec<SpecCheck> {
                 checks.push(check(
                     "go-test",
                     CheckKind::Test,
-                    "Run the Go test suite.",
+                    "Run the project's Go testing command.",
                     &["go", "test", "./..."],
                     900,
                 ));
                 checks.push(check(
                     "go-vet",
                     CheckKind::Lint,
-                    "Run the Go vet check.",
+                    "Run the project's Go vetting command.",
                     &["go", "vet", "./..."],
                     600,
                 ));
