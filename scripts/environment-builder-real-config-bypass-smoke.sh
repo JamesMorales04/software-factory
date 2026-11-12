@@ -52,6 +52,16 @@ flakes = {
         "    in import nixpkgs { config = settings; };\n"
         "}\n"
     ),
+    "computed": (
+        "{\n"
+        "  outputs = { self, nixpkgs }:\n"
+        "    let\n"
+        '      configKey = "con" + "fig";\n'
+        '      allow = "allowUn" + "freePredicate";\n'
+        '      settings = { "${allow}" = _: true; };\n'
+        "    in import nixpkgs { ${configKey} = settings; };\n"
+        "}\n"
+    ),
 }
 for name, flake in flakes.items():
     plan = {
@@ -136,7 +146,7 @@ for name, flake in flakes.items():
 PY
 
 chmod -R 0777 "$TMP/cache"
-for case in merged alias; do
+for case in merged alias computed; do
   mkdir -p "$TMP/cache/run-$case"
   chmod 0777 "$TMP/cache/run-$case"
   set +e

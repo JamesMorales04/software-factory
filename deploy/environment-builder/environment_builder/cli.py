@@ -41,6 +41,7 @@ from .nix import (
 from .policy import (
     MAX_ENVIRONMENT_FILE_BYTES,
     NIXPKGS_PREFIX,
+    reject_computed_nixpkgs_import,
     reject_dynamic_config_ast,
     validate_check,
     validate_closure_licenses,
@@ -131,6 +132,7 @@ def validate_nix_config_ast(files: list[Any]) -> None:
             continue
         ast = nix_parse(file.content, filename=file.path)
         reject_dynamic_config_ast(ast, file.path)
+        reject_computed_nixpkgs_import(ast, file.path)
 
 
 def _validate_request(

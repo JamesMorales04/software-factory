@@ -113,6 +113,9 @@ per-language table. Instead:
    first semicolon. A `config` value must be a literal attrset or a merge of
    literal attrsets; let-bound aliases, function calls and other non-literal
    config expressions fail closed with a typed `ENVIRONMENT_SANDBOX_DENIED`.
+   Every `import nixpkgs <args>` argument must also be a literal attrset or a
+   merge of literal attrsets with static attribute names; computed keys such as
+   `{ ${configKey} = settings; }` and aliased arguments fail closed.
    Ordinary committed flake interpolation such as `devShells.${system}` remains
    valid, and a literal `config = { allowUnfree = false; }` is accepted (while
    `allowUnfree = true` remains rejected by the unfree policy). The production
@@ -333,10 +336,11 @@ same image: the profile closure audit observed 14 package entries (including
 helper script and the exact profile wrapper are excluded as non-package
 wrappers; a fabricated substrate-named path still fails closed.
 
-A real committed flake containing the reviewer's long-whitespace/nested-`let`
-merged config bypass was also submitted to the builder. `nix-instantiate
---parse` normalised it and the AST check rejected it with
-`ENVIRONMENT_SANDBOX_DENIED` before any Nix realisation.
+A checked-in real committed-flake bypass smoke covers the long-whitespace/
+nested-`let` merged config, the RHS alias and the computed `configKey` import
+argument. `nix-instantiate --parse` normalised each case and the AST/import
+guards rejected all three with `ENVIRONMENT_SANDBOX_DENIED` before any Nix
+realisation.
 
 The smoke uses `--privileged` because this developer host does not grant the
 nested kernel namespaces Nix sandboxing needs; that is a harness detail, not the

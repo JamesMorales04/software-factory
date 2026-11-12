@@ -471,12 +471,34 @@ class PolicyTests(unittest.TestCase):
             '{ outputs = ({ nixpkgs }: import nixpkgs { config = ({ } // (let x = 1; in { "${key}" = (_: true); })); }); }',
             '{ outputs = ({ nixpkgs }: let settings = { "${allow}" = (_: true); }; in import nixpkgs { config = settings; }); }',
         ]
-        from environment_builder.policy import reject_dynamic_config_ast
+        from environment_builder.policy import (
+            reject_computed_nixpkgs_import,
+            reject_dynamic_config_ast,
+        )
 
         for ast in rejected_asts:
             with self.assertRaises(BuilderError) as raised:
                 reject_dynamic_config_ast(ast, "flake.nix")
             self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
+
+        rejected_import_asts = [
+            '{ outputs = ({ nixpkgs }: let configKey = ("con" + "fig"); settings = { "${allow}" = (_: true); }; in (import nixpkgs { "${configKey}" = settings; })); }',
+            '{ outputs = ({ nixpkgs }: let args = { config = { allowUnfree = false; }; }; in (import nixpkgs args)); }',
+            '{ outputs = ({ nixpkgs }: import nixpkgs ({} // { "${key}" = (_: true); })); }',
+        ]
+        for ast in rejected_import_asts:
+            with self.assertRaises(BuilderError) as raised:
+                reject_computed_nixpkgs_import(ast, "flake.nix")
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
+
+        accepted_import_asts = [
+            '{ outputs = ({ nixpkgs }: import nixpkgs { config = { allowUnfree = false; }; }); }',
+            '{ outputs = ({ nixpkgs }: import nixpkgs { overlays = [ ]; }); }',
+            '{ outputs = ({ nixpkgs }: let system = "x86_64-linux"; pkgs = import nixpkgs { inherit system; }; in { devShells = { "${system}" = { default = (pkgs.mkShell { }); }; }; }); }',
+        ]
+        for ast in accepted_import_asts:
+            reject_dynamic_config_ast(ast, "flake.nix")
+            reject_computed_nixpkgs_import(ast, "flake.nix")
 
         conventional_ast = (
             '{ outputs = ({ nixpkgs }: let system = "x86_64-linux"; '
@@ -484,6 +506,7 @@ class PolicyTests(unittest.TestCase):
             '{ devShells = { "${system}" = { default = (pkgs.mkShell { }); }; }; }); }'
         )
         reject_dynamic_config_ast(conventional_ast, "flake.nix")
+        reject_computed_nixpkgs_import(conventional_ast, "flake.nix")
         reject_dynamic_config_ast(
             '{ outputs = ({ nixpkgs }: import nixpkgs { config = { allowUnfree = false; }; }); }',
             "flake.nix",
@@ -517,6 +540,23 @@ class PolicyTests(unittest.TestCase):
         ):
             with self.assertRaises(BuilderError) as raised:
                 cli.validate_nix_config_ast([alias_file])
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
+
+        computed_key_raw = (
+            'let configKey = "con" + "fig"; '
+            'allow = "allowUn" + "freePredicate"; '
+            'settings = { ${allow} = _: true; }; '
+            'in import nixpkgs { ${configKey} = settings; }'
+        )
+        computed_file = EnvironmentFile(
+            "flake.nix", sha256_text(computed_key_raw), "PROJECT", computed_key_raw
+        )
+        with mock.patch(
+            "environment_builder.cli.nix_parse",
+            return_value=rejected_import_asts[0],
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                cli.validate_nix_config_ast([computed_file])
         self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
 
         conventional = (

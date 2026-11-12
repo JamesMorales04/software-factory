@@ -334,6 +334,89 @@ def reject_dynamic_config_ast(ast: str, filename: str) -> None:
         search_from = end if end > start else start + 1
 
 
+def _argument_span(ast: str, start: int) -> int:
+    """Return the end of one function-application argument."""
+    index = start
+    while index < len(ast) and ast[index].isspace():
+        index += 1
+    if index >= len(ast):
+        return index
+    if ast[index] in "([{":
+        closing = _matching_delimiter(ast, index)
+        return len(ast) if closing < 0 else closing + 1
+    while index < len(ast) and not ast[index].isspace() and ast[index] not in ")]},;":
+        index += 1
+    return index
+
+
+def reject_computed_nixpkgs_import(ast: str, filename: str) -> None:
+    """Require every `import nixpkgs <args>` to use literal/static arguments.
+
+    This closes computed import-argument shapes such as
+    `import nixpkgs { ${configKey} = settings; }` and
+    `let args = { config = ...; }; in import nixpkgs args`, which would
+    otherwise evade a scan that only looks for literal `config =` keys.
+    Ordinary `devShells.${system}` is not an import argument and is unaffected.
+    """
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(ast):
+        character = ast[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+            index += 1
+            continue
+        if ast.startswith("import", index) and (
+            index == 0 or not _is_identifier_char(ast[index - 1])
+        ):
+            boundary = index + len("import")
+            if boundary < len(ast) and _is_identifier_char(ast[boundary]):
+                index += 1
+                continue
+            cursor = boundary
+            while cursor < len(ast) and ast[cursor].isspace():
+                cursor += 1
+            if not ast.startswith("nixpkgs", cursor):
+                index += 1
+                continue
+            target_end = cursor + len("nixpkgs")
+            if target_end < len(ast) and _is_identifier_char(ast[target_end]):
+                index += 1
+                continue
+            argument_start = target_end
+            while argument_start < len(ast) and ast[argument_start].isspace():
+                argument_start += 1
+            if argument_start >= len(ast) or ast[argument_start] in ")],;":
+                index = target_end
+                continue
+            argument_end = _argument_span(ast, argument_start)
+            argument = _strip_outer_parens(ast[argument_start:argument_end])
+            parts = _split_top_level_merges(argument)
+            if any(not _is_literal_attrset(part) for part in parts):
+                fail(
+                    "ENVIRONMENT_SANDBOX_DENIED",
+                    f"{filename} passes a non-literal/aliased argument to import nixpkgs; use a literal attrset or a merge of literal attrsets",
+                )
+            if any('"${' in part for part in parts):
+                fail(
+                    "ENVIRONMENT_SANDBOX_DENIED",
+                    f"{filename} uses a dynamic attribute name in the import nixpkgs argument",
+                )
+            index = argument_end
+            continue
+        index += 1
+
+
 INPUT_URL = re.compile(r"\binputs(?:\.[A-Za-z0-9_.-]+)*\.url\s*=\s*[\"']([^\"']+)[\"']")
 YAML_INPUT_URL = re.compile(r"^\s*url:\s*[\"']?([^\"'\s]+)[\"']?\s*$", re.MULTILINE)
 YAML_BOOL = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*:\s*(true|false)\s*$", re.MULTILINE)
