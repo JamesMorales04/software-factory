@@ -9,6 +9,7 @@ identities in the reviewer prompt. Usage is reported so Core can settle a
 measured model-call reservation.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -17,8 +18,44 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 CONTEXT_PATH = Path(os.environ.get("FACTORY_MODEL_CONTEXT", "/context/context.json"))
+CASSETTE_ENV = os.environ.get("FACTORY_MODEL_CASSETTE", "").strip()
+CASSETTE_PATH = Path(CASSETTE_ENV) if CASSETTE_ENV else None
+CASSETTE = None
+CASSETTE_ERROR = None
 HOST = "0.0.0.0"
 PORT = 8080
+
+
+def canonical_request_sha256(value):
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def load_cassette():
+    global CASSETTE, CASSETTE_ERROR
+    if CASSETTE_PATH is None:
+        return
+    try:
+        with CASSETTE_PATH.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if payload.get("schema") != "factory-provider-cassette-v1":
+            raise ValueError("cassette schema is not factory-provider-cassette-v1")
+        turns = payload.get("turns")
+        if not isinstance(turns, list) or not turns:
+            raise ValueError("cassette has no turns")
+        CASSETTE = payload
+    except Exception as error:  # noqa: BLE001 - fail closed and report on /health
+        CASSETTE_ERROR = str(error)
+
+
+def replay_cassette(request):
+    if CASSETTE is None:
+        raise ValueError(f"cassette is unavailable: {CASSETTE_ERROR or 'not loaded'}")
+    digest = canonical_request_sha256(request)
+    turn = next((item for item in CASSETTE["turns"] if item.get("requestSha256") == digest), None)
+    if turn is None:
+        raise ValueError("cassette has no request matching the exact canonical digest")
+    return turn["response"]
 
 
 def context():
@@ -168,7 +205,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path in ("/health", "/v1/health"):
-            self.send_json(200, {"healthy": True, "fixture": "compose-deterministic"})
+            if CASSETTE_ERROR is not None:
+                self.send_json(503, {"healthy": False, "cassette_error": CASSETTE_ERROR})
+            else:
+                mode = "cassette" if CASSETTE_PATH is not None else "deterministic"
+                self.send_json(200, {"healthy": True, "fixture": mode})
         else:
             self.send_json(404, {"error": "not found"})
 
@@ -191,7 +232,9 @@ class Handler(BaseHTTPRequestHandler):
                 (item.get("content", "") for item in messages if item.get("role") == "user"),
                 "",
             )
-            if "independent semantic code reviewer" in system:
+            if CASSETTE_PATH is not None:
+                response = replay_cassette(body)
+            elif "independent semantic code reviewer" in system:
                 response = semantic_review(user)
             else:
                 response = assessment(user, context())
@@ -201,6 +244,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    load_cassette()
+    if CASSETTE_ERROR is not None:
+        sys.stderr.write(f"compose-model-fixture: cassette error: {CASSETTE_ERROR}\n")
+    mode = "cassette" if CASSETTE_PATH is not None else "deterministic"
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    sys.stderr.write("compose-model-fixture: listening on 8080\n")
+    sys.stderr.write(f"compose-model-fixture: {mode} mode listening on 8080\n")
     server.serve_forever()

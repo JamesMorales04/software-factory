@@ -1,0 +1,48 @@
+# Narrow, high-signal security rules for the Software Factory.
+#
+# This is not a replacement for Clippy, the architecture check, cargo-audit or
+# review. Rules must be tested against positive and negative fixtures before
+# they become blocking. The initial set intentionally contains patterns that
+# must never appear in first-party production code.
+paths:
+  exclude:
+    - node_modules
+    - target
+    - office/dist
+    - office/e2e-browser/node_modules
+
+rules:
+  - id: factory-rust-no-invalid-tls
+    languages: [rust]
+    severity: ERROR
+    message: TLS certificate verification must not be disabled.
+    patterns:
+      - pattern-either:
+          - pattern: $CLIENT.danger_accept_invalid_certs(true)
+          - pattern: $BUILDER.danger_accept_invalid_certs(true)
+
+  - id: factory-rust-no-shell-command
+    languages: [rust]
+    severity: ERROR
+    message: Do not construct a shell command in Factory runtime code; use an explicit argv tool contract.
+    patterns:
+      - pattern-either:
+          - pattern: std::process::Command::new("sh")
+          - pattern: std::process::Command::new("bash")
+          - pattern: tokio::process::Command::new("sh")
+          - pattern: tokio::process::Command::new("bash")
+
+  - id: factory-ts-no-dangerous-html
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: Do not inject raw HTML into the Office; render typed content.
+    pattern: dangerouslySetInnerHTML={...}
+
+  - id: factory-ts-no-eval
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: Dynamic code execution is not allowed in Office code.
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: new Function(...)

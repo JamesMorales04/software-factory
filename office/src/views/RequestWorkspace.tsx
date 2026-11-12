@@ -371,7 +371,7 @@ export function RequestWorkspace() {
         confirm: true,
         reason: repairReason.trim(),
       });
-      navigate(`/requests/${encodeURIComponent(result.requestId)}`);
+      void navigate(`/requests/${encodeURIComponent(result.requestId)}`);
     } catch (cause) {
       setRepairError(errorMessage(cause, t("request.repair.error")));
     } finally {

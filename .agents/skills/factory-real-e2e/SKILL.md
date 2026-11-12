@@ -30,6 +30,25 @@ delivery authority, or acceptance authority.
 - TRUSTED_LOCAL is broad host access. Never describe it as isolated or
   SEC-01-certified.
 
+## Deterministic scenario runner
+
+The stage-addressed runner is the preferred way to reproduce a late Compose
+failure without restarting the whole journey:
+
+```sh
+python3 scripts/e2e/scenario.py --list
+python3 scripts/e2e/scenario.py --doctor
+python3 scripts/e2e/scenario.py --from prepare --to gate --keep
+python3 scripts/e2e/scenario.py --from gate --to summary --run-dir <run-dir>
+```
+
+It writes a candidate-bound `manifest.json`, logs and diagnostics under
+`target/qh/<run-id>` (or `--artifacts`). A partial selection is `PARTIAL`, never
+`PASS`. Provider/GitHub modes are fixture/fake only; a real provider requires a
+fresh authorization envelope and is not part of this runner. Evidence from the
+runner is implementer self-test unless an independent verifier reruns it on the
+frozen candidate.
+
 ## Procedure
 
 1. **Establish the candidate.** Record `git rev-parse HEAD` and

@@ -31,6 +31,7 @@ fn main() -> ExitCode {
         ("e2e", Some("intake-full")) => e2e::intake_full(),
         ("e2e", Some("negatives")) => e2e::negatives(),
         ("e2e", Some("provider")) => e2e::provider(),
+        ("e2e", Some("scenario")) => e2e::scenario(&args[2..]),
         ("e2e", Some(_)) => e2e::unsupported(args.get(1).map(String::as_str).unwrap_or_default()),
         ("e2e", None) => e2e::list(),
         _ => {
@@ -70,6 +71,7 @@ Commands:
   e2e intake-full         unified intake through Worker, candidate, verifier, reviewer, gate and restart
   e2e negatives           deterministic scope, verification, authorization and lease negatives
   e2e provider            deterministic fake-provider Attempt through Core, Worker, Supervisor and gate
+  e2e scenario [args...]  stage-addressed Compose scenario; run with --list/--doctor
   e2e                     list available deterministic E2E suites
 
 Xtask coordinates existing tools. It never starts a paid provider session and

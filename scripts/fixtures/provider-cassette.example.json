@@ -1,0 +1,34 @@
+{
+  "schema": "factory-provider-cassette-v1",
+  "provider": "opencode-go",
+  "model": "deepseek-v4.1-flash",
+  "mode": "build",
+  "recordedAt": "2026-11-12T00:00:00Z",
+  "turns": [
+    {
+      "index": 1,
+      "requestSha256": "c64ec3009e821d1306a2c16b85c5f23771d82afbe26d4914cb6cf6c3b8324e6d",
+      "request": {
+        "objective": "Add a bounded deterministic test",
+        "allowedPaths": [
+          "factory-cli/src/text.rs"
+        ]
+      },
+      "response": {
+        "content": "write_file and run the frozen check"
+      },
+      "toolCalls": [
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "factory-cli/src/text.rs"
+          }
+        }
+      ],
+      "usage": {
+        "inputTokens": 120,
+        "outputTokens": 40
+      }
+    }
+  ]
+}

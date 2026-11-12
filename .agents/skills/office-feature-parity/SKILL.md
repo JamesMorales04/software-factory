@@ -28,7 +28,10 @@ terminal for ordinary operation.
 
 Purely internal changes may be exempt only with a documented rationale. If the
 change has observable operational effects, expose them through health,
-diagnostics or telemetry projections even when no Office screen is needed.
+diagnostics or telemetry projections even when no Office screen is needed. This
+includes development harnesses that operators rely on: a scenario runner must
+report its stage, artifact path, failure class and `NOT_TESTED` limitations, not
+only a terminal exit code.
 
 ## 2. Required matrix
 

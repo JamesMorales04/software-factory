@@ -244,7 +244,7 @@ export function Director() {
     setPlanning(null);
     setPlanError(null);
     setSpecError(null);
-    Promise.allSettled([
+    void Promise.allSettled([
       coreApi.getAgenticPlan(activeId),
       coreApi.getAgenticSpec(activeId),
       coreApi.getAgenticPlanning(activeId),

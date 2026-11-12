@@ -38,6 +38,7 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
       FACTORY_MODEL_CONTEXT: /context/context.json
+      FACTORY_MODEL_CASSETTE: ${FACTORY_E2E_MODEL_CASSETTE:-}
     networks:
       - factory-control
     healthcheck:

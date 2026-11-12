@@ -1,0 +1,20 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/visual-harness.tsx",
+    "src/**/*.test.{ts,tsx}",
+    "src/**/*.browser.test.{ts,tsx}",
+    "e2e-browser/*.mjs"
+  ],
+  "project": ["src/**/*.{ts,tsx}", "e2e-browser/**/*.mjs"],
+  "rules": {
+    "files": "error",
+    "dependencies": "error",
+    "devDependencies": "error",
+    "unlisted": "error",
+    "binaries": "off",
+    "exports": "off",
+    "types": "off",
+    "duplicates": "off"
+  }
+}

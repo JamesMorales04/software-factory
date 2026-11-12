@@ -77,7 +77,9 @@ export function CancelCampaign({
       aria-label={t("cancelCampaign.aria", {
         id: shortId(campaign.id),
       })}
-      onSubmit={submit}
+      onSubmit={(event) => {
+        void submit(event);
+      }}
     >
       <p>{t("cancelCampaign.confirm", { id: shortId(campaign.id) })}</p>
       <Input

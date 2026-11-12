@@ -31,7 +31,7 @@ export function CommandPalette({
   function choose(to: string) {
     onOpenChange(false);
     setQuery("");
-    navigate(to);
+    void navigate(to);
   }
 
   return (

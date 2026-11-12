@@ -53,7 +53,7 @@ export function DevicePairClaim({
               if (!active) return;
               if (session?.authenticated) {
                 onAuthenticated?.(session);
-                navigate("/", { replace: true });
+                void navigate("/", { replace: true });
                 return;
               }
               await new Promise((resolve) => setTimeout(resolve, 100));
@@ -187,7 +187,7 @@ export function DevicePairClaim({
         </p>
       )}
       <p className="muted">{t("pair.privacyNote")}</p>
-      <Button variant="quiet" onClick={() => navigate("/")}>
+      <Button variant="quiet" onClick={() => void navigate("/")}>
         {t("pair.return")}
       </Button>
     </main>

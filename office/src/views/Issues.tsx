@@ -428,6 +428,9 @@ export function Issues() {
       });
     }, 1200);
     return () => window.clearTimeout(timer);
+    // startIssue closes over mutable board state; this effect is intentionally
+    // keyed by the one-shot auto-start inputs, not by a new function identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoStart, busy, cards]);
 
   function setProject(value: string) {
@@ -511,7 +514,7 @@ export function Issues() {
       !(link.state === "NEEDS_ATTENTION" && link.latestErrorEventId === null)
     ) {
       if (navigateToRequest) {
-        navigate(`/requests/${link.requestId}`);
+        void navigate(`/requests/${link.requestId}`);
       }
       return;
     }
@@ -553,7 +556,7 @@ export function Issues() {
       );
       if (result.intake?.id) {
         if (navigateToRequest) {
-          navigate(`/requests/${result.intake.id}`);
+          void navigate(`/requests/${result.intake.id}`);
         } else {
           setNotice(t("issues.start.started", { number: card.issue.number }));
           await load();
@@ -772,7 +775,12 @@ export function Issues() {
             </Badge>
           </div>
           {!github?.configured ? (
-            <form className="issues-setup-form" onSubmit={saveToken}>
+            <form
+              className="issues-setup-form"
+              onSubmit={(event) => {
+                void saveToken(event);
+              }}
+            >
               <Input
                 label={t("issues.github.token")}
                 type="password"
@@ -809,7 +817,9 @@ export function Issues() {
               </div>
               <form
                 className="issues-setup-grid"
-                onSubmit={bindSelectedRepository}
+                onSubmit={(event) => {
+                  void bindSelectedRepository(event);
+                }}
               >
                 <Select
                   label={t("issues.github.project")}
@@ -1135,7 +1145,12 @@ export function Issues() {
               </Button>
             </header>
             <p className="muted">{t("issues.setup.description")}</p>
-            <form className="issues-policy-form" onSubmit={savePolicy}>
+            <form
+              className="issues-policy-form"
+              onSubmit={(event) => {
+                void savePolicy(event);
+              }}
+            >
               <Input
                 label={t("issues.intake.field.requiredLabels")}
                 value={policyLabels}

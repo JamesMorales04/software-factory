@@ -6,8 +6,10 @@
 
 | Surface | Required default | Additional gate / conditions |
 |---|---|---|
-| Rust Core/Worker/tools (required) | `cargo fmt --check`, strict Clippy, `cargo test`, `cargo build`, `cargo doc`, `cargo audit` | Pinned Rust 1.90.0 and locked Cargo; see [rust-standards](rust-standards.md) |
-| TypeScript / React Office | TypeScript `tsc --noEmit`, Biome formatter/linter (`biome check`) | React-specific checks; use ESLint + `typescript-eslint` only if Biome lacks a required rule; avoid overlapping tools |
+| Rust Core/Worker/tools (required) | `cargo fmt --check`, strict Clippy, `cargo test`, `cargo build`, `cargo doc`, `cargo audit` | Pinned Rust 1.90.0 and locked Cargo; see [rust-standards](rust-standards.md). `cargo-nextest` is adopted only with a verified MSRV-compatible pin or an approved toolchain bump. |
+| Rust dependency policy | `cargo deny check licenses bans sources` | Advisories remain owned by the unsuppressed `cargo audit` gate; RUSTSEC-2026-0459 is a known blocker. Do not add an ignore. |
+| TypeScript / React Office | TypeScript `tsc --noEmit`, Biome formatter/linter (`biome check`) | Focused typed ESLint lane (`typescript-eslint`, React Hooks, jsx-a11y) for promise safety and rules Biome does not cover. Keep one formatter; no overlapping formatter. |
+| Office browser/component | Vitest jsdom for logic, Vitest browser mode for focus/portals/CSS, Playwright for real journeys | `@axe-core/playwright` is an automated floor, not a WCAG conformance claim. New/changed Playwright specs repeat 20 times. |
 | Markdown documentation | `markdownlint-cli2` | Automated relative-link and code-fence validation; check external links in a bounded, reliable lane |
 | Shell scripts (if introduced) | `shellcheck` and `shfmt` | Test important scripts in disposable environments |
 | YAML / JSON / GitHub Actions (if introduced) | Schema validation and formatting | `actionlint` for GitHub Actions workflows |
@@ -16,7 +18,7 @@ Versions and configurations must be pinned in repository manifests/lockfiles or 
 
 ### TypeScript policy
 
-Prefer Biome for fast formatting and general linting plus `tsc` for type checking. If semantic React hooks or security rules require ESLint, install only the missing focused plugin/rules, document why, and avoid duplicate formatters. Avoid unchecked `any`; provide explicit boundary types and schema validation for untrusted payloads.
+Prefer Biome for fast formatting and general linting plus `tsc` for type checking. The Office uses a focused `eslint` lane for rules Biome does not cover: `typescript-eslint` promise/type rules, React Hooks/Compiler rules and `jsx-a11y`. Do not install a second formatter or enable a broad overlapping preset. `npm run lint:typed` is the typed lane; `npm run lint` remains the Biome fast lane. Avoid unchecked `any`; provide explicit boundary types and schema validation for untrusted payloads.
 
 ### Selected Rust toolchain
 

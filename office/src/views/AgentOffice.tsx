@@ -244,13 +244,13 @@ export function AgentOffice() {
     else params.set(key, value);
     setSearchParams(params);
     if (participantId) {
-      navigate({ pathname: "/agents", search: params.toString() });
+      void navigate({ pathname: "/agents", search: params.toString() });
     }
   };
 
   const selectParticipant = (id: string) => {
     setInspectorOpen(true);
-    navigate({
+    void navigate({
       pathname: `/agents/${encodeURIComponent(id)}`,
       search: searchParams.toString(),
     });
@@ -258,14 +258,14 @@ export function AgentOffice() {
 
   const closeInspector = () => {
     setInspectorOpen(false);
-    navigate({ pathname: "/agents", search: searchParams.toString() });
+    void navigate({ pathname: "/agents", search: searchParams.toString() });
   };
 
   const clearFilters = () => {
     const params = new URLSearchParams();
     if (view !== "floor") params.set("view", view);
     setSearchParams(params);
-    navigate({ pathname: "/agents", search: params.toString() });
+    void navigate({ pathname: "/agents", search: params.toString() });
   };
 
   const hasFilters = Boolean(
