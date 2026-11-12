@@ -93,34 +93,63 @@ pub struct GatewayToolSpec {
     pub timeout_secs: u64,
     #[serde(default = "default_max_response")]
     pub max_response_bytes: usize,
-    #[serde(default)]
-    pub allowed_hosts: Vec<String>,
 }
 
-const KNOWN_TOOLS: &[(&str, &str, bool)] = &[
-    ("context7.resolve-library-id", "context7", true),
-    ("context7.query-docs", "context7", true),
-    ("playwright.browser_navigate", "playwright", false),
-    ("playwright.browser_snapshot", "playwright", true),
-    ("playwright.browser_take_screenshot", "playwright", true),
-    ("playwright.browser_click", "playwright", false),
-    ("playwright.browser_type", "playwright", false),
-    ("playwright.browser_close", "playwright", false),
-    ("github.issue_read", "github-read", true),
-    ("github.pull_request_read", "github-read", true),
-    ("github.get_file_contents", "github-read", true),
-    ("github.search_code", "github-read", true),
+/// Immutable Core catalog: gateway tool id, MCP server id, exact MCP tool name
+/// and read-only classification. Configuration may select and grant roles for
+/// these identities but cannot invent an identity, remap a server, or rename
+/// the downstream MCP tool.
+const KNOWN_TOOLS: &[(&str, &str, &str, bool)] = &[
+    (
+        "context7.resolve-library-id",
+        "context7",
+        "resolve-library-id",
+        true,
+    ),
+    ("context7.query-docs", "context7", "query-docs", true),
+    (
+        "playwright.browser_snapshot",
+        "playwright",
+        "browser_snapshot",
+        true,
+    ),
+    (
+        "playwright.browser_take_screenshot",
+        "playwright",
+        "browser_take_screenshot",
+        true,
+    ),
+    (
+        "playwright.browser_close",
+        "playwright",
+        "browser_close",
+        false,
+    ),
+    ("github.issue_read", "github-read", "issue_read", true),
+    (
+        "github.pull_request_read",
+        "github-read",
+        "pull_request_read",
+        true,
+    ),
+    (
+        "github.get_file_contents",
+        "github-read",
+        "get_file_contents",
+        true,
+    ),
+    ("github.search_code", "github-read", "search_code", true),
 ];
 
-fn known_tool(id: &str) -> Option<(&'static str, bool)> {
+fn known_tool(id: &str) -> Option<(&'static str, &'static str, bool)> {
     KNOWN_TOOLS
         .iter()
-        .find(|(known, _, _)| *known == id)
-        .map(|(_, server, read_only)| (*server, *read_only))
+        .find(|(known, _, _, _)| *known == id)
+        .map(|(_, server, tool, read_only)| (*server, *tool, *read_only))
 }
 
 fn core_tool_is_read_only(tool: &GatewayToolSpec) -> bool {
-    known_tool(&tool.id).is_some_and(|(_, read_only)| read_only)
+    known_tool(&tool.id).is_some_and(|(_, _, read_only)| read_only)
 }
 
 fn default_timeout() -> u64 {
@@ -372,7 +401,7 @@ impl GatewayConfig {
                     tool.id, tool.server
                 )));
             }
-            let Some((known_server, _)) = known_tool(&tool.id) else {
+            let Some((known_server, known_name, _)) = known_tool(&tool.id) else {
                 return Err(GatewayError::Config(format!(
                     "tool {} is not in the immutable gateway catalog",
                     tool.id
@@ -382,6 +411,12 @@ impl GatewayConfig {
                 return Err(GatewayError::Config(format!(
                     "tool {} must use server {known_server}, not {}",
                     tool.id, tool.server
+                )));
+            }
+            if known_name != tool.tool {
+                return Err(GatewayError::Config(format!(
+                    "tool {} must dispatch MCP tool {known_name}, not {}",
+                    tool.id, tool.tool
                 )));
             }
             if tool.roles.is_empty() {
@@ -428,11 +463,6 @@ fn tool(
         read_only,
         timeout_secs: DEFAULT_TIMEOUT_SECS,
         max_response_bytes: MAX_RESPONSE_BYTES,
-        allowed_hosts: if id == "playwright.browser_navigate" {
-            vec!["127.0.0.1".into(), "localhost".into(), "::1".into()]
-        } else {
-            Vec::new()
-        },
     }
 }
 
@@ -1093,6 +1123,19 @@ impl ToolGateway {
                 return Err(GatewayError::UnknownTool(tool_id.into()));
             }
         };
+        // Dispatch the immutable Core identity, never the configured tool name.
+        let Some((_, mcp_tool_name, _)) = known_tool(&spec.id) else {
+            self.record(
+                role,
+                tool_id,
+                &args_sha256,
+                started,
+                "DENY",
+                0,
+                Some("tool identity is not in the Core catalog"),
+            );
+            return Err(GatewayError::UnknownTool(tool_id.into()));
+        };
         if role == GatewayRole::Verifier
             || !spec.roles.contains(&role)
             || (role == GatewayRole::Reviewer && !core_tool_is_read_only(&spec))
@@ -1111,7 +1154,7 @@ impl ToolGateway {
                 tool: tool_id.into(),
             });
         }
-        if let Err(error) = validate_arguments(&spec, &arguments, role) {
+        if let Err(error) = validate_arguments(&arguments) {
             self.record(
                 role,
                 tool_id,
@@ -1155,7 +1198,7 @@ impl ToolGateway {
         };
         match client
             .call_tool(
-                &spec.tool,
+                mcp_tool_name,
                 arguments,
                 spec.timeout_secs,
                 spec.max_response_bytes,
@@ -1226,51 +1269,13 @@ fn arguments_sha256(arguments: &Value) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn validate_arguments(
-    spec: &GatewayToolSpec,
-    arguments: &Value,
-    role: GatewayRole,
-) -> Result<(), GatewayError> {
+fn validate_arguments(arguments: &Value) -> Result<(), GatewayError> {
     let bytes = serde_json::to_vec(arguments)
         .map_err(|error| GatewayError::InvalidArguments(error.to_string()))?;
     if bytes.len() > MAX_ARGUMENT_BYTES {
         return Err(GatewayError::InvalidArguments(
             "arguments exceed the bound".into(),
         ));
-    }
-    if spec.id == "playwright.browser_navigate" {
-        let url = arguments
-            .get("url")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                GatewayError::InvalidArguments("browser_navigate requires a url".into())
-            })?;
-        let parsed = reqwest::Url::parse(url)
-            .map_err(|_| GatewayError::InvalidArguments("browser URL is invalid".into()))?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err(GatewayError::InvalidArguments(
-                "browser URL must use http or https".into(),
-            ));
-        }
-        if parsed.username() != "" || parsed.password().is_some() {
-            return Err(GatewayError::InvalidArguments(
-                "browser URL must not contain credentials".into(),
-            ));
-        }
-        let host = parsed
-            .host_str()
-            .ok_or_else(|| GatewayError::InvalidArguments("browser URL has no host".into()))?;
-        if spec.allowed_hosts.is_empty()
-            || !spec
-                .allowed_hosts
-                .iter()
-                .any(|allowed| allowed.eq_ignore_ascii_case(host))
-        {
-            return Err(GatewayError::Denied {
-                role,
-                tool: "playwright.browser_navigate".into(),
-            });
-        }
     }
     Ok(())
 }
@@ -1303,9 +1308,9 @@ mod tests {
                 true,
             ),
             tool(
-                "playwright.browser_click",
+                "playwright.browser_close",
                 "playwright",
-                "browser_click",
+                "browser_close",
                 &[GatewayRole::Implementer],
                 false,
             ),
@@ -1342,33 +1347,10 @@ mod tests {
             .config
             .tools
             .iter()
-            .find(|tool| tool.id == "playwright.browser_click")
+            .find(|tool| tool.id == "playwright.browser_close")
             .expect("tool");
         assert!(!spec.roles.contains(&GatewayRole::Reviewer));
-        assert!(!spec.read_only);
-    }
-
-    #[test]
-    fn browser_navigation_rejects_foreign_hosts_and_credentials() {
-        let spec = tool(
-            "playwright.browser_navigate",
-            "playwright",
-            "browser_navigate",
-            &[GatewayRole::Implementer],
-            true,
-        );
-        let allowed = json!({"url": "http://127.0.0.1:8471/office"});
-        validate_arguments(&spec, &allowed, GatewayRole::Implementer).expect("loopback URL");
-        let foreign = json!({"url": "https://example.com/"});
-        assert!(matches!(
-            validate_arguments(&spec, &foreign, GatewayRole::Implementer),
-            Err(GatewayError::Denied { .. })
-        ));
-        let credentials = json!({"url": "http://user:pass@127.0.0.1:8471/"});
-        assert!(matches!(
-            validate_arguments(&spec, &credentials, GatewayRole::Implementer),
-            Err(GatewayError::InvalidArguments(_))
-        ));
+        assert!(!core_tool_is_read_only(spec));
     }
 
     #[test]
@@ -1378,17 +1360,7 @@ mod tests {
         assert_eq!(digest.len(), 64);
         let oversized = json!({"query": "x".repeat(MAX_ARGUMENT_BYTES + 1)});
         assert!(matches!(
-            validate_arguments(
-                &tool(
-                    "context7.query-docs",
-                    "context7",
-                    "query-docs",
-                    &[GatewayRole::Implementer],
-                    true
-                ),
-                &oversized,
-                GatewayRole::Implementer,
-            ),
+            validate_arguments(&oversized),
             Err(GatewayError::InvalidArguments(_))
         ));
     }
@@ -1522,15 +1494,29 @@ for line in sys.stdin:
             read_only: true,
             timeout_secs: 30,
             max_response_bytes: 1024,
-            allowed_hosts: Vec::new(),
         }];
         assert!(matches!(config.validate(), Err(GatewayError::Config(_))));
 
         config.tools[0].id = "context7.query-docs".into();
         config.tools[0].server = "github-read".into();
+        config.tools[0].tool = "query-docs".into();
         assert!(matches!(config.validate(), Err(GatewayError::Config(_))));
 
-        config.tools[0].server = "context7".into();
+        // A known id must keep its exact MCP tool name even for the right server.
+        let mut config = GatewayConfig::example();
+        config.tools = vec![tool(
+            "playwright.browser_snapshot",
+            "playwright",
+            "browser_click",
+            &[GatewayRole::Reviewer],
+            true,
+        )];
+        assert!(matches!(
+            config.validate(),
+            Err(GatewayError::Config(message)) if message.contains("MCP tool")
+        ));
+
+        let mut config = GatewayConfig::example();
         config.servers = vec![GatewayServerConfig::Http {
             id: "context7".into(),
             endpoint: "https://evil.example/mcp".into(),
@@ -1549,9 +1535,9 @@ for line in sys.stdin:
             env: BTreeMap::new(),
         }];
         config.tools = vec![tool(
-            "playwright.browser_click",
+            "playwright.browser_close",
             "playwright",
-            "browser_click",
+            "browser_close",
             &[GatewayRole::Verifier],
             true,
         )];

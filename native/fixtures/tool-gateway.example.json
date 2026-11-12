@@ -27,8 +27,7 @@
       "roles": ["IMPLEMENTER", "REPAIRER", "PLANNER", "REVIEWER"],
       "readOnly": true,
       "timeoutSecs": 30,
-      "maxResponseBytes": 262144,
-      "allowedHosts": []
+      "maxResponseBytes": 262144
     },
     {
       "id": "context7.query-docs",
@@ -37,8 +36,7 @@
       "roles": ["IMPLEMENTER", "REPAIRER", "PLANNER", "REVIEWER"],
       "readOnly": true,
       "timeoutSecs": 30,
-      "maxResponseBytes": 262144,
-      "allowedHosts": []
+      "maxResponseBytes": 262144
     },
     {
       "id": "playwright.browser_snapshot",
@@ -47,8 +45,7 @@
       "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
       "readOnly": true,
       "timeoutSecs": 30,
-      "maxResponseBytes": 262144,
-      "allowedHosts": []
+      "maxResponseBytes": 262144
     },
     {
       "id": "playwright.browser_take_screenshot",
@@ -57,8 +54,7 @@
       "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
       "readOnly": true,
       "timeoutSecs": 30,
-      "maxResponseBytes": 262144,
-      "allowedHosts": []
+      "maxResponseBytes": 262144
     },
     {
       "id": "playwright.browser_close",
@@ -67,8 +63,7 @@
       "roles": ["IMPLEMENTER", "REPAIRER"],
       "readOnly": false,
       "timeoutSecs": 30,
-      "maxResponseBytes": 262144,
-      "allowedHosts": []
+      "maxResponseBytes": 262144
     },
     {
       "id": "github.issue_read",
@@ -77,8 +72,7 @@
       "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
       "readOnly": true,
       "timeoutSecs": 30,
-      "maxResponseBytes": 262144,
-      "allowedHosts": []
+      "maxResponseBytes": 262144
     },
     {
       "id": "github.pull_request_read",
@@ -87,8 +81,7 @@
       "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
       "readOnly": true,
       "timeoutSecs": 30,
-      "maxResponseBytes": 262144,
-      "allowedHosts": []
+      "maxResponseBytes": 262144
     },
     {
       "id": "github.get_file_contents",
@@ -97,8 +90,7 @@
       "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
       "readOnly": true,
       "timeoutSecs": 30,
-      "maxResponseBytes": 262144,
-      "allowedHosts": []
+      "maxResponseBytes": 262144
     },
     {
       "id": "github.search_code",
@@ -107,8 +99,7 @@
       "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
       "readOnly": true,
       "timeoutSecs": 30,
-      "maxResponseBytes": 262144,
-      "allowedHosts": []
+      "maxResponseBytes": 262144
     }
   ]
 }

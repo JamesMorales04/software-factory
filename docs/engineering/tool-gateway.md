@@ -34,10 +34,12 @@ frozen candidate and checks.
 
 The example catalog is
 [`native/fixtures/tool-gateway.example.json`](../../native/fixtures/tool-gateway.example.json).
-The tool identity, server mapping and read-only classification are an
-**immutable Core catalog**, not a free-form config: a config cannot rename a
-server, point `context7` at another endpoint, invent a tool id, or relabel a
-mutating tool as read-only for Reviewer.
+The tool identity, server mapping, exact MCP tool name and read-only
+classification are an **immutable Core catalog**, not a free-form config: a
+config cannot rename a server, point `context7` at another endpoint, invent a
+tool id, remap a known id to a different MCP tool name, or relabel a mutating
+tool as read-only for Reviewer. Dispatch uses the immutable MCP name, not the
+configured one.
 
 | Tool | Roles | Read-only |
 |---|---|---|
@@ -54,8 +56,6 @@ The gateway rejects:
   id pointed at an untrusted endpoint;
 - a Verifier grant or a Reviewer grant for a mutating tool, even if the
   configuration claims `readOnly: true`;
-- a browser URL with credentials, a non-HTTP(S) scheme, or a host outside the
-  configured allowlist when a navigation tool is configured;
 - arguments over 64 KiB;
 - more than `maxCallsPerMinute` calls for the same role/tool;
 - a response over the per-tool bound.
