@@ -749,6 +749,13 @@ REVIEWED_SUBSTRATE_IDENTITIES: dict[
         ): {"name": "nix", "version": "2.28.3", "license": "LGPL-2.1-only"},
     }
 }
+# Exact reviewed deriver-less helper identities. Devenv materialises strip.sh
+# without a deriver; any other deriver-less path fails closed.
+REVIEWED_DERIVERLESS_HELPERS: frozenset[str] = frozenset(
+    {
+        "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
+    }
+)
 STORE_NAME_VERSION = re.compile(r"^([A-Za-z0-9_+.-]+?)-(\d.*)$")
 
 
@@ -812,10 +819,12 @@ def _closure_license_entries(
             substrate_entries.append(substrate)
             continue
         if not deriver:
-            # A path without a deriver is a source/helper input, not a package
-            # output. Devenv's strip.sh helper falls into this class. Any
-            # deriver-backed .sh path is audited or fails closed.
-            continue
+            if path in REVIEWED_DERIVERLESS_HELPERS:
+                continue
+            fail(
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                f"deriver-less closure path is not a reviewed helper: {path}",
+            )
         if path:
             paths.add(path)
     ordered_paths = sorted(paths)

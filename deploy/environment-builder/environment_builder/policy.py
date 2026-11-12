@@ -215,12 +215,98 @@ def _expression_end(ast: str, start: int) -> int:
     return len(ast)
 
 
-def reject_dynamic_config_ast(ast: str, filename: str) -> None:
-    """Reject dynamic attrset keys in every `config =` expression.
+def _matching_delimiter(text: str, start: int) -> int:
+    opening = text[start]
+    closing = {"(": ")", "[": "]", "{": "}"}[opening]
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        character = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+            continue
+        if character == opening:
+            depth += 1
+        elif character == closing:
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
 
-    The input is the normalised AST from `nix-instantiate --parse`, so long
-    whitespace gaps, nested `let` expressions and `//` merges are already
-    normalised. Ordinary flake interpolation outside config is unaffected.
+
+def _strip_outer_parens(expression: str) -> str:
+    expression = expression.strip()
+    while expression.startswith("(") and _matching_delimiter(expression, 0) == len(
+        expression
+    ) - 1:
+        expression = expression[1:-1].strip()
+    return expression
+
+
+def _is_literal_attrset(expression: str) -> bool:
+    expression = expression.strip()
+    return (
+        expression.startswith("{")
+        and _matching_delimiter(expression, 0) == len(expression) - 1
+    )
+
+
+def _split_top_level_merges(expression: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    index = 0
+    while index < len(expression):
+        character = expression[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+            index += 1
+            continue
+        if character in "([{":
+            depth += 1
+        elif character in ")]}":
+            depth -= 1
+        elif (
+            depth == 0
+            and character == "/"
+            and index + 1 < len(expression)
+            and expression[index + 1] == "/"
+        ):
+            parts.append(expression[start:index])
+            start = index + 2
+            index += 1
+        index += 1
+    parts.append(expression[start:])
+    return parts
+
+
+def reject_dynamic_config_ast(ast: str, filename: str) -> None:
+    """Reject variable/alias config and dynamic keys in every `config =`.
+
+    The input is the normalised AST from `nix-instantiate --parse`. The config
+    value must be a literal attrset or a merge of literal attrsets. A let-bound
+    variable or function that builds the attrset elsewhere is not followed and
+    fails closed, because alias resolution in a textual AST is not robust.
     """
     search_from = 0
     while True:
@@ -233,8 +319,14 @@ def reject_dynamic_config_ast(ast: str, filename: str) -> None:
             return
         start = offsets[0]
         end = _expression_end(ast, start)
-        expression = ast[start:end]
-        if '"${' in expression:
+        expression = _strip_outer_parens(ast[start:end])
+        parts = _split_top_level_merges(expression)
+        if any(not _is_literal_attrset(part) for part in parts):
+            fail(
+                "ENVIRONMENT_SANDBOX_DENIED",
+                f"{filename} uses a non-literal nixpkgs config expression; use a literal attrset or a merge of literal attrsets",
+            )
+        if any('"${' in part for part in parts):
             fail(
                 "ENVIRONMENT_SANDBOX_DENIED",
                 f"{filename} uses a dynamic attribute key in nixpkgs config",

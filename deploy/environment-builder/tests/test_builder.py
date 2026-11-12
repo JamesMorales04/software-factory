@@ -394,6 +394,32 @@ class PolicyTests(unittest.TestCase):
         finally:
             log.close()
 
+    def test_unreviewed_deriverless_closure_path_fails_closed(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            with mock.patch(
+                "environment_builder.cli.nix_eval_json", return_value=[]
+            ) as evaluate:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(
+                        {"nix": {"nixpkgs": pin}},
+                        [
+                            {
+                                "path": "/nix/store/" + "f" * 32 + "-unknown-source",
+                                "deriver": None,
+                            }
+                        ],
+                        {},
+                        30,
+                        log,
+                    )
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+            evaluate.assert_not_called()
+        finally:
+            log.close()
+
     def test_closure_audit_excludes_only_the_exact_devshell_wrapper(self) -> None:
         root = "/nix/store/" + "a" * 32 + "-devshell"
         package = "/nix/store/" + "b" * 32 + "-bash-5.2"
@@ -443,6 +469,7 @@ class PolicyTests(unittest.TestCase):
             '{ outputs = ({ nixpkgs }: import nixpkgs { config = { "${key}" = (_: true); }; }); }',
             '{ outputs = ({ nixpkgs }: import nixpkgs { config = ({ } // { "${key}" = (_: true); }); }); }',
             '{ outputs = ({ nixpkgs }: import nixpkgs { config = ({ } // (let x = 1; in { "${key}" = (_: true); })); }); }',
+            '{ outputs = ({ nixpkgs }: let settings = { "${allow}" = (_: true); }; in import nixpkgs { config = settings; }); }',
         ]
         from environment_builder.policy import reject_dynamic_config_ast
 
@@ -457,6 +484,10 @@ class PolicyTests(unittest.TestCase):
             '{ devShells = { "${system}" = { default = (pkgs.mkShell { }); }; }; }); }'
         )
         reject_dynamic_config_ast(conventional_ast, "flake.nix")
+        reject_dynamic_config_ast(
+            '{ outputs = ({ nixpkgs }: import nixpkgs { config = { allowUnfree = false; }; }); }',
+            "flake.nix",
+        )
 
         raw = (
             "let key = \"allowUn\" + \"freePredicate\"; "
@@ -472,6 +503,21 @@ class PolicyTests(unittest.TestCase):
                 cli.validate_nix_config_ast([file])
         self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
         parse.assert_called_once()
+
+        alias_raw = (
+            'let allow = "allowUn" + "freePredicate"; '
+            'settings = { ${allow} = _: true; }; '
+            'in import nixpkgs { config = settings; }'
+        )
+        alias_file = EnvironmentFile(
+            "flake.nix", sha256_text(alias_raw), "PROJECT", alias_raw
+        )
+        with mock.patch(
+            "environment_builder.cli.nix_parse", return_value=rejected_asts[3]
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                cli.validate_nix_config_ast([alias_file])
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
 
         conventional = (
             "outputs = { self, nixpkgs }: "
