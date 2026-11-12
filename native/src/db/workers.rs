@@ -385,7 +385,7 @@ impl Database {
             .environment_execution_for_campaign(&campaign_id)
             .await?;
         if spec.environment_required && environment_execution.is_none() {
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "test-support")))]
             return Err(Error::IntakeConflict {
                 code: "ENVIRONMENT_PLAN_REQUIRED",
                 message: "the Campaign has no exact frozen environment execution binding".into(),

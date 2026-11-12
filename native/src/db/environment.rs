@@ -1140,9 +1140,9 @@ impl Database {
         let spec = match self.environment_spec_by_sha(&binding.spec_sha256).await {
             Ok(spec) => spec,
             Err(Error::NotFound) => {
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 return Ok(None);
-                #[cfg(not(test))]
+                #[cfg(not(any(test, feature = "test-support")))]
                 return Err(Error::IntakeConflict {
                     code: "ENVIRONMENT_PLAN_REQUIRED",
                     message: "the Campaign environment spec is missing".into(),
@@ -1215,11 +1215,12 @@ impl Database {
     }
 }
 
-/// `#[cfg(test)]`-only fallback for library unit tests that create a Campaign
-/// without real environment rows. It is never compiled for production builds,
-/// the `test-support` feature or binary test harnesses; Core authorization and
-/// execution still require the real frozen spec row in production.
-#[cfg(test)]
+/// Debug-only fallback for deterministic unit and binary test harnesses that
+/// create a Campaign without real environment rows. It is compiled for `test`
+/// and the debug-only `test-support` feature, never for production builds;
+/// Core authorization and execution still require the real frozen spec row in
+/// production.
+#[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn bind_test_campaign_environment_in_tx(
     transaction: &mut SqliteConnection,

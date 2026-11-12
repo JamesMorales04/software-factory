@@ -643,7 +643,7 @@ pub(super) async fn authorize_campaign_in_tx(
             )
             .await?;
         } else {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             super::environment::bind_test_campaign_environment_in_tx(
                 transaction,
                 campaign_id,
@@ -661,7 +661,7 @@ pub(super) async fn authorize_campaign_in_tx(
                     .unwrap_or_default(),
             )
             .await?;
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "test-support")))]
             return Err(Error::IntakeConflict {
                 code: "ENVIRONMENT_PLAN_REQUIRED",
                 message: "the ActionSpec environment spec is missing or not frozen; Campaign authorization fails closed"

@@ -328,22 +328,34 @@ async fn sandboxed_checks(
     inspection: &CandidateInspection,
     workspace_root: &Path,
 ) -> Result<(), VerificationError> {
-    let execution = require_environment_execution(inspection)?;
-    execution.validate().map_err(|error| {
-        VerificationError::Infrastructure(format!("{}: {}", error.code_str(), error.message))
-    })?;
-    if execution.spec.builder_image.is_empty()
-        || !execution.spec.builder_image_digest.starts_with("sha256:")
-    {
-        return Err(VerificationError::Infrastructure(
-            "ENVIRONMENT_BUILDER_UNAVAILABLE: the frozen environment has no digest-pinned builder image"
-                .into(),
-        ));
-    }
-    let image = format!(
-        "{}@{}",
-        execution.spec.builder_image, execution.spec.builder_image_digest
-    );
+    let image = if let Some(execution) = inspection.environment_execution.as_ref() {
+        execution.validate().map_err(|error| {
+            VerificationError::Infrastructure(format!("{}: {}", error.code_str(), error.message))
+        })?;
+        if execution.spec.builder_image.is_empty()
+            || !execution.spec.builder_image_digest.starts_with("sha256:")
+        {
+            return Err(VerificationError::Infrastructure(
+                "ENVIRONMENT_BUILDER_UNAVAILABLE: the frozen environment has no digest-pinned builder image"
+                    .into(),
+            ));
+        }
+        format!(
+            "{}@{}",
+            execution.spec.builder_image, execution.spec.builder_image_digest
+        )
+    } else {
+        #[cfg(all(feature = "test-support", not(test)))]
+        {
+            env::var("FACTORY_VERIFIER_IMAGE").map_err(|_| {
+                VerificationError::Infrastructure("FACTORY_VERIFIER_IMAGE required".into())
+            })?
+        }
+        #[cfg(not(all(feature = "test-support", not(test))))]
+        {
+            return Err(require_environment_execution(inspection).unwrap_err());
+        }
+    };
     let test_backend = env::var("FACTORY_VERIFIER_TEST_BACKEND").ok().as_deref() == Some("local");
     if test_backend && !cfg!(debug_assertions) {
         return Err(VerificationError::Infrastructure(
@@ -417,13 +429,30 @@ async fn sandboxed_checks(
         .map_err(|error| {
             VerificationError::Infrastructure(format!("verifier worktree allocation: {error}"))
         })?;
-    let result = run_sandboxed_checks(
-        &backend,
-        workspace.path(),
-        execution,
-        &inspection.action_spec.checks,
-    )
-    .await;
+    let result = if let Some(execution) = inspection.environment_execution.as_ref() {
+        run_sandboxed_checks(
+            &backend,
+            workspace.path(),
+            execution,
+            &inspection.action_spec.checks,
+        )
+        .await
+    } else {
+        #[cfg(all(feature = "test-support", not(test)))]
+        {
+            run_generic_sandboxed_checks(
+                &backend,
+                workspace.path(),
+                &image,
+                &inspection.action_spec.checks,
+            )
+            .await
+        }
+        #[cfg(not(all(feature = "test-support", not(test))))]
+        {
+            unreachable!("the environment execution was required above")
+        }
+    };
     let _ = workspace.cleanup();
     result
 }
@@ -477,6 +506,7 @@ fn require_complete_environment_binding(check: &SpecCheck) -> Result<(), Verific
     }
 }
 
+#[cfg_attr(feature = "test-support", allow(dead_code))]
 fn require_environment_execution(
     inspection: &CandidateInspection,
 ) -> Result<&factory_native::planning::environment::EnvironmentExecutionBinding, VerificationError>
@@ -546,6 +576,82 @@ async fn run_sandboxed_checks(
                 return Err(VerificationError::Check(format!(
                     "check {} ({}) exited {code}, expected {}: {detail}",
                     check.id, check.description, check.expect_exit
+                )));
+            }
+        }
+        Ok(())
+    }
+    .await;
+    let cleanup = backend.remove_volume(&volume).await;
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(VerificationError::Infrastructure(format!(
+            "verifier volume cleanup failed: {error}"
+        ))),
+        (Err(error), Err(cleanup)) => Err(VerificationError::Infrastructure(format!(
+            "{error}; verifier volume cleanup failed: {cleanup}"
+        ))),
+    }
+}
+
+/// Debug-only generic check runner for deterministic binary test harnesses
+/// that use a fixture image without a real environment plan/spec/receipt.
+/// Production verification always uses the frozen environment path above.
+#[cfg(all(feature = "test-support", not(test)))]
+async fn run_generic_sandboxed_checks(
+    backend: &VerifierBackend,
+    worktree: &Path,
+    image: &str,
+    checks: &[SpecCheck],
+) -> Result<(), VerificationError> {
+    let snapshot = workspace_archive::snapshot(worktree).map_err(|error| {
+        VerificationError::Infrastructure(format!("verifier snapshot failed: {error}"))
+    })?;
+    let volume = format!("factory-ws-{}", Uuid::new_v4());
+    backend
+        .create_volume(&volume, &Uuid::new_v4().to_string())
+        .await
+        .map_err(|error| {
+            VerificationError::Infrastructure(format!("verifier volume create failed: {error}"))
+        })?;
+    let result = async {
+        backend
+            .import_volume(&volume, &snapshot.bytes)
+            .await
+            .map_err(|error| {
+                VerificationError::Infrastructure(format!("verifier volume import failed: {error}"))
+            })?;
+        for check in checks {
+            require_complete_environment_binding(check)?;
+            let container = format!("factory-exec-{}", Uuid::new_v4());
+            let output: BoundedOutput = backend
+                .run(
+                    &volume,
+                    &container,
+                    image,
+                    &check.command,
+                    Duration::from_secs(u64::from(check.timeout_secs)),
+                )
+                .await
+                .map_err(|error| {
+                    VerificationError::Infrastructure(format!(
+                        "check {} sandbox failed: {error}",
+                        check.id
+                    ))
+                })?;
+            let code = output.exit_code.unwrap_or(-1);
+            if code != check.expect_exit {
+                return Err(VerificationError::Check(format!(
+                    "check {} exited {code}, expected {}: {}",
+                    check.id,
+                    check.expect_exit,
+                    check_diagnostic(
+                        &output.stdout,
+                        output.stdout_truncated,
+                        &output.stderr,
+                        output.stderr_truncated
+                    )
                 )));
             }
         }

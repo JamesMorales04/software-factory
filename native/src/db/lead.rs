@@ -2984,7 +2984,7 @@ async fn ensure_action_spec_for_frozen_plan(
         if sha256_hex(spec_json.as_bytes()) != saved_sha256 {
             return Err(Error::Invalid("frozen ActionSpec digest mismatch"));
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             let mut spec: ActionSpec = serde_json::from_str(&spec_json)
                 .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
@@ -3034,7 +3034,7 @@ async fn ensure_action_spec_for_frozen_plan(
     }
     #[allow(unused_mut)]
     let mut spec = derive_root_action_spec(request, proposal, config, grant)?;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     crate::db::apply_test_environment_binding(&mut spec, &request.action_id);
     let spec_json =
         serde_json::to_string(&spec).map_err(|_| Error::Invalid("ActionSpec encoding"))?;

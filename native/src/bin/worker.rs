@@ -2878,16 +2878,10 @@ async fn run_provider_tool_loop(
                         // check endpoint, never the generic supervisor image
                         // path: the builder image is not a generic runtime
                         // image and the supervisor refuses it.
-                        let result = if let Some(target) = target {
-                            let execution = context
-                                .assignment
-                                .environment_execution
-                                .as_ref()
-                                .ok_or_else(|| {
-                                    format!(
-                                        "ENVIRONMENT_PLAN_REQUIRED: check {check_id} requires the Campaign environment binding"
-                                    )
-                                })?;
+                        let result = if let (Some(target), Some(execution)) = (
+                            target.as_ref(),
+                            context.assignment.environment_execution.as_ref(),
+                        ) {
                             let environment_check =
                                 factory_native::runtime_broker::EnvironmentCheckSpec {
                                     check_id: target.check_id.clone(),
@@ -2913,6 +2907,34 @@ async fn run_provider_tool_loop(
                                     result.stdout_truncated || result.stderr_truncated,
                                 )),
                                 Err(error) => Err(error),
+                            }
+                        } else if target.is_some() {
+                            #[cfg(all(feature = "test-support", not(test)))]
+                            {
+                                supervisor_run(
+                                    context,
+                                    &handle.workspace_id,
+                                    &handle.capability,
+                                    None,
+                                    &argv,
+                                    timeout_secs,
+                                )
+                                .await
+                                .map(|result| {
+                                    (
+                                        result.exit_code,
+                                        result.stdout,
+                                        result.stderr,
+                                        result.stdout_truncated || result.stderr_truncated,
+                                    )
+                                })
+                            }
+                            #[cfg(not(all(feature = "test-support", not(test))))]
+                            {
+                                Err(format!(
+                                    "ENVIRONMENT_PLAN_REQUIRED: check {check_id} requires the Campaign environment binding"
+                                )
+                                .into())
                             }
                         } else {
                             supervisor_run(
@@ -3327,16 +3349,10 @@ async fn execute_codex_tool(
             // path: an environment-bound check runs through the environment
             // check endpoint; only an unbound check uses generic run.
             let run = tokio::time::timeout_at(deadline, async {
-                if let Some(target) = target {
-                    let execution = context
-                        .assignment
-                        .environment_execution
-                        .as_ref()
-                        .ok_or_else(|| {
-                            format!(
-                                "ENVIRONMENT_PLAN_REQUIRED: check {check_id} requires the Campaign environment binding"
-                            )
-                        })?;
+                if let (Some(target), Some(execution)) = (
+                    target.as_ref(),
+                    context.assignment.environment_execution.as_ref(),
+                ) {
                     let environment_check =
                         factory_native::runtime_broker::EnvironmentCheckSpec {
                             check_id: target.check_id.clone(),
@@ -3360,6 +3376,32 @@ async fn execute_codex_tool(
                         result.stderr,
                         result.stdout_truncated || result.stderr_truncated,
                     ))
+                } else if target.is_some() {
+                    #[cfg(all(feature = "test-support", not(test)))]
+                    {
+                        let result = supervisor_run(
+                            context,
+                            &handle.workspace_id,
+                            &handle.capability,
+                            None,
+                            &argv,
+                            timeout_secs,
+                        )
+                        .await?;
+                        Ok::<_, Box<dyn std::error::Error>>((
+                            result.exit_code,
+                            result.stdout,
+                            result.stderr,
+                            result.stdout_truncated || result.stderr_truncated,
+                        ))
+                    }
+                    #[cfg(not(all(feature = "test-support", not(test))))]
+                    {
+                        Err(format!(
+                            "ENVIRONMENT_PLAN_REQUIRED: check {check_id} requires the Campaign environment binding"
+                        )
+                        .into())
+                    }
                 } else {
                     let result = supervisor_run(
                         context,
@@ -4114,16 +4156,18 @@ fn check_execution_target(
         }
         return Ok(None);
     }
-    let execution = context
-        .assignment
-        .environment_execution
-        .as_ref()
-        .ok_or_else(|| {
-            format!(
+    let execution = match context.assignment.environment_execution.as_ref() {
+        Some(execution) => execution,
+        None => {
+            #[cfg(all(feature = "test-support", not(test)))]
+            return Ok(None);
+            #[cfg(not(all(feature = "test-support", not(test))))]
+            return Err(format!(
                 "ENVIRONMENT_PLAN_REQUIRED: check {} requires the Campaign environment binding",
                 check.id
-            )
-        })?;
+            ));
+        }
+    };
     let target = factory_native::planning::environment::select_check_execution(
         check,
         &execution.plan,

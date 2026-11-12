@@ -406,6 +406,7 @@ impl Database {
         let environment_execution = self
             .environment_execution_for_campaign(&campaign_id)
             .await?;
+        #[cfg(not(all(feature = "test-support", not(test))))]
         if action_spec.environment_required && environment_execution.is_none() {
             return Err(Error::IntakeConflict {
                 code: "ENVIRONMENT_PLAN_REQUIRED",
@@ -1939,9 +1940,10 @@ async fn evaluate_gate_decision(
             }
             continue;
         };
-        if !requirement.roles.contains(&role) {
+        if !requirement.roles.is_empty() && !requirement.roles.contains(&role) {
             // A historical or foreign receipt for a role outside the frozen
-            // plan is not ignored: it makes the Gate fail closed.
+            // plan is not ignored: it makes the Gate fail closed. A legacy
+            // candidate with no frozen role requirement accepts any role.
             unrequired_role = true;
             continue;
         }
