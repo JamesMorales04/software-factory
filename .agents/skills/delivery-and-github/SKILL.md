@@ -50,8 +50,11 @@ A description, screenshot or model opinion is not a substitute.
 ## 4. GitHub lifecycle
 
 - Create/confirm the issue link before or with the PR; do not invent a link.
-- Push a branch; never push to the protected base.
-- Open a PR with the objective, candidate, risk, checks and limitations.
+- The authorized Core Delivery Engine performs branch/PR mutations. A coding
+  agent prepares the exact candidate, branch name, PR body and evidence, but
+  does not push, open, approve or merge unless an existing Action, delegation
+  and compiled tool pack explicitly grant that effect.
+- Never push to the protected base.
 - Required checks must run on the exact PR head SHA.
 - Branch protection and required reviews are not bypassed by an agent.
 - R0 auto-merge is allowed only when policy, checks, review and branch

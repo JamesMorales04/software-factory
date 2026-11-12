@@ -1,13 +1,21 @@
 import { expect, test } from "vitest";
+import { userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { Button } from "./Button";
 
 test("keeps its accessible name while busy and is focusable", async () => {
-  const screen = await render(<Button variant="primary">Save</Button>);
+  const screen = await render(
+    <>
+      <Button>First</Button>
+      <Button variant="primary">Save</Button>
+    </>,
+  );
+  const first = screen.getByRole("button", { name: "First" });
   const button = screen.getByRole("button", { name: "Save" });
 
   await expect.element(button).toBeVisible();
-  await button.click();
+  await first.click();
+  await userEvent.keyboard("{Tab}");
   await expect.element(button).toHaveFocus();
 
   await screen.rerender(

@@ -29,6 +29,8 @@ from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TIMEOUT = 600
+RUN_SCHEMA = "factory-e2e-run-v1"
+RUN_SENTINEL = "run.json"
 
 
 class ScenarioError(RuntimeError):
@@ -93,6 +95,85 @@ def project_name(value: str) -> str:
     if not all(character.isalnum() or character in "-_" for character in normalized):
         raise ScenarioError(f"the Compose project contains invalid characters: {value!r}")
     return normalized
+
+
+def _bounded_run(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+    timeout: int = 60,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ScenarioError(f"command failed or timed out: {' '.join(command)}: {error}") from error
+
+
+def run_sentinel(config: "Config") -> Path:
+    return config.run_dir / RUN_SENTINEL
+
+
+def ensure_run_identity(config: "Config", state: "State") -> dict[str, Any]:
+    """Create or validate the ownership marker for a run directory.
+
+    A run directory is disposable, but it may still be pointed at an arbitrary
+    path by mistake. The sentinel is the only proof that cleanup/`--fresh` may
+    remove the known children; a directory without it is refused.
+    """
+
+    sentinel = run_sentinel(config)
+    if sentinel.exists():
+        payload = read_json(sentinel)
+        if payload.get("schema") != RUN_SCHEMA:
+            raise ScenarioError(f"run ownership marker has an invalid schema: {sentinel}")
+        for key, value in (
+            ("runId", config.run_id),
+            ("project", config.project),
+            ("port", config.port),
+        ):
+            if payload.get(key) != value:
+                raise ScenarioError(
+                    f"run ownership marker mismatch for {key}: {payload.get(key)!r} != {value!r}"
+                )
+        return payload
+    if config.run_dir.exists() and any(config.run_dir.iterdir()):
+        raise ScenarioError(
+            f"run directory is not owned by this harness: {config.run_dir}. "
+            "Use a new --run-dir or remove it manually."
+        )
+    payload = {
+        "schema": RUN_SCHEMA,
+        "runId": config.run_id,
+        "project": config.project,
+        "port": config.port,
+        "scenario": config.scenario,
+        "createdAt": now_utc(),
+    }
+    ensure_dir(config.run_dir)
+    os.chmod(config.run_dir, 0o700)
+    write_json(sentinel, payload)
+    state.set("run_sentinel", str(sentinel))
+    return payload
+
+
+def require_owned_run(config: "Config") -> None:
+    sentinel = run_sentinel(config)
+    if not sentinel.is_file():
+        raise ScenarioError(
+            f"refusing destructive cleanup: {config.run_dir} has no {RUN_SENTINEL} marker"
+        )
+    payload = read_json(sentinel)
+    if payload.get("schema") != RUN_SCHEMA or payload.get("runId") != config.run_id:
+        raise ScenarioError(f"refusing destructive cleanup: invalid run marker in {config.run_dir}")
 
 
 def command_version(program: str) -> str | None:
@@ -253,6 +334,8 @@ class Compose:
             )
         except subprocess.TimeoutExpired as error:
             raise ScenarioError(f"command timed out after {self.config.timeout}s: {rendered}") from error
+        except FileNotFoundError as error:
+            raise ScenarioError(f"command is not installed: {command[0]}") from error
         elapsed = time.monotonic() - started
         with self.log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"\n$ {rendered}\n{tail(result.stdout)}\n{tail(result.stderr)}\n")
@@ -284,7 +367,7 @@ class Compose:
         self.run(["stop"], check=False, log_name="compose-stop")
 
     def core_container(self) -> str:
-        result = subprocess.run(
+        result = _bounded_run(
             [
                 "podman",
                 "ps",
@@ -297,15 +380,13 @@ class Compose:
             ],
             cwd=self.config.root,
             env=self.config.environment(),
-            text=True,
-            capture_output=True,
-            check=False,
+            timeout=30,
         )
         names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
         return names[0] if names else ""
 
     def service_container(self, service: str) -> str:
-        result = subprocess.run(
+        result = _bounded_run(
             [
                 "podman",
                 "ps",
@@ -317,9 +398,7 @@ class Compose:
             ],
             cwd=self.config.root,
             env=self.config.environment(),
-            text=True,
-            capture_output=True,
-            check=False,
+            timeout=30,
         )
         for name in result.stdout.splitlines():
             if f"_{service}_" in name:
@@ -347,7 +426,7 @@ class Compose:
         return result.stdout
 
     def volume_names(self) -> list[str]:
-        result = subprocess.run(
+        result = _bounded_run(
             [
                 "podman",
                 "volume",
@@ -359,9 +438,7 @@ class Compose:
             ],
             cwd=self.config.root,
             env=self.config.environment(),
-            text=True,
-            capture_output=True,
-            check=False,
+            timeout=30,
         )
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
@@ -527,14 +604,27 @@ def doctor(config: Config, compose: Compose) -> dict[str, Any]:
         version = command_version(program)
         check(f"command:{program}", version is not None, version or "not found")
 
+    podman_present = shutil.which("podman") is not None
     compose_version = command_version("podman")
-    check("podman-compose", shutil.which("podman") is not None, compose_version or "not found")
+    check("podman-compose", podman_present, compose_version or "podman not found")
     provider = os.environ.get("PODMAN_COMPOSE_PROVIDER", "/usr/bin/podman-compose")
-    if Path(provider).exists():
-        check("compose-provider", True, provider)
-    else:
-        fallback = shutil.which("docker-compose") or shutil.which("docker")
-        check("compose-provider", fallback is not None, provider if fallback is None else fallback)
+    check("compose-provider", Path(provider).exists(), provider)
+    compose_probe = None
+    if podman_present and Path(provider).exists():
+        try:
+            compose_probe = _bounded_run(
+                ["podman", "compose", "version"],
+                cwd=config.root,
+                env=config.environment(),
+                timeout=20,
+            )
+        except ScenarioError:
+            compose_probe = None
+    check(
+        "compose:version",
+        compose_probe is not None and compose_probe.returncode == 0,
+        "podman compose version unavailable" if compose_probe is None else compose_probe.stdout.strip(),
+    )
 
     check("port:free", port_is_free(config.port), f"127.0.0.1:{config.port}")
     check("repo:compose", (config.root / "compose.yaml").is_file(), str(config.root / "compose.yaml"))
@@ -547,8 +637,14 @@ def doctor(config: Config, compose: Compose) -> dict[str, Any]:
     ensure_dir(config.artifacts_dir)
     check("artifacts:writable", os.access(config.artifacts_dir, os.W_OK), str(config.artifacts_dir))
 
-    configuration = compose.run(["config"], check=False, log_name="doctor-compose-config")
-    check("compose:config", configuration.returncode == 0, f"exit {configuration.returncode}")
+    if podman_present and Path(provider).exists() and (config.root / "compose.yaml").is_file():
+        try:
+            configuration = compose.run(["config"], check=False, log_name="doctor-compose-config")
+            check("compose:config", configuration.returncode == 0, f"exit {configuration.returncode}")
+        except ScenarioError as error:
+            check("compose:config", False, str(error))
+    else:
+        check("compose:config", False, "Compose prerequisites are missing")
 
     return {
         "schema": "factory-e2e-doctor-v1",
@@ -561,9 +657,12 @@ def doctor(config: Config, compose: Compose) -> dict[str, Any]:
 
 
 def snapshot_volumes(config: Config, compose: Compose) -> dict[str, Any]:
-    """Best-effort volume snapshot. Containers are stopped first to keep the tar consistent."""
+    """Export Compose volumes with private permissions and a validated index."""
 
+    ensure_dir(config.run_dir)
+    os.chmod(config.run_dir, 0o700)
     directory = ensure_dir(config.snapshot_dir)
+    os.chmod(directory, 0o700)
     volumes = compose.volume_names()
     if not volumes:
         raise ScenarioError("cannot snapshot: no Compose volumes were found")
@@ -576,25 +675,20 @@ def snapshot_volumes(config: Config, compose: Compose) -> dict[str, Any]:
     }
     for volume in volumes:
         archive = directory / f"{volume}.tar"
-        result = subprocess.run(
+        result = _bounded_run(
             ["podman", "volume", "export", volume, "--output", str(archive)],
             cwd=config.root,
             env=config.environment(),
-            text=True,
-            capture_output=True,
-            check=False,
+            timeout=config.timeout,
         )
         if result.returncode != 0:
-            raise ScenarioError(
-                f"failed to export volume {volume}: {tail(result.stderr)}"
-            )
-        inspect = subprocess.run(
+            raise ScenarioError(f"failed to export volume {volume}: {tail(result.stderr)}")
+        os.chmod(archive, 0o600)
+        inspect = _bounded_run(
             ["podman", "volume", "inspect", volume],
             cwd=config.root,
             env=config.environment(),
-            text=True,
-            capture_output=True,
-            check=False,
+            timeout=30,
         )
         labels: dict[str, str] = {}
         if inspect.returncode == 0:
@@ -606,41 +700,81 @@ def snapshot_volumes(config: Config, compose: Compose) -> dict[str, Any]:
             {"name": volume, "archive": archive.name, "labels": labels}
         )
     write_json(directory / "index.json", index)
+    os.chmod(directory / "index.json", 0o600)
     return index
 
 
-def restore_volumes(config: Config, compose: Compose) -> dict[str, Any]:
-    index_path = config.snapshot_dir / "index.json"
-    index = read_json(index_path)
-    compose.run(["down", "-v"], check=False, log_name="restore-down")
-    for entry in index.get("volumes", []):
-        name = entry["name"]
-        archive = config.snapshot_dir / entry["archive"]
+def _validate_snapshot_index(config: Config, index: dict[str, Any]) -> list[dict[str, Any]]:
+    if index.get("schema") != "factory-e2e-volume-snapshot-v1":
+        raise ScenarioError("snapshot index has an invalid schema")
+    if index.get("project") != config.project:
+        raise ScenarioError(
+            f"snapshot belongs to project {index.get('project')!r}, not {config.project!r}"
+        )
+    entries = index.get("volumes")
+    if not isinstance(entries, list) or not entries:
+        raise ScenarioError("snapshot index has no volumes")
+    snapshot_root = config.snapshot_dir.resolve()
+    validated: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ScenarioError("snapshot volume entry is not an object")
+        name = entry.get("name")
+        archive_name = entry.get("archive")
+        if not isinstance(name, str) or not name or Path(name).name != name:
+            raise ScenarioError(f"snapshot volume name is unsafe: {name!r}")
+        if not name.startswith(config.project):
+            raise ScenarioError(f"snapshot volume {name!r} is not owned by {config.project!r}")
+        if not isinstance(archive_name, str) or Path(archive_name).name != archive_name:
+            raise ScenarioError(f"snapshot archive name is unsafe: {archive_name!r}")
+        archive = (config.snapshot_dir / archive_name).resolve()
+        if archive.parent != snapshot_root:
+            raise ScenarioError(f"snapshot archive escapes the snapshot directory: {archive}")
         if not archive.is_file():
             raise ScenarioError(f"snapshot archive is missing: {archive}")
+        labels = entry.get("labels") or {}
+        if not isinstance(labels, dict):
+            raise ScenarioError("snapshot volume labels are invalid")
+        validated.append({"name": name, "archive": archive, "labels": labels})
+    return validated
+
+
+def restore_volumes(config: Config, compose: Compose) -> dict[str, Any]:
+    """Validate the full snapshot before any destructive operation, then restore."""
+
+    index = read_json(config.snapshot_dir / "index.json")
+    entries = _validate_snapshot_index(config, index)
+    compose.run(["down", "-v"], check=False, log_name="restore-down")
+    for entry in entries:
+        name = entry["name"]
+        archive = entry["archive"]
+        existing = _bounded_run(
+            ["podman", "volume", "inspect", name],
+            cwd=config.root,
+            env=config.environment(),
+            timeout=30,
+        )
+        if existing.returncode == 0:
+            raise ScenarioError(f"refusing to import into existing volume: {name}")
         create = ["podman", "volume", "create", name]
         for key, value in (entry.get("labels") or {}).items():
             create.extend(["--label", f"{key}={value}"])
-        subprocess.run(
+        created = _bounded_run(
             create,
             cwd=config.root,
             env=config.environment(),
-            text=True,
-            capture_output=True,
-            check=False,
+            timeout=30,
         )
-        result = subprocess.run(
+        if created.returncode != 0:
+            raise ScenarioError(f"failed to create volume {name}: {tail(created.stderr)}")
+        imported = _bounded_run(
             ["podman", "volume", "import", name, str(archive)],
             cwd=config.root,
             env=config.environment(),
-            text=True,
-            capture_output=True,
-            check=False,
+            timeout=config.timeout,
         )
-        if result.returncode != 0:
-            raise ScenarioError(
-                f"failed to import volume {name}: {tail(result.stderr)}"
-            )
+        if imported.returncode != 0:
+            raise ScenarioError(f"failed to import volume {name}: {tail(imported.stderr)}")
     return index
 
 
@@ -656,34 +790,32 @@ def collect_diagnostics(
         (["podman", "volume", "ls", "--filter", f"label=com.docker.compose.project={config.project}"], "podman-volumes.txt"),
     ]
     for command, name in commands:
-        result = subprocess.run(
-            command,
-            cwd=config.root,
-            env=config.environment(),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        directory.joinpath(name).write_text(
-            f"$ {' '.join(command)}\n\n{result.stdout}\n\nSTDERR\n{result.stderr}\n",
-            encoding="utf-8",
-        )
+        try:
+            result = _bounded_run(
+                command,
+                cwd=config.root,
+                env=config.environment(),
+                timeout=30,
+            )
+            body = f"$ {' '.join(command)}\n\n{result.stdout}\n\nSTDERR\n{result.stderr}\n"
+        except ScenarioError as error:
+            body = f"$ {' '.join(command)}\ndiagnostic failed: {error}\n"
+        directory.joinpath(name).write_text(body, encoding="utf-8")
     for service in ("core", "supervisor", "worker", "runtime", "model-fixture", "git-fixture"):
         name = compose.service_container(service)
         if not name:
             continue
-        result = subprocess.run(
-            ["podman", "logs", "--tail", "240", name],
-            cwd=config.root,
-            env=config.environment(),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        directory.joinpath(f"logs-{service}.txt").write_text(
-            f"container={name}\n\n{result.stdout}\n\nSTDERR\n{result.stderr}\n",
-            encoding="utf-8",
-        )
+        try:
+            result = _bounded_run(
+                ["podman", "logs", "--tail", "240", name],
+                cwd=config.root,
+                env=config.environment(),
+                timeout=30,
+            )
+            body = f"container={name}\n\n{result.stdout}\n\nSTDERR\n{result.stderr}\n"
+        except ScenarioError as error:
+            body = f"container={name}\ndiagnostic failed: {error}\n"
+        directory.joinpath(f"logs-{service}.txt").write_text(body, encoding="utf-8")
     if api is not None:
         endpoints = {
             "workers.json": "/workers",
@@ -729,6 +861,9 @@ def write_manifest(
     error: str | None = None,
     scenarios_ran: list[str] | None = None,
 ) -> dict[str, Any]:
+    head = _git_output(config.root, ["rev-parse", "HEAD"])
+    base = _git_output(config.root, ["merge-base", "HEAD", "origin/main"]) or head
+    dirty = bool(_git_output(config.root, ["status", "--porcelain"]))
     manifest = {
         "schema": "factory-e2e-scenario-manifest-v1",
         "status": status,
@@ -736,8 +871,9 @@ def write_manifest(
         "runId": config.run_id,
         "startedAt": started_at,
         "finishedAt": now_utc(),
-        "base": _git_output(config.root, ["rev-parse", "HEAD"]),
-        "candidate": _git_output(config.root, ["rev-parse", "HEAD"]),
+        "base": base,
+        "candidate": f"{head}-dirty" if dirty else head,
+        "dirty": dirty,
         "project": config.project,
         "port": config.port,
         "provider": config.provider,
@@ -771,6 +907,7 @@ def write_manifest(
                 "gate_outcome",
                 "verifier_receipt_id",
                 "reviewer_receipt_id",
+                "restart_persistence",
                 "summary",
             }
         },
@@ -778,7 +915,7 @@ def write_manifest(
         "limitations": [
             "Development harness only; not independent acceptance.",
             "TRUSTED_LOCAL; no isolation or certification claim.",
-            "Provider is a deterministic local fixture; no paid inference ran.",
+            "Provider is a deterministic local fixture or validated cassette; no paid inference ran.",
             "GitHub is not contacted by this scenario.",
             "A partial scenario is PARTIAL, never PASS.",
         ],
@@ -807,6 +944,9 @@ def _git_output(root: Path, arguments: list[str]) -> str:
 def cleanup(config: Config, compose: Compose) -> None:
     if config.keep:
         log(f"keeping run directory and stack: {config.run_dir}")
+        return
+    if not run_sentinel(config).is_file():
+        log(f"refusing destructive cleanup: no run ownership marker in {config.run_dir}")
         return
     compose.down(volumes=True)
     shutil.rmtree(config.git_dir, ignore_errors=True)

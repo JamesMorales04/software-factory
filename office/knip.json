@@ -13,8 +13,8 @@
     "devDependencies": "error",
     "unlisted": "error",
     "binaries": "off",
-    "exports": "off",
-    "types": "off",
+    "exports": "warn",
+    "types": "warn",
     "duplicates": "off"
   }
 }

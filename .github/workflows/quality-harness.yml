@@ -36,6 +36,8 @@ jobs:
         working-directory: office
         run: npx playwright install --with-deps chromium
       - name: Run the quality harness lane
+        env:
+          QUALITY_HARNESS_BROWSER_REPEAT: "20"
         run: bash scripts/ci/quality-harness.sh
 
   dependency-policy:

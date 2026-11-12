@@ -3,14 +3,32 @@ description: Independently verify a frozen Quality Harness candidate in a clean 
 mode: subagent
 model: opencode-go/gpt-6-luna#high
 permissions:
+  - action: "*"
+    resource: "*"
+    effect: deny
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: skill
+    resource: "*"
+    effect: allow
   - action: edit
     resource: "*"
     effect: deny
   - action: shell
-    resource: "git diff *"
+    resource: "git diff --stat"
     effect: allow
   - action: shell
-    resource: "git status *"
+    resource: "git diff --check"
+    effect: allow
+  - action: shell
+    resource: "git status --porcelain"
     effect: allow
   - action: shell
     resource: "cargo test *"
@@ -25,7 +43,28 @@ permissions:
     resource: "npm test *"
     effect: allow
   - action: shell
-    resource: "npm run *"
+    resource: "npm run typecheck"
+    effect: allow
+  - action: shell
+    resource: "npm run lint"
+    effect: allow
+  - action: shell
+    resource: "npm run lint:typed"
+    effect: allow
+  - action: shell
+    resource: "npm run test"
+    effect: allow
+  - action: shell
+    resource: "npm run test:browser"
+    effect: allow
+  - action: shell
+    resource: "npm run test:a11y"
+    effect: allow
+  - action: shell
+    resource: "npm run knip"
+    effect: allow
+  - action: shell
+    resource: "npm run build"
     effect: allow
   - action: shell
     resource: "npx vitest *"

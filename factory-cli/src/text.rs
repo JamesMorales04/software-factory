@@ -16,14 +16,14 @@ mod tests {
 
     proptest! {
         #[test]
-        fn output_never_contains_a_line_break(value in ".*", max_chars in 0usize..256) {
+        fn output_never_contains_a_line_break(value in any::<String>(), max_chars in 0usize..256) {
             let rendered = one_line(&value, max_chars);
             prop_assert!(!rendered.contains('\n'));
             prop_assert!(!rendered.contains('\r'));
         }
 
         #[test]
-        fn output_is_bounded(value in ".*", max_chars in 0usize..256) {
+        fn output_is_bounded(value in any::<String>(), max_chars in 0usize..256) {
             let rendered = one_line(&value, max_chars);
             prop_assert!(rendered.chars().count() <= max_chars.saturating_add(3));
         }

@@ -3,21 +3,24 @@ description: Read-only rust reviewer for the Quality Harness Wave 1 candidate; e
 mode: subagent
 model: opencode-go/gpt-6-luna#high
 permissions:
+  - action: "*"
+    resource: "*"
+    effect: deny
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: skill
+    resource: "*"
+    effect: allow
   - action: edit
     resource: "*"
     effect: deny
-  - action: shell
-    resource: "*"
-    effect: deny
-  - action: shell
-    resource: "git diff *"
-    effect: allow
-  - action: shell
-    resource: "git show *"
-    effect: allow
-  - action: shell
-    resource: "git status *"
-    effect: allow
   - action: subagent
     resource: "*"
     effect: deny

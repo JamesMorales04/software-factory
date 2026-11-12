@@ -22,12 +22,21 @@ from common import (  # noqa: E402
     Config,
     ScenarioError,
     State,
+    _validate_snapshot_index,
+    ensure_dir,
+    ensure_run_identity,
     free_port,
     project_name,
+    require_owned_run,
     write_manifest,
 )
 from compose_intake import stage_order  # noqa: E402
-from scenario import _load_scenario, _stage_slice  # noqa: E402
+from scenario import (  # noqa: E402
+    _load_scenario,
+    _stage_slice,
+    apply_saved_identity,
+    completion_status,
+)
 
 
 class StageOrderTests(unittest.TestCase):
@@ -47,7 +56,6 @@ class StageOrderTests(unittest.TestCase):
                 "approve",
                 "gate",
                 "restart",
-                "browser",
                 "summary",
             ],
         )
@@ -161,7 +169,92 @@ class ManifestTests(unittest.TestCase):
             self.assertTrue((config.artifacts_dir / "manifest.json").is_file())
 
 
+class RunOwnershipTests(unittest.TestCase):
+    def test_new_run_gets_a_sentinel_and_resume_is_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config_for("prepare", "summary", root=Path(directory))
+            state = State.load_or_create(config.state_path)
+            first = ensure_run_identity(config, state)
+            second = ensure_run_identity(config, state)
+            self.assertEqual(first["runId"], second["runId"])
+            self.assertEqual(first["project"], second["project"])
+
+    def test_existing_unowned_directory_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = _config_for("prepare", "summary", root=root)
+            ensure_dir(config.run_dir)
+            (config.run_dir / "unrelated").write_text("keep", encoding="utf-8")
+            state = State.load_or_create(config.state_path)
+            with self.assertRaises(ScenarioError):
+                ensure_run_identity(config, state)
+
+    def test_cleanup_marker_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config_for("prepare", "summary", root=Path(directory))
+            with self.assertRaises(ScenarioError):
+                require_owned_run(config)
+
+    def test_snapshot_rejects_foreign_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config_for("prepare", "summary", root=Path(directory))
+            index = {"schema": "factory-e2e-volume-snapshot-v1", "project": "other", "volumes": []}
+            with self.assertRaises(ScenarioError):
+                _validate_snapshot_index(config, index)
+
+    def test_snapshot_rejects_archive_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config_for("prepare", "summary", root=Path(directory))
+            index = {
+                "schema": "factory-e2e-volume-snapshot-v1",
+                "project": config.project,
+                "volumes": [
+                    {
+                        "name": f"{config.project}_data",
+                        "archive": "../escape.tar",
+                        "labels": {},
+                    }
+                ],
+            }
+            with self.assertRaises(ScenarioError):
+                _validate_snapshot_index(config, index)
+
+
+class ResumeIdentityTests(unittest.TestCase):
+    def test_resume_reuses_saved_project_and_port(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config_for("gate", "summary", root=Path(directory))
+            state = State.load_or_create(config.state_path)
+            state.set("run_id", "factory-e2e-original")
+            state.set("project", "software-factory-e2e-original")
+            state.set("port", 18894)
+            state.save()
+            apply_saved_identity(config, state, None, None)
+            self.assertEqual(config.run_id, "factory-e2e-original")
+            self.assertEqual(config.project, "software-factory-e2e-original")
+            self.assertEqual(config.port, 18894)
+
+    def test_resume_rejects_a_different_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config_for("gate", "summary", root=Path(directory))
+            state = State.load_or_create(config.state_path)
+            state.set("project", "software-factory-e2e-original")
+            state.save()
+            with self.assertRaises(ScenarioError):
+                apply_saved_identity(config, state, "other-e2e", None)
+
+
 class PortTests(unittest.TestCase):
+    def test_summary_without_restart_is_partial(self) -> None:
+        completed = set(stage_order()) - {"restart"}
+        self.assertEqual(completion_status(completed, "PASS", False, False), "PARTIAL")
+
+    def test_full_clean_run_is_pass(self) -> None:
+        self.assertEqual(completion_status(set(stage_order()), "PASS", True, False), "PASS")
+
+    def test_dirty_run_is_never_pass(self) -> None:
+        self.assertEqual(completion_status(set(stage_order()), "PASS", True, True), "PARTIAL")
+
     def test_free_port_is_bindable(self) -> None:
         port = free_port()
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:

@@ -29,10 +29,19 @@ scenario -- <args>` forwards the same arguments.
 `--provider fixture` is the default and uses the deterministic local model
 fixture. `--provider cassette` validates a provider cassette and mounts it as
 the model fixture's replay input; a request whose canonical body digest does not
-match a recorded turn fails closed. `--provider real` is rejected: a real
-provider run requires a fresh owner authorization envelope and is not part of
-this harness. `--github fake` is the only supported GitHub mode; Core-owned real
-delivery is a separate authorized lane.
+match a recorded turn fails closed. `toolCalls` in a cassette is advisory
+trajectory metadata; it is not executed and is not proof that a tool ran.
+`--provider real` is rejected: a real provider run requires a fresh owner
+authorization envelope and is not part of this harness. `--github fake` is the
+only supported GitHub mode; Core-owned real delivery is a separate authorized
+lane.
+
+The runner does not execute the real-Chromium Office journey. Run
+`cargo xtask e2e office` separately in the canonical containerized development
+environment; the scenario runner must not start candidate build/browser code
+with the host environment. A run directory contains a `run.json` ownership
+marker; cleanup/`--fresh` refuse an unowned directory. `--allow-dirty` permits a
+diagnostic run but the manifest is `PARTIAL`, never `PASS`.
 
 ## Stages
 
@@ -50,7 +59,6 @@ delivery is a separate authorized lane.
 | `approve` | approve the exact plan and bind the Campaign |
 | `gate` | candidate, independent receipts and deterministic Gate |
 | `restart` | restart without volumes and verify persistence |
-| `browser` | optional real-Chromium Office journey |
 | `summary` | candidate-bound summary |
 
 A selection that stops before `summary` is `PARTIAL`, never `PASS`. A missing
@@ -59,7 +67,8 @@ tool, unknown provider outcome or missing authorization is `BLOCKED`/
 
 ## State and artifacts
 
-- Run directory: `--run-dir` or `/var/tmp/factory-e2e/<run-id>`.
+- Run directory: `--run-dir` under `FACTORY_E2E_ROOT` (default
+  `/var/tmp/factory-e2e`) or `/var/tmp/factory-e2e/<run-id>`.
 - State: `<run-dir>/state.json`; resuming requires the prior identities.
 - Artifacts: `--artifacts` or `target/qh/<run-id>`.
 - `manifest.json` records candidate/base SHA, stages, results, artifacts,
@@ -69,8 +78,11 @@ tool, unknown provider outcome or missing authorization is `BLOCKED`/
 - `diagnostics/` contains Compose/Podman state, service log tails and the latest
   Core projections. Secrets and raw prompts are not intentionally written.
 - `--snapshot` exports Compose volumes and an index; `--restore` imports them
-  before `start`. Snapshot/restore is best-effort and must be verified; it is not
-  a backup certification.
+  before `start`. The index is validated for project, volume-name and archive
+  confinement before any destructive step. Snapshot/restore is best-effort and
+  must be verified; it is not a backup certification. Snapshots contain
+  disposable E2E configuration/credentials and are written with private
+  permissions; do not publish them.
 
 ## Multi-agent execution
 

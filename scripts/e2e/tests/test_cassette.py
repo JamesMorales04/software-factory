@@ -51,6 +51,18 @@ class CassetteTests(unittest.TestCase):
         with self.assertRaises(CassetteError):
             validate(payload)
 
+    def test_rejects_prefixed_api_key_header(self) -> None:
+        payload = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+        payload["turns"][0]["request"]["x-api-key"] = "opaque-credential-value"
+        with self.assertRaises(CassetteError):
+            validate(payload)
+
+    def test_rejects_github_pat_value(self) -> None:
+        payload = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+        payload["turns"][0]["request"]["note"] = "github_pat_11AAABBBCCCDDDEEEFFF"
+        with self.assertRaises(CassetteError):
+            validate(payload)
+
     def test_allows_token_usage_counters(self) -> None:
         payload = json.loads(EXAMPLE.read_text(encoding="utf-8"))
         payload["turns"][0]["usage"] = {"inputTokens": 10, "outputTokens": 5}

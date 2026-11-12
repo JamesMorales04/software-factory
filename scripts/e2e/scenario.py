@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -32,10 +33,12 @@ from common import (
     collect_diagnostics,
     doctor,
     ensure_dir,
+    ensure_run_identity,
     free_port,
     log,
     now_utc,
     project_name,
+    require_owned_run,
     snapshot_volumes,
     write_manifest,
 )
@@ -99,6 +102,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--snapshot-dir", help="snapshot directory (default: <run-dir>/snapshots)")
     parser.add_argument("--keep", action="store_true", help="keep containers, volumes and run directory")
     parser.add_argument("--fresh", action="store_true", help="discard prior state/cookies/git/model in the run directory")
+    parser.add_argument("--allow-dirty", action="store_true", help="allow a dirty worktree; the manifest can never be PASS")
     parser.add_argument("--no-build", action="store_true", help="start Compose without rebuilding images")
     parser.add_argument("--provider", choices=["fixture", "cassette", "real"], default=os.environ.get("FACTORY_E2E_PROVIDER", "fixture"))
     parser.add_argument("--cassette", help="validated provider cassette for --provider cassette")
@@ -158,6 +162,13 @@ def _make_config(args: argparse.Namespace) -> Config:
             "--github sandbox/real is not implemented by this harness; use fake. "
             "Core-owned real delivery remains a separate, authorized lane."
         )
+    if args.browser != "none":
+        raise ScenarioError(
+            "--browser chromium is not run by this host harness. Use the canonical "
+            "containerized Office lane (`cargo xtask e2e office`) separately; the "
+            "scenario runner never executes candidate build/browser code with host "
+            "credentials in its environment."
+        )
 
     return Config(
         root=root,
@@ -188,7 +199,70 @@ def _stage_slice(config: Config, stages: list[str]) -> list[str]:
     return stages[start : end + 1]
 
 
+def apply_saved_identity(
+    config: Config,
+    state: State,
+    requested_project: str | None,
+    requested_port: int | None,
+) -> None:
+    """Reuse the persisted project/port/run identity on resume."""
+
+    if not state.path.exists():
+        return
+    saved_project = state.get("project")
+    saved_port = state.get("port")
+    saved_run_id = state.get("run_id")
+    if requested_project is not None and saved_project and requested_project != saved_project:
+        raise ScenarioError(
+            f"--project {requested_project!r} does not match the run identity {saved_project!r}"
+        )
+    if requested_port and saved_port and requested_port != saved_port:
+        raise ScenarioError(
+            f"--port {requested_port} does not match the run identity {saved_port}"
+        )
+    if saved_run_id:
+        config.run_id = saved_run_id
+    if saved_project:
+        config.project = saved_project
+    if saved_port:
+        config.port = saved_port
+    if state.get("scenario"):
+        config.scenario = state.get("scenario")
+
+
+def completion_status(
+    completed: set[str],
+    summary_status: str | None,
+    restart_ok: bool,
+    dirty: bool,
+) -> str:
+    """PASS requires every mandatory stage, restart evidence and a clean tree."""
+
+    if dirty:
+        return "PARTIAL"
+    if not set(stage_order()).issubset(completed):
+        return "PARTIAL"
+    if summary_status != "PASS" or not restart_ok:
+        return "PARTIAL"
+    return "PASS"
+
+
+def _git_status(root: Path) -> str:
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ScenarioError(f"git status failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
 def _fresh(config: Config) -> None:
+    require_owned_run(config)
     for path in (
         config.state_path,
         config.cookie_jar,
@@ -233,32 +307,65 @@ def main(argv: list[str]) -> int:
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0 if result["ok"] else 1
 
+        managed_root = Path(os.environ.get("FACTORY_E2E_ROOT", "/var/tmp/factory-e2e")).resolve()
+        if not config.run_dir.resolve().is_relative_to(managed_root):
+            raise ScenarioError(
+                f"--run-dir must be under FACTORY_E2E_ROOT ({managed_root}); "
+                f"got {config.run_dir}. This prevents cleanup from targeting an unrelated directory."
+            )
         ensure_dir(config.run_dir)
+        os.chmod(config.run_dir, 0o700)
+
+        state_path = config.state_path
+        state = State.load_or_create(state_path)
+        if state_path.exists():
+            apply_saved_identity(config, state, args.project, args.port)
+            compose = Compose(config)
+            api = Api(config)
+        else:
+            if args.project is not None and config.run_id not in args.project:
+                raise ScenarioError(
+                    "an explicit --project must contain the generated run id; "
+                    "omit it for the safe default"
+                )
+        ensure_run_identity(config, state)
         ensure_dir(config.artifacts_dir)
         ensure_dir(config.snapshot_dir)
+        os.chmod(config.artifacts_dir, 0o700)
+        os.chmod(config.snapshot_dir, 0o700)
         if args.fresh:
-            _fresh(config)
+            if state_path.exists():
+                _fresh(config)
+            state = State.load_or_create(state_path)
+            ensure_run_identity(config, state)
 
         scenario_name, stages = _load_scenario(args.scenario)
         selected = _stage_slice(config, stages)
-        state_path = config.state_path
         if config.from_stage != stages[0] and not state_path.exists():
             raise ScenarioError(
                 f"cannot resume from {config.from_stage!r}: {state_path} does not exist. "
                 "Run the earlier stages first or omit --from."
             )
-        if config.from_stage == stages[0] and state_path.exists() and not args.fresh:
+        if config.from_stage == stages[0] and state_path.exists() and state.get("stage_results") and not args.fresh:
             raise ScenarioError(
-                f"run directory already contains state: {state_path}. "
-                "Use --fresh to discard it, or resume with --from <later-stage>."
+                f"run directory already contains completed stages: {state_path}. "
+                "Use --fresh to discard them, or resume with --from <later-stage>."
             )
-        state = State.load_or_create(state_path)
+        dirty = bool(_git_status(config.root))
+        if dirty and not args.allow_dirty:
+            raise ScenarioError(
+                "the worktree is dirty; a candidate-bound run requires a clean tree. "
+                "Commit/stash the change or pass --allow-dirty for a non-PASS diagnostic run."
+            )
         state.set("run_id", config.run_id)
         state.set("scenario", scenario_name)
         state.set("selected_stages", selected)
+        state.set("project", config.project)
+        state.set("port", config.port)
         state.set("provider", config.provider)
         state.set("github", config.github)
         state.set("browser", config.browser)
+        state.set("dirty", dirty)
         state.save()
 
         context = Context(config=config, state=state, compose=compose, api=api)
@@ -298,7 +405,20 @@ def main(argv: list[str]) -> int:
             _record_stage(state, name, started, "PASS")
             log(f"PASS {name} ({int((time.monotonic() - started) * 1000)}ms)")
 
-        status = "PASS" if selected[-1] == stage_order()[-1] else "PARTIAL"
+        completed = {
+            item["name"]
+            for item in state.get("stage_results", [])
+            if item.get("status") == "PASS"
+        }
+        all_required = completed.issuperset(set(stage_order()))
+        summary_passed = (state.get("summary") or {}).get("status") == "PASS"
+        restart_ok = state.get("restart_persistence") is True
+        status = completion_status(
+            completed,
+            (state.get("summary") or {}).get("status"),
+            restart_ok,
+            dirty,
+        )
         snapshot_error: str | None = None
         if config.snapshot:
             try:

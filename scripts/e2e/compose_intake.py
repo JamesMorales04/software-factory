@@ -540,9 +540,13 @@ def gate(context: Context) -> None:
     projection = context.api.get(f"/intake/requests/{context.state.get('intake_id')}")
     assert_equal(projection.get("state"), "COMPLETED", "intake request state")
     assert_equal(projection.get("gateOutcome"), "ACCEPTED", "intake request gate outcome")
-    rendered = json.dumps(projection, sort_keys=True)
-    assert_in(rendered, context.state.get("campaign_id"), "intake request Campaign identity")
-    assert_in(rendered, context.state.get("plan_hash"), "intake request plan identity")
+    assert_equal(
+        projection.get("campaignId"),
+        context.state.get("campaign_id"),
+        "intake request Campaign identity",
+    )
+    plan = projection.get("plan") or {}
+    assert_equal(plan.get("planHash"), context.state.get("plan_hash"), "intake request plan identity")
 
     context.state.set("candidate_id", candidate_id)
     context.state.set("candidate_commit", candidate_commit)
@@ -587,47 +591,31 @@ def restart(context: Context) -> None:
     projection = context.api.get(f"/intake/requests/{context.state.get('intake_id')}")
     assert_equal(projection.get("state"), "COMPLETED", "intake projection persistence")
     assert_equal(projection.get("gateOutcome"), "ACCEPTED", "intake gate persistence")
-    rendered = json.dumps(projection, sort_keys=True)
-    assert_in(rendered, context.state.get("campaign_id"), "intake Campaign persistence")
-    assert_in(rendered, context.state.get("candidate_id"), "intake candidate persistence")
+    assert_equal(
+        projection.get("campaignId"),
+        context.state.get("campaign_id"),
+        "intake Campaign persistence",
+    )
     campaign = context.api.get(f"/campaigns/{context.state.get('campaign_id')}")
-    rendered_campaign = json.dumps(campaign, sort_keys=True)
-    assert_in(rendered_campaign, context.state.get("candidate_id"), "Campaign candidate persistence")
-    assert_in(rendered_campaign, context.state.get("candidate_commit"), "Campaign commit persistence")
+    tasks = campaign.get("tasks") or []
+    require(bool(tasks), "Campaign persistence has no tasks")
+    assert_equal(tasks[0].get("candidate_id"), context.state.get("candidate_id"), "Campaign candidate persistence")
+    assert_equal(tasks[0].get("candidate_commit"), context.state.get("candidate_commit"), "Campaign commit persistence")
     receipts = context.api.get(
         f"/quality/candidates/{context.state.get('candidate_id')}/receipts"
     )
-    rendered_receipts = json.dumps(receipts, sort_keys=True)
-    assert_in(rendered_receipts, context.state.get("verifier_receipt_id"), "verifier receipt persistence")
-    assert_in(rendered_receipts, context.state.get("reviewer_receipt_id"), "reviewer receipt persistence")
+    assert_in(
+        json.dumps(receipts, sort_keys=True),
+        context.state.get("verifier_receipt_id"),
+        "verifier receipt persistence",
+    )
+    assert_in(
+        json.dumps(receipts, sort_keys=True),
+        context.state.get("reviewer_receipt_id"),
+        "reviewer receipt persistence",
+    )
     context.state.set("restart_persistence", True)
     context.state.set("restarted_at", now_utc())
-
-
-@stage("browser", "run the independent real-Chromium Office journey (opt-in)")
-def browser(context: Context) -> None:
-    if context.config.browser != "chromium":
-        return
-    # This journey starts its own disposable Core/Worker/Vite stack. It is a
-    # separate verification surface, not a mutation of the Compose stack above.
-    result = subprocess.run(
-        ["cargo", "xtask", "e2e", "office"],
-        cwd=context.config.root,
-        env=context.config.environment(),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    log_path = ensure_dir(context.config.artifacts_dir / "logs") / "office-browser.log"
-    log_path.write_text(
-        f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}\n", encoding="utf-8"
-    )
-    if result.returncode != 0:
-        raise ScenarioError(
-            "real-Chromium Office journey failed; see "
-            f"{log_path}\n{tail(result.stderr)}"
-        )
-    context.state.set("browser_office", "PASS")
 
 
 @stage("summary", "write the candidate-bound scenario summary")
@@ -645,7 +633,7 @@ def summary(context: Context) -> None:
         "gate_outcome",
     )
     result = {
-        "status": "PASS",
+        "status": "PASS" if context.state.get("restart_persistence") is True else "PARTIAL",
         "project_id": context.state.get("project_id"),
         "action_id": context.state.get("action_id"),
         "intake_request_id": context.state.get("intake_id"),

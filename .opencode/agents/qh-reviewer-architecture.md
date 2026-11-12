@@ -3,21 +3,24 @@ description: Read-only architecture reviewer for the Quality Harness Wave 1 cand
 mode: subagent
 model: opencode-go/gpt-6-luna#xhigh
 permissions:
+  - action: "*"
+    resource: "*"
+    effect: deny
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: skill
+    resource: "*"
+    effect: allow
   - action: edit
     resource: "*"
     effect: deny
-  - action: shell
-    resource: "*"
-    effect: deny
-  - action: shell
-    resource: "git diff *"
-    effect: allow
-  - action: shell
-    resource: "git show *"
-    effect: allow
-  - action: shell
-    resource: "git status *"
-    effect: allow
   - action: subagent
     resource: "*"
     effect: deny

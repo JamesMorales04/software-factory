@@ -5,6 +5,11 @@ A cassette is recorded model/tool traffic used for deterministic replay. It is
 not a live provider session and it never grants authority. The validator is
 deliberately strict about shape and redaction so a cassette cannot silently
 carry credentials or drift into an unreadable transcript.
+
+Replay matches the exact canonical request/response pair. `toolCalls` is
+retained as advisory trajectory metadata for human review; it is not replayed as
+a tool executor and must never be treated as authority or as proof that a tool
+actually ran.
 """
 
 from __future__ import annotations
@@ -20,12 +25,15 @@ from typing import Any
 SCHEMA = "factory-provider-cassette-v1"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SECRET_KEYS = re.compile(
-    r"^(authorization|cookie|password|secret|credential|api[_-]?key|"
-    r"access[_-]?token|refresh[_-]?token|id[_-]?token|token)$",
+    r"^(authorization|proxy-authorization|cookie|set-cookie|password|secret|"
+    r"credential|api[_-]?key|x[_-]?api[_-]?key|access[_-]?token|"
+    r"refresh[_-]?token|id[_-]?token|token)$",
     re.IGNORECASE,
 )
 SECRET_VALUES = re.compile(
-    r"(bearer\s+[a-z0-9._~+/=-]{12,}|sk-[a-z0-9]{12,}|gh[pousr]_[a-z0-9]{12,})",
+    r"(bearer\s+[a-z0-9._~+/=-]{12,}|sk-[a-z0-9]{12,}|gh[pousr]_[a-z0-9]{12,}|"
+    r"github_pat_[a-z0-9_]{20,}|glpat-[a-z0-9_-]{20,}|xox[baprs]-[a-z0-9-]{10,}|"
+    r"AKIA[0-9A-Z]{16})",
     re.IGNORECASE,
 )
 

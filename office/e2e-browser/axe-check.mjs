@@ -12,12 +12,19 @@ import { launchBrowser } from "./harness.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const url = process.env.FACTORY_OFFICE_URL;
-const executablePath =
-  process.env.CHROMIUM_EXE ||
-  join(
-    process.env.HOME || "",
-    ".cache/ms-playwright/chromium-1248/chrome-linux64/chrome",
-  );
+function defaultChromium() {
+  if (process.env.CHROMIUM_EXE) return process.env.CHROMIUM_EXE;
+  try {
+    return chromium.executablePath();
+  } catch {
+    return join(
+      process.env.HOME || "",
+      ".cache/ms-playwright/chromium-1248/chrome-linux64/chrome",
+    );
+  }
+}
+
+const executablePath = defaultChromium();
 const output = process.env.FACTORY_A11Y_OUTPUT
   ? resolve(process.env.FACTORY_A11Y_OUTPUT)
   : join(root, "target/qh/office-a11y-scan.json");

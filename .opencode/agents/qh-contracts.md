@@ -3,6 +3,21 @@ description: Implement provider cassettes, contract fixtures and trajectory vali
 mode: subagent
 model: opencode-go/deepseek-v4.1-flash#high
 permissions:
+  - action: "*"
+    resource: "*"
+    effect: deny
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: skill
+    resource: "*"
+    effect: allow
   - action: edit
     resource: "*"
     effect: deny
