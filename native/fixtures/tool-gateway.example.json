@@ -91,15 +91,6 @@
       "readOnly": true,
       "timeoutSecs": 30,
       "maxResponseBytes": 262144
-    },
-    {
-      "id": "github.search_code",
-      "server": "github-read",
-      "tool": "search_code",
-      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
-      "readOnly": true,
-      "timeoutSecs": 30,
-      "maxResponseBytes": 262144
     }
   ]
 }

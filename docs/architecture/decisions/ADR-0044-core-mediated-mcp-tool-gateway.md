@@ -66,7 +66,9 @@ authority model instead of creating a second one.
    binds each gateway tool id to its MCP server id, exact downstream MCP tool
    name and read-only classification. Configuration may select roles, bounds and
    a trusted endpoint, but cannot invent an identity, remap a server, rename the
-   MCP tool or relabel a mutating tool as read-only.
+   MCP tool or relabel a mutating tool as read-only. GitHub tools are further
+   bound to the exact Project repository in Core; free-form code search is not
+   exposed.
 2. Support bounded HTTP MCP (Context7 and GitHub read-only) and stdio MCP
    (Playwright). The stdio child receives only its configured environment.
 3. Enforce role policy in Core: Verifier grants are rejected; Reviewer grants
@@ -99,6 +101,9 @@ authority model instead of creating a second one.
   adding a role to the catalog without a client path is not completion.
 - Browser navigation remains deferred, so Playwright inspection is useful only
   for pages already open in the persistent MCP browser session.
+- GitHub issue, pull-request and file reads require the exact Project
+  repository; `search_code` remains deferred until the MCP server exposes a
+  scoping contract Core can enforce.
 - Live Context7, GitHub and Playwright calls, replay fixtures and independent
   acceptance remain follow-up work.
 
@@ -112,6 +117,8 @@ authority model instead of creating a second one.
 - Database tests cover durable audit insertion and bounded error text.
 - Worker tests cover the `gateway_call` argument shape, provider tool grants and
   hiding the tool when the assignment has no catalog.
+- Core tests cover GitHub repository-scope extraction and exact owner/repo
+  matching; a mismatched or absent repository fails closed.
 - Office component tests cover enabled, disabled and recent-call states; the
   real Chromium journey exercises the enabled diagnostics panel against a real
   Core.

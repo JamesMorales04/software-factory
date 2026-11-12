@@ -1248,6 +1248,7 @@ pub use wave12_fixture::TRACE_RETRY_REQUEST as WAVE12_TRACE_RETRY_REQUEST;
 mod quality;
 mod tool_gateway;
 mod workers;
+pub use workers::AssignedProviderGrant;
 mod workflow;
 pub use tool_gateway::ToolGatewayCallRecord;
 

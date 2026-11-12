@@ -2588,7 +2588,7 @@ capabilities:
   - Recent model-call history is sampled to 200 records; unresolved reservations and open provider-turn ceilings use the full ledger.
   - Sampled measured spend is not a total; unmeasured session count is not a held ceiling.
   - Reservation release writes off the reservation; it does not create measured usage.
-  - The MCP gateway panel is read-only and never displays endpoints, credentials or raw arguments. It reports disabled when FACTORY_TOOL_GATEWAY_CONFIG is absent; an authenticated Chromium journey exercised the enabled catalog and empty-call state, while a live MCP call and a browser journey with a populated durable call remain NOT_TESTED.
+  - The MCP gateway panel is read-only and never displays endpoints, credentials or raw arguments. It reports disabled when FACTORY_TOOL_GATEWAY_CONFIG is absent; an authenticated Chromium journey exercised the enabled catalog and empty-call state, while a live MCP call and a browser journey with a populated durable call remain NOT_TESTED. GitHub tools require the exact Project owner/repo; free-form code search is not exposed.
   blockers:
   - Real browser acceptance and Product Owner review remain pending.
 

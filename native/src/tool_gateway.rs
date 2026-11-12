@@ -177,13 +177,6 @@ const KNOWN_TOOLS: &[KnownTool] = &[
         read_only: true,
         hint: "{\"owner\": string, \"repo\": string, \"path\": string}",
     },
-    KnownTool {
-        id: "github.search_code",
-        server: "github-read",
-        tool: "search_code",
-        read_only: true,
-        hint: "{\"query\": string}",
-    },
 ];
 
 fn known_tool(id: &str) -> Option<&'static KnownTool> {
@@ -351,17 +344,6 @@ impl GatewayConfig {
                     "github.get_file_contents",
                     "github-read",
                     "get_file_contents",
-                    &[
-                        GatewayRole::Implementer,
-                        GatewayRole::Repairer,
-                        GatewayRole::Reviewer,
-                    ],
-                    true,
-                ),
-                tool(
-                    "github.search_code",
-                    "github-read",
-                    "search_code",
                     &[
                         GatewayRole::Implementer,
                         GatewayRole::Repairer,
@@ -1857,7 +1839,7 @@ for line in sys.stdin:
         assert!(reviewer.iter().all(|tool| tool.read_only));
         assert!(gateway.tools_for_role(GatewayRole::Verifier).is_empty());
         assert!(gateway.status().enabled);
-        assert_eq!(gateway.status().tools.len(), 9);
+        assert_eq!(gateway.status().tools.len(), 8);
 
         let report = gateway
             .call_audited(

@@ -44,12 +44,19 @@ tool id, remap a known id to a different MCP tool name, or relabel a mutating
 tool as read-only for Reviewer. Dispatch uses the immutable MCP name, not the
 configured one.
 
+GitHub tools are advertised only when the exact Project has a resolvable GitHub
+`owner/repo` (from its source URL or remote origin). Core requires the tool
+arguments' `owner` and `repo` to match that project repository; a missing or
+different repository is denied. `github.search_code` is not exposed because a
+free-form code search cannot be bound reliably to one repository; it returns
+only with a server-side scoping contract.
+
 | Tool | Roles | Read-only |
 |---|---|---|
 | `context7.resolve-library-id`, `context7.query-docs` | Implementer, Repairer, Planner, Reviewer | yes |
 | `playwright.browser_snapshot`, `browser_take_screenshot` | Implementer, Repairer, Reviewer | yes |
 | `playwright.browser_close` | Implementer, Repairer | no |
-| `github.issue_read`, `pull_request_read`, `get_file_contents`, `search_code` | Implementer, Repairer, Reviewer | yes |
+| `github.issue_read`, `pull_request_read`, `get_file_contents` | Implementer, Repairer, Reviewer | yes |
 
 The gateway rejects:
 
@@ -165,6 +172,7 @@ servers directly to agents:
    server.
 3. Add a controlled browser navigation/network boundary before exposing
    navigation, click or type.
-4. Exercise live Context7, GitHub read-only and Playwright MCP calls in the
-   canonical container topology, including the stdio environment contract.
+4. Exercise live Context7, repository-scoped GitHub read-only and Playwright MCP
+   calls in the canonical container topology, including the stdio environment
+   contract.
 5. Obtain independent browser and security review for the Worker/Office path.

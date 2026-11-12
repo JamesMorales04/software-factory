@@ -8840,8 +8840,25 @@ async fn worker_claim(
                             .into(),
                     ));
                 };
-                assignment.gateway_tools =
-                    gateway.tools_for_role(factory_native::tool_gateway::GatewayRole::Implementer);
+                let grant = match app
+                    .db
+                    .assigned_provider_grant(
+                        &assignment.lease.worker_id,
+                        &assignment.lease.attempt_id,
+                        assignment.lease.generation,
+                        chrono::Utc::now().timestamp_millis(),
+                    )
+                    .await
+                {
+                    Ok(grant) => grant,
+                    Err(error) => return api_error(error),
+                };
+                let github_scope = github_repository_scope(&grant).is_some();
+                assignment.gateway_tools = gateway
+                    .tools_for_role(factory_native::tool_gateway::GatewayRole::Implementer)
+                    .into_iter()
+                    .filter(|tool| !tool.id.starts_with("github.") || github_scope)
+                    .collect();
             }
             match sign_assignment_grant(&app, &mut assignment) {
                 Ok(()) => Json(json!({
@@ -9212,9 +9229,9 @@ async fn worker_tool_gateway(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let allowed_tools = match app
+    let grant = match app
         .db
-        .assigned_provider_tools(
+        .assigned_provider_grant(
             &input.worker_id,
             &input.attempt_id,
             input.generation,
@@ -9222,11 +9239,23 @@ async fn worker_tool_gateway(
         )
         .await
     {
-        Ok(allowed_tools) => allowed_tools,
+        Ok(grant) => grant,
         Err(error) => return api_error(error),
     };
-    if !allowed_tools.iter().any(|tool| tool == "gateway_call") {
+    if !grant
+        .allowed_tools
+        .iter()
+        .any(|tool| tool == "gateway_call")
+    {
         return StatusCode::FORBIDDEN.into_response();
+    }
+    if input.tool.starts_with("github.") {
+        let Some((owner, repo)) = github_repository_scope(&grant) else {
+            return StatusCode::FORBIDDEN.into_response();
+        };
+        if !github_arguments_match_scope(&input.arguments, &owner, &repo) {
+            return StatusCode::FORBIDDEN.into_response();
+        }
     }
     let Some(gateway) = app.tool_gateway.as_ref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -9259,6 +9288,30 @@ async fn worker_tool_gateway(
         .into_response(),
         Err(error) => gateway_error_response(error),
     }
+}
+
+fn github_repository_scope(
+    grant: &factory_native::db::AssignedProviderGrant,
+) -> Option<(String, String)> {
+    let source = if grant.source_kind == "github" || grant.source_url.contains("github.com") {
+        &grant.source_url
+    } else {
+        &grant.remote_origin
+    };
+    factory_native::github::repository_coordinates_from_url(source)
+}
+
+fn github_arguments_match_scope(arguments: &Value, owner: &str, repo: &str) -> bool {
+    let Some(object) = arguments.as_object() else {
+        return false;
+    };
+    let Some(requested_owner) = object.get("owner").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(requested_repo) = object.get("repo").and_then(Value::as_str) else {
+        return false;
+    };
+    requested_owner.eq_ignore_ascii_case(owner) && requested_repo.eq_ignore_ascii_case(repo)
 }
 
 fn gateway_error_response(error: factory_native::tool_gateway::GatewayError) -> Response {
@@ -22494,6 +22547,44 @@ mod tests {
             assert_eq!(access.status(), StatusCode::UNAUTHORIZED, "{operation}");
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    #[test]
+    fn github_gateway_arguments_are_bound_to_the_project_repository() {
+        assert!(github_arguments_match_scope(
+            &json!({"owner": "Acme", "repo": "Widgets", "issue_number": 1}),
+            "acme",
+            "widgets"
+        ));
+        for arguments in [
+            json!({"owner": "other", "repo": "widgets"}),
+            json!({"owner": "acme", "repo": "other"}),
+            json!({"owner": "acme"}),
+            json!({"repo": "widgets"}),
+            json!({"query": "repo:other/widgets"}),
+        ] {
+            assert!(
+                !github_arguments_match_scope(&arguments, "acme", "widgets"),
+                "{arguments}"
+            );
+        }
+        let grant = factory_native::db::AssignedProviderGrant {
+            allowed_tools: vec!["gateway_call".into()],
+            source_kind: "github".into(),
+            source_url: "https://github.com/acme/widgets".into(),
+            remote_origin: String::new(),
+        };
+        assert_eq!(
+            github_repository_scope(&grant),
+            Some(("acme".into(), "widgets".into()))
+        );
+        let local = factory_native::db::AssignedProviderGrant {
+            source_kind: "local".into(),
+            source_url: String::new(),
+            remote_origin: "/tmp/widgets".into(),
+            ..grant
+        };
+        assert_eq!(github_repository_scope(&local), None);
     }
 
     #[tokio::test]

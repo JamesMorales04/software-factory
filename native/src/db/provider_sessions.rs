@@ -2577,9 +2577,10 @@ mod tests {
             ("opencode".into(), "deepseek-v4.1-flash".into())
         );
         assert_eq!(
-            db.assigned_provider_tools("worker", "attempt", 1, now_ms)
+            db.assigned_provider_grant("worker", "attempt", 1, now_ms)
                 .await
-                .unwrap(),
+                .unwrap()
+                .allowed_tools,
             vec!["write_file", "run_command", "gateway_call"]
         );
 
