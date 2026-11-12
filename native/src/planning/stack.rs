@@ -21,7 +21,7 @@ use crate::planning::{
 };
 
 const MAX_CAPABILITIES: usize = 16;
-const MAX_SELECTION_RATIONALE_CHARS: usize = 500;
+pub const MAX_SELECTION_RATIONALE_CHARS: usize = 500;
 
 /// One deterministic Core-supported stack option. The catalog is a bounded
 /// decision surface, not a per-language package or image default. A model may
@@ -48,9 +48,15 @@ pub struct StackSelectionOption {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StackSelectionModel {
     #[serde(default)]
+    #[schemars(length(max = 64))]
     pub option_id: String,
+    #[schemars(length(min = 1, max = 64))]
     pub language: String,
+    #[schemars(length(min = 1, max = 64))]
     pub framework: String,
+    /// One concise sentence explaining the selection; bounded to 500
+    /// characters so provider structured output advertises the exact policy.
+    #[schemars(length(min = 1, max = MAX_SELECTION_RATIONALE_CHARS))]
     pub rationale: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_proposal: Option<EnvironmentProposal>,
@@ -565,6 +571,26 @@ mod tests {
                 .iter()
                 .any(|value| value == "rust")
         );
+    }
+
+    #[test]
+    fn rationale_bound_is_exactly_500_characters() {
+        let options = selection_options("Build a calculator application. You choose the stack.");
+        let mut selection = StackSelectionModel {
+            option_id: "python-service".into(),
+            language: "python".into(),
+            framework: "fastapi".into(),
+            rationale: "a".repeat(MAX_SELECTION_RATIONALE_CHARS),
+            environment_proposal: None,
+        };
+        resolve_model_stack_selection(&options, &selection, &[Capability::GenericToolchain])
+            .expect("a 500-character rationale is valid");
+
+        selection.rationale.push('a');
+        assert!(matches!(
+            resolve_model_stack_selection(&options, &selection, &[Capability::GenericToolchain]),
+            Err(StackSelectionError::Invalid(_))
+        ));
     }
 
     #[test]

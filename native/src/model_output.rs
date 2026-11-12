@@ -467,6 +467,22 @@ mod tests {
         validate_provider_schema(&schema).unwrap();
         assert_eq!(stack_selection_schema_sha256().len(), 64);
         assert!(schema["properties"]["environmentProposal"].is_object());
+        assert_eq!(
+            schema["properties"]["rationale"]["maxLength"],
+            serde_json::json!(500)
+        );
+        assert_eq!(
+            schema["properties"]["rationale"]["minLength"],
+            serde_json::json!(1)
+        );
+        assert_eq!(
+            schema["properties"]["language"]["minLength"],
+            serde_json::json!(1)
+        );
+        assert_eq!(
+            schema["properties"]["framework"]["minLength"],
+            serde_json::json!(1)
+        );
 
         let selection = StackSelectionModel {
             option_id: "python-service".into(),
