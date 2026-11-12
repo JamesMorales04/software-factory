@@ -15,6 +15,7 @@ from __future__ import annotations
 import http.cookiejar
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -425,6 +426,27 @@ class Compose:
             )
         return result.stdout
 
+    def declared_volume_names(self) -> set[str] | None:
+        """Return the exact Compose volume names, or None if the config is unreadable."""
+
+        result = self.run(["config"], check=False, log_name="compose-config")
+        if result.returncode != 0:
+            return None
+        names: set[str] = set()
+        in_volumes = False
+        for line in result.stdout.splitlines():
+            if line == "volumes:":
+                in_volumes = True
+                continue
+            if not in_volumes:
+                continue
+            if line and not line.startswith(" "):
+                break
+            match = re.match(r"^  ([A-Za-z0-9_.-]+):", line)
+            if match:
+                names.add(f"{self.config.project}_{match.group(1)}")
+        return names or None
+
     def volume_names(self) -> list[str]:
         result = _bounded_run(
             [
@@ -704,7 +726,11 @@ def snapshot_volumes(config: Config, compose: Compose) -> dict[str, Any]:
     return index
 
 
-def _validate_snapshot_index(config: Config, index: dict[str, Any]) -> list[dict[str, Any]]:
+def _validate_snapshot_index(
+    config: Config,
+    index: dict[str, Any],
+    expected_volumes: set[str] | None = None,
+) -> list[dict[str, Any]]:
     if index.get("schema") != "factory-e2e-volume-snapshot-v1":
         raise ScenarioError("snapshot index has an invalid schema")
     if index.get("project") != config.project:
@@ -740,6 +766,15 @@ def _validate_snapshot_index(config: Config, index: dict[str, Any]) -> list[dict
         if not isinstance(labels, dict):
             raise ScenarioError("snapshot volume labels are invalid")
         validated.append({"name": name, "archive": archive, "labels": labels})
+    if expected_volumes is not None:
+        observed = {entry["name"] for entry in validated}
+        if observed != expected_volumes:
+            missing = sorted(expected_volumes - observed)
+            extra = sorted(observed - expected_volumes)
+            raise ScenarioError(
+                "snapshot volume set does not match the Compose declaration: "
+                f"missing={missing}, extra={extra}"
+            )
     return validated
 
 
@@ -747,7 +782,7 @@ def restore_volumes(config: Config, compose: Compose) -> dict[str, Any]:
     """Validate the full snapshot before any destructive operation, then restore."""
 
     index = read_json(config.snapshot_dir / "index.json")
-    entries = _validate_snapshot_index(config, index)
+    entries = _validate_snapshot_index(config, index, compose.declared_volume_names())
     # Preflight target names before removing anything. A same-name volume owned
     # by this project is the disposable stack we are replacing; anything else is
     # a foreign volume and must block the restore.
@@ -892,9 +927,12 @@ def write_manifest(
     base = _git_output(config.root, ["merge-base", "HEAD", "origin/main"]) or head
     dirty = bool(_git_output(config.root, ["status", "--porcelain"]))
     head_changed = frozen != head
-    if head_changed and status == "PASS":
+    if status == "PASS" and (head_changed or dirty):
         status = "FAIL"
-        error = error or f"manifest HEAD changed: bound {frozen}, observed {head}"
+        if head_changed:
+            error = error or f"manifest HEAD changed: bound {frozen}, observed {head}"
+        else:
+            error = error or "manifest observed a dirty worktree"
     manifest = {
         "schema": "factory-e2e-scenario-manifest-v1",
         "status": status,

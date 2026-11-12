@@ -153,6 +153,21 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(manifest["github"], "fake")
             self.assertEqual(manifest["browser"], "none")
 
+    def test_manifest_cannot_pass_a_dirty_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = _config_for("prepare", "summary", root=root)
+            state = State.load_or_create(config.state_path)
+            manifest = write_manifest(
+                config,
+                state,
+                status="PASS",
+                started_at="2026-11-12T00:00:00Z",
+                candidate_sha="a" * 40,
+            )
+            self.assertEqual(manifest["status"], "FAIL")
+            self.assertTrue(manifest["dirty"])
+
     def test_manifest_records_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -202,6 +217,23 @@ class RunOwnershipTests(unittest.TestCase):
             index = {"schema": "factory-e2e-volume-snapshot-v1", "project": "other", "volumes": []}
             with self.assertRaises(ScenarioError):
                 _validate_snapshot_index(config, index)
+
+    def test_snapshot_rejects_undeclared_volume(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config_for("prepare", "summary", root=Path(directory))
+            index = {
+                "schema": "factory-e2e-volume-snapshot-v1",
+                "project": config.project,
+                "volumes": [
+                    {"name": f"{config.project}_data", "archive": "a.tar", "labels": {}}
+                ],
+            }
+            with self.assertRaises(ScenarioError):
+                _validate_snapshot_index(
+                    config,
+                    index,
+                    {f"{config.project}_data", f"{config.project}_other"},
+                )
 
     def test_snapshot_rejects_duplicate_volumes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

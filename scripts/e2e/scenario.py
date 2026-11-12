@@ -240,13 +240,17 @@ def validate_resume_binding(
     artifacts_dir: str,
 ) -> None:
     if state.get("stage_results"):
-        required = ("candidate_sha", "provider", "scenario", "artifacts_dir")
+        required = ("candidate_sha", "provider", "scenario", "artifacts_dir", "cassette_sha256")
         missing = [key for key in required if key not in state.data]
         if missing:
             raise ScenarioError(
                 "resume state predates candidate-bound provenance; "
                 f"missing {', '.join(missing)}. Use a fresh run directory."
             )
+        if state.get("provider") == "cassette" and not state.get("cassette_sha256"):
+            raise ScenarioError("staged cassette run has no cassette digest")
+        if state.get("provider") == "fixture" and state.get("cassette_sha256") is not None:
+            raise ScenarioError("staged fixture run has an unexpected cassette digest")
     checks = (
         ("candidate_sha", candidate_sha, "candidate"),
         ("provider", provider, "provider"),
@@ -534,6 +538,7 @@ def main(argv: list[str]) -> int:
             scenarios_ran=selected,
             candidate_sha=state.get("candidate_sha"),
         )
+        status = manifest["status"]
         log(f"{status}: {config.artifacts_dir / 'manifest.json'}")
         cleanup(config, compose)
         print(json.dumps(manifest, indent=2, sort_keys=True))
