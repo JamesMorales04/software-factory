@@ -782,7 +782,13 @@ def restore_volumes(config: Config, compose: Compose) -> dict[str, Any]:
     """Validate the full snapshot before any destructive operation, then restore."""
 
     index = read_json(config.snapshot_dir / "index.json")
-    entries = _validate_snapshot_index(config, index, compose.declared_volume_names())
+    expected = compose.declared_volume_names()
+    if not expected:
+        raise ScenarioError(
+            "cannot restore: the exact Compose-declared volume set is unavailable; "
+            "refusing to tear down the current stack"
+        )
+    entries = _validate_snapshot_index(config, index, expected)
     # Preflight target names before removing anything. A same-name volume owned
     # by this project is the disposable stack we are replacing; anything else is
     # a foreign volume and must block the restore.

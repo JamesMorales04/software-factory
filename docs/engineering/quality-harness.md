@@ -133,11 +133,13 @@ object, a stripped environment, and cargo targets outside the candidate:
 
 ```sh
 scripts/ci/verify-candidate.sh <sha> --office
-scripts/ci/verify-candidate.sh <sha> --skip-native --office
+scripts/ci/verify-candidate.sh <sha> --skip-native --office   # PARTIAL, exit 3
 ```
 
-The script is development infrastructure, not isolation or acceptance. It does
-not run the Compose stack, a paid provider or the `test:a11y` server lane.
+The script is development infrastructure, not isolation or acceptance. Only
+the full native + Office invocation is `PASS`; a skipped lane is `PARTIAL` with
+exit 3. It does not run the Compose stack, a paid provider or the `test:a11y`
+server lane.
 
 `cargo audit` remains unsuppressed. `RUSTSEC-2026-0459` is a known dependency
 blocker owned by the Product Owner; `cargo-deny` advisories are not enabled

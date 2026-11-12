@@ -67,4 +67,8 @@ if ((OFFICE == 1)); then
   run npm --prefix "$WORK/office" run lint:typed
   run npm --prefix "$WORK/office" test -- --run
 fi
+if ((SKIP_NATIVE == 1 || OFFICE == 0)); then
+  printf 'verify candidate PARTIAL (native=%s office=%s)\n' "$((SKIP_NATIVE == 0))" "$OFFICE"
+  exit 3
+fi
 printf 'verify candidate PASS\n'
