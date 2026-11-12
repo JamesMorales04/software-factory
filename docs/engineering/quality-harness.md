@@ -128,8 +128,9 @@ bash scripts/ci/semgrep.sh               # narrow security rules
 bash scripts/ci/mutation-sample.sh       # PR-scoped mutation sample
 ```
 
-Independent candidate verification uses a read-only export of the exact git
-object, a stripped environment, and cargo targets outside the candidate:
+Candidate self-test uses a read-only export of the exact git object, a stripped
+environment, and cargo targets outside the candidate. It is explicitly **not**
+independent verification or acceptance:
 
 ```sh
 scripts/ci/verify-candidate.sh <sha> --office
@@ -137,9 +138,10 @@ scripts/ci/verify-candidate.sh <sha> --skip-native --office   # PARTIAL, exit 3
 ```
 
 The script is development infrastructure, not isolation or acceptance. Only
-the full native + Office invocation is `PASS`; a skipped lane is `PARTIAL` with
-exit 3. It does not run the Compose stack, a paid provider or the `test:a11y`
-server lane.
+the full native + Office invocation is `SELF_TEST_PASS`; a skipped lane is
+`SELF_TEST_PARTIAL` with exit 3. It does not run the Compose stack, a paid
+provider or the `test:a11y` server lane. The independent Factory Verifier,
+reviewers and Quality Gate remain authoritative.
 
 `cargo audit` remains unsuppressed. `RUSTSEC-2026-0459` is a known dependency
 blocker owned by the Product Owner; `cargo-deny` advisories are not enabled

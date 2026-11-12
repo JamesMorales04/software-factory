@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Independent, read-only candidate verification.
+# Read-only candidate self-test driver.
+#
+# This is NOT independent verification or Factory acceptance. It is a
+# development diagnostic that a candidate can potentially alter; the Factory
+# independent Verifier, reviewers and Quality Gate remain authoritative.
 #
 # Exports the exact git object to a disposable directory, removes write
 # permission from the candidate, runs the Rust checks with a target directory
@@ -68,7 +72,7 @@ if ((OFFICE == 1)); then
   run npm --prefix "$WORK/office" test -- --run
 fi
 if ((SKIP_NATIVE == 1 || OFFICE == 0)); then
-  printf 'verify candidate PARTIAL (native=%s office=%s)\n' "$((SKIP_NATIVE == 0))" "$OFFICE"
+  printf 'self-test candidate PARTIAL (native=%s office=%s)\n' "$((SKIP_NATIVE == 0))" "$OFFICE"
   exit 3
 fi
-printf 'verify candidate PASS\n'
+printf 'self-test candidate PASS\n'

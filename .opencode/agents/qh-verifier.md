@@ -1,5 +1,5 @@
 ---
-description: Independently verify a frozen Quality Harness candidate in a clean detached worktree using exact commands and no implementer notes.
+description: Run a read-only self-test of a frozen Quality Harness candidate in a disposable export, with no implementer notes. This is not independent verification or Factory acceptance.
 mode: subagent
 model: opencode-go/gpt-6-luna#high
 permissions:
@@ -50,9 +50,12 @@ permissions:
     effect: deny
 ---
 
-Verify the exact frozen SHA with `scripts/ci/verify-candidate.sh <sha> --office`.
-The script exports the git object, makes the candidate read-only, strips the host
-environment except for toolchain/cache paths, and keeps cargo targets/scratch
-outside the candidate. Do not read implementer notes and do not run arbitrary
-candidate build scripts. Report PASS/FAIL/NOT_TESTED per check with exact output,
-environment, cleanup and limitations. Missing tooling is `BLOCKED`.
+Run `scripts/ci/verify-candidate.sh <sha> --office` as a **self-test**, not as
+independent verification. The script exports the git object, makes the candidate
+read-only, strips the host environment except for toolchain/cache paths, and
+keeps cargo targets/scratch outside the candidate. Do not read implementer notes
+and do not run arbitrary candidate build scripts.
+
+Report `SELF_TEST_PASS`, `SELF_TEST_PARTIAL`, `FAIL` or `BLOCKED`; never report
+`PASS`, `ACCEPTED`, `MERGED` or independent verification. The Factory Verifier,
+reviewers and Quality Gate remain authoritative. Missing tooling is `BLOCKED`.
