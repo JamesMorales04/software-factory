@@ -321,7 +321,7 @@ describe("RequestTrace", () => {
     expect(screen.queryByText(/sensitive-constructor-value/)).toBeNull();
     expect(screen.queryByText("987654321")).toBeNull();
     expect(screen.queryByText("555555")).toBeNull();
-    expect(screen.getByText("EXECUTING")).toBeDefined();
+    expect(await screen.findByText("EXECUTING")).toBeDefined();
   });
 
   it("renders a rejected replay as unknown rather than in progress", async () => {
