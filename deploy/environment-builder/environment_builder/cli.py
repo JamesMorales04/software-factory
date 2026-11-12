@@ -30,6 +30,7 @@ from .nix import (
     devenv_version,
     environment_digest,
     nix_eval_json,
+    nix_parse,
     nix_version,
     prepare_workspace,
     realize_environment,
@@ -40,6 +41,7 @@ from .nix import (
 from .policy import (
     MAX_ENVIRONMENT_FILE_BYTES,
     NIXPKGS_PREFIX,
+    reject_dynamic_config_ast,
     validate_check,
     validate_closure_licenses,
     validate_environment_digest,
@@ -122,6 +124,15 @@ def _workspace(request: dict[str, Any], explicit: str | None) -> Path:
     return path
 
 
+def validate_nix_config_ast(files: list[Any]) -> None:
+    """Parse every Nix file and reject dynamic nixpkgs config attrset keys."""
+    for file in files:
+        if not file.path.endswith(".nix"):
+            continue
+        ast = nix_parse(file.content, filename=file.path)
+        reject_dynamic_config_ast(ast, file.path)
+
+
 def _validate_request(
     request: dict[str, Any],
     source_workspace: Path,
@@ -143,6 +154,7 @@ def _validate_request(
     validate_workspace_environment_overrides(source_workspace)
     validate_workspace_paths(source_workspace)
     validate_nix_constructs(files)
+    validate_nix_config_ast(files)
     validate_lock_pins(files, plan, spec)
     validate_secrets(files, dict(os.environ))
     validate_license_inventory(spec, plan)
@@ -793,16 +805,16 @@ def _closure_license_entries(
         path = str(entry.get("path", ""))
         if path in (exclude or set()):
             continue
-        deriver = str(entry.get("deriver", "")).strip()
+        deriver_value = entry.get("deriver")
+        deriver = str(deriver_value).strip() if deriver_value is not None else ""
         substrate = _reviewed_substrate_identity(pin, path, deriver)
         if substrate is not None:
             substrate_entries.append(substrate)
             continue
         if not deriver:
-            continue
-        # Devenv materialises small helper scripts such as strip.sh as closure
-        # entries. They are not packages and carry no package licence.
-        if Path(path).suffix == ".sh":
+            # A path without a deriver is a source/helper input, not a package
+            # output. Devenv's strip.sh helper falls into this class. Any
+            # deriver-backed .sh path is audited or fails closed.
             continue
         if path:
             paths.add(path)
@@ -889,6 +901,7 @@ def resolve(args: argparse.Namespace) -> int:
             descriptor_digest=desc["digest"],
             descriptor_platform=desc["platform"],
         )
+        validate_nix_config_ast(files)
         validate_fetch_policy(request, plan, "resolve")
         network = request.get("fetchNetwork", "none")
         proxy = request.get("fetchProxy")

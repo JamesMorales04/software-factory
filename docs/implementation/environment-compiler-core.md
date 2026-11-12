@@ -107,7 +107,10 @@ per-language table. Instead:
    dynamic config construction (`listToAttrs`, `mapAttrs`, `getAttr`,
    `fromJSON`, `attrNames`, `functionArgs`), dynamic attrset keys inside
    `config`, impure evaluation, unpinned fetches, secrets and unsafe
-   sandbox/network constructs. Ordinary committed flake interpolation such as
+   sandbox/network constructs. Every Nix file is parsed with
+   `nix-instantiate --parse`; the normalised AST is checked for dynamic keys in
+   every `config =` expression, with no fixed lookahead window or stop at the
+   first semicolon. Ordinary committed flake interpolation such as
    `devShells.${system}` remains valid. The production
    `RequestEnvironmentConstraints` does not expose a `files` field.
 6. Precedence remains: explicit request `environmentConstraints`; committed
@@ -128,7 +131,9 @@ per-language table. Instead:
    closure**, including transitive packages. Generated environments audit the
    selected package outputs; committed environments audit the realised package
    profile (`.devenv/profile` or the flake profile), excluding only that exact
-   profile wrapper. `EnvironmentResolution.closureLicenses`
+   profile wrapper. A deriver-backed helper script is audited like any package;
+   only a path with no deriver (the real `strip.sh` helper) is treated as a
+   non-package input. `EnvironmentResolution.closureLicenses`
    records builder-observed closure licence metadata; any unfree, denied or
    unknown closure package fails closed. Outputs of an observed package are
    mapped by their exact output path or shared deriver. The only non-nixpkgs
@@ -276,7 +281,7 @@ before any assignment.
 - `cargo test -p factory-native --bin factory-runtime-broker` — 71 passed.
 - `cargo test -p factory-native --bin factory-supervisor` — 11 passed.
 - `python3 -W error::ResourceWarning -m unittest discover -s
-  deploy/environment-builder/tests` — 77 tests OK.
+  deploy/environment-builder/tests` — 79 tests OK.
 - `scripts/environment-builder-real-resolve-smoke.sh` — real Nix resolution
   against the pinned nixpkgs passed: `real-nix-resolve: PASS packages=1
   closure=24`.
@@ -317,6 +322,11 @@ same image: the profile closure audit observed 14 package entries (including
 `libunistring`) with no unfree/denied/unknown licence. Devenv's `strip.sh`
 helper script and the exact profile wrapper are excluded as non-package
 wrappers; a fabricated substrate-named path still fails closed.
+
+A real committed flake containing the reviewer's long-whitespace/nested-`let`
+merged config bypass was also submitted to the builder. `nix-instantiate
+--parse` normalised it and the AST check rejected it with
+`ENVIRONMENT_SANDBOX_DENIED` before any Nix realisation.
 
 The smoke uses `--privileged` because this developer host does not grant the
 nested kernel namespaces Nix sandboxing needs; that is a harness detail, not the

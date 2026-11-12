@@ -14,6 +14,7 @@ import re
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -229,6 +230,49 @@ def nix_eval_json(
         return json.loads(rendered)
     except json.JSONDecodeError as error:
         fail(failure_code, f"package metadata evaluation returned invalid JSON: {error}")
+
+
+def nix_parse(content: str, *, filename: str, timeout: int = 60) -> str:
+    """Parse one Nix file with `nix-instantiate --parse` and return its AST.
+
+    Parsing is a real Nix parser, not a text heuristic. A file with free
+    variables is not a complete expression and fails closed.
+    """
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".nix", prefix="factory-parse-", delete=False, encoding="utf-8"
+    )
+    path = Path(handle.name)
+    try:
+        handle.write(content)
+        handle.close()
+        returncode, stdout, stderr, stdout_truncated, stderr_truncated = (
+            _run_bounded_capture(
+                ["nix-instantiate", "--parse", str(path)],
+                timeout=timeout,
+                env=dict(os.environ),
+                failure_code="ENVIRONMENT_PLAN_INVALID",
+                stdout_limit=MAX_CLOSURE_OUTPUT_BYTES,
+                stderr_limit=MAX_TOOL_OUTPUT_BYTES,
+            )
+        )
+        diagnostics = stderr.decode("utf-8", errors="replace")
+        if stdout_truncated or stderr_truncated:
+            fail("ENVIRONMENT_PLAN_INVALID", f"{filename} parse output exceeds its bound")
+        if returncode != 0:
+            fail(
+                "ENVIRONMENT_PLAN_INVALID",
+                f"{filename} does not parse as Nix: {tail(diagnostics, 2_000)}",
+            )
+        return stdout.decode("utf-8", errors="replace")
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        try:
+            handle.close()
+        except (OSError, ValueError):
+            pass
 
 
 def nix_version() -> str:
@@ -471,7 +515,7 @@ def closure_manifest(root: str | list[str]) -> list[dict[str, Any]]:
                 "path": path,
                 "narHash": str(info.get("narHash", "")),
                 "narSize": int(info.get("narSize", 0) or 0),
-                "deriver": str(info.get("deriver", "")),
+                "deriver": str(info.get("deriver") or ""),
             }
         )
     return manifest

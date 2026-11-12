@@ -136,12 +136,112 @@ FORBIDDEN_NIX_PATTERNS: Final[tuple[tuple[re.Pattern[str], str, str], ...]] = (
     (re.compile(r"\b(?:builtins\.)?fetchTree\b"), "ENVIRONMENT_PIN_MISSING", "fetchTree"),
 )
 
-# Dynamic attrset keys inside nixpkgs config can construct an unfree policy
-# from fragments. Ordinary flake interpolation such as devShells.${system} is
-# not affected.
-DYNAMIC_CONFIG_KEY = re.compile(
-    r"\b(?:nixpkgs\.)?config\b[^;]{0,2000}\$\{", re.IGNORECASE
-)
+def _is_identifier_char(character: str) -> bool:
+    return character.isascii() and (character.isalnum() or character in "_-'")
+
+
+def _config_assignment_offsets(ast: str) -> list[int]:
+    """Find `config =` assignments outside string literals in a parsed AST."""
+    offsets: list[int] = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(ast):
+        character = ast[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+            index += 1
+            continue
+        if ast.startswith("config", index) and (
+            index == 0 or not _is_identifier_char(ast[index - 1])
+        ):
+            boundary = index + len("config")
+            if boundary >= len(ast) or not _is_identifier_char(ast[boundary]):
+                cursor = boundary
+                while cursor < len(ast) and ast[cursor].isspace():
+                    cursor += 1
+                if cursor < len(ast) and ast[cursor] == "=":
+                    offsets.append(cursor + 1)
+        index += 1
+    return offsets
+
+
+def _expression_end(ast: str, start: int) -> int:
+    """Return the end of the balanced expression beginning at `start`."""
+    depth = 0
+    in_string = False
+    escaped = False
+    seen = False
+    for index in range(start, len(ast)):
+        character = ast[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+            seen = True
+            continue
+        if character in "([{":
+            depth += 1
+            seen = True
+            continue
+        if character in ")]}":
+            if depth == 0:
+                return index
+            depth -= 1
+            if depth == 0:
+                return index + 1
+            continue
+        if depth == 0 and seen and character in ",;":
+            return index
+        if depth == 0 and character == "}":
+            return index
+        if not character.isspace():
+            seen = True
+    return len(ast)
+
+
+def reject_dynamic_config_ast(ast: str, filename: str) -> None:
+    """Reject dynamic attrset keys in every `config =` expression.
+
+    The input is the normalised AST from `nix-instantiate --parse`, so long
+    whitespace gaps, nested `let` expressions and `//` merges are already
+    normalised. Ordinary flake interpolation outside config is unaffected.
+    """
+    search_from = 0
+    while True:
+        offsets = [
+            offset
+            for offset in _config_assignment_offsets(ast)
+            if offset >= search_from
+        ]
+        if not offsets:
+            return
+        start = offsets[0]
+        end = _expression_end(ast, start)
+        expression = ast[start:end]
+        if '"${' in expression:
+            fail(
+                "ENVIRONMENT_SANDBOX_DENIED",
+                f"{filename} uses a dynamic attribute key in nixpkgs config",
+            )
+        search_from = end if end > start else start + 1
+
+
 INPUT_URL = re.compile(r"\binputs(?:\.[A-Za-z0-9_.-]+)*\.url\s*=\s*[\"']([^\"']+)[\"']")
 YAML_INPUT_URL = re.compile(r"^\s*url:\s*[\"']?([^\"'\s]+)[\"']?\s*$", re.MULTILINE)
 YAML_BOOL = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*:\s*(true|false)\s*$", re.MULTILINE)
@@ -569,14 +669,6 @@ def validate_nix_constructs(files: Iterable[EnvironmentFile]) -> None:
     for file in files:
         if not file.path.endswith((".nix", ".yaml", ".yml")):
             continue
-        # Committed Nix may use ordinary flake interpolation, but a dynamic
-        # attrset key inside nixpkgs config can construct an unfree policy from
-        # fragments. Core-generated files keep their controlled interpolation.
-        if file.origin == "PROJECT" and DYNAMIC_CONFIG_KEY.search(file.content):
-            fail(
-                "ENVIRONMENT_SANDBOX_DENIED",
-                f"{file.path} uses a dynamic attribute key in nixpkgs config",
-            )
         for pattern, code, label in FORBIDDEN_NIX_PATTERNS:
             if pattern.search(file.content):
                 # fetch* and currentSystem need a pin check, not an automatic

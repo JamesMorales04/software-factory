@@ -343,6 +343,57 @@ class PolicyTests(unittest.TestCase):
         finally:
             log.close()
 
+    def test_fabricated_sh_package_with_deriver_fails_closed(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            with mock.patch(
+                "environment_builder.cli.nix_eval_json", return_value=[]
+            ) as evaluate:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(
+                        {"nix": {"nixpkgs": pin}},
+                        [
+                            {
+                                "path": "/nix/store/" + "e" * 32 + "-concealed-package.sh",
+                                "deriver": "/nix/store/concealed-package.drv",
+                            }
+                        ],
+                        {},
+                        30,
+                        log,
+                    )
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+            evaluate.assert_called_once()
+        finally:
+            log.close()
+
+    def test_strip_sh_helper_without_deriver_is_not_a_package(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            with mock.patch(
+                "environment_builder.cli.nix_eval_json", return_value=[]
+            ) as evaluate:
+                entries = cli._closure_license_entries(
+                    {"nix": {"nixpkgs": pin}},
+                    [
+                        {
+                            "path": "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
+                            "deriver": None,
+                        }
+                    ],
+                    {},
+                    30,
+                    log,
+                )
+            self.assertEqual(entries, [])
+            evaluate.assert_not_called()
+        finally:
+            log.close()
+
     def test_closure_audit_excludes_only_the_exact_devshell_wrapper(self) -> None:
         root = "/nix/store/" + "a" * 32 + "-devshell"
         package = "/nix/store/" + "b" * 32 + "-bash-5.2"
@@ -383,27 +434,44 @@ class PolicyTests(unittest.TestCase):
         finally:
             log.close()
 
-    def test_committed_dynamic_attrset_keys_are_rejected(self) -> None:
-        contents = [
-            (
-                'let allow = "allowUn" + "freePredicate"; '
-                'in import nixpkgs { config = { ${allow} = _: true; }; }'
-            ),
-            (
-                'let key = "allowUn" + "freePredicate"; '
-                'in import nixpkgs { config = {} // { ${key} = _: true; }; }'
-            ),
-        ]
+    def test_committed_dynamic_config_ast_is_rejected(self) -> None:
         from environment_builder.util import sha256_text
 
-        for content in contents:
-            file = EnvironmentFile("flake.nix", sha256_text(content), "PROJECT", content)
+        # Normalised `nix-instantiate --parse` ASTs: direct, merged, long
+        # whitespace and a nested `let` between the merge and the dynamic key.
+        rejected_asts = [
+            '{ outputs = ({ nixpkgs }: import nixpkgs { config = { "${key}" = (_: true); }; }); }',
+            '{ outputs = ({ nixpkgs }: import nixpkgs { config = ({ } // { "${key}" = (_: true); }); }); }',
+            '{ outputs = ({ nixpkgs }: import nixpkgs { config = ({ } // (let x = 1; in { "${key}" = (_: true); })); }); }',
+        ]
+        from environment_builder.policy import reject_dynamic_config_ast
+
+        for ast in rejected_asts:
             with self.assertRaises(BuilderError) as raised:
-                validate_nix_constructs([file])
+                reject_dynamic_config_ast(ast, "flake.nix")
             self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
-        # Core-generated files keep their controlled interpolation.
-        generated = EnvironmentFile("flake.nix", sha256_text(content), "GENERATED", content)
-        validate_nix_constructs([generated])
+
+        conventional_ast = (
+            '{ outputs = ({ nixpkgs }: let system = "x86_64-linux"; '
+            'pkgs = import nixpkgs { inherit system; }; in '
+            '{ devShells = { "${system}" = { default = (pkgs.mkShell { }); }; }; }); }'
+        )
+        reject_dynamic_config_ast(conventional_ast, "flake.nix")
+
+        raw = (
+            "let key = \"allowUn\" + \"freePredicate\"; "
+            "in import nixpkgs { config = {} // "
+            + " " * 4000
+            + " (let x = 1; in { ${key} = _: true; }); }"
+        )
+        file = EnvironmentFile("flake.nix", sha256_text(raw), "PROJECT", raw)
+        with mock.patch(
+            "environment_builder.cli.nix_parse", return_value=rejected_asts[2]
+        ) as parse:
+            with self.assertRaises(BuilderError) as raised:
+                cli.validate_nix_config_ast([file])
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
+        parse.assert_called_once()
 
         conventional = (
             "outputs = { self, nixpkgs }: "
