@@ -225,6 +225,17 @@ class PolicyTests(unittest.TestCase):
                     },
                     "ENVIRONMENT_PIN_MISSING",
                 ),
+                (
+                    {
+                        "name": "ripgrep",
+                        "attr": "ripgrep",
+                        "storePath": "/nix/store/" + "c" * 32 + "-ripgrep-14.1.1",
+                        "version": "14.1.1",
+                        "license": "MIT",
+                        "unfree": True,
+                    },
+                    "ENVIRONMENT_UNFREE_REQUIRES_OWNER",
+                ),
             ]:
                 with mock.patch(
                     "environment_builder.cli.nix_eval_json", return_value=[observed]
@@ -238,6 +249,82 @@ class PolicyTests(unittest.TestCase):
                             log,
                         )
                 self.assertEqual(raised.exception.code, expected_code)
+        finally:
+            log.close()
+
+    def test_version_constraint_matching_uses_a_numeric_dot_boundary(self) -> None:
+        for constraint, observed, accepted in [
+            ("22", "22.20.0", True),
+            ("22.20", "22.20.0", True),
+            ("22.20.0", "22.20.0", True),
+            ("22", "220.0", False),
+            ("22.2", "22.20.0", False),
+            ("22.21", "22.20.0", False),
+            ("23", "22.20.0", False),
+            ("22.x", "22.20.0", False),
+            ("^22", "22.20.0", False),
+            ("~22.20", "22.20.0", False),
+            (">=22", "22.20.0", False),
+            ("22.", "22.20.0", False),
+            ("", "22.20.0", False),
+        ]:
+            self.assertEqual(
+                cli.version_constraint_matches(constraint, observed),
+                accepted,
+                (constraint, observed),
+            )
+
+    def test_builder_resolves_numeric_prefix_versions_to_the_observed_exact_version(
+        self,
+    ) -> None:
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        observed_version = "22.20.0"
+        try:
+            for constraint in ("22", "22.20", "22.20.0"):
+                plan = {
+                    "packages": [
+                        {
+                            "name": "nodejs",
+                            "attr": "nodejs_22",
+                            "version": constraint,
+                            "license": "MIT",
+                            "source": "nixpkgs",
+                            "unfree": False,
+                        }
+                    ]
+                }
+                observed = {
+                    "name": "nodejs",
+                    "attr": "nodejs_22",
+                    "storePath": "/nix/store/"
+                    + "d" * 32
+                    + f"-nodejs-{observed_version}",
+                    "version": observed_version,
+                    "license": "MIT",
+                    "unfree": False,
+                }
+                with mock.patch(
+                    "environment_builder.cli.nix_eval_json", return_value=[observed]
+                ):
+                    metadata = cli._package_metadata(
+                        "github:NixOS/nixpkgs/" + "a" * 40, plan, {}, 30, log
+                    )
+                self.assertEqual(metadata[0]["version"], observed_version)
+                self.assertEqual(metadata[0]["versionConstraint"], constraint)
+
+            for constraint in ("22.21", "23", "22.x", "^22", "~22.20", ">=22", ""):
+                plan["packages"][0]["version"] = constraint
+                with mock.patch(
+                    "environment_builder.cli.nix_eval_json", return_value=[observed]
+                ):
+                    with self.assertRaises(BuilderError) as raised:
+                        cli._package_metadata(
+                            "github:NixOS/nixpkgs/" + "a" * 40, plan, {}, 30, log
+                        )
+                self.assertEqual(
+                    raised.exception.code, "ENVIRONMENT_PIN_MISSING", constraint
+                )
         finally:
             log.close()
 
@@ -992,6 +1079,58 @@ class SbomTests(unittest.TestCase):
         self.assertEqual(transitive[0]["licenses"], [])
         selected = [component for component in first["components"] if component["name"] == "nodejs"]
         self.assertEqual(selected[0]["licenses"][0]["license"]["id"], "MIT")
+
+    def test_sbom_uses_the_observed_exact_version_and_records_the_constraint(
+        self,
+    ) -> None:
+        plan = {
+            "packages": [
+                {
+                    "name": "nodejs",
+                    "attr": "nodejs_22",
+                    "version": "22",
+                    "license": "MIT",
+                    "source": "nixpkgs",
+                }
+            ],
+            "licenseInventory": license_inventory(
+                [
+                    {
+                        "name": "nodejs",
+                        "version": "22",
+                        "license": "MIT",
+                        "source": "nixpkgs",
+                    }
+                ]
+            ),
+        }
+        observed = [
+            {
+                "name": "nodejs",
+                "attr": "nodejs_22",
+                "storePath": "/nix/store/" + "a" * 32 + "-nodejs-22.20.0",
+                "version": "22.20.0",
+                "versionConstraint": "22",
+                "license": "MIT",
+                "unfree": False,
+            }
+        ]
+        sbom = build_sbom(
+            spec=spec(),
+            plan=plan,
+            manifest=[],
+            packages=observed,
+            nix_version="2.28.3",
+            devenv_version="1.11.2",
+        )
+        selected = [
+            component for component in sbom["components"] if component["name"] == "nodejs"
+        ]
+        self.assertEqual(selected[0]["version"], "22.20.0")
+        self.assertIn(
+            {"name": "factory:version-constraint", "value": "22"},
+            selected[0]["properties"],
+        )
 
     def test_sbom_binding_requires_core_entry_hash(self) -> None:
         plan = {"licenseInventory": license_inventory([])}

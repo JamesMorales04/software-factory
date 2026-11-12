@@ -14,6 +14,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${FACTORY_ENVIRONMENT_BUILDER_IMAGE:-localhost/software-factory-environment-builder:dev}"
 PIN="${FACTORY_ENVIRONMENT_REAL_NIXPKGS:-github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d}"
 CARGO_VERSION="${FACTORY_ENVIRONMENT_REAL_CARGO_VERSION:-1.86.0}"
+CARGO_CONSTRAINT="${FACTORY_ENVIRONMENT_REAL_CARGO_CONSTRAINT:-1.86}"
 DIGEST="sha256:$(podman image inspect --format '{{.Id}}' "$IMAGE")"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/factory-real-nix-resolve.XXXXXX")"
 trap 'podman unshare rm -rf "$TMP" 2>/dev/null || rm -rf "$TMP"' EXIT
@@ -26,13 +27,13 @@ fi
 mkdir -p "$TMP/cache" "$TMP/workspace"
 chmod 0777 "$TMP/cache" "$TMP/workspace"
 
-python3 - "$PIN" "$CARGO_VERSION" "$DIGEST" "$TMP" <<'PY'
+python3 - "$PIN" "$CARGO_VERSION" "$CARGO_CONSTRAINT" "$DIGEST" "$TMP" <<'PY'
 import hashlib
 import json
 import sys
 from pathlib import Path
 
-pin, cargo_version, digest, tmp = sys.argv[1:]
+pin, cargo_version, cargo_constraint, digest, tmp = sys.argv[1:]
 root = Path(tmp)
 flake = f'''{{
   description = "Factory real resolution smoke";
@@ -61,7 +62,7 @@ plan = {
     "toolchains": [{"id": "rust", "version": cargo_version, "source": "fixture", "evidence": []}],
     "packages": [{
         "name": "cargo",
-        "version": cargo_version,
+        "version": cargo_constraint,
         "license": "MIT AND Apache-2.0",
         "source": "nixpkgs",
         "attr": "cargo",
@@ -136,14 +137,20 @@ podman run --rm --privileged --security-opt label=disable --entrypoint /bin/sh \
 
 podman run --rm --entrypoint /bin/sh -v "$TMP/cache:/cache:Z" "$IMAGE" -c 'cat /cache/run/resolution.json' > "$TMP/resolution.json"
 
-python3 - "$TMP/resolution.json" <<'PY'
+python3 - "$TMP/resolution.json" "$CARGO_CONSTRAINT" "$CARGO_VERSION" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 resolution = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+cargo_constraint = sys.argv[2]
+cargo_version = sys.argv[3]
 assert resolution["packages"], "no independently observed package metadata"
 assert resolution["packages"][0]["name"] == "cargo"
+assert resolution["packages"][0]["versionConstraint"] == cargo_constraint
+assert resolution["packages"][0]["version"] == cargo_version or resolution["packages"][0][
+    "version"
+].startswith(cargo_constraint + "."), "observed version does not satisfy the constraint"
 assert resolution["closureLicenses"], "no closure license evidence"
 assert any(entry["name"] == "cargo" for entry in resolution["closureLicenses"])
 assert all(entry["unfree"] is False for entry in resolution["closureLicenses"])

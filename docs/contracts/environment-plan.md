@@ -170,10 +170,17 @@ Rules:
 - A selected package `source` is exactly `nixpkgs` or
   `nixpkgs:<the exact validated dotted attr>`; any other suffix is
   `ENVIRONMENT_PIN_MISSING`.
+- A selected package `version` is either an exact version or a numeric dotted
+  prefix constraint (`22`, `22.20`). Ranges (`^22`, `~22.20`, `>=22`),
+  wildcards (`22.x`) and empty/malformed values are `ENVIRONMENT_PIN_MISSING`.
 - Before freeze, the builder independently evaluates every selected package's
-  exact pinned nixpkgs attribute and returns version, SPDX licence and unfree
-  metadata. Core requires exact coverage and rejects missing or mismatched
-  claims; a package plan without verified metadata cannot freeze.
+  exact pinned nixpkgs attribute and returns the exact observed version, the
+  original `versionConstraint`, SPDX licence and unfree metadata. The observed
+  version must equal the constraint or extend it at a dot boundary. Core
+  requires exact coverage and rejects missing or mismatched claims; a package
+  plan without verified metadata cannot freeze. The exact observed version is
+  authoritative for the closure audit and SBOM; the frozen plan's version value
+  remains a constraint, not a claim about the exact patch version.
 - Resolution realises the exact environment and independently verifies the
   **actual closure**, including transitive packages. Any unfree, denied or
   unknown closure licence fails closed. The builder also verifies each planned
