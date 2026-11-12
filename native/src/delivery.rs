@@ -31,7 +31,7 @@ use crate::github_sync::GitHubCredential;
 use crate::issues::{IssueDeliveryError, IssueDeliveryOutcome};
 use crate::planning::ReviewerRole;
 use crate::quality::{CandidateFinalSource, GateOutcome, ReceiptResult};
-use crate::workspace::verify_candidate_commit;
+use crate::workspace::{is_ancestor, verify_candidate_commit};
 
 pub const FRESHNESS_WINDOW_SECS: i64 = 120;
 pub const MAX_REQUIRED_CHECKS: usize = 50;
@@ -1480,6 +1480,127 @@ fn git_command(repository: &Path, token: &str, remote: &str) -> Command {
     command
 }
 
+fn git_commit_exists(repository: &Path, sha: &str) -> Result<bool, DeliveryError> {
+    if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(false);
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(["cat-file", "-e", &format!("{sha}^{{commit}}")])
+        .output()
+        .map_err(|error| {
+            DeliveryError::blocked(
+                "PROJECT_BASE_UPDATE_FAILED",
+                format!("merge commit lookup failed: {error}"),
+            )
+        })?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(DeliveryError::blocked(
+            "PROJECT_BASE_UPDATE_FAILED",
+            format!(
+                "merge commit lookup failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        )),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BaseAdvanceOrder {
+    Equal,
+    Advance,
+    AlreadyAhead,
+    Diverged,
+}
+
+fn classify_base_advance(
+    repository: &Path,
+    current_base: &str,
+    merge_sha: &str,
+) -> Result<BaseAdvanceOrder, DeliveryError> {
+    if current_base.eq_ignore_ascii_case(merge_sha) {
+        return Ok(BaseAdvanceOrder::Equal);
+    }
+    let merge_descends = is_ancestor(repository, current_base, merge_sha).map_err(|error| {
+        DeliveryError::blocked(
+            "PROJECT_BASE_UPDATE_FAILED",
+            format!("base ancestry could not be proven: {error}"),
+        )
+    })?;
+    if merge_descends {
+        return Ok(BaseAdvanceOrder::Advance);
+    }
+    let current_descends = is_ancestor(repository, merge_sha, current_base).map_err(|error| {
+        DeliveryError::blocked(
+            "PROJECT_BASE_UPDATE_FAILED",
+            format!("merge ancestry could not be proven: {error}"),
+        )
+    })?;
+    if current_descends {
+        return Ok(BaseAdvanceOrder::AlreadyAhead);
+    }
+    Ok(BaseAdvanceOrder::Diverged)
+}
+
+/// Advance the Project base monotonically. The current base, revision and
+/// ancestry are re-checked on every optimistic-concurrency retry, so an older
+/// merged delivery cannot overwrite a newer base.
+async fn advance_project_base_checked(
+    db: &Database,
+    project_id: &str,
+    repository: &Path,
+    default_branch: &str,
+    merge_sha: &str,
+) -> Result<(), DeliveryError> {
+    let mut last_conflict: Option<DeliveryError> = None;
+    for _ in 0..3 {
+        let (expected_revision, current_base) = match db.project_config(project_id).await {
+            Ok(config) => (config.revision, config.base_commit),
+            Err(DbError::NotFound) => (1, db.project(project_id).await?.base_commit),
+            Err(error) => return Err(error.into()),
+        };
+        match classify_base_advance(repository, &current_base, merge_sha)? {
+            BaseAdvanceOrder::Equal | BaseAdvanceOrder::AlreadyAhead => return Ok(()),
+            BaseAdvanceOrder::Diverged => {
+                return Err(DeliveryError::blocked(
+                    "PROJECT_BASE_DIVERGED",
+                    "the verified merge commit does not descend from the current Project base",
+                ));
+            }
+            BaseAdvanceOrder::Advance => {}
+        }
+        match db
+            .advance_project_base_after_merged_delivery(
+                project_id,
+                merge_sha,
+                default_branch,
+                expected_revision,
+                &current_base,
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(DbError::Conflict(detail)) => {
+                last_conflict = Some(DeliveryError::blocked(
+                    "PROJECT_BASE_UPDATE_CONFLICT",
+                    detail,
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(last_conflict.unwrap_or_else(|| {
+        DeliveryError::blocked(
+            "PROJECT_BASE_UPDATE_FAILED",
+            "the Project base could not be advanced to the merge commit",
+        )
+    }))
+}
+
 fn ls_remote_branch(
     repository: &Path,
     remote: &str,
@@ -2682,47 +2803,97 @@ impl<'a, H: DeliveryIssueHook> DeliveryService<'a, H> {
 
     /// The protected default branch was verified to point at the exact merge
     /// commit after a successful delivery. Advance the Project config base so a
-    /// follow-up request plans from merged main, never from the old base. A
-    /// concurrent config update is retried with its fresh revision fence; a
-    /// non-default branch or invalid config fails closed.
+    /// follow-up request plans from merged main, never from the old base. The
+    /// new base must descend from the current base; an older or divergent merge
+    /// can never move the Project backward.
     async fn advance_project_base_after_merge(
         &self,
         context: &DeliveryContext,
         merge_sha: &str,
     ) -> Result<(), DeliveryError> {
-        let mut last_conflict: Option<DeliveryError> = None;
-        for _ in 0..3 {
-            let expected_revision = match self.db.project_config(&context.project.id).await {
-                Ok(config) => config.revision,
-                Err(DbError::NotFound) => 1,
-                Err(error) => return Err(error.into()),
-            };
-            match self
-                .db
-                .advance_project_base_after_merged_delivery(
-                    &context.project.id,
-                    merge_sha,
-                    &context.binding.default_branch,
-                    expected_revision,
-                )
+        self.ensure_merge_commit_available(context, merge_sha)
+            .await?;
+        advance_project_base_checked(
+            self.db,
+            &context.project.id,
+            Path::new(&context.project.repository),
+            &context.binding.default_branch,
+            merge_sha,
+        )
+        .await
+    }
+
+    /// Make the provider-confirmed merge commit available for the local Git
+    /// ancestry check. The commit normally arrives with the default-branch
+    /// fetch; a locally present commit (tests or a prior fetch) needs no network.
+    async fn ensure_merge_commit_available(
+        &self,
+        context: &DeliveryContext,
+        merge_sha: &str,
+    ) -> Result<(), DeliveryError> {
+        let repository = PathBuf::from(&context.project.repository);
+        let check_repository = repository.clone();
+        let check_sha = merge_sha.to_owned();
+        let present =
+            tokio::task::spawn_blocking(move || git_commit_exists(&check_repository, &check_sha))
                 .await
-            {
-                Ok(_) => return Ok(()),
-                Err(DbError::Conflict(detail)) => {
-                    last_conflict = Some(DeliveryError::blocked(
-                        "PROJECT_BASE_UPDATE_CONFLICT",
-                        detail,
-                    ));
-                }
-                Err(error) => return Err(error.into()),
-            }
+                .map_err(|error| {
+                    DeliveryError::blocked(
+                        "PROJECT_BASE_UPDATE_FAILED",
+                        format!("merge commit check task failed: {error}"),
+                    )
+                })??;
+        if present {
+            return Ok(());
         }
-        Err(last_conflict.unwrap_or_else(|| {
+        let remote = remote_for(&context.project, &context.binding)?;
+        let token = self.credential.token().to_owned();
+        let branch = context.binding.default_branch.clone();
+        let fetch_repository = repository.clone();
+        let fetch_sha = merge_sha.to_owned();
+        let fetched = tokio::task::spawn_blocking(move || {
+            let output = git_command(&fetch_repository, &token, &remote)
+                .args([
+                    "fetch",
+                    "--no-tags",
+                    "--quiet",
+                    "--force",
+                    &remote,
+                    &format!("+refs/heads/{branch}:refs/factory/delivery/{branch}"),
+                ])
+                .output()
+                .map_err(|error| {
+                    DeliveryError::blocked(
+                        "PROJECT_BASE_UPDATE_FAILED",
+                        format!("default-branch fetch failed: {error}"),
+                    )
+                })?;
+            if !output.status.success() {
+                return Err(DeliveryError::blocked(
+                    "PROJECT_BASE_UPDATE_FAILED",
+                    format!(
+                        "default-branch fetch failed: {}",
+                        sanitize_git_output(&output.stderr, &token)
+                    ),
+                ));
+            }
+            git_commit_exists(&fetch_repository, &fetch_sha)
+        })
+        .await
+        .map_err(|error| {
             DeliveryError::blocked(
                 "PROJECT_BASE_UPDATE_FAILED",
-                "the Project base could not be advanced to the merge commit",
+                format!("default-branch fetch task failed: {error}"),
             )
-        }))
+        })??;
+        if fetched {
+            Ok(())
+        } else {
+            Err(DeliveryError::blocked(
+                "PROJECT_BASE_UPDATE_FAILED",
+                "the verified merge commit is not available locally after fetch",
+            ))
+        }
     }
 
     /// A replay of a recorded MERGED attempt may repair a missing Project base

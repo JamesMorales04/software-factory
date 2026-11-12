@@ -9,14 +9,11 @@
 //! credential isolation and does not provide independent certification.
 
 use std::{
-    collections::HashSet,
-    env,
-    ffi::OsString,
-    fmt, io,
-    path::{Path, PathBuf},
-    process::Stdio,
-    time::Duration,
+    collections::HashSet, env, ffi::OsString, fmt, io, path::Path, process::Stdio, time::Duration,
 };
+
+#[cfg(debug_assertions)]
+use std::path::PathBuf;
 
 use factory_native::db::CandidateInspection;
 use factory_native::execution::{

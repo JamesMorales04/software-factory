@@ -78,6 +78,13 @@ fn init_repo() -> RepoFixture {
     run_git(&work, &["commit", "-m", "candidate"]);
     let candidate = run_git(&work, &["rev-parse", "HEAD"]);
     let tree = run_git(&work, &["rev-parse", "HEAD^{tree}"]);
+    // A provider-confirmed squash merge is a new commit on the protected base.
+    // Keep it locally available so deterministic tests exercise ancestry without
+    // a network fetch.
+    let merge = run_git(
+        &work,
+        &["commit-tree", &tree, "-p", &base, "-m", "squash merge"],
+    );
     let identity = crate::repository::inspect(&work, &[]).unwrap().identity;
     RepoFixture {
         root,
@@ -86,6 +93,7 @@ fn init_repo() -> RepoFixture {
         base,
         candidate,
         tree,
+        merge,
         identity,
     }
 }
@@ -98,6 +106,7 @@ struct RepoFixture {
     base: String,
     candidate: String,
     tree: String,
+    merge: String,
     identity: String,
 }
 
@@ -148,7 +157,7 @@ impl FakeState {
         Arc::new(Mutex::new(Self {
             base_sha: repo.base.clone(),
             candidate_sha: repo.candidate.clone(),
-            merge_sha: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".into(),
+            merge_sha: repo.merge.clone(),
             candidate_branch_sha: repo.candidate.clone(),
             default_branch_sha: repo.base.clone(),
             default_branch_after_merge: None,
@@ -672,6 +681,7 @@ async fn setup_fixture(risk: &str) -> Fixture {
         .unwrap();
     let (base_url, fake) = start_fake(&repo).await;
     let candidate_sha = repo.candidate.clone();
+    let merge_sha = repo.merge.clone();
     Fixture {
         db,
         repo,
@@ -680,7 +690,7 @@ async fn setup_fixture(risk: &str) -> Fixture {
         campaign_id: "campaign-1".into(),
         candidate_id: "candidate-1".into(),
         candidate_sha,
-        merge_sha: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".into(),
+        merge_sha,
     }
 }
 
@@ -1234,6 +1244,86 @@ async fn reset_project_base_to_repo_base(fixture: &Fixture) {
 // -------------------------------------------------------------------------
 // Fake GitHub integration
 // -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn base_advance_is_monotonic_and_rejects_stale_or_divergent_merges() {
+    let fixture = setup_fixture("R0").await;
+    let repository = Path::new(&fixture.repo.work);
+    let tree = run_git(&fixture.repo.work, &["rev-parse", "HEAD^{tree}"]);
+    let later_merge = run_git(
+        &fixture.repo.work,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            &fixture.merge_sha,
+            "-m",
+            "later squash merge",
+        ],
+    );
+    let divergent = run_git(
+        &fixture.repo.work,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            &fixture.repo.base,
+            "-m",
+            "divergent merge",
+        ],
+    );
+
+    // A then B: both advance monotonically.
+    advance_project_base_checked(
+        &fixture.db,
+        "project",
+        repository,
+        "main",
+        &fixture.merge_sha,
+    )
+    .await
+    .unwrap();
+    let after_a = fixture.db.project_config("project").await.unwrap();
+    assert_eq!(after_a.base_commit, fixture.merge_sha);
+    advance_project_base_checked(&fixture.db, "project", repository, "main", &later_merge)
+        .await
+        .unwrap();
+    let after_b = fixture.db.project_config("project").await.unwrap();
+    assert_eq!(after_b.base_commit, later_merge);
+    assert_eq!(after_b.revision, after_a.revision + 1);
+
+    // A's late advancement sees B already ahead and must not move backward.
+    advance_project_base_checked(
+        &fixture.db,
+        "project",
+        repository,
+        "main",
+        &fixture.merge_sha,
+    )
+    .await
+    .unwrap();
+    let stale = fixture.db.project_config("project").await.unwrap();
+    assert_eq!(stale.base_commit, later_merge);
+    assert_eq!(stale.revision, after_b.revision);
+
+    // Equal is idempotent.
+    advance_project_base_checked(&fixture.db, "project", repository, "main", &later_merge)
+        .await
+        .unwrap();
+    let equal = fixture.db.project_config("project").await.unwrap();
+    assert_eq!(equal.base_commit, later_merge);
+    assert_eq!(equal.revision, after_b.revision);
+
+    // A divergent merge is refused and never replaces the current base.
+    let error =
+        advance_project_base_checked(&fixture.db, "project", repository, "main", &divergent)
+            .await
+            .unwrap_err();
+    assert_eq!(error.kind(), "PROJECT_BASE_DIVERGED");
+    let diverged = fixture.db.project_config("project").await.unwrap();
+    assert_eq!(diverged.base_commit, later_merge);
+    assert_eq!(diverged.revision, after_b.revision);
+}
 
 #[tokio::test]
 async fn r0_auto_merge_pushes_exact_candidate_and_merges_once() {

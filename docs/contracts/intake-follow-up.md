@@ -97,10 +97,17 @@ The typed database operation:
 
 - validates a 40-hex merge commit and the Project default branch;
 - appends a new versioned Project config revision with the merge as base;
-- fences on the expected current config revision;
+- fences on the expected current config revision and the exact expected current
+  base, and only conditionally updates that base;
 - returns the current revision idempotently when the base already equals the
   merge commit;
 - records `project.base_advanced`.
+
+The delivery layer proves Git ancestry before the write: an equal base or a
+merge that already descends from the current base does not move backward, while
+an older ancestor or divergent merge is refused. After an optimistic-concurrency
+conflict it re-reads the current base and repeats the ancestry check before any
+retry. The database cannot perform Git ancestry itself.
 
 It is not called for blocked, failed, reverted or other-branch deliveries. A
 manual revert does not claim a base rollback.
@@ -132,7 +139,8 @@ The Request workspace must show:
 | `INTAKE_WITHDRAWN` | Withdrawn requests remain fenced |
 | `INTAKE_PLAN_FROZEN` | Non-terminal frozen/approval request still needs the existing path |
 | `CAMPAIGN_STARTED` | Active execution still uses the Campaign workspace |
-| `PROJECT_BASE_UPDATE_CONFLICT` | The Project config revision fence changed |
+| `PROJECT_BASE_UPDATE_CONFLICT` | The Project config revision/base fence changed |
+| `PROJECT_BASE_DIVERGED` | The verified merge does not descend from the current Project base |
 | `PROJECT_BASE_UPDATE_FAILED` | Delivery could not record merged main |
 | `DEFAULT_BRANCH_UNCONFIRMED` | The protected default branch could not be read after merge or replay |
 | `MERGE_IDENTITY_MISMATCH` | The default branch or post-merge evidence is bound to another merge |

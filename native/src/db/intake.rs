@@ -4213,6 +4213,7 @@ mod tests {
                 &merge_commit,
                 "main",
                 config.revision,
+                &config.base_commit,
             )
             .await
             .unwrap();
