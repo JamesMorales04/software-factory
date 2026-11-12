@@ -44,8 +44,8 @@ authority, tools or acceptance.
 
 ## 2. What is consolidated
 
-The branch contains 286 commits over `main`, including the Quality Wave 12
-integration and the subsequent live-environment work. The principal work
+The branch contains more than 280 commits over `main`, including the Quality
+Wave 12 integration and the subsequent live-environment work. The principal work
 packages are:
 
 | Area | Status | Main evidence |
