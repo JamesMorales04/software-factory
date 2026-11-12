@@ -239,6 +239,14 @@ def validate_resume_binding(
     scenario: str,
     artifacts_dir: str,
 ) -> None:
+    if state.get("stage_results"):
+        required = ("candidate_sha", "provider", "scenario", "artifacts_dir")
+        missing = [key for key in required if key not in state.data]
+        if missing:
+            raise ScenarioError(
+                "resume state predates candidate-bound provenance; "
+                f"missing {', '.join(missing)}. Use a fresh run directory."
+            )
     checks = (
         ("candidate_sha", candidate_sha, "candidate"),
         ("provider", provider, "provider"),
@@ -470,6 +478,7 @@ def main(argv: list[str]) -> int:
                     started_at=started_at,
                     error=f"{name}: {message}",
                     scenarios_ran=selected,
+                    candidate_sha=state.get("candidate_sha"),
                 )
                 log(f"FAILED {name}: {message}")
                 log(f"manifest: {config.artifacts_dir / 'manifest.json'}")
@@ -486,23 +495,13 @@ def main(argv: list[str]) -> int:
         all_required = completed.issuperset(set(stage_order()))
         summary_passed = (state.get("summary") or {}).get("status") == "PASS"
         restart_ok = state.get("restart_persistence") is True
-        final_head = _git_head(config.root)
-        final_dirty = bool(_git_status(config.root))
         status = completion_status(
             completed,
             (state.get("summary") or {}).get("status"),
             restart_ok,
-            dirty or final_dirty,
+            dirty,
         )
         snapshot_error: str | None = None
-        if final_head != state.get("candidate_sha"):
-            status = "FAIL"
-            snapshot_error = (
-                f"candidate changed during the run: started {state.get('candidate_sha')}, "
-                f"finished {final_head}"
-            )
-        elif final_dirty and not dirty:
-            snapshot_error = "worktree became dirty during the run; result is PARTIAL"
         if config.snapshot:
             try:
                 index = snapshot_volumes(config, compose)
@@ -513,6 +512,19 @@ def main(argv: list[str]) -> int:
                 snapshot_error = f"snapshot: {error}"
                 status = "FAIL"
                 log(snapshot_error)
+        # Recheck after optional snapshot work; the manifest must never attribute
+        # a snapshot result to a different HEAD than the one that ran.
+        final_head = _git_head(config.root)
+        final_dirty = bool(_git_status(config.root))
+        if final_head != state.get("candidate_sha"):
+            status = "FAIL"
+            snapshot_error = (
+                f"candidate changed during the run: started {state.get('candidate_sha')}, "
+                f"finished {final_head}"
+            )
+        elif final_dirty and not dirty:
+            status = "FAIL"
+            snapshot_error = "worktree became dirty during the run"
         manifest = write_manifest(
             config,
             state,
@@ -520,6 +532,7 @@ def main(argv: list[str]) -> int:
             started_at=started_at,
             error=snapshot_error,
             scenarios_ran=selected,
+            candidate_sha=state.get("candidate_sha"),
         )
         log(f"{status}: {config.artifacts_dir / 'manifest.json'}")
         cleanup(config, compose)

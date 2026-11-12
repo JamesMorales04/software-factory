@@ -274,6 +274,20 @@ class ResumeBindingTests(unittest.TestCase):
                     artifacts_dir="/tmp/artifacts",
                 )
 
+    def test_resume_rejects_unbound_legacy_stage_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State.load_or_create(Path(directory) / "state.json")
+            state.append("stage_results", {"name": "prepare", "status": "PASS"})
+            with self.assertRaises(ScenarioError):
+                validate_resume_binding(
+                    state,
+                    candidate_sha="a" * 40,
+                    provider="fixture",
+                    cassette_sha256=None,
+                    scenario="compose-intake",
+                    artifacts_dir="/tmp/artifacts",
+                )
+
     def test_resume_rejects_provider_or_cassette_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = State.load_or_create(Path(directory) / "state.json")

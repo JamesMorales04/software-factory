@@ -763,10 +763,11 @@ def restore_volumes(config: Config, compose: Compose) -> dict[str, Any]:
                 labels = json.loads(existing.stdout)[0].get("Labels", {}) or {}
             except (json.JSONDecodeError, IndexError, KeyError):
                 labels = {}
-            if labels.get("com.docker.compose.project") not in (None, config.project):
+            owner = labels.get("com.docker.compose.project")
+            if owner != config.project:
                 raise ScenarioError(
-                    f"refusing to replace foreign volume {entry['name']!r} "
-                    f"owned by {labels.get('com.docker.compose.project')!r}"
+                    f"refusing to replace volume {entry['name']!r} with owner "
+                    f"{owner!r}; expected {config.project!r}"
                 )
     compose.run(["down", "-v"], check=False, log_name="restore-down")
     for entry in entries:
@@ -884,10 +885,16 @@ def write_manifest(
     started_at: str,
     error: str | None = None,
     scenarios_ran: list[str] | None = None,
+    candidate_sha: str | None = None,
 ) -> dict[str, Any]:
     head = _git_output(config.root, ["rev-parse", "HEAD"])
+    frozen = candidate_sha or state.get("candidate_sha") or head
     base = _git_output(config.root, ["merge-base", "HEAD", "origin/main"]) or head
     dirty = bool(_git_output(config.root, ["status", "--porcelain"]))
+    head_changed = frozen != head
+    if head_changed and status == "PASS":
+        status = "FAIL"
+        error = error or f"manifest HEAD changed: bound {frozen}, observed {head}"
     manifest = {
         "schema": "factory-e2e-scenario-manifest-v1",
         "status": status,
@@ -896,7 +903,9 @@ def write_manifest(
         "startedAt": started_at,
         "finishedAt": now_utc(),
         "base": base,
-        "candidate": f"{head}-dirty" if dirty else head,
+        "candidate": f"{frozen}-dirty" if dirty else frozen,
+        "head": head,
+        "headChanged": head_changed,
         "dirty": dirty,
         "project": config.project,
         "port": config.port,

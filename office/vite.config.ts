@@ -2,9 +2,12 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 
-declare const process: { cwd(): string; env: Record<string, string | undefined> };
+declare const process: {
+  cwd(): string;
+  env: Record<string, string | undefined>;
+};
 
 function nodeModulesAllow() {
   try {
@@ -16,8 +19,20 @@ function nodeModulesAllow() {
   }
 }
 
+function a11yProbe(): Plugin {
+  return {
+    name: "factory-a11y-probe",
+    configureServer(server) {
+      server.middlewares.use("/__factory_a11y_probe", (_request, response) => {
+        response.setHeader("content-type", "text/plain");
+        response.end(process.env.FACTORY_A11Y_PROBE || "unset");
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), a11yProbe()],
   server: {
     fs: { allow: [process.cwd(), ...nodeModulesAllow()] },
     port: 5173,

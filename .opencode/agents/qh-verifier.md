@@ -31,9 +31,6 @@ permissions:
     resource: "git status --porcelain"
     effect: allow
   - action: shell
-    resource: "cargo test *"
-    effect: allow
-  - action: shell
     resource: "cargo xtask e2e scenario --doctor"
     effect: allow
   - action: shell
@@ -46,38 +43,16 @@ permissions:
     resource: "python3 scripts/e2e/scenario.py --list"
     effect: allow
   - action: shell
-    resource: "npm run typecheck"
-    effect: allow
-  - action: shell
-    resource: "npm run lint"
-    effect: allow
-  - action: shell
-    resource: "npm run lint:typed"
-    effect: allow
-  - action: shell
-    resource: "npm run test"
-    effect: allow
-  - action: shell
-    resource: "npm run test:browser"
-    effect: allow
-  - action: shell
-    resource: "npm run test:a11y"
-    effect: allow
-  - action: shell
-    resource: "npm run knip"
-    effect: allow
-  - action: shell
-    resource: "npm run build"
-    effect: allow
-  - action: shell
-    resource: "npx vitest *"
+    resource: "bash scripts/ci/verify-candidate.sh *"
     effect: allow
   - action: subagent
     resource: "*"
     effect: deny
 ---
 
-Verify the exact frozen SHA in a clean detached worktree. Do not read implementer
-notes. Run only the supplied commands; keep `CARGO_TARGET_DIR`/`TMPDIR` outside
-the candidate. Report PASS/FAIL/NOT_TESTED per check with exact output,
+Verify the exact frozen SHA with `scripts/ci/verify-candidate.sh <sha> --office`.
+The script exports the git object, makes the candidate read-only, strips the host
+environment except for toolchain/cache paths, and keeps cargo targets/scratch
+outside the candidate. Do not read implementer notes and do not run arbitrary
+candidate build scripts. Report PASS/FAIL/NOT_TESTED per check with exact output,
 environment, cleanup and limitations. Missing tooling is `BLOCKED`.
