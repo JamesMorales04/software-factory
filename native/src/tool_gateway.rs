@@ -593,6 +593,7 @@ impl HttpMcpClient {
         body: &Value,
         session: Option<&str>,
         expected_id: Option<u64>,
+        max_response_bytes: usize,
     ) -> Result<(Value, Option<String>), GatewayError> {
         let mut request = self
             .client
@@ -630,7 +631,7 @@ impl HttpMcpClient {
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| GatewayError::Transport(error.to_string()))?;
-            if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            if bytes.len().saturating_add(chunk.len()) > max_response_bytes {
                 return Err(GatewayError::ResponseTooLarge);
             }
             bytes.extend_from_slice(&chunk);
@@ -687,6 +688,7 @@ impl HttpMcpClient {
                 }),
                 None,
                 Some(id),
+                MAX_RESPONSE_BYTES,
             )
             .await?;
         if response
@@ -710,7 +712,8 @@ impl HttpMcpClient {
             "method": "notifications/initialized",
             "params": {}
         });
-        self.post(&notification, Some(&session), None).await?;
+        self.post(&notification, Some(&session), None, MAX_RESPONSE_BYTES)
+            .await?;
         Ok(session)
     }
 
@@ -721,28 +724,29 @@ impl HttpMcpClient {
         timeout_secs: u64,
         max_response_bytes: usize,
     ) -> Result<Value, GatewayError> {
-        let session = self
-            .session
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let session = match session {
-            Some(session) => session,
-            None => self.initialize().await?,
+        let operation = async {
+            let session = self
+                .session
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            let session = match session {
+                Some(session) => session,
+                None => self.initialize().await?,
+            };
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let body = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {"name": tool, "arguments": arguments}
+            });
+            self.post(&body, Some(&session), Some(id), max_response_bytes)
+                .await
         };
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let body = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "tools/call",
-            "params": {"name": tool, "arguments": arguments}
-        });
-        let (response, _) = timeout(
-            Duration::from_secs(timeout_secs),
-            self.post(&body, Some(&session), Some(id)),
-        )
-        .await
-        .map_err(|_| GatewayError::Transport("MCP call timed out".into()))??;
+        let (response, _) = timeout(Duration::from_secs(timeout_secs), operation)
+            .await
+            .map_err(|_| GatewayError::Transport("MCP call timed out".into()))??;
         let result = response
             .get("result")
             .cloned()
@@ -852,11 +856,15 @@ impl StdioProcess {
         &mut self,
         expected_id: u64,
         timeout_secs: u64,
+        max_response_bytes: usize,
     ) -> Result<Value, GatewayError> {
         for _ in 0..64 {
-            let read = timeout(Duration::from_secs(timeout_secs), self.read_limited_line())
-                .await
-                .map_err(|_| GatewayError::Transport("stdio MCP read timed out".into()))?;
+            let read = timeout(
+                Duration::from_secs(timeout_secs),
+                self.read_limited_line(max_response_bytes),
+            )
+            .await
+            .map_err(|_| GatewayError::Transport("stdio MCP read timed out".into()))?;
             let line = read?;
             let value: Value = serde_json::from_str(&line)
                 .map_err(|error| GatewayError::InvalidResponse(error.to_string()))?;
@@ -880,7 +888,10 @@ impl StdioProcess {
         ))
     }
 
-    async fn read_limited_line(&mut self) -> Result<String, GatewayError> {
+    async fn read_limited_line(
+        &mut self,
+        max_response_bytes: usize,
+    ) -> Result<String, GatewayError> {
         let mut line = Vec::new();
         loop {
             let available = self
@@ -892,14 +903,14 @@ impl StdioProcess {
                 return Err(GatewayError::Transport("stdio MCP closed stdout".into()));
             }
             if let Some(position) = available.iter().position(|byte| *byte == b'\n') {
-                if line.len().saturating_add(position) > MAX_RESPONSE_BYTES {
+                if line.len().saturating_add(position) > max_response_bytes {
                     return Err(GatewayError::ResponseTooLarge);
                 }
                 line.extend_from_slice(&available[..position]);
                 self.stdout.consume(position + 1);
                 break;
             }
-            if line.len().saturating_add(available.len()) > MAX_RESPONSE_BYTES {
+            if line.len().saturating_add(available.len()) > max_response_bytes {
                 return Err(GatewayError::ResponseTooLarge);
             }
             line.extend_from_slice(available);
@@ -925,7 +936,9 @@ impl StdioProcess {
             }
         }))
         .await?;
-        let response = self.read_response(id, DEFAULT_TIMEOUT_SECS).await?;
+        let response = self
+            .read_response(id, DEFAULT_TIMEOUT_SECS, MAX_RESPONSE_BYTES)
+            .await?;
         if response
             .get("result")
             .and_then(|result| result.get("protocolVersion"))
@@ -988,7 +1001,9 @@ impl StdioMcpClient {
                     "params": {"name": tool, "arguments": arguments}
                 }))
                 .await?;
-            process.read_response(id, timeout_secs).await
+            process
+                .read_response(id, timeout_secs, max_response_bytes)
+                .await
         };
         let outcome = timeout(
             Duration::from_secs(timeout_secs.saturating_add(1)),
@@ -1426,6 +1441,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn http_applies_the_tool_response_bound_while_reading() {
+        use axum::{Json, Router, routing::post};
+
+        async fn handler(Json(body): Json<Value>) -> Json<Value> {
+            let id = body.get("id").cloned().unwrap_or(Value::Null);
+            if body.get("method").and_then(Value::as_str) == Some("initialize") {
+                return Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {"protocolVersion": "2025-03-26"}
+                }));
+            }
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"content": [{"type": "text", "text": "x".repeat(4096)}]}
+            }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/mcp", post(handler)))
+                .await
+                .expect("fake MCP server");
+        });
+        let mut config = GatewayConfig::example();
+        config.servers = vec![GatewayServerConfig::Http {
+            id: "context7".into(),
+            endpoint: format!("http://{address}/mcp"),
+            bearer_env: None,
+            allow_loopback_http: true,
+        }];
+        config.tools = vec![tool(
+            "context7.query-docs",
+            "context7",
+            "query-docs",
+            &[GatewayRole::Implementer],
+            true,
+        )];
+        config.tools[0].max_response_bytes = 512;
+        let gateway = ToolGateway::from_config(config).expect("gateway");
+        assert!(matches!(
+            gateway
+                .call(
+                    GatewayRole::Implementer,
+                    "context7.query-docs",
+                    json!({"query": "react"})
+                )
+                .await,
+            Err(GatewayError::ResponseTooLarge)
+        ));
+    }
+
+    #[tokio::test]
+    async fn http_tool_timeout_covers_initialization() {
+        use axum::{Json, Router, routing::post};
+
+        async fn handler(Json(body): Json<Value>) -> Json<Value> {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let id = body.get("id").cloned().unwrap_or(Value::Null);
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"protocolVersion": "2025-03-26"}
+            }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/mcp", post(handler)))
+                .await
+                .expect("fake MCP server");
+        });
+        let mut config = GatewayConfig::example();
+        config.servers = vec![GatewayServerConfig::Http {
+            id: "context7".into(),
+            endpoint: format!("http://{address}/mcp"),
+            bearer_env: None,
+            allow_loopback_http: true,
+        }];
+        config.tools = vec![tool(
+            "context7.query-docs",
+            "context7",
+            "query-docs",
+            &[GatewayRole::Implementer],
+            true,
+        )];
+        config.tools[0].timeout_secs = 1;
+        let gateway = ToolGateway::from_config(config).expect("gateway");
+        assert!(matches!(
+            gateway
+                .call(
+                    GatewayRole::Implementer,
+                    "context7.query-docs",
+                    json!({"query": "react"})
+                )
+                .await,
+            Err(GatewayError::Transport(message)) if message.contains("timed out")
+        ));
+    }
+
+    #[tokio::test]
     async fn stdio_transport_initializes_and_calls_a_tool() {
         let script = r#"
 import json, sys
@@ -1612,6 +1735,7 @@ for line in sys.stdin:
             &[GatewayRole::Implementer],
             true,
         )];
+        config.tools[0].max_response_bytes = 1024;
         let gateway = ToolGateway::from_config(config).expect("gateway");
         assert!(matches!(
             gateway

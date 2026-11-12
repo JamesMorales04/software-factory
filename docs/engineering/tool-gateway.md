@@ -95,9 +95,11 @@ not the installed runtime and not authority.
 ## Transport bounds
 
 - HTTP MCP: HTTPS only, except explicit loopback HTTP for tests; no redirects;
-  60-second transport timeout; response bounded; optional bearer from env.
+  one tool deadline covers initialization and the call; the per-tool response
+  bound is enforced while streaming; optional bearer from env.
 - stdio MCP: explicit command/argv; no shell; stderr discarded to avoid
-  deadlock; child killed on drop; initialize and call timeouts.
+  deadlock; child killed on drop; one deadline covers initialize, write and
+  read; the per-tool response bound is enforced while reading.
 - Playwright MCP is a development/container capability. Do not install it into
   the Core image by default.
 - The example catalog intentionally exposes browser **inspection**
