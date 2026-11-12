@@ -32,6 +32,8 @@ use tokio::{
 
 const MAX_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+/// Hard ceiling for a per-tool call deadline, independent of configuration.
+const MAX_TIMEOUT_SECS: u64 = 300;
 const MAX_AUDIT_RECORDS: usize = 256;
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_CALLS_PER_MINUTE: usize = 60;
@@ -437,9 +439,15 @@ impl GatewayConfig {
                     tool.id
                 )));
             }
-            if tool.max_response_bytes == 0 || tool.timeout_secs == 0 {
+            if tool.max_response_bytes == 0 || tool.max_response_bytes > MAX_RESPONSE_BYTES {
                 return Err(GatewayError::Config(format!(
-                    "tool {} has a zero bound",
+                    "tool {} response bound must be between 1 and {MAX_RESPONSE_BYTES} bytes",
+                    tool.id
+                )));
+            }
+            if tool.timeout_secs == 0 || tool.timeout_secs > MAX_TIMEOUT_SECS {
+                return Err(GatewayError::Config(format!(
+                    "tool {} timeout must be between 1 and {MAX_TIMEOUT_SECS} seconds",
                     tool.id
                 )));
             }
@@ -595,6 +603,7 @@ impl HttpMcpClient {
         expected_id: Option<u64>,
         max_response_bytes: usize,
     ) -> Result<(Value, Option<String>), GatewayError> {
+        let max_response_bytes = max_response_bytes.min(MAX_RESPONSE_BYTES);
         let mut request = self
             .client
             .post(&self.endpoint)
@@ -892,6 +901,7 @@ impl StdioProcess {
         &mut self,
         max_response_bytes: usize,
     ) -> Result<String, GatewayError> {
+        let max_response_bytes = max_response_bytes.min(MAX_RESPONSE_BYTES);
         let mut line = Vec::new();
         loop {
             let available = self
@@ -1215,8 +1225,8 @@ impl ToolGateway {
             .call_tool(
                 mcp_tool_name,
                 arguments,
-                spec.timeout_secs,
-                spec.max_response_bytes,
+                spec.timeout_secs.min(MAX_TIMEOUT_SECS),
+                spec.max_response_bytes.min(MAX_RESPONSE_BYTES),
             )
             .await
         {
@@ -1647,6 +1657,24 @@ for line in sys.stdin:
             allow_loopback_http: false,
         }];
         assert!(matches!(config.validate(), Err(GatewayError::Config(_))));
+    }
+
+    #[test]
+    fn rejects_bounds_above_the_transport_limits() {
+        let mut config = GatewayConfig::example();
+        config.tools[0].max_response_bytes = MAX_RESPONSE_BYTES + 1;
+        assert!(matches!(
+            config.validate(),
+            Err(GatewayError::Config(message)) if message.contains("response bound")
+        ));
+        config.tools[0].max_response_bytes = MAX_RESPONSE_BYTES;
+        config.tools[0].timeout_secs = MAX_TIMEOUT_SECS + 1;
+        assert!(matches!(
+            config.validate(),
+            Err(GatewayError::Config(message)) if message.contains("timeout")
+        ));
+        config.tools[0].timeout_secs = MAX_TIMEOUT_SECS;
+        config.validate().expect("limits at the ceiling are valid");
     }
 
     #[test]

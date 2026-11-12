@@ -17,7 +17,7 @@ Worker / Reviewer / Verifier
         ▼
 Core Tool Gateway
   ├── curated catalog by role
-  ├── argument validation / host allowlist
+  ├── argument bound / digest
   ├── per-role/tool rate limit
   ├── timeout and response bound
   ├── audit (args digest, decision, latency, response size)
@@ -84,7 +84,7 @@ not the installed runtime and not authority.
 ## Policy and audit
 
 - Tool list is filtered by role before the model sees it (next Worker slice).
-- Arguments are validated and hashed; raw arguments are not written to audit.
+- Arguments are bounded and hashed; raw arguments are not written to audit.
 - The audit record contains role, tool, argument digest, decision, latency,
   response bytes and error class.
 - The current audit log is bounded and in-memory. Durable audit/Office projection
@@ -95,11 +95,14 @@ not the installed runtime and not authority.
 ## Transport bounds
 
 - HTTP MCP: HTTPS only, except explicit loopback HTTP for tests; no redirects;
-  one tool deadline covers initialization and the call; the per-tool response
-  bound is enforced while streaming; optional bearer from env.
+  one tool deadline covers initialization and the call; optional bearer from
+  env.
 - stdio MCP: explicit command/argv; no shell; stderr discarded to avoid
   deadlock; child killed on drop; one deadline covers initialize, write and
-  read; the per-tool response bound is enforced while reading.
+  read.
+- Per-tool bounds: response at most 256 KiB and timeout at most 300 s.
+  Validation rejects larger values, and the readers clamp to the same hard
+  ceiling while streaming.
 - Playwright MCP is a development/container capability. Do not install it into
   the Core image by default.
 - The example catalog intentionally exposes browser **inspection**
@@ -122,7 +125,7 @@ servers directly to agents:
 
 1. Persist the catalog/policy and audit in Core; expose health/diagnostics in
    Office.
-2. Add an authenticated `/worker/tool-gateway` operation with worker session,
+2. Add an authenticated `/worker/tool_gateway` operation with worker session,
    attempt, candidate and role binding.
 3. Add `gateway_call` to the compiled provider tool pack; keep `write_file`/
    `run_command` frozen-check semantics unchanged.
