@@ -267,36 +267,79 @@ class PolicyTests(unittest.TestCase):
         finally:
             log.close()
 
-    def test_substrate_closure_entries_use_reviewed_licenses(self) -> None:
+    def test_committed_environment_uses_the_devenv_package_profile(self) -> None:
+        workspace = Path(tempfile.mkdtemp())
+        (workspace / ".devenv").mkdir()
+        target = "/nix/store/" + "a" * 32 + "-devenv-profile"
+        (workspace / ".devenv" / "profile").symlink_to(target)
+        self.assertEqual(
+            cli._environment_profile(workspace, workspace / "run"), target
+        )
+
+    def test_committed_substrate_closure_entries_require_exact_reviewed_identities(self) -> None:
         pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
-        package = "/nix/store/" + "b" * 32 + "-bash-5.2"
-        manifest = [
-            {"path": "/nix/store/" + "1" * 32 + "-nix-2.28.3", "deriver": "/nix/store/nix.drv"},
-            {"path": "/nix/store/" + "2" * 32 + "-devenv-1.11.2", "deriver": "/nix/store/devenv.drv"},
-            {"path": "/nix/store/" + "3" * 32 + "-nixpkgs-24.11", "deriver": "/nix/store/nixpkgs.drv"},
-            {"path": "/nix/store/" + "4" * 32 + "-git-hooks.nix-1.0", "deriver": "/nix/store/git-hooks.drv"},
-            {"path": package, "deriver": "/nix/store/bash.drv"},
+        reviewed = [
+            (
+                "/nix/store/aiijyyiz8mrml76mr1kvx0r62aw8ccbn-devenv-1.11.2.drv",
+                "/nix/store/mxi4r8qi2y79pybxyfzlqg5i8hl5a910-devenv-1.11.2",
+                "devenv",
+                "Apache-2.0",
+            ),
+            (
+                "/nix/store/dzwdvpqgiv9ja73r6pfnkf4gdjk34x3n-nix-2.28.5.drv",
+                "/nix/store/mxafjxh0amr24d2gb7n3km6hljj79qsj-nix-2.28.5",
+                "nix",
+                "LGPL-2.1-only",
+            ),
+            (
+                "/nix/store/10jdyhddq82xfyfyrid403bdfsyq2l00-githooks-3.0.4.drv",
+                "/nix/store/7s93k2darc8ba3n36j17dafzw7z165ck-githooks-3.0.4",
+                "githooks",
+                "MIT",
+            ),
+            ("", "/nix/store/3p306srz83h9z9v0ma9xcxb8y8cdxkxj-source", "nixpkgs", "MIT"),
+            (
+                "",
+                "/nix/store/q8g9dljvn01w9fn5ih0yam13z96lxfa2-source",
+                "git-hooks.nix",
+                "MIT",
+            ),
         ]
-        observed = {
-            "path": package,
-            "name": "bash",
-            "version": "5.2",
-            "license": "GPL-3.0-or-later",
-            "unfree": False,
-        }
         workspace = Path(tempfile.mkdtemp())
         log = BuildLog(workspace / "resolve.log")
         try:
-            with mock.patch(
-                "environment_builder.cli.nix_eval_json", return_value=[observed]
-            ):
-                entries = cli._closure_license_entries(
-                    {"nix": {"nixpkgs": pin}}, manifest, {}, 30, log
-                )
-            names = sorted(entry["name"] for entry in entries)
-            self.assertEqual(
-                names, ["bash", "devenv", "git-hooks.nix", "nix", "nixpkgs"]
-            )
+            for deriver, path, name, license_value in reviewed:
+                with mock.patch(
+                    "environment_builder.cli.nix_eval_json", return_value=[]
+                ):
+                    entries = cli._closure_license_entries(
+                        {"nix": {"nixpkgs": pin}},
+                        [{"path": path, "deriver": deriver}],
+                        {},
+                        30,
+                        log,
+                    )
+                self.assertEqual(entries[0]["name"], name)
+                self.assertEqual(entries[0]["license"], license_value)
+
+            for fabricate in [
+                "/nix/store/" + "f" * 32 + "-devenv-1.0",
+                "/nix/store/" + "f" * 32 + "-nix-1.0",
+                "/nix/store/" + "f" * 32 + "-nixpkgs-1.0",
+                "/nix/store/" + "f" * 32 + "-git-hooks-1.0",
+            ]:
+                with mock.patch(
+                    "environment_builder.cli.nix_eval_json", return_value=[]
+                ):
+                    with self.assertRaises(BuilderError) as raised:
+                        cli._closure_license_entries(
+                            {"nix": {"nixpkgs": pin}},
+                            [{"path": fabricate, "deriver": "/nix/store/fabricated.drv"}],
+                            {},
+                            30,
+                            log,
+                        )
+                self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
         finally:
             log.close()
 
@@ -341,16 +384,23 @@ class PolicyTests(unittest.TestCase):
             log.close()
 
     def test_committed_dynamic_attrset_keys_are_rejected(self) -> None:
-        content = (
-            'let allow = "allowUn" + "freePredicate"; '
-            'in import nixpkgs { config = { ${allow} = _: true; }; }'
-        )
+        contents = [
+            (
+                'let allow = "allowUn" + "freePredicate"; '
+                'in import nixpkgs { config = { ${allow} = _: true; }; }'
+            ),
+            (
+                'let key = "allowUn" + "freePredicate"; '
+                'in import nixpkgs { config = {} // { ${key} = _: true; }; }'
+            ),
+        ]
         from environment_builder.util import sha256_text
 
-        file = EnvironmentFile("flake.nix", sha256_text(content), "PROJECT", content)
-        with self.assertRaises(BuilderError) as raised:
-            validate_nix_constructs([file])
-        self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
+        for content in contents:
+            file = EnvironmentFile("flake.nix", sha256_text(content), "PROJECT", content)
+            with self.assertRaises(BuilderError) as raised:
+                validate_nix_constructs([file])
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_SANDBOX_DENIED")
         # Core-generated files keep their controlled interpolation.
         generated = EnvironmentFile("flake.nix", sha256_text(content), "GENERATED", content)
         validate_nix_constructs([generated])

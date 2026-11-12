@@ -97,6 +97,7 @@ CLOSURE_ALLOWED_SPDX: Final[frozenset[str]] = ALLOWED_SPDX | frozenset(
         "PostgreSQL",
         "NCSA",
         "Public Domain",
+        "publicDomain",
     }
 )
 MAX_CLOSURE_PACKAGES: Final[int] = 4096
@@ -139,7 +140,7 @@ FORBIDDEN_NIX_PATTERNS: Final[tuple[tuple[re.Pattern[str], str, str], ...]] = (
 # from fragments. Ordinary flake interpolation such as devShells.${system} is
 # not affected.
 DYNAMIC_CONFIG_KEY = re.compile(
-    r"\b(?:nixpkgs\.)?config\s*=\s*\{[^{}]*\$\{", re.IGNORECASE | re.DOTALL
+    r"\b(?:nixpkgs\.)?config\b[^;]{0,2000}\$\{", re.IGNORECASE
 )
 INPUT_URL = re.compile(r"\binputs(?:\.[A-Za-z0-9_.-]+)*\.url\s*=\s*[\"']([^\"']+)[\"']")
 YAML_INPUT_URL = re.compile(r"^\s*url:\s*[\"']?([^\"'\s]+)[\"']?\s*$", re.MULTILINE)

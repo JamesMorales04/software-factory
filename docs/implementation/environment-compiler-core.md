@@ -125,15 +125,20 @@ per-language table. Instead:
    carries the observed metadata. Core requires exact coverage and rejects a
    missing, mismatched or unknown version, licence or unfree state.
 8. Resolution also realises the exact environment and inspects the **actual
-   closure**, including transitive packages. `EnvironmentResolution.closureLicenses`
+   closure**, including transitive packages. Generated environments audit the
+   selected package outputs; committed environments audit the realised package
+   profile (`.devenv/profile` or the flake profile), excluding only that exact
+   profile wrapper. `EnvironmentResolution.closureLicenses`
    records builder-observed closure licence metadata; any unfree, denied or
    unknown closure package fails closed. Outputs of an observed package are
    mapped by their exact output path or shared deriver. The only non-nixpkgs
    exception is the internal `xgcc` bootstrap output, bound to its exact pinned
    nixpkgs revision, derivation path and output path; a name-only match is not
    accepted. Substrate paths (`nix`, `devenv`, `nixpkgs`, `git-hooks`) are
-   identified by the package name parsed after the store hash and recorded with
-   their known licence entries. Any other unobserved closure path fails closed.
+   accepted only by exact reviewed `(pin, deriver, output)` identities; a
+   fabricated substrate-named path fails closed. A pin change also fails closed
+   until the identities are reviewed. Any other unobserved closure path fails
+   closed.
    This check is independent of the plan copy and of Nix text, so a constructed
    `allowUnfreePredicate` cannot hide an unfree dependency. The builder also
    checks every plan command's executable with `command -v` inside the realised
@@ -271,7 +276,7 @@ before any assignment.
 - `cargo test -p factory-native --bin factory-runtime-broker` — 71 passed.
 - `cargo test -p factory-native --bin factory-supervisor` — 11 passed.
 - `python3 -W error::ResourceWarning -m unittest discover -s
-  deploy/environment-builder/tests` — 76 tests OK.
+  deploy/environment-builder/tests` — 77 tests OK.
 - `scripts/environment-builder-real-resolve-smoke.sh` — real Nix resolution
   against the pinned nixpkgs passed: `real-nix-resolve: PASS packages=1
   closure=24`.
@@ -305,6 +310,13 @@ transitive packages (including bash, glibc, gcc, llvm/LLVM-exception, curl,
 openssl, zlib, libffi and the reviewed internal `xgcc` bootstrap output) with no
 unfree, denied or unknown licence. The generated devShell wrapper was not
 required to be a nixpkgs package attribute.
+
+A committed Devenv profile was also resolved with the current code against the
+same image: the profile closure audit observed 14 package entries (including
+`hello`, `glibc`, `bash`, `pkg-config`, `tzdata`, `process-compose` and
+`libunistring`) with no unfree/denied/unknown licence. Devenv's `strip.sh`
+helper script and the exact profile wrapper are excluded as non-package
+wrappers; a fabricated substrate-named path still fails closed.
 
 The smoke uses `--privileged` because this developer host does not grant the
 nested kernel namespaces Nix sandboxing needs; that is a harness detail, not the

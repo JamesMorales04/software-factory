@@ -281,8 +281,10 @@ def build(args: argparse.Namespace) -> int:
                 )
                 exclude_paths: set[str] = set()
             else:
-                license_manifest = manifest
-                exclude_paths = {root}
+                profile = _environment_profile(build_workspace, run_dir)
+                license_root = profile or root
+                license_manifest = closure_manifest(license_root)
+                exclude_paths = {license_root}
             closure_licenses = _closure_license_entries(
                 plan,
                 license_manifest,
@@ -690,27 +692,67 @@ REVIEWED_INTERNAL_CLOSURE_IDENTITIES: dict[
         }
     }
 }
-# Exact substrate identities are recorded with their known licenses instead of
-# being looked up in nixpkgs or silently skipped.
-SUBSTRATE_CLOSURE_LICENSES: dict[str, str] = {
-    "nix": "LGPL-2.1-only",
-    "devenv": "Apache-2.0",
-    "nixpkgs": "MIT",
-    "git-hooks": "MIT",
-    "git-hooks.nix": "MIT",
+# Exact reviewed substrate identities. A name-only match is never accepted.
+# These are tied to the current pinned nixpkgs and Devenv lock revisions; a pin
+# change fails closed until a new identity is reviewed.
+REVIEWED_SUBSTRATE_IDENTITIES: dict[
+    str, dict[tuple[str, str], dict[str, Any]]
+] = {
+    "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d": {
+        (
+            "/nix/store/aiijyyiz8mrml76mr1kvx0r62aw8ccbn-devenv-1.11.2.drv",
+            "/nix/store/mxi4r8qi2y79pybxyfzlqg5i8hl5a910-devenv-1.11.2",
+        ): {"name": "devenv", "version": "1.11.2", "license": "Apache-2.0"},
+        (
+            "/nix/store/dzwdvpqgiv9ja73r6pfnkf4gdjk34x3n-nix-2.28.5.drv",
+            "/nix/store/mxafjxh0amr24d2gb7n3km6hljj79qsj-nix-2.28.5",
+        ): {"name": "nix", "version": "2.28.5", "license": "LGPL-2.1-only"},
+        (
+            "/nix/store/dzwdvpqgiv9ja73r6pfnkf4gdjk34x3n-nix-2.28.5.drv",
+            "/nix/store/0nrwky0a12lwjvjcx3if3gv2bni2fjmx-nix-2.28.5-man",
+        ): {"name": "nix", "version": "2.28.5", "license": "LGPL-2.1-only"},
+        (
+            "/nix/store/dzwdvpqgiv9ja73r6pfnkf4gdjk34x3n-nix-2.28.5.drv",
+            "/nix/store/cak7gm7n4a78ikgna0q6d1l4028n2nnz-nix-2.28.5-dev",
+        ): {"name": "nix", "version": "2.28.5", "license": "LGPL-2.1-only"},
+        (
+            "/nix/store/10jdyhddq82xfyfyrid403bdfsyq2l00-githooks-3.0.4.drv",
+            "/nix/store/7s93k2darc8ba3n36j17dafzw7z165ck-githooks-3.0.4",
+        ): {"name": "githooks", "version": "3.0.4", "license": "MIT"},
+        (
+            "",
+            "/nix/store/3p306srz83h9z9v0ma9xcxb8y8cdxkxj-source",
+        ): {"name": "nixpkgs", "version": "source", "license": "MIT"},
+        (
+            "",
+            "/nix/store/q8g9dljvn01w9fn5ih0yam13z96lxfa2-source",
+        ): {"name": "git-hooks.nix", "version": "source", "license": "MIT"},
+        (
+            "",
+            "/nix/store/00av8zvvlwqh6l41kqlfq5n67mv10pfj-source/src/modules",
+        ): {"name": "devenv", "version": "source", "license": "Apache-2.0"},
+        (
+            "unknown-deriver",
+            "/nix/store/xlg2s2hdngc2gjb6kfwac1g7b4q2pcg5-nix-2.28.3",
+        ): {"name": "nix", "version": "2.28.3", "license": "LGPL-2.1-only"},
+    }
 }
-STORE_NAME = re.compile(r"^[a-z0-9]{32}-(.+)$")
 STORE_NAME_VERSION = re.compile(r"^([A-Za-z0-9_+.-]+?)-(\d.*)$")
 
 
-def _store_name_version(path: str) -> tuple[str, str]:
-    match = STORE_NAME.match(Path(path).name)
-    if match is None:
-        return Path(path).name, ""
-    name_match = STORE_NAME_VERSION.match(match.group(1))
-    if name_match is None:
-        return match.group(1), ""
-    return name_match.group(1), name_match.group(2)
+def _environment_profile(workspace: Path, run_dir: Path) -> str | None:
+    """Return the exact realised package profile for a committed environment.
+
+    Devenv exposes the actual package profile at `.devenv/profile`; a flake
+    `nix develop` writes the profile to the run directory. Auditing the profile
+    closure avoids treating Devenv's shell-wrapper files as nixpkgs packages.
+    """
+    for candidate in (workspace / ".devenv" / "profile", run_dir / "profile"):
+        if candidate.exists() or candidate.is_symlink():
+            resolved = candidate.resolve()
+            if str(resolved).startswith("/nix/store/"):
+                return str(resolved)
+    return None
 
 
 def _reviewed_internal_closure_license(
@@ -722,18 +764,13 @@ def _reviewed_internal_closure_license(
     return {"path": path, **identity}
 
 
-def _substrate_closure_license(path: str) -> dict[str, Any] | None:
-    name, version = _store_name_version(path)
-    license_value = SUBSTRATE_CLOSURE_LICENSES.get(name)
-    if license_value is None:
+def _reviewed_substrate_identity(
+    pin: str, path: str, deriver: str
+) -> dict[str, Any] | None:
+    identity = REVIEWED_SUBSTRATE_IDENTITIES.get(pin, {}).get((deriver, path))
+    if identity is None:
         return None
-    return {
-        "path": path,
-        "name": name,
-        "version": version or "pinned",
-        "license": license_value,
-        "unfree": False,
-    }
+    return {"path": path, **identity, "unfree": False}
 
 
 def _closure_license_entries(
@@ -751,16 +788,21 @@ def _closure_license_entries(
     substrate_entries: list[dict[str, Any]] = []
     paths: set[str] = set()
     for entry in manifest:
-        if not isinstance(entry, dict) or not str(entry.get("deriver", "")).strip():
+        if not isinstance(entry, dict):
             continue
         path = str(entry.get("path", ""))
         if path in (exclude or set()):
             continue
-        store_name, _version = _store_name_version(path)
-        if store_name in SUBSTRATE_CLOSURE_LICENSES:
-            substrate = _substrate_closure_license(path)
-            if substrate is not None:
-                substrate_entries.append(substrate)
+        deriver = str(entry.get("deriver", "")).strip()
+        substrate = _reviewed_substrate_identity(pin, path, deriver)
+        if substrate is not None:
+            substrate_entries.append(substrate)
+            continue
+        if not deriver:
+            continue
+        # Devenv materialises small helper scripts such as strip.sh as closure
+        # entries. They are not packages and carry no package licence.
+        if Path(path).suffix == ".sh":
             continue
         if path:
             paths.add(path)
@@ -936,15 +978,18 @@ def resolve(args: argparse.Namespace) -> int:
             )
         else:
             # A committed environment may carry packages in flake/devenv files
-            # that are not listed in the plan. Audit its realised closure, but
-            # exclude only the exact devShell/root wrapper path.
+            # that are not listed in the plan. Audit the realised package
+            # profile closure, not Devenv's shell-wrapper file closure, and
+            # exclude only the exact profile/root wrapper path.
+            profile = _environment_profile(build_workspace, run_dir)
+            closure_root = profile or root
             closure_licenses = _closure_license_entries(
                 plan,
-                closure_manifest(root),
+                closure_manifest(closure_root),
                 environment,
                 timeout,
                 log,
-                exclude={root},
+                exclude={closure_root},
             )
         disk_budget.check()
         resolution = {

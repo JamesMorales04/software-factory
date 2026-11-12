@@ -2363,6 +2363,11 @@ fn validate_generated_nix(path: &str, content: &str) -> Result<(), EnvironmentEr
             "generated environment files cannot enable impure evaluation",
         ));
     }
+    if lower.contains("config") && content.contains("${") {
+        return Err(sandbox_denied(
+            "generated environment files cannot construct dynamic nixpkgs config keys",
+        ));
+    }
     if contains_secret_shape(content) {
         return Err(EnvironmentError::new(
             EnvironmentBlockerCode::EnvironmentSecretDetected,
@@ -2525,6 +2530,7 @@ const CLOSURE_ALLOWED_SPDX: &[&str] = &[
     "NCSA",
     "OpenSSL",
     "PostgreSQL",
+    "publicDomain",
     "Unlicense",
     "Zlib",
 ];
@@ -5625,6 +5631,7 @@ mod tests {
             "nixpkgs.config.allowUnfree = true;",
             "config.${builtins.getAttr (\"allow\" + \"Unfree\") { allowUnfree = true; }} = true;",
             "let allow = \"allowUn\" + \"freePredicate\"; in import nixpkgs { config = builtins.listToAttrs [ { name = allow; value = _: true; } ]; }",
+            "let key = \"allowUn\" + \"freePredicate\"; in import nixpkgs { config = {} // { ${key} = _: true; }; }",
         ] {
             let error = validate_generated_nix("flake.nix", content).unwrap_err();
             assert_eq!(
