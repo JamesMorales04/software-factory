@@ -300,7 +300,7 @@ services:
     command:
       - /bin/sh
       - -c
-      - until [ -f /config/.ready ]; do sleep 1; done; i=0; until [ -f /bundles/environment-builder.digest ] || [ "$i" -ge 600 ]; do i=$((i+1)); sleep 1; done; exec /usr/local/bin/factory-core
+      - until [ -f /config/.ready ]; do sleep 1; done; i=0; until [ -f /bundles/environment-builder.digest ] || [ "$$i" -ge 900 ]; do i=$$((i+1)); sleep 1; done; exec /usr/local/bin/factory-core
     <<: *restricted
     read_only: true
     tmpfs:
@@ -342,7 +342,7 @@ services:
       # devenv's bundled Cachix manager reads public cache metadata from
       # https://cachix.org/api/v1/cache/<name>; no CACHIX_AUTH_TOKEN is set and
       # generated files that add Cachix credentials are refused.
-      FACTORY_ENVIRONMENT_FETCH_ALLOWLIST: https://cache.nixos.org,https://github.com,https://codeload.github.com,https://api.github.com,https://cachix.org,https://devenv.cachix.org
+      FACTORY_ENVIRONMENT_FETCH_ALLOWLIST: https://cache.nixos.org,https://github.com,https://codeload.github.com,https://raw.githubusercontent.com,https://api.github.com,https://cachix.org,https://devenv.cachix.org
     networks:
       factory-control:
         aliases:

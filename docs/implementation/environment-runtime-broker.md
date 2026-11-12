@@ -170,8 +170,10 @@ unchanged.
 
 ## 2. Image identity and allowlist
 
-- `FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGES` is the dedicated builder image
-  allowlist. A provider/supervisor/global Rust image is never accepted.
+- `FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGE` is the only image accepted for
+  builder operations. It is imported from the bundle and its digest and
+  inspected image ID are verified; the generic `FACTORY_RUNTIME_IMAGES`
+  allowlist and provider/supervisor/Rust images are never accepted.
 - The broker reads the exact content digest from
   `FACTORY_RUNTIME_ENVIRONMENT_BUILDER_DIGEST_FILE` (Compose:
   `/bundles/environment-builder.digest`) or the explicit `_DIGEST` variable.
