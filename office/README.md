@@ -73,3 +73,11 @@ The Rust-backed views typecheck, lint, pass component tests and build. `cargo xt
 the real Chromium journey against the Rust Core, Supervisor and Worker; see
 `e2e-browser/README.md`. That journey is author-run and CI evidence, not
 independent acceptance or isolation certification.
+
+## Quality lanes
+
+`npm run lint` is Biome; `npm run lint:typed` is the focused ESLint program.
+`npm run knip` treats files/dependencies as errors and unused exports/types as
+visible warnings because the Core projection surface is broad and partly
+consumed indirectly. `npm run test:browser` covers focus/portals/CSS in a real
+Chromium; `npm run test:a11y` is an automated axe floor, not WCAG conformance.

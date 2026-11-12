@@ -168,6 +168,20 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(manifest["status"], "FAIL")
             self.assertTrue(manifest["dirty"])
 
+    def test_manifest_records_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = _config_for("prepare", "summary", root=root)
+            state = State.load_or_create(config.state_path)
+            manifest = write_manifest(
+                config,
+                state,
+                status="PARTIAL",
+                started_at="2026-11-12T00:00:00Z",
+                cleanup_result={"status": "KEPT", "detail": "test"},
+            )
+            self.assertEqual(manifest["cleanup"]["status"], "KEPT")
+
     def test_manifest_records_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -317,6 +331,27 @@ class ResumeBindingTests(unittest.TestCase):
                     provider="fixture",
                     cassette_sha256=None,
                     scenario="compose-intake",
+                    artifacts_dir="/tmp/artifacts",
+                )
+
+    def test_resume_rejects_changed_scenario_definition(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = State.load_or_create(Path(directory) / "state.json")
+            state.set("candidate_sha", "a" * 40)
+            state.set("provider", "fixture")
+            state.set("cassette_sha256", None)
+            state.set("scenario", "compose-intake")
+            state.set("scenario_sha256", "c" * 64)
+            state.set("artifacts_dir", "/tmp/artifacts")
+            state.append("stage_results", {"name": "prepare", "status": "PASS"})
+            with self.assertRaises(ScenarioError):
+                validate_resume_binding(
+                    state,
+                    candidate_sha="a" * 40,
+                    provider="fixture",
+                    cassette_sha256=None,
+                    scenario="compose-intake",
+                    scenario_sha256="d" * 64,
                     artifacts_dir="/tmp/artifacts",
                 )
 

@@ -20,6 +20,18 @@ Versions and configurations must be pinned in repository manifests/lockfiles or 
 
 Prefer Biome for fast formatting and general linting plus `tsc` for type checking. The Office uses a focused `eslint` lane for rules Biome does not cover: `typescript-eslint` promise/type rules, React Hooks/Compiler rules and `jsx-a11y`. Do not install a second formatter or enable a broad overlapping preset. `npm run lint:typed` is the typed lane; `npm run lint` remains the Biome fast lane. Avoid unchecked `any`; provide explicit boundary types and schema validation for untrusted payloads.
 
+The React Compiler rules `set-state-in-effect`, `preserve-manual-memoization`,
+`refs` and `immutability` are a scoped, temporary exception for the current
+Office views. They remain off until a dedicated React Compiler migration; new
+code must not add fresh violations, and the exception is removed when that
+migration lands.
+
+`knip` treats unused files and dependencies as errors, while unused exports and
+types are warnings. The Office exposes a large typed Core projection surface and
+tests consume several types indirectly; making export/type analysis blocking
+today would create noise that is not a reliable defect signal. The warnings are
+printed in the quality lane and reviewed; they are not hidden or suppressed.
+
 ### Selected Rust toolchain
 
 [ADR-0018](../architecture/decisions/ADR-0018-native-rust-replacement.md) ratifies Rust for Core, Workers, provider adapters, persistence and governance tools. Rust 1.90.0 is pinned by `rust-toolchain.toml`; dependencies are locked by `Cargo.lock`. These commands are required and run on the exact candidate:

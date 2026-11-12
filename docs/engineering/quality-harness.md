@@ -72,8 +72,9 @@ tool, unknown provider outcome or missing authorization is `BLOCKED`/
 - State: `<run-dir>/state.json`; resuming requires the prior identities.
 - Artifacts: `--artifacts` or `target/qh/<run-id>`.
 - `manifest.json` records candidate/base SHA, stages, results, artifacts,
-  `paidInference:false`, `TRUSTED_LOCAL`, `isolated:false`, `certified:false`
-  and limitations.
+  cassette/scenario digests, cleanup outcome, `paidInference:false`,
+  `TRUSTED_LOCAL`, `isolated:false`, `certified:false` and limitations. A
+  failed cleanup makes the run `FAIL`.
 - `logs/commands.log` contains every Compose command and its exit status.
 - `diagnostics/` contains Compose/Podman state, service log tails and the latest
   Core projections. Secrets and raw prompts are not intentionally written.
@@ -87,14 +88,16 @@ tool, unknown provider outcome or missing authorization is `BLOCKED`/
 
 ## Multi-agent execution
 
-The reusable OpenCode role definitions live in `.opencode/agents/qh-*.md`:
-implementers use DeepSeek V4.1 Flash, reviewers/verifiers use GPT-6 Luna and
-editors are restricted to disjoint paths. Reviewers have edit denied and shell
-limited to `git diff/show/status`; the verifier may run the exact test commands
-but cannot edit. These are development-time definitions, not Factory runtime
-agents and not authority grants. If a needed role is not discovered by the
-`subagent` tool, stop and fix discovery; do not fall back to an unrestricted
-`general` agent for a read-only review.
+OpenCode role definitions in `.opencode/agents/qh-*.md` cover the orchestrator
+and DeepSeek implementers only. The review fleet is **Codex/Paseo** with
+`codex/gpt-6-luna`; it is documented in
+[codex-review-fleet.md](codex-review-fleet.md). Do not use an OpenCode subagent
+with a Luna model ID as a substitute for a Codex reviewer. These are
+development-time agents, not Factory runtime agents and not authority grants.
+
+Codex `auto` mode is workspace-write, not a read-only boundary; the reviewer
+works in a disposable workspace and the orchestrator verifies the diff. The
+Factory independent Verifier, reviewers and Quality Gate remain authoritative.
 
 ## Determinism rules
 

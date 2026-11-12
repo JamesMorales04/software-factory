@@ -353,9 +353,9 @@ class Compose:
             )
         return result
 
-    def down(self, *, volumes: bool) -> None:
+    def down(self, *, volumes: bool) -> subprocess.CompletedProcess[str]:
         arguments = ["down"] + (["-v"] if volumes else [])
-        self.run(arguments, check=False, log_name="compose-down")
+        return self.run(arguments, check=False, log_name="compose-down")
 
     def up(self, *, build: bool) -> None:
         arguments = ["up", "-d"] + (["--build"] if build else [])
@@ -688,6 +688,12 @@ def snapshot_volumes(config: Config, compose: Compose) -> dict[str, Any]:
     volumes = compose.volume_names()
     if not volumes:
         raise ScenarioError("cannot snapshot: no Compose volumes were found")
+    expected = compose.declared_volume_names()
+    if not expected or set(volumes) != expected:
+        raise ScenarioError(
+            "cannot snapshot: live volumes do not match the exact Compose declaration; "
+            f"live={sorted(volumes)}, expected={sorted(expected or [])}"
+        )
     compose.stop()
     index: dict[str, Any] = {
         "schema": "factory-e2e-volume-snapshot-v1",
@@ -927,12 +933,20 @@ def write_manifest(
     error: str | None = None,
     scenarios_ran: list[str] | None = None,
     candidate_sha: str | None = None,
+    cleanup_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     head = _git_output(config.root, ["rev-parse", "HEAD"])
     frozen = candidate_sha or state.get("candidate_sha") or head
     base = _git_output(config.root, ["merge-base", "HEAD", "origin/main"]) or head
     dirty = bool(_git_output(config.root, ["status", "--porcelain"]))
     head_changed = frozen != head
+    if (
+        status == "PASS"
+        and cleanup_result is not None
+        and cleanup_result.get("status") == "FAIL"
+    ):
+        status = "FAIL"
+        error = error or "Compose cleanup failed"
     if status == "PASS" and (head_changed or dirty):
         status = "FAIL"
         if head_changed:
@@ -943,6 +957,7 @@ def write_manifest(
         "schema": "factory-e2e-scenario-manifest-v1",
         "status": status,
         "scenario": config.scenario,
+        "scenarioSha256": state.get("scenario_sha256"),
         "runId": config.run_id,
         "startedAt": started_at,
         "finishedAt": now_utc(),
@@ -954,6 +969,7 @@ def write_manifest(
         "project": config.project,
         "port": config.port,
         "provider": config.provider,
+        "cassetteSha256": state.get("cassette_sha256"),
         "github": config.github,
         "browser": config.browser,
         "paidInference": False,
@@ -984,10 +1000,13 @@ def write_manifest(
                 "gate_outcome",
                 "verifier_receipt_id",
                 "reviewer_receipt_id",
+                "cassette_sha256",
+                "scenario_sha256",
                 "restart_persistence",
                 "summary",
             }
         },
+        "cleanup": cleanup_result,
         "error": error,
         "limitations": [
             "Development harness only; not independent acceptance.",
@@ -1022,14 +1041,14 @@ def _git_output(root: Path, arguments: list[str]) -> str:
     return result.stdout.strip() if result.returncode == 0 else "unknown"
 
 
-def cleanup(config: Config, compose: Compose) -> None:
+def cleanup(config: Config, compose: Compose) -> dict[str, Any]:
     if config.keep:
         log(f"keeping run directory and stack: {config.run_dir}")
-        return
+        return {"status": "KEPT", "detail": "containers and volumes retained by --keep"}
     if not run_sentinel(config).is_file():
         log(f"refusing destructive cleanup: no run ownership marker in {config.run_dir}")
-        return
-    compose.down(volumes=True)
+        return {"status": "SKIPPED", "detail": "missing run ownership marker"}
+    result = compose.down(volumes=True)
     shutil.rmtree(config.git_dir, ignore_errors=True)
     shutil.rmtree(config.model_dir, ignore_errors=True)
     shutil.rmtree(config.run_dir / "tmp", ignore_errors=True)
@@ -1037,3 +1056,8 @@ def cleanup(config: Config, compose: Compose) -> None:
         config.cookie_jar.unlink(missing_ok=True)
     except OSError:
         pass
+    return {
+        "status": "PASS" if result.returncode == 0 else "FAIL",
+        "exitCode": result.returncode,
+        "stderr": tail(result.stderr) if result.returncode != 0 else "",
+    }

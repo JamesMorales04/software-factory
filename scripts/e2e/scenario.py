@@ -230,6 +230,13 @@ def apply_saved_identity(
         config.scenario = state.get("scenario")
 
 
+def scenario_definition_sha256(name: str, stages: list[str]) -> str:
+    import hashlib
+
+    payload = json.dumps({"name": name, "stages": stages}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def validate_resume_binding(
     state: State,
     *,
@@ -237,10 +244,18 @@ def validate_resume_binding(
     provider: str,
     cassette_sha256: str | None,
     scenario: str,
+    scenario_sha256: str | None = None,
     artifacts_dir: str,
 ) -> None:
     if state.get("stage_results"):
-        required = ("candidate_sha", "provider", "scenario", "artifacts_dir", "cassette_sha256")
+        required = (
+            "candidate_sha",
+            "provider",
+            "scenario",
+            "scenario_sha256",
+            "artifacts_dir",
+            "cassette_sha256",
+        )
         missing = [key for key in required if key not in state.data]
         if missing:
             raise ScenarioError(
@@ -256,6 +271,7 @@ def validate_resume_binding(
         ("provider", provider, "provider"),
         ("cassette_sha256", cassette_sha256, "cassette"),
         ("scenario", scenario, "scenario"),
+        ("scenario_sha256", scenario_sha256, "scenario definition"),
         ("artifacts_dir", artifacts_dir, "artifacts path"),
     )
     for key, current, label in checks:
@@ -426,16 +442,19 @@ def main(argv: list[str]) -> int:
             )
         head = _git_head(config.root)
         cassette_sha = _file_sha256(config.cassette) if config.cassette else None
+        scenario_sha = scenario_definition_sha256(scenario_name, stages)
         validate_resume_binding(
             state,
             candidate_sha=head,
             provider=config.provider,
             cassette_sha256=cassette_sha,
             scenario=scenario_name,
+            scenario_sha256=scenario_sha,
             artifacts_dir=str(config.artifacts_dir),
         )
         state.set("run_id", config.run_id)
         state.set("scenario", scenario_name)
+        state.set("scenario_sha256", scenario_sha)
         state.set("candidate_sha", head)
         state.set("cassette_sha256", cassette_sha)
         state.set("artifacts_dir", str(config.artifacts_dir))
@@ -475,6 +494,7 @@ def main(argv: list[str]) -> int:
                 except Exception as diagnostic_error:  # noqa: BLE001
                     log(f"diagnostics collection failed: {diagnostic_error}")
                 status = "FAIL"
+                cleanup_result = cleanup(config, compose)
                 manifest = write_manifest(
                     config,
                     state,
@@ -483,10 +503,10 @@ def main(argv: list[str]) -> int:
                     error=f"{name}: {message}",
                     scenarios_ran=selected,
                     candidate_sha=state.get("candidate_sha"),
+                    cleanup_result=cleanup_result,
                 )
                 log(f"FAILED {name}: {message}")
                 log(f"manifest: {config.artifacts_dir / 'manifest.json'}")
-                cleanup(config, compose)
                 print(json.dumps(manifest, indent=2, sort_keys=True))
                 return 1
             _record_stage(state, name, started, "PASS")
@@ -529,6 +549,10 @@ def main(argv: list[str]) -> int:
         elif final_dirty and not dirty:
             status = "FAIL"
             snapshot_error = "worktree became dirty during the run"
+        cleanup_result = cleanup(config, compose)
+        if cleanup_result.get("status") == "FAIL":
+            status = "FAIL"
+            snapshot_error = snapshot_error or "Compose cleanup failed"
         manifest = write_manifest(
             config,
             state,
@@ -537,10 +561,10 @@ def main(argv: list[str]) -> int:
             error=snapshot_error,
             scenarios_ran=selected,
             candidate_sha=state.get("candidate_sha"),
+            cleanup_result=cleanup_result,
         )
         status = manifest["status"]
         log(f"{status}: {config.artifacts_dir / 'manifest.json'}")
-        cleanup(config, compose)
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0 if status in {"PASS", "PARTIAL"} else 1
     except ScenarioError as error:

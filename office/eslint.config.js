@@ -39,9 +39,10 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       ...jsxA11y.flatConfigs.recommended.rules,
-      // React Compiler's set-state-in-effect is valuable but the current
-      // Office views predate it; enabling it now would mix a large refactor
-      // into the harness change. Track it separately.
+      // Scoped React Compiler migration exception: the current Office views
+      // predate these rules. Enabling them now would mix a broad refactor into
+      // the harness change, so they stay off until a dedicated migration.
+      // rules-of-hooks and exhaustive-deps remain active.
       "react-hooks/set-state-in-effect": "off",
       "react-hooks/preserve-manual-memoization": "off",
       "react-hooks/refs": "off",

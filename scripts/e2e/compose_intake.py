@@ -639,8 +639,10 @@ def summary(context: Context) -> None:
         "reviewer_receipt_id",
         "gate_outcome",
     )
+    clean = context.state.get("dirty") is not True
     result = {
-        "status": "PASS" if context.state.get("restart_persistence") is True else "PARTIAL",
+        "status": "PASS" if context.state.get("restart_persistence") is True and clean else "PARTIAL",
+        "diagnosticOnly": not clean,
         "project_id": context.state.get("project_id"),
         "action_id": context.state.get("action_id"),
         "intake_request_id": context.state.get("intake_id"),
