@@ -1284,7 +1284,11 @@ export function Director() {
                 <EnvironmentPanel
                   environment={detail.environment ?? null}
                   requestId={activeId}
-                  executionBound={Boolean(detail.lead.campaignId)}
+                  executionBound={Boolean(
+                    detail.lead.campaignId ||
+                      detail.environment?.specSha256 ||
+                      detail.environment?.spec,
+                  )}
                   onEnvironmentUpdated={(next) =>
                     setDetail((current) =>
                       current ? { ...current, environment: next } : current,

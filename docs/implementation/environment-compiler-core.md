@@ -88,7 +88,13 @@ per-language table. Instead:
    concrete `environmentProposal` with at least one toolchain or package and
    argv commands; a missing, null or empty proposal fails closed with
    `STACK_ENVIRONMENT_REQUIRED` and is never synthesized from a per-language
-   default. The system prompt states that
+   default. Core also checks that at least one proposal toolchain id, package
+   name/attr or command runtime covers the selected language/framework using
+   the normalized aliases (`nodejs`/`node`/`typescript`, `python3`/`python`,
+   `rustc`/`cargo`/`rust`, plus the catalog frameworks); a mismatched proposal
+   fails closed with `STACK_ENVIRONMENT_MISMATCH`. The selected option identity
+   is therefore validated before the environment compiler is called; no
+   separate stack-identity field is needed in the plan. The system prompt states that
    `rationale` is required, non-empty and one concise sentence of at most 500
    characters, and the provider-native JSON Schema advertises the matching
    `minLength: 1`/`maxLength: 500` bound. An over-long rationale is rejected
@@ -196,16 +202,21 @@ silently mutating a blocked or stale artifact:
   and environment revision.
 
 Both require a body `{"rationale": "..."}` of 8–2000 characters. They are
-refused with a typed conflict when a Campaign, run, attempt or authored
+refused with a typed conflict when a Campaign, run, attempt or frozen authored
 specification is bound, or when the latest plan review is
 `REJECTED`/`CHANGES_REQUESTED`. They are allowed for `BLOCKED`, `CORE_VALIDATED`
 or `FROZEN` environments only while execution is unbound, including an empty
 frozen environment that must be replaced before a Campaign starts. The previous
 plan/environment/spec rows remain immutable historical revisions; the audit
 event records the actor, rationale, previous status/revision/spec hash and new
-revision/status. The new environment requires Lead review again; approvals are
-never carried forward. A recompile that is still blocked returns the new
-blocked plan with its blockers, not a 500.
+revision/status. Plan recompile returns a typed conflict for any planning
+conflict value (`STACK_SELECTION_*`, `STACK_ENVIRONMENT_*`, `SKILL_PACK_*`,
+`PLAN_ARTIFACTS_REQUIRED`) and never claims a new revision. It compares the
+recompiled `STACK` decision with the previous revision; a changed selected stack
+or required capability set returns `PLAN_RECOMPILE_STACK_CHANGE_REQUIRES_OWNER`
+instead of auto-approving the change. The new environment requires Lead review
+again; approvals are never carried forward. A recompile that is still blocked
+returns the new blocked plan with its blockers, not a 500.
 
 ## 3. Typed failures
 
@@ -325,7 +336,7 @@ before any assignment.
   policy form, independently observed package metadata mismatch, model stack
   selection, schema round-trip, selected-stack artifact flow and multi-line
   architecture-context tests.
-- `cargo test -p factory-native --lib` — 978 passed, 4 ignored. Includes the
+- `cargo test -p factory-native --lib` — 979 passed, 4 ignored. Includes the
   greenfield Node/Rust environment proposal, explicit-constraint precedence,
   unknown licence/pin/source rejection, model-file rejection, every unfree
   policy form, independently observed package metadata mismatch, model stack
@@ -333,9 +344,10 @@ before any assignment.
   artifact flow and multi-line architecture-context tests.
 - `cargo test -p factory-native --bin factory-core` — 67 passed.
 - `cargo test -p factory-native --bin factory-core --features test-support` —
-  90 passed, including the model-driven stack selection, invalid/empty
-  environment proposal, typed model-failure, generated environment fallback,
-  Lead approval, operator-forgery, recompile authorization/frozen/campaign-bound,
+  92 passed, including the model-driven stack selection, invalid/empty
+  environment proposal, stack-coverage mismatch, typed model-failure, generated
+  environment fallback, Lead approval, operator-forgery, recompile
+  authorization/frozen/campaign-bound, rejected missing-proposal/silent-stack-change,
   and stale-hash tests.
 - `cargo test -p factory-native --bin factory-worker` — 34 passed.
 - `cargo test -p factory-native --bin factory-verifier` — 11 passed.
@@ -353,9 +365,9 @@ before any assignment.
   failed with `ENVIRONMENT_SANDBOX_DENIED` before realisation.
 - `cargo clippy -p factory-native --all-targets --all-features -- -D warnings`
   — clean.
-- Office: `npm run typecheck`, `npm run lint` and `npm test -- --run` were
-  **NOT_RUN** on this host because `office/node_modules` is absent; the
-  component tests were added and the full Office matrix remains pending.
+- Office: `npm ci`, `npm run typecheck`, `npm run lint` and
+  `npm test -- --run` — 50 files / 365 tests passed, including 11
+  EnvironmentPanel recompile/spec-bound tests.
 - `podman compose config --quiet` — exit 0.
 - `docs/product/office-parity.json` parses as valid JSON and includes the
   environment states and endpoints. `docs/product/capabilities.yaml` and the

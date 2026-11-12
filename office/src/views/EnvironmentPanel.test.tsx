@@ -488,6 +488,23 @@ describe("EnvironmentPanel", () => {
     ).toBeTruthy();
   });
 
+  it("hides recompile when a frozen environment spec is bound", () => {
+    renderPanel(
+      state({
+        status: "FROZEN",
+        specSha256: "a".repeat(64),
+        spec: null,
+      }),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Recompile environment" }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Recompile plan" })).toBeNull();
+    expect(
+      screen.getByText(/A Campaign or authored specification is already bound/),
+    ).toBeTruthy();
+  });
+
   it("shows a recompile error without losing the environment", async () => {
     const user = userEvent.setup();
     mocks.recompileAgenticEnvironment.mockRejectedValue("builder unavailable");

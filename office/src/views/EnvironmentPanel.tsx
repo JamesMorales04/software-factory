@@ -87,6 +87,8 @@ export function EnvironmentPanel({
 
   const plan = environment?.plan ?? null;
   const leadApproval = environment?.leadApproval ?? null;
+  const bound =
+    executionBound || Boolean(environment?.specSha256 || environment?.spec);
   const canReview =
     Boolean(requestId) &&
     Boolean(plan) &&
@@ -97,14 +99,14 @@ export function EnvironmentPanel({
     !plan || (plan.toolchains.length === 0 && plan.packages.length === 0);
   const canRecompileEnvironment =
     Boolean(requestId) &&
-    !executionBound &&
+    !bound &&
     Boolean(plan) &&
     (environment?.status === "BLOCKED" ||
       environment?.status === "CORE_VALIDATED" ||
       environment?.status === "FROZEN");
   const canRecompilePlan =
     Boolean(requestId) &&
-    !executionBound &&
+    !bound &&
     (environmentEmpty ||
       environment?.status === "BLOCKED" ||
       environment?.status === "MISSING" ||
@@ -173,7 +175,7 @@ export function EnvironmentPanel({
 
   function renderRecompileSection() {
     if (!requestId) return null;
-    if (!executionBound && !canRecompilePlan && !canRecompileEnvironment) {
+    if (!bound && !canRecompilePlan && !canRecompileEnvironment) {
       return null;
     }
     return (
@@ -182,7 +184,7 @@ export function EnvironmentPanel({
           {t("environment.recompile.title")}
         </h3>
         <p className="muted">{t("environment.recompile.description")}</p>
-        {executionBound ? (
+        {bound ? (
           <p className="ui-callout ui-callout--attention">
             {t("environment.recompile.bound")}
           </p>

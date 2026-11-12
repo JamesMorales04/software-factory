@@ -162,7 +162,11 @@ Rules:
   untrusted `EnvironmentProposal` (exact nixpkgs pin or omitted builder default,
   toolchains, nixpkgs packages with SPDX licences and argv commands). A
   greenfield stack selection must include a concrete proposal; a missing or
-  empty one is `STACK_ENVIRONMENT_REQUIRED`. It fills
+  empty one is `STACK_ENVIRONMENT_REQUIRED`. The proposal must cover the
+  selected language/framework with a matching toolchain id, package name/attr
+  or command runtime using the normalized aliases (`nodejs`/`node`/
+  `typescript`, `python3`/`python`, `rustc`/`cargo`/`rust`, plus catalog
+  frameworks); a mismatch is `STACK_ENVIRONMENT_MISMATCH`. It fills
   only missing fields after explicit request constraints and committed
   conventions; it never enables `allowUnfree`, chooses a language by default,
   grants capabilities or bypasses Core validation and the Lead review.
@@ -206,7 +210,11 @@ Rules:
   previous status/revision/spec hash and new revision/status. The new
   environment requires Lead review again; no previous approval is carried
   forward, and a still-blocked recompile returns the new blocked plan instead
-  of a 500.
+  of a 500. Any planning conflict value (`STACK_SELECTION_*`,
+  `STACK_ENVIRONMENT_*`, `SKILL_PACK_*`, `PLAN_ARTIFACTS_REQUIRED`) is returned
+  as a typed conflict without claiming a new revision. A recompiled stack that
+  changes its selected option or required capabilities returns
+  `PLAN_RECOMPILE_STACK_CHANGE_REQUIRES_OWNER`; it is not auto-approved.
 
 ## 5. Lead approval and Core freeze
 

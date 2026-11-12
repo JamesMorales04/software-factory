@@ -12706,8 +12706,10 @@ explaining why the selected deterministic option fits the objective and the supp
 capabilities. A concrete environmentProposal is also required for this greenfield selection: it MUST \
 cover the selected language/framework with at least one toolchain or package (exact or numeric-prefix \
 versions), at least build/test/lint/format/typecheck/run commands as argv vectors where applicable, \
-bounded resources, and no unfree package. An exact pinned nixpkgs revision may be supplied; omit \
-nixpkgs to use the builder's documented default. Never invent an option, language, framework, \
+bounded resources, and no unfree package. The proposal must actually cover the selected language and \
+framework with a matching toolchain id, package name/attribute or command runtime (for example \
+python/fastapi, rust/axum, node/typescript/react); a mismatched proposal fails closed. An exact \
+pinned nixpkgs revision may be supplied; omit nixpkgs to use the builder's documented default. Never invent an option, language, framework, \
 capability, path, package or command. There is no language default. Model output is advisory; Core \
 validates the selection and the environment proposal against the deterministic catalog, the \
 existing environment compiler and the project's authorized capabilities.\n\nJSON Schema:\n{schema}",
@@ -12825,6 +12827,9 @@ async fn select_stack_option_with_model(
     .map_err(|error| match error {
         factory_native::planning::stack::StackSelectionError::EnvironmentRequired(message) => {
             stack_selection_conflict("STACK_ENVIRONMENT_REQUIRED", message, options)
+        }
+        factory_native::planning::stack::StackSelectionError::EnvironmentMismatch(message) => {
+            stack_selection_conflict("STACK_ENVIRONMENT_MISMATCH", message, options)
         }
         error => stack_selection_conflict("STACK_SELECTION_INVALID", error.to_string(), options),
     })?;
@@ -13235,6 +13240,7 @@ async fn persist_planning_plan(
     context: &AgenticTriageContext,
     graph: &factory_native::agentic::ValidatedWorkGraph,
     environment_revision: Option<u32>,
+    precompiled_stack: Option<CompiledStackDecision>,
 ) -> Result<Value, Response> {
     use factory_native::planning::route::{required_artifacts, required_reviewers};
     use factory_native::planning::{PlanningLane, R0_AUTONOMY_POINTS};
@@ -13246,12 +13252,15 @@ async fn persist_planning_plan(
         .await
         .map_err(api_error)?;
     let repository = PathBuf::from(&config.repository);
-    let stack = match compile_stack_decision(app, record, lane, &context.stack, &config).await {
-        Ok(stack) => stack,
-        Err(PlanningCompileFailure::Conflict(conflict)) => {
-            return Ok(planning_compile_conflict_value(conflict));
-        }
-        Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
+    let stack = match precompiled_stack {
+        Some(stack) => stack,
+        None => match compile_stack_decision(app, record, lane, &context.stack, &config).await {
+            Ok(stack) => stack,
+            Err(PlanningCompileFailure::Conflict(conflict)) => {
+                return Ok(planning_compile_conflict_value(conflict));
+            }
+            Err(PlanningCompileFailure::Internal(error)) => return Err(api_error(error)),
+        },
     };
     let architecture = factory_native::planning::architecture::build_architecture_plan(
         &record.objective,
@@ -13887,11 +13896,11 @@ JSON Schema:
                 Ok(record) => record,
                 Err(error) => return api_error(error),
             };
-            let planning = match persist_planning_plan(&app, &record, &context, &graph, None).await
-            {
-                Ok(value) => value,
-                Err(response) => return response,
-            };
+            let planning =
+                match persist_planning_plan(&app, &record, &context, &graph, None, None).await {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
             if let Some(code) = planning.get("code").and_then(Value::as_str) {
                 return (
                     StatusCode::CONFLICT,
@@ -15416,6 +15425,31 @@ async fn recompile_agentic_plan(
         }
         Err(error) => return api_error(error),
     };
+    let previous_stack_artifact = match app
+        .db
+        .planning_artifact(&record.id, "STACK", previous_plan.revision)
+        .await
+    {
+        Ok(artifact) => artifact,
+        Err(Error::NotFound) => {
+            return agentic_conflict(
+                "PLAN_RECOMPILE_STACK_MISSING",
+                "the previous plan has no STACK artifact to compare against",
+            );
+        }
+        Err(error) => return api_error(error),
+    };
+    let previous_stack = match serde_json::from_str::<factory_native::planning::StackDecision>(
+        &previous_stack_artifact.content_json,
+    ) {
+        Ok(stack) => stack,
+        Err(_) => {
+            return agentic_conflict(
+                "PLAN_RECOMPILE_STACK_MISSING",
+                "the previous STACK artifact is not decodable",
+            );
+        }
+    };
     let previous_environment = app.db.latest_environment_plan(&record.id).await.ok();
     let previous_environment_status = previous_environment
         .as_ref()
@@ -15438,19 +15472,50 @@ async fn recompile_agentic_plan(
         Ok(context) => context,
         Err(error) => return api_error(error),
     };
+    let precompiled_stack = match compile_stack_decision(
+        &app,
+        &record,
+        context.planning_lane,
+        &context.stack,
+        &config,
+    )
+    .await
+    {
+        Ok(stack) => stack,
+        Err(PlanningCompileFailure::Conflict(conflict)) => {
+            return planning_compile_conflict_response(conflict, &[]);
+        }
+        Err(PlanningCompileFailure::Internal(error)) => return api_error(error),
+    };
+    let mut previous_capabilities = previous_stack.required_capabilities.clone();
+    previous_capabilities.sort();
+    let mut next_capabilities = precompiled_stack.decision.required_capabilities.clone();
+    next_capabilities.sort();
+    if precompiled_stack.decision.selected != previous_stack.selected
+        || next_capabilities != previous_capabilities
+    {
+        return agentic_conflict(
+            "PLAN_RECOMPILE_STACK_CHANGE_REQUIRES_OWNER",
+            format!(
+                "the recompiled stack changed from {} to {}; a stack change requires an explicit owner decision",
+                previous_stack.selected, precompiled_stack.decision.selected
+            ),
+        );
+    }
     let planning = match persist_planning_plan(
         &app,
         &record,
         &context,
         &graph,
         Some(next_environment_revision),
+        Some(precompiled_stack),
     )
     .await
     {
         Ok(value) => value,
         Err(response) => return response,
     };
-    if planning.get("code").and_then(Value::as_str) == Some("PLAN_ARTIFACTS_REQUIRED") {
+    if planning.get("code").is_some() {
         return (StatusCode::CONFLICT, Json(planning)).into_response();
     }
     let plan = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
@@ -31103,6 +31168,33 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            let stack_options = factory_native::planning::stack::selection_options(
+                "Build a calculator application. You choose the stack.",
+            );
+            let selected_python = stack_options
+                .iter()
+                .find(|option| option.id == "python-service")
+                .unwrap()
+                .clone();
+            let previous_stack = factory_native::planning::stack::build_model_stack_decision(
+                factory_native::planning::PlanningLane::FormalSpec,
+                &factory_native::agentic::StackProfile::default(),
+                &selected_python,
+                &stack_options,
+                "Build a calculator application. You choose the stack.",
+            )
+            .unwrap();
+            fixture
+                .app
+                .db
+                .save_planning_artifact(
+                    &intake_id,
+                    "STACK",
+                    1,
+                    &serde_json::to_string(&previous_stack).unwrap(),
+                )
+                .await
+                .unwrap();
             seed_core_test_environment(
                 &fixture.app.db,
                 &fixture.path,
@@ -31190,6 +31282,238 @@ mod tests {
                     .unwrap()
                     .revision,
                 2
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+            let _ = std::fs::remove_dir_all(repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        async fn setup_plan_recompile_conflict_case(
+            model_content: String,
+        ) -> (Fixture, String, PathBuf) {
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let content = Arc::new(Mutex::new(model_content));
+            let (url, _hits) = stack_selection_upstream(content).await;
+            let key = environment_master_key();
+            let fixture = setup_with(Some(&key), &url, &url, profile_content()).await;
+            fixture
+                .app
+                .db
+                .enable_test_subscription_fixture_mode()
+                .await
+                .unwrap();
+            let (repository, base) = empty_git_repository();
+            let project = fixture
+                .app
+                .db
+                .register_project(&repository, "plan-recompile-conflict-project")
+                .await
+                .unwrap();
+            let config = fixture
+                .app
+                .db
+                .update_project_config(
+                    &project.id,
+                    &NewProjectConfig {
+                        expected_revision: 1,
+                        allowed_paths: vec!["src".into()],
+                        capabilities: vec![
+                            factory_native::lead::Capability::RepositoryEdit,
+                            factory_native::lead::Capability::GenericToolchain,
+                        ],
+                        quality_profile: factory_native::lead::QualityProfile::Generic,
+                        active: true,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(config.base_commit, base);
+            let (policy_status, _) = enable_policy_for_project(
+                &fixture,
+                &project.id,
+                &config.config_hash,
+                "plan-recompile-conflict-policy",
+            )
+            .await;
+            assert!(matches!(
+                policy_status,
+                StatusCode::CREATED | StatusCode::OK
+            ));
+            let (status, intake) = send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(json!({
+                    "project_id": project.id,
+                    "objective": "Build a calculator application. You choose the stack.",
+                    "execution_profile_id": fixture.profile.id,
+                    "mode": "REVIEW_PLAN",
+                    "idempotency_key": "plan-recompile-conflict-request",
+                    "authorized_micros": 1_000_000
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .admit_test_subscription_dispatch(&record.lead_request_id)
+                .await
+                .unwrap();
+            let graph = factory_native::agentic::validate_work_graph(
+                &factory_native::agentic::WorkGraphModel {
+                    units: vec![factory_native::agentic::PlannedWorkUnit {
+                        id: "calculator".into(),
+                        title: "Calculator".into(),
+                        objective: "Implement the calculator.".into(),
+                        depends_on: Vec::new(),
+                        paths: vec!["src".into()],
+                        acceptance: vec!["The calculator adds two numbers.".into()],
+                    }],
+                    assumptions: Vec::new(),
+                    risks: Vec::new(),
+                },
+                &config.allowed_paths,
+            )
+            .unwrap();
+            let digest = "a".repeat(64);
+            fixture
+                .app
+                .db
+                .save_agentic_work_graph(&factory_native::db::NewAgenticWorkGraph {
+                    request_id: &intake_id,
+                    graph: &graph,
+                    provider: "fixture",
+                    model: "fixture",
+                    schema_sha256: &digest,
+                    request_sha256: &digest,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    cost_micros: 0,
+                    usage_known: false,
+                })
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_planning_artifact(
+                    &intake_id,
+                    "PLAN",
+                    1,
+                    &json!({
+                        "schemaVersion": factory_native::planning::SCHEMA_VERSION,
+                        "planRevision": 1,
+                        "environmentProposal": null
+                    })
+                    .to_string(),
+                )
+                .await
+                .unwrap();
+            let stack_options = factory_native::planning::stack::selection_options(
+                "Build a calculator application. You choose the stack.",
+            );
+            let selected_python = stack_options
+                .iter()
+                .find(|option| option.id == "python-service")
+                .unwrap()
+                .clone();
+            let previous_stack = factory_native::planning::stack::build_model_stack_decision(
+                factory_native::planning::PlanningLane::FormalSpec,
+                &factory_native::agentic::StackProfile::default(),
+                &selected_python,
+                &stack_options,
+                "Build a calculator application. You choose the stack.",
+            )
+            .unwrap();
+            fixture
+                .app
+                .db
+                .save_planning_artifact(
+                    &intake_id,
+                    "STACK",
+                    1,
+                    &serde_json::to_string(&previous_stack).unwrap(),
+                )
+                .await
+                .unwrap();
+            (fixture, intake_id, repository)
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn plan_recompile_rejects_a_missing_environment_proposal() {
+            let (fixture, intake_id, repository) = setup_plan_recompile_conflict_case(
+                stack_selection_content("python-service", "python", "fastapi", None),
+            )
+            .await;
+            let (status, conflict) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan/recompile"),
+                Some(json!({"rationale": "Retry without a concrete environment proposal."})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+            assert_eq!(conflict["code"], "STACK_ENVIRONMENT_REQUIRED");
+            assert!(conflict.get("recompiled").is_none());
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .latest_planning_artifact(&intake_id, "PLAN")
+                    .await
+                    .unwrap()
+                    .revision,
+                1
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+            let _ = std::fs::remove_dir_all(repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn plan_recompile_rejects_a_silent_stack_change() {
+            let (fixture, intake_id, repository) =
+                setup_plan_recompile_conflict_case(stack_selection_content(
+                    "rust-service",
+                    "rust",
+                    "axum",
+                    Some(calculator_environment_proposal()),
+                ))
+                .await;
+            let (status, conflict) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan/recompile"),
+                Some(json!({"rationale": "Try to change the stack silently."})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+            assert_eq!(
+                conflict["code"],
+                "PLAN_RECOMPILE_STACK_CHANGE_REQUIRES_OWNER"
+            );
+            assert!(conflict.get("recompiled").is_none());
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .latest_planning_artifact(&intake_id, "PLAN")
+                    .await
+                    .unwrap()
+                    .revision,
+                1
             );
 
             fixture.app.db.close().await;

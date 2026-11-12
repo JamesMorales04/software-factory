@@ -68,10 +68,77 @@ pub enum StackSelectionError {
     Invalid(String),
     #[error("the stack selection requires a concrete environment proposal: {0}")]
     EnvironmentRequired(String),
+    #[error("the environment proposal does not cover the selected stack: {0}")]
+    EnvironmentMismatch(String),
     #[error("the stack selection {0:?} is not one of the deterministic options")]
     Unknown(String),
     #[error("the selected stack requires an unauthorized project capability: {0:?}")]
     Unauthorized(Capability),
+}
+
+/// Normalize a technology token to the family used for coverage checks. The
+/// aliases match the existing `normalize_tool_name` conventions and add the
+/// framework names used by the deterministic catalog.
+fn stack_technology_kind(value: &str) -> Option<&'static str> {
+    let lower = value.trim().to_ascii_lowercase();
+    let lower = lower.trim_start_matches(|character: char| !character.is_ascii_alphanumeric());
+    const PREFIXES: &[(&str, &str)] = &[
+        ("nodejs", "node"),
+        ("node", "node"),
+        ("typescript", "node"),
+        ("javascript", "node"),
+        ("npm", "node"),
+        ("pnpm", "node"),
+        ("yarn", "node"),
+        ("bun", "node"),
+        ("python", "python"),
+        ("pip", "python"),
+        ("pytest", "python"),
+        ("rust", "rust"),
+        ("cargo", "rust"),
+        ("fastapi", "fastapi"),
+        ("axum", "axum"),
+        ("react", "react"),
+        ("next", "next"),
+        ("vue", "vue"),
+        ("angular", "angular"),
+    ];
+    PREFIXES
+        .iter()
+        .find(|(prefix, _)| lower.starts_with(prefix))
+        .map(|(_, kind)| *kind)
+}
+
+fn proposal_covers_selected_stack(
+    selected: &StackSelectionOption,
+    proposal: &EnvironmentProposal,
+) -> bool {
+    let language_kind = stack_technology_kind(&selected.language)
+        .map(str::to_owned)
+        .unwrap_or_else(|| selected.language.to_ascii_lowercase());
+    let framework_kind = stack_technology_kind(&selected.framework)
+        .map(str::to_owned)
+        .unwrap_or_else(|| selected.framework.to_ascii_lowercase());
+    let matches = |candidate: &str| {
+        stack_technology_kind(candidate)
+            .is_some_and(|kind| kind == language_kind.as_str() || kind == framework_kind.as_str())
+    };
+    proposal
+        .toolchains
+        .iter()
+        .any(|toolchain| matches(&toolchain.id))
+        || proposal.packages.iter().any(|package| {
+            matches(&package.name)
+                || matches(&package.attr)
+                || package.attr.split('.').any(&matches)
+        })
+        || proposal.commands.values().any(|command| {
+            command
+                .argv
+                .iter()
+                .take(2)
+                .any(|argument| matches(argument))
+        })
 }
 
 /// Deterministically resolve one model stack selection against the exact
@@ -149,6 +216,12 @@ pub fn resolve_model_stack_selection(
             "a greenfield proposal cannot include an unfree package without an owner override"
                 .into(),
         ));
+    }
+    if !proposal_covers_selected_stack(selected, proposal) {
+        return Err(StackSelectionError::EnvironmentMismatch(format!(
+            "{}/{} is not covered by a matching toolchain, package or command",
+            selected.language, selected.framework
+        )));
     }
     Ok(selected.clone())
 }
@@ -590,6 +663,135 @@ mod tests {
             resolve_model_stack_selection(&options, &selection, &[Capability::GenericToolchain]),
             Err(StackSelectionError::EnvironmentRequired(_))
         ));
+    }
+
+    fn rust_proposal() -> EnvironmentProposal {
+        use crate::planning::environment::{
+            CommandRequirement, PackageRequirement, ToolchainRequirement,
+        };
+        EnvironmentProposal {
+            toolchains: vec![ToolchainRequirement {
+                id: "rust".into(),
+                version: "1.90.0".into(),
+                source: "stack-selection".into(),
+                evidence: vec!["selected rust-service".into()],
+            }],
+            packages: vec![PackageRequirement {
+                name: "cargo".into(),
+                version: "1.90.0".into(),
+                license: "MIT".into(),
+                source: "nixpkgs".into(),
+                attr: "cargo".into(),
+                sha256: String::new(),
+                unfree: false,
+                attribution: "Cargo is MIT licensed.".into(),
+            }],
+            commands: std::collections::BTreeMap::from([(
+                "test".into(),
+                CommandRequirement {
+                    argv: vec!["cargo".into(), "test".into()],
+                    cwd: ".".into(),
+                    timeout_secs: 300,
+                    expect_exit: 0,
+                },
+            )]),
+            nixpkgs: Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into()),
+            ..EnvironmentProposal::default()
+        }
+    }
+
+    fn typescript_proposal() -> EnvironmentProposal {
+        use crate::planning::environment::{
+            CommandRequirement, PackageRequirement, ToolchainRequirement,
+        };
+        EnvironmentProposal {
+            toolchains: vec![ToolchainRequirement {
+                id: "node".into(),
+                version: "22.14.0".into(),
+                source: "stack-selection".into(),
+                evidence: vec!["selected typescript-react".into()],
+            }],
+            packages: vec![PackageRequirement {
+                name: "react".into(),
+                version: "19".into(),
+                license: "MIT".into(),
+                source: "nixpkgs".into(),
+                attr: "nodePackages.react".into(),
+                sha256: String::new(),
+                unfree: false,
+                attribution: "React is MIT licensed.".into(),
+            }],
+            commands: std::collections::BTreeMap::from([(
+                "test".into(),
+                CommandRequirement {
+                    argv: vec!["npm".into(), "test".into()],
+                    cwd: ".".into(),
+                    timeout_secs: 300,
+                    expect_exit: 0,
+                },
+            )]),
+            nixpkgs: Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into()),
+            ..EnvironmentProposal::default()
+        }
+    }
+
+    #[test]
+    fn greenfield_proposal_must_cover_the_selected_stack() {
+        let options = selection_options("Build a calculator application. You choose the stack.");
+        let python = StackSelectionModel {
+            option_id: "python-service".into(),
+            language: "python".into(),
+            framework: "fastapi".into(),
+            rationale: "A small calculator is quickly testable as a Python service.".into(),
+            environment_proposal: python_proposal(),
+        };
+        assert_eq!(
+            resolve_model_stack_selection(&options, &python, &[Capability::GenericToolchain])
+                .unwrap()
+                .id,
+            "python-service"
+        );
+
+        let rust = StackSelectionModel {
+            option_id: "rust-service".into(),
+            language: "rust".into(),
+            framework: "axum".into(),
+            rationale: "A typed local service fits the bounded objective.".into(),
+            environment_proposal: rust_proposal(),
+        };
+        assert_eq!(
+            resolve_model_stack_selection(&options, &rust, &[Capability::GenericToolchain])
+                .unwrap()
+                .id,
+            "rust-service"
+        );
+
+        let mismatch = StackSelectionModel {
+            option_id: "python-service".into(),
+            language: "python".into(),
+            framework: "fastapi".into(),
+            rationale: "A small calculator is quickly testable as a Python service.".into(),
+            environment_proposal: rust_proposal(),
+        };
+        assert!(matches!(
+            resolve_model_stack_selection(&options, &mismatch, &[Capability::GenericToolchain]),
+            Err(StackSelectionError::EnvironmentMismatch(_))
+        ));
+
+        let web_options = selection_options("Build a web dashboard. You choose the stack.");
+        let typescript = StackSelectionModel {
+            option_id: "typescript-react".into(),
+            language: "typescript".into(),
+            framework: "react".into(),
+            rationale: "A browser dashboard fits the requested web interface.".into(),
+            environment_proposal: typescript_proposal(),
+        };
+        assert_eq!(
+            resolve_model_stack_selection(&web_options, &typescript, &[Capability::NodeToolchain])
+                .unwrap()
+                .id,
+            "typescript-react"
+        );
     }
 
     #[test]

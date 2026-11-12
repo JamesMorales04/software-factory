@@ -832,7 +832,12 @@ export function RequestWorkspace() {
           <EnvironmentPanel
             environment={data.environment ?? null}
             requestId={data.id}
-            executionBound={Boolean(data.campaignId || data.campaign)}
+            executionBound={Boolean(
+              data.campaignId ||
+                data.campaign ||
+                data.environment?.specSha256 ||
+                data.environment?.spec,
+            )}
             onEnvironmentUpdated={() => void load(true)}
             onPlanRecompiled={() => void load(true)}
           />
