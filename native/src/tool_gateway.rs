@@ -97,19 +97,30 @@ pub struct GatewayToolSpec {
     pub allowed_hosts: Vec<String>,
 }
 
+const KNOWN_TOOLS: &[(&str, &str, bool)] = &[
+    ("context7.resolve-library-id", "context7", true),
+    ("context7.query-docs", "context7", true),
+    ("playwright.browser_navigate", "playwright", false),
+    ("playwright.browser_snapshot", "playwright", true),
+    ("playwright.browser_take_screenshot", "playwright", true),
+    ("playwright.browser_click", "playwright", false),
+    ("playwright.browser_type", "playwright", false),
+    ("playwright.browser_close", "playwright", false),
+    ("github.issue_read", "github-read", true),
+    ("github.pull_request_read", "github-read", true),
+    ("github.get_file_contents", "github-read", true),
+    ("github.search_code", "github-read", true),
+];
+
+fn known_tool(id: &str) -> Option<(&'static str, bool)> {
+    KNOWN_TOOLS
+        .iter()
+        .find(|(known, _, _)| *known == id)
+        .map(|(_, server, read_only)| (*server, *read_only))
+}
+
 fn core_tool_is_read_only(tool: &GatewayToolSpec) -> bool {
-    match tool.server.as_str() {
-        "context7" => true,
-        "playwright" => matches!(
-            tool.tool.as_str(),
-            "browser_snapshot" | "browser_take_screenshot"
-        ),
-        "github-read" => matches!(
-            tool.tool.as_str(),
-            "issue_read" | "pull_request_read" | "get_file_contents" | "search_code"
-        ),
-        _ => false,
-    }
+    known_tool(&tool.id).is_some_and(|(_, read_only)| read_only)
 }
 
 fn default_timeout() -> u64 {
@@ -313,12 +324,29 @@ impl GatewayConfig {
                             "MCP endpoint for {id} must be HTTPS (loopback HTTP is test-only)"
                         )));
                     }
+                    let trusted = match id.as_str() {
+                        "context7" => endpoint == "https://mcp.context7.com/mcp" || loopback,
+                        "github-read" => {
+                            endpoint == "https://api.githubcopilot.com/mcp/readonly" || loopback
+                        }
+                        _ => false,
+                    };
+                    if !trusted {
+                        return Err(GatewayError::Config(format!(
+                            "MCP endpoint for {id} is not a trusted server identity"
+                        )));
+                    }
                     id
                 }
                 GatewayServerConfig::Stdio { id, command, .. } => {
                     if command.is_empty() || command[0].trim().is_empty() {
                         return Err(GatewayError::Config(format!(
                             "stdio server {id} has no command"
+                        )));
+                    }
+                    if id != "playwright" {
+                        return Err(GatewayError::Config(format!(
+                            "stdio server {id} is not in the immutable gateway catalog"
                         )));
                     }
                     id
@@ -341,6 +369,18 @@ impl GatewayConfig {
             if !servers.contains(&tool.server) {
                 return Err(GatewayError::Config(format!(
                     "tool {} references unknown server {}",
+                    tool.id, tool.server
+                )));
+            }
+            let Some((known_server, _)) = known_tool(&tool.id) else {
+                return Err(GatewayError::Config(format!(
+                    "tool {} is not in the immutable gateway catalog",
+                    tool.id
+                )));
+            };
+            if known_server != tool.server {
+                return Err(GatewayError::Config(format!(
+                    "tool {} must use server {known_server}, not {}",
                     tool.id, tool.server
                 )));
             }
@@ -1469,6 +1509,35 @@ for line in sys.stdin:
                 .iter()
                 .any(|tool| tool.id == "github.issue_read")
         );
+    }
+
+    #[test]
+    fn rejects_unknown_tool_identities_and_server_remapping() {
+        let mut config = GatewayConfig::example();
+        config.tools = vec![GatewayToolSpec {
+            id: "context7.arbitrary".into(),
+            server: "context7".into(),
+            tool: "arbitrary".into(),
+            roles: vec![GatewayRole::Reviewer],
+            read_only: true,
+            timeout_secs: 30,
+            max_response_bytes: 1024,
+            allowed_hosts: Vec::new(),
+        }];
+        assert!(matches!(config.validate(), Err(GatewayError::Config(_))));
+
+        config.tools[0].id = "context7.query-docs".into();
+        config.tools[0].server = "github-read".into();
+        assert!(matches!(config.validate(), Err(GatewayError::Config(_))));
+
+        config.tools[0].server = "context7".into();
+        config.servers = vec![GatewayServerConfig::Http {
+            id: "context7".into(),
+            endpoint: "https://evil.example/mcp".into(),
+            bearer_env: None,
+            allow_loopback_http: false,
+        }];
+        assert!(matches!(config.validate(), Err(GatewayError::Config(_))));
     }
 
     #[test]

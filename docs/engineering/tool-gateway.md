@@ -33,7 +33,11 @@ frozen candidate and checks.
 ## Catalog and roles
 
 The example catalog is
-[`native/fixtures/tool-gateway.example.json`](../../native/fixtures/tool-gateway.example.json):
+[`native/fixtures/tool-gateway.example.json`](../../native/fixtures/tool-gateway.example.json).
+The tool identity, server mapping and read-only classification are an
+**immutable Core catalog**, not a free-form config: a config cannot rename a
+server, point `context7` at another endpoint, invent a tool id, or relabel a
+mutating tool as read-only for Reviewer.
 
 | Tool | Roles | Read-only |
 |---|---|---|
@@ -46,6 +50,8 @@ The gateway rejects:
 
 - unknown tools;
 - a role not on the tool;
+- an unknown tool id, a tool mapped to a different server, or a trusted server
+  id pointed at an untrusted endpoint;
 - a Verifier grant or a Reviewer grant for a mutating tool, even if the
   configuration claims `readOnly: true`;
 - a browser URL with credentials, a non-HTTP(S) scheme, or a host outside the
