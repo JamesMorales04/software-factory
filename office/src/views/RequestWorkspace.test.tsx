@@ -601,6 +601,197 @@ describe("RequestWorkspace", () => {
     ).toBe("");
   });
 
+  it("starts one follow-up from a completed request and exposes the created request", async () => {
+    const completed = makeProjection({
+      state: "COMPLETED",
+      stateDetail: "Quality Gate recorded ACCEPTED for the exact candidate.",
+    });
+    const followUp = makeProjection({
+      id: "request-2",
+      state: "SUBMITTED",
+      parentRequestId: "request-1",
+      plan: null,
+      assessment: null,
+      proposal: null,
+      messages: [],
+    });
+    const completedWithFollowUp = makeProjection({
+      state: "COMPLETED",
+      followUpRequest: followUp,
+    });
+    mocks.getIntakeRequest
+      .mockResolvedValueOnce(completed)
+      .mockResolvedValue(completedWithFollowUp);
+    mocks.messageIntakeRequest.mockResolvedValue(completedWithFollowUp);
+    renderRequest();
+    await screen.findByLabelText("Start a follow-up request");
+    await userEvent.type(
+      screen.getByLabelText("Start a follow-up request"),
+      "Add the CSV export follow-up.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start follow-up" }),
+    );
+    await waitFor(() =>
+      expect(mocks.messageIntakeRequest).toHaveBeenCalledWith("request-1", {
+        body: "Add the CSV export follow-up.",
+        idempotency_key: "message-key",
+      }),
+    );
+    expect(
+      await screen.findByText(/Core created the follow-up request with state/),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("link", { name: "Open follow-up" }).getAttribute("href"),
+    ).toBe("/requests/request-2");
+    expect(screen.queryByLabelText("Start a follow-up request")).toBeNull();
+  });
+
+  it("does not offer a follow-up on a withdrawn terminal request", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        state: "CANCELLED",
+        authorization: {
+          required: false,
+          available: false,
+          reason: "INTAKE_WITHDRAWN",
+        },
+      }),
+    );
+    renderRequest();
+    await screen.findByText("Keep the API backward compatible.");
+    expect(screen.queryByLabelText("Start a follow-up request")).toBeNull();
+  });
+
+  it("explains a follow-up policy refusal in English", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({ state: "COMPLETED" }),
+    );
+    mocks.messageIntakeRequest.mockRejectedValue(
+      new CoreApiError(409, "policy no longer matches", {
+        code: "FOLLOW_UP_EXECUTION_POLICY_REQUIRED",
+        error: "policy no longer matches",
+      }),
+    );
+    renderRequest();
+    await screen.findByLabelText("Start a follow-up request");
+    await userEvent.type(
+      screen.getByLabelText("Start a follow-up request"),
+      "Continue with a new objective.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start follow-up" }),
+    );
+    expect(
+      await screen.findByText(/parent owner-confirmed execution policy/),
+    ).toBeDefined();
+    expect(screen.getByRole("alert")).toBeDefined();
+    expect(screen.getByLabelText("Start a follow-up request")).toBeDefined();
+  });
+
+  it("explains a follow-up policy refusal in Spanish", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({ state: "COMPLETED" }),
+    );
+    mocks.messageIntakeRequest.mockRejectedValue(
+      new CoreApiError(409, "policy no longer matches", {
+        code: "FOLLOW_UP_EXECUTION_POLICY_REQUIRED",
+        error: "policy no longer matches",
+      }),
+    );
+    renderRequest("es");
+    await screen.findByLabelText("Iniciar una solicitud de seguimiento");
+    await userEvent.type(
+      screen.getByLabelText("Iniciar una solicitud de seguimiento"),
+      "Continúa con un nuevo objetivo.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Iniciar seguimiento" }),
+    );
+    expect(
+      await screen.findByText(
+        /política de ejecución confirmada por el propietario/,
+      ),
+    ).toBeDefined();
+    expect(screen.getByRole("alert")).toBeDefined();
+  });
+
+  it("explains a follow-up principal mismatch in English", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({ state: "COMPLETED" }),
+    );
+    mocks.messageIntakeRequest.mockRejectedValue(
+      new CoreApiError(409, "principal mismatch", {
+        code: "FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH",
+        error: "principal mismatch",
+      }),
+    );
+    renderRequest();
+    await screen.findByLabelText("Start a follow-up request");
+    await userEvent.type(
+      screen.getByLabelText("Start a follow-up request"),
+      "Continue with another principal.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start follow-up" }),
+    );
+    expect(
+      await screen.findByText(
+        /only the principal that confirmed the parent execution policy/,
+      ),
+    ).toBeDefined();
+    expect(screen.getByRole("alert")).toBeDefined();
+    expect(screen.getByLabelText("Start a follow-up request")).toBeDefined();
+  });
+
+  it("explains a follow-up principal mismatch in Spanish", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({ state: "COMPLETED" }),
+    );
+    mocks.messageIntakeRequest.mockRejectedValue(
+      new CoreApiError(409, "principal mismatch", {
+        code: "FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH",
+        error: "principal mismatch",
+      }),
+    );
+    renderRequest("es");
+    await screen.findByLabelText("Iniciar una solicitud de seguimiento");
+    await userEvent.type(
+      screen.getByLabelText("Iniciar una solicitud de seguimiento"),
+      "Continúa con otro principal.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Iniciar seguimiento" }),
+    );
+    expect(
+      await screen.findByText(
+        /solo el principal que confirmó la política de ejecución del padre/,
+      ),
+    ).toBeDefined();
+    expect(screen.getByRole("alert")).toBeDefined();
+    expect(
+      screen.getByLabelText("Iniciar una solicitud de seguimiento"),
+    ).toBeDefined();
+  });
+
+  it("shows the parent thread on a follow-up request", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        id: "request-2",
+        state: "SUBMITTED",
+        parentRequestId: "request-1",
+        plan: null,
+        assessment: null,
+        proposal: null,
+      }),
+    );
+    const { container } = renderRequest();
+    expect(await screen.findByText(/Follow-up from/)).toBeDefined();
+    const parentLink = container.querySelector('a[href="/requests/request-1"]');
+    expect(parentLink).not.toBeNull();
+    expect(parentLink?.textContent).toContain("request-");
+  });
+
   it("starts a bounded repair from the exact rejected candidate after confirmation", async () => {
     mocks.getIntakeRequest.mockResolvedValue(
       makeProjection({

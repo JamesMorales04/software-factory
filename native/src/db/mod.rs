@@ -392,6 +392,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "github.connection_revoked",
     "github.issues_synced",
     "github.project_bound",
+    "intake.follow_up_created",
     "intake.message_recorded",
     "intake.request_created",
     "issue_delivery.applied",
@@ -439,6 +440,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "provider.turn_resolved",
     "provider.turn_settled",
     "provider.session_terminal",
+    "project.base_advanced",
     "project.config_updated",
     "project.discovery_completed",
     "project.registered",
@@ -1163,7 +1165,8 @@ pub use lead::{
 mod intake;
 pub use intake::{
     ExecutionPolicyGrantRecord, ExecutionPolicyGrantResult, IntakeApprovalContext,
-    IntakeMessageRecord, IntakeRequestRecord, LeadExecutionContextRecord, NewExecutionPolicyGrant,
+    IntakeMessageOutcome, IntakeMessageRecord, IntakeRequestRecord, LeadExecutionContextRecord,
+    NewExecutionPolicyGrant,
 };
 mod issue_intake;
 pub use issue_intake::{

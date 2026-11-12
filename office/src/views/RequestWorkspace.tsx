@@ -27,6 +27,7 @@ import {
   IntakeModeBadge,
   IntakeStateBadge,
   isTerminalIntakeState,
+  supportsIntakeFollowUp,
 } from "./RequestState";
 import { RequestTrace } from "./RequestTrace";
 
@@ -143,6 +144,27 @@ export function RequestWorkspace() {
     } catch (cause) {
       if (
         cause instanceof CoreApiError &&
+        cause.code === "FOLLOW_UP_EXECUTION_POLICY_REQUIRED"
+      ) {
+        setActionError(t("request.followUp.policyRequired"));
+        return false;
+      }
+      if (
+        cause instanceof CoreApiError &&
+        cause.code === "FOLLOW_UP_POLICY_PRINCIPAL_MISMATCH"
+      ) {
+        setActionError(t("request.followUp.principalMismatch"));
+        return false;
+      }
+      if (
+        cause instanceof CoreApiError &&
+        cause.code === "INTAKE_FOLLOW_UP_EXISTS"
+      ) {
+        setActionError(t("request.followUp.exists"));
+        return false;
+      }
+      if (
+        cause instanceof CoreApiError &&
         cause.code === "LEAD_ALREADY_STARTED"
       ) {
         const body =
@@ -192,7 +214,12 @@ export function RequestWorkspace() {
   }
 
   const terminal = isTerminalIntakeState(data.state);
-  const canMessage = !terminal && data.plan === null;
+  const followUpEligible =
+    supportsIntakeFollowUp(data.state) &&
+    data.authorization.reason !== "INTAKE_WITHDRAWN";
+  const followUpRequest = data.followUpRequest ?? null;
+  const canFollowUp = followUpEligible && followUpRequest === null;
+  const canMessage = (!terminal && data.plan === null) || canFollowUp;
   const canCancel = !terminal && data.state !== "EXECUTING";
   const authorizationPending = [
     "AWAITING_APPROVAL",
@@ -308,7 +335,9 @@ export function RequestWorkspace() {
           idempotency_key: messageKey.current,
         });
       },
-      t("request.notice.message"),
+      canFollowUp
+        ? t("request.notice.followUpStarted")
+        : t("request.notice.message"),
     );
     if (ok) {
       messageKey.current = newIdempotencyKey();
@@ -956,7 +985,35 @@ export function RequestWorkspace() {
                 })}
               </span>
             </div>
-            <p className="muted">{t("request.conversation.description")}</p>
+            <p className="muted">
+              {canFollowUp
+                ? t("request.conversation.followUpDescription")
+                : t("request.conversation.description")}
+            </p>
+            {data.parentRequestId && (
+              <p className="muted request-follow-up-parent">
+                {t("request.conversation.followUpFrom")}{" "}
+                <Link
+                  to={`/requests/${encodeURIComponent(data.parentRequestId)}`}
+                >
+                  {shortId(data.parentRequestId)}
+                </Link>
+              </p>
+            )}
+            {followUpRequest && (
+              <div className="ui-callout request-follow-up" role="status">
+                <p>
+                  {t("request.conversation.followUpCreated")}{" "}
+                  <IntakeStateBadge state={followUpRequest.state} />
+                </p>
+                <Link
+                  className={buttonClass("secondary")}
+                  to={`/requests/${encodeURIComponent(followUpRequest.id)}`}
+                >
+                  {t("request.conversation.openFollowUp")}
+                </Link>
+              </div>
+            )}
             {data.messages.length === 0 ? (
               <EmptyState
                 title={t("request.conversation.emptyTitle")}
@@ -986,10 +1043,18 @@ export function RequestWorkspace() {
                 onSubmit={(event) => void sendMessage(event)}
               >
                 <Textarea
-                  label={t("request.conversation.messageLabel")}
+                  label={
+                    canFollowUp
+                      ? t("request.conversation.followUpLabel")
+                      : t("request.conversation.messageLabel")
+                  }
                   value={messageBody}
                   onChange={(event) => setMessageBody(event.target.value)}
-                  placeholder={t("request.conversation.messagePlaceholder")}
+                  placeholder={
+                    canFollowUp
+                      ? t("request.conversation.followUpPlaceholder")
+                      : t("request.conversation.messagePlaceholder")
+                  }
                   disabled={offline}
                 />
                 <div className="request-form-actions">
@@ -1001,10 +1066,16 @@ export function RequestWorkspace() {
                   >
                     {busy === "message"
                       ? t("request.conversation.sending")
-                      : t("request.conversation.send")}
+                      : canFollowUp
+                        ? t("request.conversation.startFollowUp")
+                        : t("request.conversation.send")}
                   </Button>
                 </div>
               </form>
+            ) : followUpRequest !== null ? (
+              <p className="muted">
+                {t("request.conversation.followUpExists")}
+              </p>
             ) : data.plan !== null ? (
               <p className="muted">{t("request.conversation.frozen")}</p>
             ) : (

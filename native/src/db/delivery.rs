@@ -918,6 +918,30 @@ impl Database {
         })
     }
 
+    pub async fn delivery_post_merge_check(
+        &self,
+        attempt_id: &str,
+        check_id: &str,
+    ) -> Result<DeliveryPostMergeCheckRecord, Error> {
+        let row = sqlx::query::query(
+            "SELECT attempt_id,check_id,merge_commit_sha,status,detail,observed_at
+             FROM delivery_post_merge_checks WHERE attempt_id=?1 AND check_id=?2",
+        )
+        .bind(attempt_id)
+        .bind(check_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(Error::NotFound)?;
+        Ok(DeliveryPostMergeCheckRecord {
+            attempt_id: row.try_get("attempt_id")?,
+            check_id: row.try_get("check_id")?,
+            merge_commit_sha: row.try_get("merge_commit_sha")?,
+            status: row.try_get("status")?,
+            detail: row.try_get("detail")?,
+            observed_at: row.try_get("observed_at")?,
+        })
+    }
+
     pub async fn open_delivery_incident(
         &self,
         input: NewDeliveryIncident<'_>,

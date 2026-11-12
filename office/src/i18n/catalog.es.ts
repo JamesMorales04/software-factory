@@ -368,6 +368,8 @@ export const es: Catalog = {
   "request.notice.approved":
     "Core registró la aprobación. El estado de ejecución se muestra desde la proyección actualizada.",
   "request.notice.message": "Mensaje registrado por Core.",
+  "request.notice.followUpStarted":
+    "Core registró el mensaje y creó una solicitud de seguimiento.",
   "request.notice.cancelled":
     "Core registró la cancelación de la solicitud. Esto no cancela una Campaña autorizada.",
   "request.next.title": "Siguiente paso",
@@ -476,6 +478,24 @@ export const es: Catalog = {
     "El plan ejecutable está congelado. Core no acepta enmiendas aquí; inicia una nueva solicitud para cambiar el objetivo o el plan.",
   "request.conversation.terminal":
     "Core informa de que esta solicitud es terminal, por lo que aquí no se ofrecen mensajes nuevos.",
+  "request.conversation.followUpDescription":
+    "Este hilo está completo. Enviar un mensaje inicia una nueva solicitud de seguimiento en el mismo Proyecto y perfil. Recibe una evaluación, plan, congelación de entorno/especificación y Campaign nuevos; nunca reutiliza el plan, candidato o Campaign del padre.",
+  "request.conversation.followUpLabel": "Iniciar una solicitud de seguimiento",
+  "request.conversation.followUpPlaceholder":
+    "Describe el siguiente objetivo para el seguimiento",
+  "request.conversation.startFollowUp": "Iniciar seguimiento",
+  "request.conversation.followUpCreated":
+    "Core creó la solicitud de seguimiento con estado",
+  "request.conversation.followUpExists":
+    "Este hilo ya tiene una solicitud de seguimiento. Continúa en el seguimiento.",
+  "request.conversation.openFollowUp": "Abrir seguimiento",
+  "request.followUp.policyRequired":
+    "Core rechazó el seguimiento: la política de ejecución confirmada por el propietario del padre ya no coincide con este Proyecto, perfil o alcance. Vuelve a habilitar la política o inicia una nueva solicitud; Core no reutilizará la concesión de otro principal.",
+  "request.followUp.exists":
+    "Este hilo ya tiene una solicitud de seguimiento. Ábrela para continuar.",
+  "request.followUp.principalMismatch":
+    "Core rechazó el seguimiento: solo el principal que confirmó la política de ejecución del padre puede continuarlo. Core no reutilizará la concesión de otro principal; continúa con el principal original o inicia una nueva solicitud.",
+  "request.conversation.followUpFrom": "Seguimiento de",
   "request.details.title": "Detalles de la solicitud",
   "request.details.request": "Solicitud",
   "request.details.project": "Proyecto",

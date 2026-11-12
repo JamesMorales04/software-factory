@@ -139,6 +139,99 @@ impl Database {
         Ok(next)
     }
 
+    /// Advance the Project base to the exact merge commit that a Factory
+    /// delivery recorded on the protected default branch. The write is a new
+    /// versioned project-config revision with a fencing revision guard and an
+    /// audit event; it never rewrites a historical revision or accepts a
+    /// non-default branch. A duplicate call for the same merge is idempotent
+    /// and leaves the revision unchanged.
+    pub async fn advance_project_base_after_merged_delivery(
+        &self,
+        project_id: &str,
+        merge_commit_sha: &str,
+        default_branch: &str,
+        expected_config_revision: u32,
+    ) -> Result<ProjectConfig, Error> {
+        if merge_commit_sha.len() != 40
+            || !merge_commit_sha
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            || default_branch.trim().is_empty()
+            || default_branch.len() > 255
+        {
+            return Err(Error::Invalid("merged delivery base"));
+        }
+        let merge_commit_sha = merge_commit_sha.to_ascii_lowercase();
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current = match load_project_config(&mut transaction, project_id).await {
+            Ok(config) => config,
+            Err(Error::NotFound) => {
+                self.ensure_project_config(&mut transaction, project_id)
+                    .await?
+            }
+            Err(error) => return Err(error),
+        };
+        if current.base_commit.eq_ignore_ascii_case(&merge_commit_sha) {
+            transaction.commit().await?;
+            return Ok(current);
+        }
+        if current.revision != expected_config_revision {
+            return Err(Error::Conflict("project config revision is stale"));
+        }
+        let project: Option<(String, String)> =
+            sqlx::query_as::query_as("SELECT default_branch,repository FROM projects WHERE id=?1")
+                .bind(project_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let Some((project_default_branch, repository)) = project else {
+            return Err(Error::NotFound);
+        };
+        let effective_branch = if project_default_branch.trim().is_empty() {
+            let binding: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT default_branch FROM project_github_bindings WHERE project_id=?1",
+            )
+            .bind(project_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            binding.map(|(branch,)| branch).unwrap_or_default()
+        } else {
+            project_default_branch
+        };
+        if effective_branch != default_branch {
+            return Err(Error::Conflict(
+                "merged delivery did not target the Project default branch",
+            ));
+        }
+        sqlx::query::query("UPDATE projects SET base_commit=?1 WHERE id=?2")
+            .bind(&merge_commit_sha)
+            .bind(project_id)
+            .execute(&mut *transaction)
+            .await?;
+        let mut next = current;
+        next.revision = next
+            .revision
+            .checked_add(1)
+            .ok_or(Error::Constraint("project config revision overflow".into()))?;
+        next.repository = repository;
+        next.base_commit = merge_commit_sha.clone();
+        next.updated_at = Utc::now().to_rfc3339();
+        next.config_hash = next.compute_hash();
+        write_project_config(&mut transaction, &next).await?;
+        record_event(
+            &mut transaction,
+            project_id,
+            "project.base_advanced",
+            &format!(
+                "merge_commit={} branch={} revision={}",
+                merge_commit_sha, default_branch, next.revision
+            ),
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(next)
+    }
+
     pub(super) async fn ensure_project_config(
         &self,
         transaction: &mut SqliteConnection,
@@ -318,14 +411,17 @@ mod tests {
         .to_owned();
         let path = root.join("factory.sqlite");
         let db = Database::open(&path).await.unwrap();
-        sqlx::query::query("INSERT INTO projects(id,repository,base_commit,created_at,identity) VALUES (?1,?2,?3,?4,'')")
-            .bind("project")
-            .bind(repo.to_string_lossy().as_ref())
-            .bind(&base)
-            .bind(Utc::now().to_rfc3339())
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        sqlx::query::query(
+            "INSERT INTO projects(id,repository,base_commit,created_at,identity,default_branch)
+             VALUES (?1,?2,?3,?4,'','main')",
+        )
+        .bind("project")
+        .bind(repo.to_string_lossy().as_ref())
+        .bind(&base)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
         let mut connection = db.pool.acquire().await.unwrap();
         db.ensure_project_config(&mut connection, "project")
             .await
@@ -353,6 +449,60 @@ mod tests {
         assert!(matches!(
             db.advance_project_base_for_repair("project", &"d".repeat(40), 1)
                 .await,
+            Err(Error::Conflict(_))
+        ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn merged_delivery_advances_the_base_only_for_the_default_branch() {
+        let (path, db, _candidate) = fixture().await;
+        let merge = "e".repeat(40);
+        let initial = db.project_config("project").await.unwrap();
+        let advanced = db
+            .advance_project_base_after_merged_delivery("project", &merge, "main", initial.revision)
+            .await
+            .unwrap();
+        assert_eq!(advanced.revision, 2);
+        assert_eq!(advanced.base_commit, merge);
+        assert_eq!(advanced.config_hash, advanced.compute_hash());
+        let stored: (String,) =
+            sqlx::query_as::query_as("SELECT base_commit FROM projects WHERE id='project'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(stored.0, merge);
+
+        // Replaying the same exact merge is idempotent and does not append a
+        // second config revision.
+        let replay = db
+            .advance_project_base_after_merged_delivery("project", &merge, "main", 999)
+            .await
+            .unwrap();
+        assert_eq!(replay.revision, 2);
+
+        // A non-default branch never advances the Project base.
+        assert!(matches!(
+            db.advance_project_base_after_merged_delivery(
+                "project",
+                &"f".repeat(40),
+                "release",
+                advanced.revision
+            )
+            .await,
+            Err(Error::Conflict(_))
+        ));
+        // A stale revision fence is refused instead of overwriting a newer
+        // Project config revision.
+        assert!(matches!(
+            db.advance_project_base_after_merged_delivery(
+                "project",
+                &"f".repeat(40),
+                "main",
+                initial.revision
+            )
+            .await,
             Err(Error::Conflict(_))
         ));
         db.close().await;

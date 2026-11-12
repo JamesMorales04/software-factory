@@ -61,3 +61,12 @@ export function IntakeModeBadge({ mode }: { mode: IntakeMode | string }) {
 export function isTerminalIntakeState(state: IntakeState | string): boolean {
   return state === "COMPLETED" || state === "CANCELLED" || state === "ASSESSED";
 }
+
+/**
+ * A terminal request may start one follow-up from an additional operator
+ * message. Core owns the same rule; Office only mirrors it for copy and
+ * discoverability.
+ */
+export function supportsIntakeFollowUp(state: IntakeState | string): boolean {
+  return state === "COMPLETED" || state === "CANCELLED";
+}
