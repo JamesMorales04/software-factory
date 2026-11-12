@@ -15,7 +15,7 @@
     {
       "transport": "stdio",
       "id": "playwright",
-      "command": ["npx", "-y", "@playwright/mcp@latest", "--isolated"],
+      "command": ["npx", "-y", "@playwright/mcp@0.0.84", "--isolated", "--allowed-hosts", "127.0.0.1,localhost,::1"],
       "env": {}
     }
   ],
@@ -41,16 +41,6 @@
       "allowedHosts": []
     },
     {
-      "id": "playwright.browser_navigate",
-      "server": "playwright",
-      "tool": "browser_navigate",
-      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
-      "readOnly": true,
-      "timeoutSecs": 30,
-      "maxResponseBytes": 262144,
-      "allowedHosts": ["127.0.0.1", "localhost", "::1"]
-    },
-    {
       "id": "playwright.browser_snapshot",
       "server": "playwright",
       "tool": "browser_snapshot",
@@ -71,31 +61,11 @@
       "allowedHosts": []
     },
     {
-      "id": "playwright.browser_click",
-      "server": "playwright",
-      "tool": "browser_click",
-      "roles": ["IMPLEMENTER", "REPAIRER"],
-      "readOnly": false,
-      "timeoutSecs": 30,
-      "maxResponseBytes": 262144,
-      "allowedHosts": []
-    },
-    {
-      "id": "playwright.browser_type",
-      "server": "playwright",
-      "tool": "browser_type",
-      "roles": ["IMPLEMENTER", "REPAIRER"],
-      "readOnly": false,
-      "timeoutSecs": 30,
-      "maxResponseBytes": 262144,
-      "allowedHosts": []
-    },
-    {
       "id": "playwright.browser_close",
       "server": "playwright",
       "tool": "browser_close",
-      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
-      "readOnly": true,
+      "roles": ["IMPLEMENTER", "REPAIRER"],
+      "readOnly": false,
       "timeoutSecs": 30,
       "maxResponseBytes": 262144,
       "allowedHosts": []

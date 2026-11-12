@@ -20,6 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -96,6 +97,21 @@ pub struct GatewayToolSpec {
     pub allowed_hosts: Vec<String>,
 }
 
+fn core_tool_is_read_only(tool: &GatewayToolSpec) -> bool {
+    match tool.server.as_str() {
+        "context7" => true,
+        "playwright" => matches!(
+            tool.tool.as_str(),
+            "browser_snapshot" | "browser_take_screenshot"
+        ),
+        "github-read" => matches!(
+            tool.tool.as_str(),
+            "issue_read" | "pull_request_read" | "get_file_contents" | "search_code"
+        ),
+        _ => false,
+    }
+}
+
 fn default_timeout() -> u64 {
     DEFAULT_TIMEOUT_SECS
 }
@@ -159,8 +175,10 @@ impl GatewayConfig {
                     command: vec![
                         "npx".into(),
                         "-y".into(),
-                        "@playwright/mcp@latest".into(),
+                        "@playwright/mcp@0.0.84".into(),
                         "--isolated".into(),
+                        "--allowed-hosts".into(),
+                        "127.0.0.1,localhost,::1".into(),
                     ],
                     env: BTreeMap::new(),
                 },
@@ -191,17 +209,6 @@ impl GatewayConfig {
                     true,
                 ),
                 tool(
-                    "playwright.browser_navigate",
-                    "playwright",
-                    "browser_navigate",
-                    &[
-                        GatewayRole::Implementer,
-                        GatewayRole::Repairer,
-                        GatewayRole::Reviewer,
-                    ],
-                    true,
-                ),
-                tool(
                     "playwright.browser_snapshot",
                     "playwright",
                     "browser_snapshot",
@@ -224,29 +231,11 @@ impl GatewayConfig {
                     true,
                 ),
                 tool(
-                    "playwright.browser_click",
-                    "playwright",
-                    "browser_click",
-                    &[GatewayRole::Implementer, GatewayRole::Repairer],
-                    false,
-                ),
-                tool(
-                    "playwright.browser_type",
-                    "playwright",
-                    "browser_type",
-                    &[GatewayRole::Implementer, GatewayRole::Repairer],
-                    false,
-                ),
-                tool(
                     "playwright.browser_close",
                     "playwright",
                     "browser_close",
-                    &[
-                        GatewayRole::Implementer,
-                        GatewayRole::Repairer,
-                        GatewayRole::Reviewer,
-                    ],
-                    true,
+                    &[GatewayRole::Implementer, GatewayRole::Repairer],
+                    false,
                 ),
                 tool(
                     "github.issue_read",
@@ -358,6 +347,18 @@ impl GatewayConfig {
             if tool.roles.is_empty() {
                 return Err(GatewayError::Config(format!(
                     "tool {} has no roles",
+                    tool.id
+                )));
+            }
+            if tool.roles.contains(&GatewayRole::Verifier) {
+                return Err(GatewayError::Config(format!(
+                    "tool {} cannot grant Verifier access",
+                    tool.id
+                )));
+            }
+            if tool.roles.contains(&GatewayRole::Reviewer) && !core_tool_is_read_only(tool) {
+                return Err(GatewayError::Config(format!(
+                    "tool {} is mutating and cannot grant Reviewer access",
                     tool.id
                 )));
             }
@@ -521,6 +522,7 @@ impl HttpMcpClient {
         &self,
         body: &Value,
         session: Option<&str>,
+        expected_id: Option<u64>,
     ) -> Result<(Value, Option<String>), GatewayError> {
         let mut request = self
             .client
@@ -554,12 +556,14 @@ impl HttpMcpClient {
             .get("mcp-session-id")
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| GatewayError::Transport(error.to_string()))?;
-        if bytes.len() > MAX_RESPONSE_BYTES {
-            return Err(GatewayError::ResponseTooLarge);
+        let mut bytes = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| GatewayError::Transport(error.to_string()))?;
+            if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+                return Err(GatewayError::ResponseTooLarge);
+            }
+            bytes.extend_from_slice(&chunk);
         }
         if !status.is_success() {
             return Err(GatewayError::Transport(format!(
@@ -569,13 +573,32 @@ impl HttpMcpClient {
         if bytes.is_empty() {
             return Ok((Value::Null, session_id));
         }
-        let value = if content_type.contains("text/event-stream") {
-            parse_sse(&bytes)?
+        let values = if content_type.contains("text/event-stream") {
+            parse_sse_messages(&bytes)?
         } else {
-            serde_json::from_slice(&bytes)
-                .map_err(|error| GatewayError::InvalidResponse(error.to_string()))?
+            vec![
+                serde_json::from_slice(&bytes)
+                    .map_err(|error| GatewayError::InvalidResponse(error.to_string()))?,
+            ]
         };
-        Ok((value, session_id))
+        if let Some(expected) = expected_id {
+            let value = values
+                .into_iter()
+                .find(|value| value.get("id").and_then(Value::as_u64) == Some(expected))
+                .ok_or_else(|| {
+                    GatewayError::InvalidResponse(
+                        "MCP response did not contain the expected JSON-RPC id".into(),
+                    )
+                })?;
+            if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+                return Err(GatewayError::InvalidResponse(
+                    "MCP response is not JSON-RPC 2.0".into(),
+                ));
+            }
+            Ok((value, session_id))
+        } else {
+            Ok((values.into_iter().next().unwrap_or(Value::Null), session_id))
+        }
     }
 
     async fn initialize(&self) -> Result<String, GatewayError> {
@@ -593,6 +616,7 @@ impl HttpMcpClient {
                     }
                 }),
                 None,
+                Some(id),
             )
             .await?;
         if response
@@ -616,7 +640,7 @@ impl HttpMcpClient {
             "method": "notifications/initialized",
             "params": {}
         });
-        self.post(&notification, Some(&session)).await?;
+        self.post(&notification, Some(&session), None).await?;
         Ok(session)
     }
 
@@ -645,7 +669,7 @@ impl HttpMcpClient {
         });
         let (response, _) = timeout(
             Duration::from_secs(timeout_secs),
-            self.post(&body, Some(&session)),
+            self.post(&body, Some(&session), Some(id)),
         )
         .await
         .map_err(|_| GatewayError::Transport("MCP call timed out".into()))??;
@@ -667,9 +691,10 @@ impl HttpMcpClient {
     }
 }
 
-fn parse_sse(bytes: &[u8]) -> Result<Value, GatewayError> {
+fn parse_sse_messages(bytes: &[u8]) -> Result<Vec<Value>, GatewayError> {
     let text = std::str::from_utf8(bytes)
         .map_err(|error| GatewayError::InvalidResponse(error.to_string()))?;
+    let mut values = Vec::new();
     for chunk in text.split("\n\n") {
         let data = chunk
             .lines()
@@ -680,12 +705,15 @@ fn parse_sse(bytes: &[u8]) -> Result<Value, GatewayError> {
         if !data.is_empty()
             && let Ok(value) = serde_json::from_str::<Value>(&data)
         {
-            return Ok(value);
+            values.push(value);
         }
     }
-    Err(GatewayError::InvalidResponse(
-        "MCP SSE response contained no JSON-RPC message".into(),
-    ))
+    if values.is_empty() {
+        return Err(GatewayError::InvalidResponse(
+            "MCP SSE response contained no JSON-RPC message".into(),
+        ));
+    }
+    Ok(values)
 }
 
 struct StdioProcess {
@@ -709,6 +737,7 @@ impl StdioProcess {
         let mut process = Command::new(program);
         process
             .args(arguments)
+            .env_clear()
             .envs(env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -749,23 +778,65 @@ impl StdioProcess {
             .map_err(|error| GatewayError::Transport(error.to_string()))
     }
 
-    async fn read_response(&mut self, timeout_secs: u64) -> Result<Value, GatewayError> {
-        let mut line = String::new();
-        let read = timeout(
-            Duration::from_secs(timeout_secs),
-            self.stdout.read_line(&mut line),
-        )
-        .await
-        .map_err(|_| GatewayError::Transport("stdio MCP read timed out".into()))?
-        .map_err(|error| GatewayError::Transport(error.to_string()))?;
-        if read == 0 {
-            return Err(GatewayError::Transport("stdio MCP closed stdout".into()));
+    async fn read_response(
+        &mut self,
+        expected_id: u64,
+        timeout_secs: u64,
+    ) -> Result<Value, GatewayError> {
+        for _ in 0..64 {
+            let read = timeout(Duration::from_secs(timeout_secs), self.read_limited_line())
+                .await
+                .map_err(|_| GatewayError::Transport("stdio MCP read timed out".into()))?;
+            let line = read?;
+            let value: Value = serde_json::from_str(&line)
+                .map_err(|error| GatewayError::InvalidResponse(error.to_string()))?;
+            if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+                return Err(GatewayError::InvalidResponse(
+                    "stdio MCP response is not JSON-RPC 2.0".into(),
+                ));
+            }
+            match value.get("id").and_then(Value::as_u64) {
+                Some(id) if id == expected_id => return Ok(value),
+                Some(_) => {
+                    return Err(GatewayError::InvalidResponse(
+                        "stdio MCP response id does not match the request".into(),
+                    ));
+                }
+                None => continue,
+            }
         }
-        if line.len() > MAX_RESPONSE_BYTES {
-            return Err(GatewayError::ResponseTooLarge);
+        Err(GatewayError::InvalidResponse(
+            "stdio MCP sent no matching JSON-RPC response".into(),
+        ))
+    }
+
+    async fn read_limited_line(&mut self) -> Result<String, GatewayError> {
+        let mut line = Vec::new();
+        loop {
+            let available = self
+                .stdout
+                .fill_buf()
+                .await
+                .map_err(|error| GatewayError::Transport(error.to_string()))?;
+            if available.is_empty() {
+                return Err(GatewayError::Transport("stdio MCP closed stdout".into()));
+            }
+            if let Some(position) = available.iter().position(|byte| *byte == b'\n') {
+                if line.len().saturating_add(position) > MAX_RESPONSE_BYTES {
+                    return Err(GatewayError::ResponseTooLarge);
+                }
+                line.extend_from_slice(&available[..position]);
+                self.stdout.consume(position + 1);
+                break;
+            }
+            if line.len().saturating_add(available.len()) > MAX_RESPONSE_BYTES {
+                return Err(GatewayError::ResponseTooLarge);
+            }
+            line.extend_from_slice(available);
+            let length = available.len();
+            self.stdout.consume(length);
         }
-        serde_json::from_str(&line)
-            .map_err(|error| GatewayError::InvalidResponse(error.to_string()))
+        String::from_utf8(line).map_err(|error| GatewayError::InvalidResponse(error.to_string()))
     }
 
     async fn initialize(&mut self, next_id: &AtomicU64) -> Result<(), GatewayError> {
@@ -784,7 +855,7 @@ impl StdioProcess {
             }
         }))
         .await?;
-        let response = self.read_response(DEFAULT_TIMEOUT_SECS).await?;
+        let response = self.read_response(id, DEFAULT_TIMEOUT_SECS).await?;
         if response
             .get("result")
             .and_then(|result| result.get("protocolVersion"))
@@ -836,17 +907,37 @@ impl StdioMcpClient {
         let process = guard
             .as_mut()
             .ok_or_else(|| GatewayError::Transport("stdio MCP process is unavailable".into()))?;
-        process.initialize(&self.next_id).await?;
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        process
-            .send(&json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": "tools/call",
-                "params": {"name": tool, "arguments": arguments}
-            }))
-            .await?;
-        let response = process.read_response(timeout_secs).await?;
+        let operation = async {
+            process.initialize(&self.next_id).await?;
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            process
+                .send(&json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "tools/call",
+                    "params": {"name": tool, "arguments": arguments}
+                }))
+                .await?;
+            process.read_response(id, timeout_secs).await
+        };
+        let outcome = timeout(
+            Duration::from_secs(timeout_secs.saturating_add(1)),
+            operation,
+        )
+        .await;
+        let response = match outcome {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                *guard = None;
+                return Err(error);
+            }
+            Err(_) => {
+                *guard = None;
+                return Err(GatewayError::Transport(
+                    "stdio MCP call exceeded its deadline".into(),
+                ));
+            }
+        };
         let result = response
             .get("result")
             .cloned()
@@ -962,7 +1053,10 @@ impl ToolGateway {
                 return Err(GatewayError::UnknownTool(tool_id.into()));
             }
         };
-        if !spec.roles.contains(&role) || (role == GatewayRole::Reviewer && !spec.read_only) {
+        if role == GatewayRole::Verifier
+            || !spec.roles.contains(&role)
+            || (role == GatewayRole::Reviewer && !core_tool_is_read_only(&spec))
+        {
             self.record(
                 role,
                 tool_id,
@@ -1329,6 +1423,7 @@ for line in sys.stdin:
     if method == "initialize":
         print(json.dumps({"jsonrpc":"2.0","id":request.get("id"),"result":{"protocolVersion":"2025-03-26"}}), flush=True)
     elif method == "tools/call":
+        print(json.dumps({"jsonrpc":"2.0","method":"notifications/progress","params":{}}), flush=True)
         print(json.dumps({"jsonrpc":"2.0","id":request.get("id"),"result":{"content":[{"type":"text","text":"stdio-ok"}]}}), flush=True)
 "#;
         let mut config = GatewayConfig::example();
@@ -1374,6 +1469,161 @@ for line in sys.stdin:
                 .iter()
                 .any(|tool| tool.id == "github.issue_read")
         );
+    }
+
+    #[test]
+    fn rejects_verifier_and_mutating_reviewer_grants() {
+        let mut config = GatewayConfig::example();
+        config.servers = vec![GatewayServerConfig::Stdio {
+            id: "playwright".into(),
+            command: vec!["true".into()],
+            env: BTreeMap::new(),
+        }];
+        config.tools = vec![tool(
+            "playwright.browser_click",
+            "playwright",
+            "browser_click",
+            &[GatewayRole::Verifier],
+            true,
+        )];
+        assert!(matches!(
+            config.validate(),
+            Err(GatewayError::Config(message)) if message.contains("Verifier")
+        ));
+        config.tools[0].roles = vec![GatewayRole::Reviewer];
+        assert!(matches!(
+            config.validate(),
+            Err(GatewayError::Config(message)) if message.contains("mutating")
+        ));
+    }
+
+    #[tokio::test]
+    async fn stdio_child_does_not_inherit_the_gateway_environment() {
+        let script = r#"
+import json, os, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if request.get("method") == "initialize":
+        print(json.dumps({"jsonrpc":"2.0","id":request.get("id"),"result":{"protocolVersion":"2025-03-26"}}), flush=True)
+    elif request.get("method") == "tools/call":
+        print(json.dumps({"jsonrpc":"2.0","id":request.get("id"),"result":{"content":[{"type":"text","text":str(os.environ.get("PATH"))}]}}), flush=True)
+"#;
+        let mut config = GatewayConfig::example();
+        config.servers = vec![GatewayServerConfig::Stdio {
+            id: "playwright".into(),
+            command: vec!["python3".into(), "-u".into(), "-c".into(), script.into()],
+            env: BTreeMap::new(),
+        }];
+        config.tools = vec![tool(
+            "playwright.browser_snapshot",
+            "playwright",
+            "browser_snapshot",
+            &[GatewayRole::Implementer],
+            true,
+        )];
+        let gateway = ToolGateway::from_config(config).expect("gateway");
+        let outcome = gateway
+            .call(
+                GatewayRole::Implementer,
+                "playwright.browser_snapshot",
+                json!({}),
+            )
+            .await
+            .expect("stdio MCP call");
+        assert_eq!(outcome.content["content"][0]["text"], "None");
+    }
+
+    #[tokio::test]
+    async fn stdio_rejects_an_oversized_line() {
+        let script = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if request.get("method") == "initialize":
+        print(json.dumps({"jsonrpc":"2.0","id":request.get("id"),"result":{"protocolVersion":"2025-03-26"}}), flush=True)
+    elif request.get("method") == "tools/call":
+        print(json.dumps({"jsonrpc":"2.0","id":request.get("id"),"result":{"content":[{"type":"text","text":"x"*300000}]}}), flush=True)
+"#;
+        let mut config = GatewayConfig::example();
+        config.servers = vec![GatewayServerConfig::Stdio {
+            id: "playwright".into(),
+            command: vec!["python3".into(), "-u".into(), "-c".into(), script.into()],
+            env: BTreeMap::new(),
+        }];
+        config.tools = vec![tool(
+            "playwright.browser_snapshot",
+            "playwright",
+            "browser_snapshot",
+            &[GatewayRole::Implementer],
+            true,
+        )];
+        let gateway = ToolGateway::from_config(config).expect("gateway");
+        assert!(matches!(
+            gateway
+                .call(
+                    GatewayRole::Implementer,
+                    "playwright.browser_snapshot",
+                    json!({})
+                )
+                .await,
+            Err(GatewayError::ResponseTooLarge)
+        ));
+    }
+
+    #[tokio::test]
+    async fn http_rejects_a_mismatched_json_rpc_id() {
+        use axum::{Json, Router, routing::post};
+
+        async fn handler(Json(body): Json<Value>) -> Json<Value> {
+            let method = body.get("method").and_then(Value::as_str);
+            if method == Some("initialize") {
+                return Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": body.get("id").cloned().unwrap_or(Value::Null),
+                    "result": {"protocolVersion": "2025-03-26"}
+                }));
+            }
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": 999,
+                "result": {"content": [{"type": "text", "text": "wrong id"}]}
+            }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/mcp", post(handler)))
+                .await
+                .expect("fake MCP server");
+        });
+        let mut config = GatewayConfig::example();
+        config.servers = vec![GatewayServerConfig::Http {
+            id: "context7".into(),
+            endpoint: format!("http://{address}/mcp"),
+            bearer_env: None,
+            allow_loopback_http: true,
+        }];
+        config.tools = vec![tool(
+            "context7.query-docs",
+            "context7",
+            "query-docs",
+            &[GatewayRole::Implementer],
+            true,
+        )];
+        let gateway = ToolGateway::from_config(config).expect("gateway");
+        assert!(matches!(
+            gateway
+                .call(
+                    GatewayRole::Implementer,
+                    "context7.query-docs",
+                    json!({"query": "react"})
+                )
+                .await,
+            Err(GatewayError::InvalidResponse(_))
+        ));
     }
 
     #[test]

@@ -38,17 +38,18 @@ The example catalog is
 | Tool | Roles | Read-only |
 |---|---|---|
 | `context7.resolve-library-id`, `context7.query-docs` | Implementer, Repairer, Planner, Reviewer | yes |
-| `playwright.browser_navigate`, `browser_snapshot`, `browser_take_screenshot`, `browser_close` | Implementer, Repairer, Reviewer | yes |
-| `playwright.browser_click`, `browser_type` | Implementer, Repairer | no |
+| `playwright.browser_snapshot`, `browser_take_screenshot` | Implementer, Repairer, Reviewer | yes |
+| `playwright.browser_close` | Implementer, Repairer | no |
 | `github.issue_read`, `pull_request_read`, `get_file_contents`, `search_code` | Implementer, Repairer, Reviewer | yes |
 
 The gateway rejects:
 
 - unknown tools;
 - a role not on the tool;
-- a Reviewer using a mutating browser tool;
+- a Verifier grant or a Reviewer grant for a mutating tool, even if the
+  configuration claims `readOnly: true`;
 - a browser URL with credentials, a non-HTTP(S) scheme, or a host outside the
-  configured allowlist;
+  configured allowlist when a navigation tool is configured;
 - arguments over 64 KiB;
 - more than `maxCallsPerMinute` calls for the same role/tool;
 - a response over the per-tool bound.
@@ -93,6 +94,11 @@ not the installed runtime and not authority.
   deadlock; child killed on drop; initialize and call timeouts.
 - Playwright MCP is a development/container capability. Do not install it into
   the Core image by default.
+- The example catalog intentionally exposes browser **inspection**
+  (`snapshot`/`screenshot`), not arbitrary navigation or click/type. Playwright
+  MCP's `--allowed-hosts` guards the MCP server host, not every redirect or page
+  request; a navigation-capable browser tool must add a controlled browser
+  network boundary before it is enabled.
 
 ## Recommended pattern
 
@@ -112,6 +118,8 @@ servers directly to agents:
    attempt, candidate and role binding.
 3. Add `gateway_call` to the compiled provider tool pack; keep `write_file`/
    `run_command` frozen-check semantics unchanged.
+   The first browser slice should expose inspection only until a controlled
+   navigation/network boundary is tested with real browser evidence.
 4. Filter the tool list per role before the prompt; do not expose the full
    catalog.
 5. Add replay cassettes for gateway calls so a browser/docs defect can become a
