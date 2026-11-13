@@ -1,7 +1,7 @@
 {
   "schema": "factory.tool-gateway-worker-office.v1",
   "recorded_at": "2026-11-13T02:30:00Z",
-  "result": "PASS (author-run Worker/Office gateway, live Context7 and Playwright stdio smoke; not independent acceptance)",
+  "result": "PASS (author-run Worker/Office gateway, live Context7 and Playwright stdio, host+container Worker/lease gateway E2E; not independent acceptance)",
   "candidate_sha": "c57dd57594cb24e4640982fb40cc8f32400411b7",
   "branch": "feat/tool-gateway",
   "environment": {
@@ -12,7 +12,7 @@
     "gateway": "real Core gateway configured with the Context7 HTTP catalog; no remote MCP call"
   },
   "browser_observation": {
-    "command": "FACTORY_EVIDENCE_DIR=docs/evidence/tool-gateway-worker-office-2026-11-12 node office/e2e-browser/rust-journey.mjs; FACTORY_E2E_GATEWAY=disabled FACTORY_EVIDENCE_DIR=... node office/e2e-browser/rust-journey.mjs",
+    "command": "FACTORY_EVIDENCE_DIR=... node office/e2e-browser/rust-journey.mjs; FACTORY_E2E_GATEWAY=disabled FACTORY_EVIDENCE_DIR=... node office/e2e-browser/rust-journey.mjs",
     "result": "enabled and disabled runs both returned {\"ok\":true,\"journey\":\"office\"}",
     "screenshots": [
       "runtime-gateway-enabled-1440.png",
@@ -134,12 +134,14 @@
   },
   "limitations": [
     "The populated recent-call row is seeded directly in SQLite to exercise the real Core projection and browser table; it is not produced by a live MCP call.",
-    "The repository e2e_dispatch_negative and e2e_fixture_dispatch fixtures are stale relative to the environment compiler: they fail at campaign authorization with ENVIRONMENT_PLAN_REQUIRED before reaching gateway code. The environment check predates the branch base; this is reported as pre-existing BLOCKED, not a gateway failure.",
     "No independent verifier, Quality Gate acceptance, live provider turn or security review was performed for this slice.",
     "TRUSTED_LOCAL is not isolated or certified; browser navigation/click/type remain disabled until a controlled network boundary exists.",
     "Real GitHub read-only is BLOCKED: no GITHUB_MCP_TOKEN. Cross-repository behavior is proven with a deterministic fake multi-repository upstream; real-token confirmation remains NOT_TESTED.",
     "Playwright navigation/click/type remain deferred; the live smoke used browser_close with no open tab.",
-    "Container e2e_fixture_dispatch has 3 provider-sandbox readiness failures; host passes 12/12. Full --tests --features test-support is not a supported combination because the test-support environment seam conflicts with Core intake fixtures."
+    "Container e2e_fixture_dispatch has 3 provider-sandbox readiness failures; host passes 13/13. Full --tests --features test-support is not a supported combination because the test-support environment seam conflicts with Core intake fixtures.",
+    "The browser populated row is seeded; the real Worker-generated row is proven separately by worker-gateway-e2e.json.",
+    "The Worker gateway E2E proves worker registration, claim, live lease/generation and the authenticated Core endpoint, but not a model-driven provider turn.",
+    "Host --tests has two provider_sandbox failures because host OpenCode is 2.2.5; the canonical dev container with pinned 1.18.32 passes 7/7."
   ],
   "live_mcp": {
     "context7": {
@@ -161,7 +163,19 @@
   "canonical_container": {
     "provider_sandbox": "7 passed / 0 failed in software-factory-dev:local with pinned OpenCode 1.18.32",
     "e2e_dispatch_negative": "5 passed / 0 failed with test-support in the dev container",
-    "e2e_fixture_dispatch": "9 passed / 3 provider-sandbox readiness failures in the dev container; host run 12/12",
+    "e2e_fixture_dispatch": "10 passed / 3 provider-sandbox readiness failures in the dev container; host 13/13",
     "unsupported_combination": "Full --tests --features test-support conflicts with 20 Core intake fixtures that construct their own environment binding; not a gateway failure."
+  },
+  "test_matrix": {
+    "host_lib": "1000 passed / 0 failed / 4 ignored",
+    "host_core": "70 passed",
+    "host_worker": "36 passed",
+    "host_feature_e2e": "e2e_dispatch_negative 5/5, e2e_fixture_dispatch 13/13, worker gateway E2E PASS",
+    "container_provider_sandbox": "7/7 passed",
+    "container_e2e_dispatch_negative": "5/5 passed",
+    "container_e2e_fixture_dispatch": "10 passed / 3 provider-sandbox readiness failures (new worker gateway E2E passes)",
+    "container_worker_gateway_e2e": "PASS",
+    "unsupported": "Full --tests --features test-support conflicts with 20 Core intake fixtures; not a supported combination",
+    "reason": "The fixture E2E targets require test-support; the default suite omits them and the container provider-sandbox path is environment-dependent."
   }
 }

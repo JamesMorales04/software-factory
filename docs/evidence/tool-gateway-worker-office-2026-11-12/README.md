@@ -82,7 +82,7 @@ durable `repository_scope` DENY audit and never reaches the upstream. See
 |---|---|---|
 | `provider_sandbox` | `software-factory-dev:local`, pinned OpenCode 1.18.32 | 7 passed / 0 failed |
 | `e2e_dispatch_negative --features test-support` | same dev container | 5 passed / 0 failed |
-| `e2e_fixture_dispatch --features test-support` | same dev container | 9 passed / 3 failed in provider-sandbox readiness; host run of the same target passed 12/12 |
+| `e2e_fixture_dispatch --features test-support` | same dev container | 10 passed / 3 failed in provider-sandbox readiness (the new worker gateway E2E passes); host run 13/13 |
 | Host default `--lib` | host Rust 1.90 | 1000 passed / 0 failed / 4 ignored |
 | Host `factory-core` / `factory-worker` | host Rust 1.90 | 70 / 36 passed |
 
@@ -99,7 +99,7 @@ targets are the supported lanes.
 | Context7 | `context7.query-docs` with `/react/react` | PASS; bounded documentation content, ALLOW audit | `context7-live.json` |
 | Context7 redirect | `/facebook/react` returns `isError` redirect content | PASS; content returned and audited as `tool_error` | `context7-live.json` note |
 | Playwright | `playwright.browser_close` via stdio MCP 0.0.84 + pinned headless Chromium | PASS; no open tab, successful no-op | `playwright-live.json` |
-| GitHub read-only | n/a | BLOCKED: no token available; no cross-repo live test | `github-live.json` |
+| GitHub read-only | same-repository fake upstream + cross-repository denial | PASS for scope enforcement; real GitHub token BLOCKED | `worker-gateway-e2e.json`, `github-live.json` |
 
 ## Browser and network observations
 
@@ -107,7 +107,8 @@ The real Chromium journey completed with `{"ok":true,"journey":"office"}` in
 both modes:
 
 - enabled: configured `context7` catalog, empty recent-call state, then a
-  seeded durable ALLOW row after a reload;
+  seeded durable ALLOW row after a reload; a real Worker-generated row is
+  covered separately by the gateway E2E;
 - disabled: no `FACTORY_TOOL_GATEWAY_CONFIG`, explicit not-configured state.
 
 Both modes checked 834/390 px widths and ran the scoped axe scan. The journey
@@ -116,15 +117,21 @@ No unexpected console errors or page errors were recorded.
 
 ## Limitations
 
-- No live Context7, GitHub read-only or Playwright MCP call was exercised. The
-  browser journey used a configured catalog but deliberately did not invoke a
-  remote MCP server.
-- The populated recent-call table is component-tested, not exercised in the real
-  browser. A durable row requires a real Worker/Attempt gateway call.
-- The running Core had no live Worker/Attempt, so the authenticated
-  `/worker/tool_gateway` success path was not exercised end-to-end here. Its
-  library, database, route-auth and binding components are covered separately.
-- No independent verifier, Quality Gate acceptance, live provider turn or
+- Live Context7 and Playwright stdio calls pass. Real GitHub read-only is
+  BLOCKED because no authorized `GITHUB_MCP_TOKEN` is available; the
+  cross-repository denial is proven against a deterministic fake multi-repository
+  upstream.
+- The browser populated row is seeded directly in SQLite. A real
+  Worker/Attempt-generated row is proven separately by
+  `worker-gateway-e2e.json`, not rendered in the same browser run.
+- The Worker gateway E2E exercises worker registration, claim, a live Attempt
+  lease/generation and the authenticated Core endpoint, but not a model-driven
+  provider turn.
+- The canonical container `e2e_fixture_dispatch` target has 3 provider-sandbox
+  readiness failures; host passes 13/13 and the new gateway E2E passes in both.
+  A full `--tests --features test-support` run is not a supported combination
+  because the test-support environment seam conflicts with Core intake fixtures.
+- No independent verifier, Quality Gate acceptance, real GitHub token test or
   security review was performed for this slice.
 - `TRUSTED_LOCAL` is not isolated or certified. Browser navigation/click/type
   remain disabled until a controlled network boundary exists.
