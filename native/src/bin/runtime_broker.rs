@@ -1461,7 +1461,14 @@ impl App {
     }
 
     async fn prepull_images(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let environment_image = self.environment_builder().image;
+        // Read the configured image rather than the runtime status: when the
+        // bundle is missing the builder is UNAVAILABLE and its runtime image is
+        // empty, but a missing bundle must still disable only environment
+        // operations rather than make the whole broker fail pulling the tag.
+        let environment_image = env::var("FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGE")
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
         for image in self.images.iter() {
             // The environment builder is imported from its bundle by
             // `prepare_environment_builder`; a missing bundle must disable only
