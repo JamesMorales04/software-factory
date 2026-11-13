@@ -7,7 +7,7 @@
 | Surface | Required default | Additional gate / conditions |
 |---|---|---|
 | Rust Core/Worker/tools (required) | `cargo fmt --check`, strict Clippy, `cargo test`, `cargo build`, `cargo doc`, `cargo audit` | Pinned Rust 1.90.0 and locked Cargo; see [rust-standards](rust-standards.md). `cargo-nextest` is adopted only with a verified MSRV-compatible pin or an approved toolchain bump. |
-| Rust dependency policy | `cargo deny check licenses bans sources` | Advisories remain owned by the unsuppressed `cargo audit` gate; RUSTSEC-2026-0459 is a known blocker. Do not add an ignore. |
+| Rust dependency policy | `cargo deny check licenses bans sources` | Advisories remain owned by the unsuppressed `cargo audit` gate; RUSTSEC-2026-0459 is resolved by the vendored `sqlx-sqlite` manifest patch selecting `libsqlite3-sys` 0.39.1. Do not add an ignore. |
 | TypeScript / React Office | TypeScript `tsc --noEmit`, Biome formatter/linter (`biome check`) | Focused typed ESLint lane (`typescript-eslint`, React Hooks, jsx-a11y) for promise safety and rules Biome does not cover. Keep one formatter; no overlapping formatter. |
 | Office browser/component | Vitest jsdom for logic, Vitest browser mode for focus/portals/CSS, Playwright for real journeys | `@axe-core/playwright` is an automated floor, not a WCAG conformance claim. New/changed Playwright specs repeat 20 times. |
 | Markdown documentation | `markdownlint-cli2` | Automated relative-link and code-fence validation; check external links in a bounded, reliable lane |

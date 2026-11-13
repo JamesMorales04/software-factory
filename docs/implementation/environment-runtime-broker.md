@@ -329,6 +329,9 @@ fetch/resolve.
   [staging evidence](../evidence/environment-check-staging-2026-11-11/README.md).
 - `podman compose -f compose.yaml config --quiet` — exit 0.
 - `factory-architecture-check --root .` — PASS.
+- `cargo audit --file Cargo.lock` — exit 0 with patched `libsqlite3-sys`
+  0.39.1; `cargo deny check licenses bans sources` — PASS. The workspace
+  `test-support` lane passed 1398 tests with 0 failures and 4 ignored.
 - Isolated Compose observation (`podman compose -p wp1c-e2e2`, source commit
   `4bc082f`): bundle tar digest `sha256:efc5bc…`, runtime broker health
   `environmentBuilder.status=READY`, imported builder image ID

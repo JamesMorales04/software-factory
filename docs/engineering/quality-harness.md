@@ -148,9 +148,10 @@ the full native + Office invocation is `SELF_TEST_PASS`; a skipped lane is
 provider or the `test:a11y` server lane. The independent Factory Verifier,
 reviewers and Quality Gate remain authoritative.
 
-`cargo audit` remains unsuppressed. `RUSTSEC-2026-0459` is a known dependency
-blocker owned by the Product Owner; `cargo-deny` advisories are not enabled
-until it is resolved.
+`cargo audit` remains unsuppressed. `RUSTSEC-2026-0459` is resolved by the
+vendored `sqlx-sqlite` manifest patch selecting `libsqlite3-sys` 0.39.1;
+`cargo-deny` advisories are still not enabled because `cargo audit` owns that
+gate.
 
 ## Evidence template
 
