@@ -1,8 +1,8 @@
 {
   "schema": "factory.tool-gateway-worker-office.v1",
-  "recorded_at": "2026-11-13T02:05:00Z",
+  "recorded_at": "2026-11-13T02:30:00Z",
   "result": "PASS (author-run Worker/Office gateway, live Context7 and Playwright stdio smoke; not independent acceptance)",
-  "candidate_sha": "437cab261683f253c161eea686fe3cf586c9c772",
+  "candidate_sha": "c57dd57594cb24e4640982fb40cc8f32400411b7",
   "branch": "feat/tool-gateway",
   "environment": {
     "core": "factory-core development binary built from the candidate",
@@ -128,15 +128,16 @@
     "github_repository_scope": "PASS (strict HTTPS/SSH host parser, deceptive-host rejection, exact owner/repo argument matching and DB grant tests); a live multi-repository token test remains NOT_TESTED",
     "transport_bounds": "PASS (tool_gateway argument, response, timeout, rate-limit tests)",
     "worker_tool_pack": "PASS (factory-worker tool grant and hidden-catalog tests)",
-    "provider_paths": "PASS (static inspection plus Worker tests); live OpenCode/Codex gateway turn NOT_TESTED"
+    "provider_paths": "PASS (static inspection plus Worker tests); live OpenCode/Codex gateway turn NOT_TESTED",
+    "worker_gateway_e2e": "PASS on host and in software-factory-dev:local (register, claim, live lease, catalog, Context7/GitHub same-repo ALLOW, cross-repo 403, repository_scope audit; fake MCP upstream)",
+    "cross_repository_denial": "PASS with a deterministic multi-repo fake upstream; real GitHub token remains BLOCKED"
   },
   "limitations": [
     "The populated recent-call row is seeded directly in SQLite to exercise the real Core projection and browser table; it is not produced by a live MCP call.",
-    "No live Worker/Attempt reached the authenticated Core success path in this run.",
     "The repository e2e_dispatch_negative and e2e_fixture_dispatch fixtures are stale relative to the environment compiler: they fail at campaign authorization with ENVIRONMENT_PLAN_REQUIRED before reaching gateway code. The environment check predates the branch base; this is reported as pre-existing BLOCKED, not a gateway failure.",
     "No independent verifier, Quality Gate acceptance, live provider turn or security review was performed for this slice.",
     "TRUSTED_LOCAL is not isolated or certified; browser navigation/click/type remain disabled until a controlled network boundary exists.",
-    "GitHub read-only is BLOCKED: no GITHUB_MCP_TOKEN or multi-repository token was available for a live cross-repository denial test.",
+    "Real GitHub read-only is BLOCKED: no GITHUB_MCP_TOKEN. Cross-repository behavior is proven with a deterministic fake multi-repository upstream; real-token confirmation remains NOT_TESTED.",
     "Playwright navigation/click/type remain deferred; the live smoke used browser_close with no open tab.",
     "Container e2e_fixture_dispatch has 3 provider-sandbox readiness failures; host passes 12/12. Full --tests --features test-support is not a supported combination because the test-support environment seam conflicts with Core intake fixtures."
   ],

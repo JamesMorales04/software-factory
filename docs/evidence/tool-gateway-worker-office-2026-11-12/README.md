@@ -1,6 +1,6 @@
 # Core-mediated MCP tool gateway — Worker and Office slice
 
-**Candidate:** `437cab261683f253c161eea686fe3cf586c9c772`  
+**Candidate:** `c57dd57594cb24e4640982fb40cc8f32400411b7`  
 **Branch:** `feat/tool-gateway`  
 **Date:** 2026-11-12  
 **Evidence level:** implementer self-test. Not independent verification,
@@ -65,6 +65,16 @@ still checks document overflow and page-level rendering.
 | Transport bounds | Args ≤ 64 KiB; response ≤ 256 KiB; timeout ≤ 300 s; rate limit per role/tool | `tool_gateway` tests | PASS |
 | Worker tool pack | `gateway_call` is accepted, requires `write_file`, and is hidden when the assignment has no catalog | `factory-worker` tests | PASS |
 | Provider paths | OpenCode and Codex both route `gateway_call` through the same Core endpoint | Code inspection + Worker tests | PASS (static) |
+
+## Worker gateway E2E
+
+`worker_gateway_call_is_bound_to_the_live_lease_and_audited` passes on host and
+in `software-factory-dev:local`. It registers a Worker, claims a real Attempt
+lease, receives the Implementer gateway catalog, performs a Context7 call and a
+same-repository GitHub call against a deterministic fake multi-repository MCP
+upstream, then proves a different-repository GitHub call is denied with a
+durable `repository_scope` DENY audit and never reaches the upstream. See
+`worker-gateway-e2e.json`.
 
 ## Canonical-container test evidence
 
