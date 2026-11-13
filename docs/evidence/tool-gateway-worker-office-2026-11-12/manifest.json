@@ -1,8 +1,8 @@
 {
   "schema": "factory.tool-gateway-worker-office.v1",
-  "recorded_at": "2026-11-13T03:25:00Z",
+  "recorded_at": "2026-11-13T03:40:00Z",
   "result": "PASS (author-run Worker/Office gateway, live Context7 and Playwright stdio, host+container Worker/lease gateway E2E; not independent acceptance)",
-  "candidate_sha": "40d7743646bb23afcb2efbf8427f383b78c2cfbb",
+  "candidate_sha": "293f849da44ed815e36907e913c7b7925fd7853c",
   "branch": "feat/tool-gateway",
   "environment": {
     "core": "factory-core development binary built from the candidate",
@@ -131,7 +131,7 @@
     "provider_paths": "PASS (static inspection plus Worker tests); live OpenCode/Codex gateway turn NOT_TESTED",
     "worker_gateway_e2e": "PASS on host and in software-factory-dev:local (register, claim, live lease, catalog, Context7/GitHub same-repo ALLOW, cross-repo 403, repository_scope audit; fake MCP upstream)",
     "cross_repository_denial": "PASS with a deterministic multi-repo fake upstream; real GitHub token remains BLOCKED",
-    "model_driven_gateway_turn": "PASS on host (Codex fixture dynamic gateway_call -> Core ALLOW audit -> write_file candidate); container blocked by provider-sandbox readiness"
+    "model_driven_gateway_turn": "PASS on host: fixture verifies success/content, fake upstream called exactly once, audit ALLOW error=null response_bytes>0, then write_file candidate; container blocked by provider-sandbox readiness"
   },
   "limitations": [
     "The populated recent-call row is seeded directly in SQLite to exercise the real Core projection and browser table; it is not produced by a live MCP call.",
@@ -171,7 +171,7 @@
     "host_lib": "1000 passed / 0 failed / 4 ignored",
     "host_core": "70 passed",
     "host_worker": "36 passed",
-    "host_feature_e2e": "e2e_dispatch_negative 5/5, e2e_fixture_dispatch 13/13, direct and model-driven gateway E2E PASS",
+    "host_feature_e2e": "e2e_dispatch_negative 5/5, e2e_fixture_dispatch 13/13, direct and model-driven gateway E2E PASS (result verified)",
     "container_provider_sandbox": "7/7 passed",
     "container_e2e_dispatch_negative": "5/5 passed",
     "container_e2e_fixture_dispatch": "10 passed / 3 provider-sandbox readiness failures (direct gateway E2E passes; model-driven is one of the three)",

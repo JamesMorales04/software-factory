@@ -1,7 +1,7 @@
 {
   "schema": "factory.tool-gateway-live-mcp.v1",
-  "recorded_at": "2026-11-13T03:15:00Z",
-  "candidate_sha": "40d7743646bb23afcb2efbf8427f383b78c2cfbb",
+  "recorded_at": "2026-11-13T03:40:00Z",
+  "candidate_sha": "293f849da44ed815e36907e913c7b7925fd7853c",
   "server": "context7",
   "tool": "context7.query-docs",
   "arguments": {
@@ -10,7 +10,7 @@
   },
   "result": "PASS",
   "response_bytes": 4896,
-  "duration_ms": 1269,
+  "duration_ms": 1542,
   "decision": "ALLOW",
   "error": null,
   "notes": "Live Context7 HTTP MCP call. A /facebook/react call was redirected with isError and is returned as bounded tool content with audit error tool_error; no raw response is stored here."
