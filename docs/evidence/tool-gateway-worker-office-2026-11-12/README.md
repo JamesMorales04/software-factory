@@ -1,6 +1,6 @@
 # Core-mediated MCP tool gateway — Worker and Office slice
 
-**Candidate:** `e8c82adba63afd71b9da839313ff3fb122da41ec`  
+**Candidate:** `9ff46eeafcb16179567390b5bda9fe8213c0f8d7`  
 **Branch:** `feat/tool-gateway`  
 **Date:** 2026-11-12  
 **Evidence level:** implementer self-test. Not independent verification,
@@ -40,12 +40,13 @@ FACTORY_EVIDENCE_DIR="$PWD/docs/evidence/tool-gateway-worker-office-2026-11-12" 
 | UI-002 | same | enabled catalog summary | Server `context7 (http)`, one authorized tool and the per-role rate limit render | `runtime-gateway-enabled-1440.png` | PASS |
 | UI-003 | same | catalog row | `context7.query-docs` renders with its argument hint and `Read-only` policy | `runtime-gateway-enabled-1440.png` | PASS |
 | UI-004 | same | empty recent calls | Explicit “No mediated MCP call has been recorded yet.” rather than invented history | `runtime-gateway-enabled-1440.png` | PASS |
-| UI-005 | same | responsive layout | No document overflow at 834 or 390 px; the catalog stacks into labelled rows at 390 px | `runtime-gateway-enabled-390.png`; journey width assertions | PASS |
+| UI-005 | same | responsive layout | No document overflow at 834 or 390 px; the catalog stacks into labelled rows at 390 px; the disabled state is checked too | `runtime-gateway-enabled-390.png`, `runtime-gateway-disabled-390.png`; journey width assertions | PASS |
 | UI-006 | same | accessibility floor | No critical or serious axe violations inside the gateway panel | journey scoped axe scan | PASS |
-| UI-007 | same | disabled state | Explicit “not configured” empty state; no fake catalog or calls | `Runtime.test.tsx` | PASS (component) |
-| UI-008 | same | populated recent calls | ALLOW/DENY, role, latency, bytes and bounded error render; endpoints and args are absent | `Runtime.test.tsx` | PASS (component); real-browser populated state `NOT_TESTED` |
+| UI-007 | same | disabled state | Explicit “not configured” empty state; no fake catalog or calls | `runtime-gateway-disabled-1440.png`; journey assertions | PASS |
+| UI-008 | same | populated recent calls | A durable ALLOW row renders role, latency and bytes; endpoints and raw args are absent | `runtime-gateway-populated-1440.png`; journey assertions | PASS (seeded durable row; no live MCP call) |
 | UI-009 | same | Spanish labels | Panel title, states and table labels have Spanish catalog entries | `catalog.es.ts`; existing i18n tests | PASS (component) |
 | UI-010 | same | keyboard/tab navigation | The Diagnostics tab can be selected and exposes `aria-selected="true"` | journey assertion | PASS |
+| UI-011 | same | theme and density | Dark theme + compact density retain the panel layout and pass the scoped axe scan at 1440 and 390 px | `runtime-gateway-enabled-dark-compact-1440.png`, `...-dark-compact-390.png`, disabled variants; journey assertions | PASS |
 
 Axe is scoped to the new panel so the pre-existing global command-trigger
 `label-content-name-mismatch` does not mask the changed surface. The journey
@@ -65,13 +66,27 @@ still checks document overflow and page-level rendering.
 | Worker tool pack | `gateway_call` is accepted, requires `write_file`, and is hidden when the assignment has no catalog | `factory-worker` tests | PASS |
 | Provider paths | OpenCode and Codex both route `gateway_call` through the same Core endpoint | Code inspection + Worker tests | PASS (static) |
 
+## Live MCP smoke
+
+| Server | Call | Result | Evidence |
+|---|---|---|---|
+| Context7 | `context7.query-docs` with `/react/react` | PASS; bounded documentation content, ALLOW audit | `context7-live.json` |
+| Context7 redirect | `/facebook/react` returns `isError` redirect content | PASS; content returned and audited as `tool_error` | `context7-live.json` note |
+| Playwright | `playwright.browser_close` via stdio MCP 0.0.84 + pinned headless Chromium | PASS; no open tab, successful no-op | `playwright-live.json` |
+| GitHub read-only | n/a | BLOCKED: no token available; no cross-repo live test | `github-live.json` |
+
 ## Browser and network observations
 
-The real Chromium journey completed with `{"ok":true,"journey":"office"}`.
-It started disposable Core/Supervisor state, enrolled a real device session,
-opened Runtime → Diagnostics, observed the configured `context7` catalog,
-checked 834/390 px widths and ran the scoped axe scan. No unexpected console
-errors or page errors were recorded by the journey.
+The real Chromium journey completed with `{"ok":true,"journey":"office"}` in
+both modes:
+
+- enabled: configured `context7` catalog, empty recent-call state, then a
+  seeded durable ALLOW row after a reload;
+- disabled: no `FACTORY_TOOL_GATEWAY_CONFIG`, explicit not-configured state.
+
+Both modes checked 834/390 px widths and ran the scoped axe scan. The journey
+started disposable Core/Supervisor state and enrolled a real device session.
+No unexpected console errors or page errors were recorded.
 
 ## Limitations
 

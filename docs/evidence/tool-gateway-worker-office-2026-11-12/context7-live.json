@@ -1,0 +1,17 @@
+{
+  "schema": "factory.tool-gateway-live-mcp.v1",
+  "recorded_at": "2026-11-12T23:40:00Z",
+  "candidate_sha": "9ff46eeafcb16179567390b5bda9fe8213c0f8d7",
+  "server": "context7",
+  "tool": "context7.query-docs",
+  "arguments": {
+    "libraryId": "/react/react",
+    "query": "useEffect cleanup function examples"
+  },
+  "result": "PASS",
+  "response_bytes": 4896,
+  "duration_ms": 1462,
+  "decision": "ALLOW",
+  "error": null,
+  "notes": "Live Context7 HTTP MCP call. A /facebook/react call was redirected with isError and is returned as bounded tool content with audit error tool_error; no raw response is stored here."
+}

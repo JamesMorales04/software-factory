@@ -1,0 +1,9 @@
+{
+  "schema": "factory.tool-gateway-live-mcp.v1",
+  "recorded_at": "2026-11-12T23:40:00Z",
+  "candidate_sha": "9ff46eeafcb16179567390b5bda9fe8213c0f8d7",
+  "server": "github-read",
+  "result": "BLOCKED",
+  "reason": "No GITHUB_MCP_TOKEN or authorized multi-repository token is available in this environment; a live GitHub call and cross-repo denial test were not possible.",
+  "notes": "Repository-scope logic is unit-tested; live token behavior remains NOT_TESTED."
+}
