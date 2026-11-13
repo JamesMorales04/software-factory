@@ -1,6 +1,6 @@
 # Core-mediated MCP tool gateway — Worker and Office slice
 
-**Candidate:** `c57dd57594cb24e4640982fb40cc8f32400411b7`  
+**Candidate:** `40d7743646bb23afcb2efbf8427f383b78c2cfbb`  
 **Branch:** `feat/tool-gateway`  
 **Date:** 2026-11-12  
 **Evidence level:** implementer self-test. Not independent verification,
@@ -76,6 +76,16 @@ upstream, then proves a different-repository GitHub call is denied with a
 durable `repository_scope` DENY audit and never reaches the upstream. See
 `worker-gateway-e2e.json`.
 
+## Model-driven Worker gateway E2E
+
+`codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting` now emits
+a model-driven `gateway_call` dynamic tool request from the Codex fixture. The
+Worker executes it through Core, Core calls the fake Context7 upstream and
+persists an ALLOW row, then the Worker writes the candidate and finishes the
+turn. Host: PASS (13/13 target). Container: BLOCKED by the same three
+provider-sandbox readiness failures; the direct Core/lease gateway E2E passes
+in the container. See `worker-model-turn-e2e.json`.
+
 ## Canonical-container test evidence
 
 | Test target | Environment | Result |
@@ -124,9 +134,10 @@ No unexpected console errors or page errors were recorded.
 - The browser populated row is seeded directly in SQLite. A real
   Worker/Attempt-generated row is proven separately by
   `worker-gateway-e2e.json`, not rendered in the same browser run.
-- The Worker gateway E2E exercises worker registration, claim, a live Attempt
-  lease/generation and the authenticated Core endpoint, but not a model-driven
-  provider turn.
+- The direct Worker gateway E2E exercises registration/claim/live lease and the
+  authenticated Core endpoint. The separate Codex fixture E2E exercises a
+  model-driven provider tool turn; it passes on host but is one of the three
+  provider-sandbox readiness failures in the container.
 - The canonical container `e2e_fixture_dispatch` target has 3 provider-sandbox
   readiness failures; host passes 13/13 and the new gateway E2E passes in both.
   A full `--tests --features test-support` run is not a supported combination

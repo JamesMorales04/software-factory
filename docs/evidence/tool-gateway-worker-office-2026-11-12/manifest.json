@@ -1,8 +1,8 @@
 {
   "schema": "factory.tool-gateway-worker-office.v1",
-  "recorded_at": "2026-11-13T02:30:00Z",
+  "recorded_at": "2026-11-13T03:15:00Z",
   "result": "PASS (author-run Worker/Office gateway, live Context7 and Playwright stdio, host+container Worker/lease gateway E2E; not independent acceptance)",
-  "candidate_sha": "c57dd57594cb24e4640982fb40cc8f32400411b7",
+  "candidate_sha": "40d7743646bb23afcb2efbf8427f383b78c2cfbb",
   "branch": "feat/tool-gateway",
   "environment": {
     "core": "factory-core development binary built from the candidate",
@@ -130,7 +130,8 @@
     "worker_tool_pack": "PASS (factory-worker tool grant and hidden-catalog tests)",
     "provider_paths": "PASS (static inspection plus Worker tests); live OpenCode/Codex gateway turn NOT_TESTED",
     "worker_gateway_e2e": "PASS on host and in software-factory-dev:local (register, claim, live lease, catalog, Context7/GitHub same-repo ALLOW, cross-repo 403, repository_scope audit; fake MCP upstream)",
-    "cross_repository_denial": "PASS with a deterministic multi-repo fake upstream; real GitHub token remains BLOCKED"
+    "cross_repository_denial": "PASS with a deterministic multi-repo fake upstream; real GitHub token remains BLOCKED",
+    "model_driven_gateway_turn": "PASS on host (Codex fixture dynamic gateway_call -> Core ALLOW audit -> write_file candidate); container blocked by provider-sandbox readiness"
   },
   "limitations": [
     "The populated recent-call row is seeded directly in SQLite to exercise the real Core projection and browser table; it is not produced by a live MCP call.",
@@ -140,8 +141,8 @@
     "Playwright navigation/click/type remain deferred; the live smoke used browser_close with no open tab.",
     "Container e2e_fixture_dispatch has 3 provider-sandbox readiness failures; host passes 13/13. Full --tests --features test-support is not a supported combination because the test-support environment seam conflicts with Core intake fixtures.",
     "The browser populated row is seeded; the real Worker-generated row is proven separately by worker-gateway-e2e.json.",
-    "The Worker gateway E2E proves worker registration, claim, live lease/generation and the authenticated Core endpoint, but not a model-driven provider turn.",
-    "Host --tests has two provider_sandbox failures because host OpenCode is 2.2.5; the canonical dev container with pinned 1.18.32 passes 7/7."
+    "Host --tests has two provider_sandbox failures because host OpenCode is 2.2.5; the canonical dev container with pinned 1.18.32 passes 7/7.",
+    "The model-driven Codex fixture gateway turn passes on host; its container run is one of the three provider-sandbox readiness failures. The direct Core/lease gateway E2E passes in the container."
   ],
   "live_mcp": {
     "context7": {
@@ -170,10 +171,10 @@
     "host_lib": "1000 passed / 0 failed / 4 ignored",
     "host_core": "70 passed",
     "host_worker": "36 passed",
-    "host_feature_e2e": "e2e_dispatch_negative 5/5, e2e_fixture_dispatch 13/13, worker gateway E2E PASS",
+    "host_feature_e2e": "e2e_dispatch_negative 5/5, e2e_fixture_dispatch 13/13, direct and model-driven gateway E2E PASS",
     "container_provider_sandbox": "7/7 passed",
     "container_e2e_dispatch_negative": "5/5 passed",
-    "container_e2e_fixture_dispatch": "10 passed / 3 provider-sandbox readiness failures (new worker gateway E2E passes)",
+    "container_e2e_fixture_dispatch": "10 passed / 3 provider-sandbox readiness failures (direct gateway E2E passes; model-driven is one of the three)",
     "container_worker_gateway_e2e": "PASS",
     "unsupported": "Full --tests --features test-support conflicts with 20 Core intake fixtures; not a supported combination",
     "reason": "The fixture E2E targets require test-support; the default suite omits them and the container provider-sandbox path is environment-dependent."

@@ -1,13 +1,13 @@
 {
   "schema": "factory.tool-gateway-live-mcp.v1",
-  "recorded_at": "2026-11-13T02:30:00Z",
-  "candidate_sha": "c57dd57594cb24e4640982fb40cc8f32400411b7",
+  "recorded_at": "2026-11-13T03:15:00Z",
+  "candidate_sha": "40d7743646bb23afcb2efbf8427f383b78c2cfbb",
   "server": "playwright",
   "tool": "playwright.browser_close",
   "arguments": {},
   "result": "PASS",
   "response_bytes": 154,
-  "duration_ms": 754,
+  "duration_ms": 892,
   "decision": "ALLOW",
   "error": null,
   "notes": "Live stdio Playwright MCP 0.0.84 with a pinned headless Chromium executable; no open tab existed, so browser_close returned a successful no-op. Navigation remains deferred."
