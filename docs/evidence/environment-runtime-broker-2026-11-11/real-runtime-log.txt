@@ -1,0 +1,10 @@
+2026-11-11T09:51:24.224386Z  INFO factory_runtime_broker: environment builder ready image=localhost/software-factory-environment-builder:dev digest=sha256:37957bf26a2231cda135c61172427c84d39445c7af7c28caf5b5286f2951fed0 image_id=sha256:82145b824fcd7cc81433394bf2bdc146960bb8b6f74456cdf23005a045ebb9c5
+2026-11-11T09:51:25.299993Z  INFO factory_runtime_broker: dependency egress gateway is not assigned; binding a subnet-scoped wildcard listener address=10.90.0.1:18080 wildcard=0.0.0.0:18080
+2026-11-11T09:51:25.300060Z  INFO factory_runtime_broker: dependency acquisition endpoint enabled image=localhost/software-factory-dependency:dev image_id=sha256:53e99474b3eb848754ede705e1ece6ddfd30514c71237e9e11b17b304ac00f86 network=factory-deps-egress proxy_url=http://10.90.0.1:18080 binding="wildcard-subnet-scoped"
+2026-11-11T09:51:25.300144Z  INFO factory_runtime_broker: Factory runtime broker listening addr=0.0.0.0:8770
+2026-11-11T09:51:59.716366Z  INFO factory_runtime_broker: dependency egress gateway is not assigned; binding a subnet-scoped wildcard listener address=10.91.1.1:18081 wildcard=0.0.0.0:18081
+2026-11-11T09:53:53.721590Z  INFO factory_runtime_broker: dependency egress gateway is not assigned; binding a subnet-scoped wildcard listener address=10.91.1.1:18081 wildcard=0.0.0.0:18081
+2026-11-11T09:56:37.521743Z  INFO factory_runtime_broker: dependency egress gateway is not assigned; binding a subnet-scoped wildcard listener address=10.91.1.1:18081 wildcard=0.0.0.0:18081
+2026-11-11T09:59:17.577484Z  INFO factory_runtime_broker: dependency egress gateway is not assigned; binding a subnet-scoped wildcard listener address=10.91.1.1:18081 wildcard=0.0.0.0:18081
+2026-11-11T10:01:57.567401Z  INFO factory_runtime_broker: dependency egress gateway is not assigned; binding a subnet-scoped wildcard listener address=10.91.1.1:18081 wildcard=0.0.0.0:18081
+2026-11-11T10:04:48.467386Z  INFO factory_runtime_broker: dependency egress gateway is not assigned; binding a subnet-scoped wildcard listener address=10.91.1.1:18081 wildcard=0.0.0.0:18081

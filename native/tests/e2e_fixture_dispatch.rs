@@ -23,6 +23,32 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+/// Retry a bounded SQLite `Busy` while a running Core owns the write lock.
+/// This is test-fixture seeding, not production retry policy.
+macro_rules! retry_busy {
+    ($label:expr, $operation:expr) => {{
+        let mut result = None;
+        let mut delay = Duration::from_millis(100);
+        for attempt in 0..10 {
+            match ($operation).await {
+                Ok(value) => {
+                    result = Some(value);
+                    break;
+                }
+                Err(factory_native::db::Error::Busy) if attempt < 9 => {
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(Duration::from_secs(1));
+                }
+                Err(error) => panic!("{}: {error:?}", $label),
+            }
+        }
+        match result {
+            Some(value) => value,
+            None => panic!("{} remained Busy", $label),
+        }
+    }};
+}
+
 const OPERATOR_TOKEN: &str = "operator-token-e2e-dispatch";
 const BOOTSTRAP_TOKEN: &str = "bootstrap-token-123456789012345678901234";
 const VERIFIER_TOKEN: &str = "verifier-token-1234567890123456789012";
@@ -469,9 +495,28 @@ async fn seed_v2_grant(database: &Path, grant: &factory_native::lead::StandingDe
     let db = factory_native::db::Database::open(database)
         .await
         .expect("open database to seed V2 delegation");
-    db.create_standing_delegation_v2(grant, &format!("{}-key", grant.id))
-        .await
-        .expect("seed V2 delegation");
+    // Core owns the same SQLite database while this test seeds the grant from
+    // a second connection. Retry a bounded `Busy` result instead of failing on
+    // transient startup lock contention.
+    let mut seeded = false;
+    let mut delay = Duration::from_millis(100);
+    for attempt in 0..10 {
+        match db
+            .create_standing_delegation_v2(grant, &format!("{}-key", grant.id))
+            .await
+        {
+            Ok(_) => {
+                seeded = true;
+                break;
+            }
+            Err(factory_native::db::Error::Busy) if attempt < 9 => {
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(1));
+            }
+            Err(error) => panic!("seed V2 delegation: {error:?}"),
+        }
+    }
+    assert!(seeded, "seed V2 delegation remained Busy");
     db.close().await;
 }
 
@@ -479,31 +524,42 @@ async fn seed_provider_settings(database: &Path, provider: &str, kind: &str, mod
     let db = factory_native::db::Database::open(database)
         .await
         .expect("open database to seed provider settings");
-    db.save_provider_settings(
-        &factory_native::db::ProviderSettingsWrite {
-            provider: provider.into(),
-            kind: kind.into(),
-            model: model.into(),
-            // The admission route gate only needs a plain-HTTP fixture
-            // upstream; the Worker regression supplies its own egress URL.
-            base_url: "http://127.0.0.1:9/v1".into(),
-            auth_mode: "api_key".into(),
-            credential_ciphertext: "ciphertext".into(),
-            credential_nonce: "nonce".into(),
-            credential_fingerprint: "configured".into(),
-            enabled: true,
-            is_default: true,
-            max_turns: 4,
-            max_input_tokens: 100_000,
-            max_output_tokens: 12_000,
-            max_cost_micros: 500_000,
-            input_micros_per_million: 1_000,
-            output_micros_per_million: 2_000,
-        },
-        "e2e-operator",
-    )
-    .await
-    .expect("seed provider settings");
+    let settings = factory_native::db::ProviderSettingsWrite {
+        provider: provider.into(),
+        kind: kind.into(),
+        model: model.into(),
+        // The admission route gate only needs a plain-HTTP fixture
+        // upstream; the Worker regression supplies its own egress URL.
+        base_url: "http://127.0.0.1:9/v1".into(),
+        auth_mode: "api_key".into(),
+        credential_ciphertext: "ciphertext".into(),
+        credential_nonce: "nonce".into(),
+        credential_fingerprint: "configured".into(),
+        enabled: true,
+        is_default: true,
+        max_turns: 4,
+        max_input_tokens: 100_000,
+        max_output_tokens: 12_000,
+        max_cost_micros: 500_000,
+        input_micros_per_million: 1_000,
+        output_micros_per_million: 2_000,
+    };
+    let mut seeded = false;
+    let mut delay = Duration::from_millis(100);
+    for attempt in 0..10 {
+        match db.save_provider_settings(&settings, "e2e-operator").await {
+            Ok(_) => {
+                seeded = true;
+                break;
+            }
+            Err(factory_native::db::Error::Busy) if attempt < 9 => {
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(1));
+            }
+            Err(error) => panic!("seed provider settings: {error:?}"),
+        }
+    }
+    assert!(seeded, "seed provider settings remained Busy");
     db.close().await;
 }
 
@@ -1323,32 +1379,32 @@ async fn seed_test_provider(
     let db = factory_native::db::Database::open(database)
         .await
         .expect("open database to seed test provider");
-    db.enable_test_subscription_fixture_mode()
-        .await
-        .expect("enable fixture admission for this database");
-    db.save_provider_settings(
-        &factory_native::db::ProviderSettingsWrite {
-            provider: provider.into(),
-            kind: kind.into(),
-            model: model.into(),
-            base_url: base_url.into(),
-            auth_mode: "api_key".into(),
-            credential_ciphertext: "ciphertext".into(),
-            credential_nonce: "nonce".into(),
-            credential_fingerprint: "configured".into(),
-            enabled: true,
-            is_default: true,
-            max_turns: 4,
-            max_input_tokens: 100_000,
-            max_output_tokens: 12_000,
-            max_cost_micros: 5_000_000,
-            input_micros_per_million: 1_000,
-            output_micros_per_million: 2_000,
-        },
-        "e2e-operator",
-    )
-    .await
-    .expect("seed test provider settings");
+    retry_busy!(
+        "enable fixture admission for this database",
+        db.enable_test_subscription_fixture_mode()
+    );
+    let settings = factory_native::db::ProviderSettingsWrite {
+        provider: provider.into(),
+        kind: kind.into(),
+        model: model.into(),
+        base_url: base_url.into(),
+        auth_mode: "api_key".into(),
+        credential_ciphertext: "ciphertext".into(),
+        credential_nonce: "nonce".into(),
+        credential_fingerprint: "configured".into(),
+        enabled: true,
+        is_default: true,
+        max_turns: 4,
+        max_input_tokens: 100_000,
+        max_output_tokens: 12_000,
+        max_cost_micros: 5_000_000,
+        input_micros_per_million: 1_000,
+        output_micros_per_million: 2_000,
+    };
+    retry_busy!(
+        "seed test provider settings",
+        db.save_provider_settings(&settings, "e2e-operator")
+    );
     db.close().await;
 }
 

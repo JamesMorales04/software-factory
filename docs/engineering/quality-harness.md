@@ -91,7 +91,7 @@ tool, unknown provider outcome or missing authorization is `BLOCKED`/
 ## Multi-agent execution
 
 OpenCode role definitions in `.opencode/agents/qh-*.md` cover the orchestrator
-and DeepSeek implementers only. The review fleet is **Codex/Paseo** with
+and DeepSeek implementers only. The review fleet is **Codex** with
 `codex/gpt-6-luna`; it is documented in
 [codex-review-fleet.md](codex-review-fleet.md). Do not use an OpenCode subagent
 with a Luna model ID as a substitute for a Codex reviewer. These are
@@ -148,9 +148,10 @@ the full native + Office invocation is `SELF_TEST_PASS`; a skipped lane is
 provider or the `test:a11y` server lane. The independent Factory Verifier,
 reviewers and Quality Gate remain authoritative.
 
-`cargo audit` remains unsuppressed. `RUSTSEC-2026-0459` is a known dependency
-blocker owned by the Product Owner; `cargo-deny` advisories are not enabled
-until it is resolved.
+`cargo audit` remains unsuppressed. `RUSTSEC-2026-0459` is resolved by the
+vendored `sqlx-sqlite` manifest patch selecting `libsqlite3-sys` 0.39.1;
+`cargo-deny` advisories are still not enabled because `cargo audit` owns that
+gate.
 
 ## Evidence template
 

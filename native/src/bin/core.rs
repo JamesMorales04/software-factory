@@ -24959,6 +24959,12 @@ mod tests {
         {
             return Ok(());
         }
+        // `create_action` applies the fixture environment binding under
+        // `test-support`. This helper is about to bind a real frozen
+        // plan/spec, so clear the fixture identity first; otherwise the
+        // immutability check correctly rejects replacing one binding with a
+        // different one.
+        db.clear_test_action_environment(action_id).await?;
         let binding = core_test_environment_binding(action_id);
         let mut conventions = ProjectConventions {
             schema_version: ENVIRONMENT_SCHEMA_VERSION,
@@ -30826,6 +30832,15 @@ mod tests {
             let intake_id = intake["id"].as_str().unwrap().to_string();
             let _ = fixture_plan_unseeded(&fixture, &intake_id, "FIXTURE").await;
             let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            // This test compiles and binds a real environment below; remove the
+            // `test-support` fixture binding first so the real binding is not
+            // rejected as a replacement.
+            fixture
+                .app
+                .db
+                .clear_test_action_environment(&record.action_id)
+                .await
+                .unwrap();
             fixture
                 .app
                 .db
@@ -32445,6 +32460,15 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::CREATED, "{action}");
             let action_id = action["id"].as_str().unwrap().to_string();
+            // This negative test must start without any environment binding,
+            // including the fixture binding applied by `create_action` under
+            // `test-support`.
+            fixture
+                .app
+                .db
+                .clear_test_action_environment(&action_id)
+                .await
+                .unwrap();
             let db_action = fixture.app.db.action(&action_id).await.unwrap();
 
             let options = SqliteConnectOptions::new().filename(&fixture.path);

@@ -1,3 +1,8 @@
 [workspace]
 members = ["factory-cli", "native", "xtask"]
 resolver = "2"
+
+[patch.crates-io]
+# RUSTSEC-2026-0459: sqlx-sqlite 0.8.6 manifest patched to allow
+# libsqlite3-sys 0.39.1 until a sqlx release raises its upper bound.
+sqlx-sqlite = { path = "vendor/sqlx-sqlite" }

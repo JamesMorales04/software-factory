@@ -1,9 +1,9 @@
 # Dependency policy for the Software Factory workspace.
 #
-# `advisories` is intentionally checked by `cargo audit` today. The known
-# RUSTSEC-2026-0459 / sqlx/libsqlite3-sys blocker is owned by the repository
-# owner and must not be suppressed here. Enable the advisory section only when
-# that blocker is resolved.
+# `advisories` is checked by `cargo audit`. RUSTSEC-2026-0459 is resolved by
+# the vendored sqlx-sqlite manifest patch that selects libsqlite3-sys 0.39.1;
+# do not add an audit ignore. Enable the advisory section only when the
+# advisory gate is consolidated.
 
 [graph]
 targets = [

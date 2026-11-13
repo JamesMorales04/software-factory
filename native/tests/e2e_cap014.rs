@@ -152,30 +152,47 @@ async fn admit_test_evaluation(database: &Path, evaluation_id: &str, model_url: 
         .enable_test_subscription_fixture_mode()
         .await
         .expect("enable fixture admission for this database");
-    database
-        .save_provider_settings(
-            &factory_native::db::ProviderSettingsWrite {
-                provider: "opencode-go".into(),
-                kind: "opencode".into(),
-                model: "deepseek-v4.1-flash".into(),
-                base_url: model_url.into(),
-                auth_mode: "api_key".into(),
-                credential_ciphertext: "ciphertext".into(),
-                credential_nonce: "nonce".into(),
-                credential_fingerprint: "configured".into(),
-                enabled: true,
-                is_default: false,
-                max_turns: 4,
-                max_input_tokens: 100_000,
-                max_output_tokens: 12_000,
-                max_cost_micros: 2_000_000,
-                input_micros_per_million: 1_000,
-                output_micros_per_million: 2_000,
-            },
-            "cap014-test",
-        )
-        .await
-        .expect("seed test provider settings");
+    let settings = factory_native::db::ProviderSettingsWrite {
+        provider: "opencode-go".into(),
+        kind: "opencode".into(),
+        model: "deepseek-v4.1-flash".into(),
+        base_url: model_url.into(),
+        auth_mode: "api_key".into(),
+        credential_ciphertext: "ciphertext".into(),
+        credential_nonce: "nonce".into(),
+        credential_fingerprint: "configured".into(),
+        enabled: true,
+        is_default: false,
+        max_turns: 4,
+        max_input_tokens: 100_000,
+        max_output_tokens: 12_000,
+        max_cost_micros: 2_000_000,
+        input_micros_per_million: 1_000,
+        output_micros_per_million: 2_000,
+    };
+    // The Core process owns the same SQLite database while this test seeds the
+    // provider settings through a second connection. Startup migrations can
+    // briefly hold the write lock, so retry the bounded `Busy` result instead
+    // of treating it as a test failure.
+    let mut seeded = false;
+    let mut delay = Duration::from_millis(100);
+    for attempt in 0..10 {
+        match database
+            .save_provider_settings(&settings, "cap014-test")
+            .await
+        {
+            Ok(_) => {
+                seeded = true;
+                break;
+            }
+            Err(factory_native::db::Error::Busy) if attempt < 9 => {
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(1));
+            }
+            Err(error) => panic!("seed test provider settings: {error:?}"),
+        }
+    }
+    assert!(seeded, "seed test provider settings remained Busy");
     database
         .admit_test_subscription_dispatch(evaluation_id)
         .await

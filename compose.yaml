@@ -259,6 +259,7 @@ services:
       # The builder image is imported from the bundle, never pulled by tag.
       FACTORY_RUNTIME_IMAGES: docker.io/library/rust:1.90.0-bookworm
       FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGE: localhost/software-factory-environment-builder:dev
+      FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGES: localhost/software-factory-environment-builder:dev
       FACTORY_RUNTIME_ENVIRONMENT_BUILDER_BUNDLE: /bundles/environment-builder-rootfs.tar
       FACTORY_RUNTIME_ENVIRONMENT_BUILDER_DIGEST_FILE: /bundles/environment-builder.digest
       FACTORY_RUNTIME_ENVIRONMENT_BUILDER_PLATFORM: x86_64-linux
