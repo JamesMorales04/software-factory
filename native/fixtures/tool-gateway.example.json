@@ -1,0 +1,96 @@
+{
+  "maxCallsPerMinute": 60,
+  "servers": [
+    {
+      "transport": "http",
+      "id": "context7",
+      "endpoint": "https://mcp.context7.com/mcp"
+    },
+    {
+      "transport": "http",
+      "id": "github-read",
+      "endpoint": "https://api.githubcopilot.com/mcp/readonly",
+      "bearerEnv": "GITHUB_MCP_TOKEN"
+    },
+    {
+      "transport": "stdio",
+      "id": "playwright",
+      "command": ["npx", "-y", "@playwright/mcp@0.0.84", "--isolated", "--allowed-hosts", "127.0.0.1,localhost,::1"],
+      "env": {}
+    }
+  ],
+  "tools": [
+    {
+      "id": "context7.resolve-library-id",
+      "server": "context7",
+      "tool": "resolve-library-id",
+      "roles": ["IMPLEMENTER", "REPAIRER", "PLANNER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144
+    },
+    {
+      "id": "context7.query-docs",
+      "server": "context7",
+      "tool": "query-docs",
+      "roles": ["IMPLEMENTER", "REPAIRER", "PLANNER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144
+    },
+    {
+      "id": "playwright.browser_snapshot",
+      "server": "playwright",
+      "tool": "browser_snapshot",
+      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144
+    },
+    {
+      "id": "playwright.browser_take_screenshot",
+      "server": "playwright",
+      "tool": "browser_take_screenshot",
+      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144
+    },
+    {
+      "id": "playwright.browser_close",
+      "server": "playwright",
+      "tool": "browser_close",
+      "roles": ["IMPLEMENTER", "REPAIRER"],
+      "readOnly": false,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144
+    },
+    {
+      "id": "github.issue_read",
+      "server": "github-read",
+      "tool": "issue_read",
+      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144
+    },
+    {
+      "id": "github.pull_request_read",
+      "server": "github-read",
+      "tool": "pull_request_read",
+      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144
+    },
+    {
+      "id": "github.get_file_contents",
+      "server": "github-read",
+      "tool": "get_file_contents",
+      "roles": ["IMPLEMENTER", "REPAIRER", "REVIEWER"],
+      "readOnly": true,
+      "timeoutSecs": 30,
+      "maxResponseBytes": 262144
+    }
+  ]
+}

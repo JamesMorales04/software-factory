@@ -1667,6 +1667,45 @@ pub fn validate_repo_coordinates(owner: &str, repo: &str) -> Result<(), GitHubEr
     Ok(())
 }
 
+/// Extract the exact GitHub owner/repository pair from a project source or
+/// remote URL. Only a repository root is accepted; arbitrary subpaths and
+/// non-GitHub hosts return `None` so a gateway call fails closed.
+pub fn repository_coordinates_from_url(url: &str) -> Option<(String, String)> {
+    let value = url.trim();
+    if value.len() > 2_048 {
+        return None;
+    }
+    if let Some(path) = value.strip_prefix("git@github.com:") {
+        return repository_from_path(path);
+    }
+    if let Some(path) = value.strip_prefix("ssh://git@github.com/") {
+        return repository_from_path(path);
+    }
+    let parsed = reqwest::Url::parse(value).ok()?;
+    if parsed.scheme() != "https"
+        || parsed.host_str() != Some("github.com")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return None;
+    }
+    repository_from_path(parsed.path())
+}
+
+fn repository_from_path(path: &str) -> Option<(String, String)> {
+    let path = path.trim_matches('/');
+    let mut parts = path.split('/');
+    let owner = parts.next()?.trim();
+    let repo = parts.next()?.trim().trim_end_matches(".git");
+    if parts.next().is_some() {
+        return None;
+    }
+    validate_repo_coordinates(owner, repo).ok()?;
+    Some((owner.to_owned(), repo.to_owned()))
+}
+
 pub fn validate_default_branch(branch: &str) -> Result<(), GitHubError> {
     if branch.is_empty()
         || branch.len() > MAX_BRANCH_BYTES
@@ -3712,5 +3751,38 @@ mod tests {
                 .is_err()
         );
         assert!(fake.token_seen.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn repository_coordinates_require_an_exact_github_root() {
+        assert_eq!(
+            repository_coordinates_from_url("https://github.com/acme/widgets"),
+            Some(("acme".into(), "widgets".into()))
+        );
+        assert_eq!(
+            repository_coordinates_from_url("https://github.com/acme/widgets.git"),
+            Some(("acme".into(), "widgets".into()))
+        );
+        assert_eq!(
+            repository_coordinates_from_url("git@github.com:acme/widgets.git"),
+            Some(("acme".into(), "widgets".into()))
+        );
+        assert_eq!(
+            repository_coordinates_from_url("ssh://git@github.com/acme/widgets.git"),
+            Some(("acme".into(), "widgets".into()))
+        );
+        for invalid in [
+            "https://gitlab.com/acme/widgets",
+            "https://github.com/acme/widgets/tree/main",
+            "https://github.com/acme",
+            "https://evil.example/path/github.com/acme/widgets",
+            "https://github.com.evil/acme/widgets",
+            "https://user:pass@github.com/acme/widgets",
+            "https://github.com/acme/widgets?tab=readme",
+            "https://github.com/acme/widgets#readme",
+            "http://github.com/acme/widgets",
+            "",
+        ] {
+            assert_eq!(repository_coordinates_from_url(invalid), None, "{invalid}");
+        }
     }
 }

@@ -1,0 +1,17 @@
+{
+  "schema": "factory.tool-gateway-worker-model-turn.v1",
+  "recorded_at": "2026-11-13T03:55:00Z",
+  "candidate_sha": "5babcfbb1c428216c0970890bd7ae3dc94dd845e",
+  "test": "codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting",
+  "host_result": "PASS (13/13 target)",
+  "container_result": "BLOCKED by provider-sandbox readiness (one of the 3 provider-backed container cases); the direct Core/lease gateway E2E passes in the container",
+  "coverage": [
+    "Codex fixture emits a model-driven gateway_call dynamic tool request",
+    "Worker executes gateway_call through the authenticated Core endpoint",
+    "Core reaches the fake context7 MCP upstream exactly once",
+    "fixture verifies success=true and content \"provider gateway ok\" before write_file",
+    "durable ALLOW audit has error=null and response_bytes>0",
+    "Worker then writes the candidate file and completes the provider turn"
+  ],
+  "notes": "Host proves the model-driven provider tool turn; the container lacks the provider sandbox readiness used by these three fixture cases."
+}

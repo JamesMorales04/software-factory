@@ -1960,7 +1960,8 @@ mod tests {
                   authorized_paths_json,provider,model,provider_mode,delegation_id,
                   allowed_tools_json,created_at,schema_version,policy_id)
                  VALUES ('campaign','auth','R0','TRUSTED_LOCAL_PROVIDER','test','test','[\"src\"]',
-                         'opencode','deepseek-v4.1-flash','build','grant','[]',?1,2,'policy')",
+                         'opencode','deepseek-v4.1-flash','build','grant',
+                         '[\"write_file\",\"run_command\",\"gateway_call\"]',?1,2,'policy')",
             )
             .bind(&now)
             .execute(&db.pool)
@@ -2574,6 +2575,13 @@ mod tests {
                 .await
                 .unwrap(),
             ("opencode".into(), "deepseek-v4.1-flash".into())
+        );
+        assert_eq!(
+            db.assigned_provider_grant("worker", "attempt", 1, now_ms)
+                .await
+                .unwrap()
+                .allowed_tools,
+            vec!["write_file", "run_command", "gateway_call"]
         );
 
         sqlx::query::query("UPDATE attempts SET status='CANDIDATE_READY' WHERE id='attempt'")

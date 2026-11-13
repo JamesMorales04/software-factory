@@ -1334,6 +1334,41 @@ export interface ObservabilityStatus {
   last_error: string | null;
 }
 
+interface ToolGatewayServer {
+  id: string;
+  transport: string;
+}
+
+interface ToolGatewayTool {
+  id: string;
+  server: string;
+  readOnly: boolean;
+  hint: string;
+}
+
+interface ToolGatewayCall {
+  callId: string;
+  workerId: string;
+  attemptId: string;
+  generation: number;
+  role: string;
+  tool: string;
+  argsSha256: string;
+  decision: "ALLOW" | "DENY";
+  responseBytes: number;
+  durationMs: number;
+  error: string | null;
+  createdAt: string;
+}
+
+export interface ToolGatewayStatus {
+  enabled: boolean;
+  servers: ToolGatewayServer[];
+  tools: ToolGatewayTool[];
+  maxCallsPerMinute: number;
+  recentCalls: ToolGatewayCall[];
+}
+
 export interface Health {
   healthy: boolean;
   version: string;
@@ -4886,6 +4921,8 @@ export const coreApi = {
   listUnresolvedModelCalls: () =>
     request<ModelCallRecord[]>("/model/calls/unresolved"),
   getObservability: () => request<ObservabilityStatus>("/observability"),
+  getToolGatewayStatus: () =>
+    request<ToolGatewayStatus>("/tool_gateway/status"),
   getOverview: () => request<OfficeOverview>("/office/overview"),
   getGitHubConnection: () =>
     request<GitHubConnectionState>("/integrations/github"),

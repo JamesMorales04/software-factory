@@ -2540,7 +2540,7 @@ capabilities:
 - id: CAP-051
   name: Runtime operational console
   category: Product
-  purpose: Operators can inspect runtime health, provider sessions, model-call usage, reservations, cleanup and telemetry without terminal inspection
+  purpose: Operators can inspect runtime health, provider sessions, model-call usage, reservations, cleanup, telemetry and the MCP tool-gateway catalog/audit without terminal inspection
   product_objective: Coherent engineering command center
   decision_status: approved
   implementation_status: in_progress
@@ -2564,6 +2564,9 @@ capabilities:
     source:
     - native/src/bin/core.rs
     - native/src/db/model_calls.rs
+    - native/src/tool_gateway.rs
+    - native/src/db/tool_gateway.rs
+    - migrations/0080_tool_gateway_calls.sql
     - office/src/views/Runtime.tsx
     - office/src/components/office/ModelCallResolution.tsx
     - office/src/components/office/ParticipantSessionList.tsx
@@ -2571,8 +2574,8 @@ capabilities:
     - office/src/views/Runtime.test.tsx
     - office/e2e-browser/rust-journey.mjs
   acceptance:
-    deterministic: Runtime typechecks, lints, passes component tests and builds; operator authentication protects unresolved model calls and reservation release.
-    real: An authenticated Chromium journey opens Runtime, inspects session and model-call views, and verifies diagnostics without claiming unsupported Supervisor or nested-runtime state.
+    deterministic: Runtime typechecks, lints, passes component tests and builds; operator authentication protects unresolved model calls, reservation release and the MCP gateway status projection; the gateway catalog is role-filtered and call audit rows carry the exact Worker/Attempt/generation binding.
+    real: An authenticated Chromium journey opens Runtime, inspects session, model-call and MCP gateway diagnostics, and verifies responsive state without claiming unsupported Supervisor or nested-runtime state.
   evidence:
     deterministic:
     - docs/evidence/office-runtime-console-2026-10-27.json
@@ -2585,6 +2588,7 @@ capabilities:
   - Recent model-call history is sampled to 200 records; unresolved reservations and open provider-turn ceilings use the full ledger.
   - Sampled measured spend is not a total; unmeasured session count is not a held ceiling.
   - Reservation release writes off the reservation; it does not create measured usage.
+  - The MCP gateway panel is read-only and never displays endpoints, credentials or raw arguments. It reports disabled when FACTORY_TOOL_GATEWAY_CONFIG is absent; an authenticated Chromium journey exercised the enabled catalog and empty-call state, while a live MCP call and a browser journey with a populated durable call remain NOT_TESTED. GitHub tools require the exact Project owner/repo; free-form code search is not exposed.
   blockers:
   - Real browser acceptance and Product Owner review remain pending.
 

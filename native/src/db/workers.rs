@@ -3,6 +3,17 @@ use super::*;
 use chrono::Utc;
 use uuid::Uuid;
 
+/// Exact provider-tool grant and repository identity resolved for a live
+/// Worker lease. Core uses it before a mediated tool call so a Worker cannot
+/// widen its Campaign authorization or read another project's GitHub data.
+#[derive(Debug, Clone)]
+pub struct AssignedProviderGrant {
+    pub allowed_tools: Vec<String>,
+    pub source_kind: String,
+    pub source_url: String,
+    pub remote_origin: String,
+}
+
 fn validate_assignment_provider_route(
     execution_mode: &str,
     provider: &str,
@@ -138,14 +149,56 @@ impl Database {
         generation: i64,
         now_ms: i64,
     ) -> Result<(String, String), Error> {
+        let (provider, model, _, _, _, _) = self
+            .assigned_provider_binding(worker_id, attempt_id, generation, now_ms)
+            .await?;
+        Ok((provider, model))
+    }
+
+    /// Return the exact provider-tool grant and project repository identity for
+    /// a live Worker lease. Core uses this before a mediated tool call so a
+    /// Worker cannot widen its Campaign authorization or read another project's
+    /// GitHub data by calling the endpoint directly.
+    pub async fn assigned_provider_grant(
+        &self,
+        worker_id: &str,
+        attempt_id: &str,
+        generation: i64,
+        now_ms: i64,
+    ) -> Result<AssignedProviderGrant, Error> {
+        let (_, _, allowed_tools, source_kind, source_url, remote_origin) = self
+            .assigned_provider_binding(worker_id, attempt_id, generation, now_ms)
+            .await?;
+        Ok(AssignedProviderGrant {
+            allowed_tools: serde_json::from_str(&allowed_tools)
+                .map_err(|_| Error::Invalid("stored allowed tools encoding"))?,
+            source_kind,
+            source_url,
+            remote_origin,
+        })
+    }
+
+    async fn assigned_provider_binding(
+        &self,
+        worker_id: &str,
+        attempt_id: &str,
+        generation: i64,
+        now_ms: i64,
+    ) -> Result<(String, String, String, String, String, String), Error> {
         if worker_id.trim().is_empty() || attempt_id.trim().is_empty() || generation <= 0 {
             return Err(Error::Invalid("provider assignment identity"));
         }
-        let row: Option<(String, String)> = sqlx::query_as::query_as(
-            "SELECT COALESCE(ca.provider,''),COALESCE(ca.model,'')
+        let row: Option<(String, String, String, String, String, String)> =
+            sqlx::query_as::query_as(
+                "SELECT COALESCE(ca.provider,''),COALESCE(ca.model,''),
+                    COALESCE(ca.allowed_tools_json,'[]'),
+                    COALESCE(p.source_kind,''),COALESCE(p.source_url,''),
+                    COALESCE(p.remote_origin,'')
              FROM attempts a
              JOIN runs r ON r.id=a.run_id
              JOIN campaigns c ON c.id=r.campaign_id
+             JOIN actions ac ON ac.id=c.action_id
+             JOIN projects p ON p.id=ac.project_id
              JOIN campaign_authorizations ca ON ca.campaign_id=c.id
              JOIN execution_policies p ON p.policy_id=ca.policy_id
              JOIN standing_delegations d ON d.id=ca.delegation_id
@@ -154,14 +207,15 @@ impl Database {
                AND wl.expires_at_ms>?4 AND a.status='LEASED' AND c.status='AUTHORIZED'
                AND ca.schema_version=2 AND d.schema_version=2 AND d.revoked_at IS NULL
                AND ca.execution_mode='TRUSTED_LOCAL_PROVIDER'",
-        )
-        .bind(attempt_id)
-        .bind(worker_id)
-        .bind(generation)
-        .bind(now_ms)
-        .fetch_optional(&self.pool)
-        .await?;
-        let Some((provider, model)) = row else {
+            )
+            .bind(attempt_id)
+            .bind(worker_id)
+            .bind(generation)
+            .bind(now_ms)
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some((provider, model, allowed_tools, source_kind, source_url, remote_origin)) = row
+        else {
             return Err(Error::Forbidden(
                 "no live V2 authorized provider assignment for this Worker attempt".into(),
             ));
@@ -171,7 +225,14 @@ impl Database {
                 "provider assignment has no authorized route".into(),
             ));
         }
-        Ok((provider, model))
+        Ok((
+            provider,
+            model,
+            allowed_tools,
+            source_kind,
+            source_url,
+            remote_origin,
+        ))
     }
 
     pub async fn workers(&self) -> Result<Vec<WorkerSummary>, Error> {
@@ -413,6 +474,7 @@ impl Database {
             )),
             allowed_tools: serde_json::from_str(&allowed_tools)
                 .map_err(|_| Error::Invalid("stored allowed tools encoding"))?,
+            gateway_tools: Vec::new(),
             attempt_grant: String::new(),
             skills,
             environment,

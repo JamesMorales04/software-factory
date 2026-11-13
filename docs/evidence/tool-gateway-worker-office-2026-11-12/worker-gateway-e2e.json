@@ -1,0 +1,19 @@
+{
+  "schema": "factory.tool-gateway-worker-e2e.v1",
+  "recorded_at": "2026-11-13T03:55:00Z",
+  "candidate_sha": "5babcfbb1c428216c0970890bd7ae3dc94dd845e",
+  "test": "worker_gateway_call_is_bound_to_the_live_lease_and_audited",
+  "host_result": "PASS",
+  "canonical_container_result": "PASS",
+  "coverage": [
+    "real Core worker registration and claim",
+    "live lease + generation binding",
+    "Implementer-filtered gateway catalog in the claim",
+    "Context7 fake-upstream ALLOW and durable audit",
+    "GitHub same-repository fake-upstream ALLOW",
+    "GitHub cross-repository 403 before the upstream call",
+    "durable DENY audit with repository_scope",
+    "upstream tools/call count remains 2"
+  ],
+  "notes": "The E2E uses a deterministic fake multi-repository MCP upstream. Real Context7 and Playwright calls are recorded separately; a real GitHub token remains unavailable."
+}

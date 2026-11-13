@@ -689,7 +689,7 @@ pub(super) async fn authorize_campaign_in_tx(
         )));
     }
     if provider {
-        let allowed = ["write_file", "run_command"];
+        let allowed = ["write_file", "run_command", "gateway_call"];
         let mut seen = std::collections::BTreeSet::new();
         if input
             .allowed_tools
@@ -697,7 +697,8 @@ pub(super) async fn authorize_campaign_in_tx(
             .any(|tool| !allowed.contains(&tool.as_str()) || !seen.insert(tool))
         {
             return Err(Error::Forbidden(
-                "provider tools must be a unique subset of write_file and run_command".into(),
+                "provider tools must be a unique subset of write_file, run_command and gateway_call"
+                    .into(),
             ));
         }
         if input.provider.is_empty()

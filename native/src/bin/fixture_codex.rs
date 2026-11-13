@@ -215,6 +215,31 @@ fn main() {
                         json!({"method":"item/started","params":{"threadId":"thread-fixture","turnId":turn_id,"item":{"id":"native-1","type":"commandExecution","command":"id","status":"inProgress"}}}),
                     );
                 } else {
+                    if std::env::var("FACTORY_FIXTURE_CODEX_GATEWAY").as_deref() == Ok("1") {
+                        let gateway_id = next_id + 1000;
+                        let gateway_call_id = format!("gateway-{gateway_id}");
+                        send(json!({"id":gateway_id,"method":"item/tool/call","params":{
+                            "threadId":"thread-fixture","turnId":turn_id,"callId":gateway_call_id,"tool":"gateway_call","namespace":null,
+                            "arguments":{"tool":"context7.query-docs","arguments":{"libraryId":"/react/react","query":"hooks"}}
+                        }}));
+                        loop {
+                            let Some(Ok(line)) = lines.next() else { return };
+                            let Ok(response) = serde_json::from_str::<Value>(&line) else {
+                                continue;
+                            };
+                            if response.get("id").and_then(Value::as_u64) == Some(gateway_id) {
+                                let text = response["result"]["contentItems"][0]["text"]
+                                    .as_str()
+                                    .unwrap_or_default();
+                                if response["result"]["success"].as_bool() != Some(true)
+                                    || !text.contains("provider gateway ok")
+                                {
+                                    return;
+                                }
+                                break;
+                            }
+                        }
+                    }
                     let call_id = format!("call-{next_id}");
                     send(json!({"id":next_id,"method":"item/tool/call","params":{
                         "threadId":"thread-fixture","turnId":turn_id,"callId":call_id,"tool":"write_file","namespace":null,

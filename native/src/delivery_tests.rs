@@ -29,9 +29,7 @@ const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 fn temp_root(prefix: &str) -> PathBuf {
-    let root = PathBuf::from("/tmp/opencode");
-    fs::create_dir_all(&root).unwrap();
-    root.join(format!("{prefix}-{}", uuid::Uuid::new_v4()))
+    std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()))
 }
 
 fn run_git(dir: &Path, args: &[&str]) -> String {

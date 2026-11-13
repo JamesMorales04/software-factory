@@ -1,13 +1,14 @@
 // Real Chromium acceptance for the unified Rust-backed Office.
 // Starts the real Rust Core, Worker and Vite dev server in disposable state.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { chromium } from "playwright-core";
+import AxeBuilder from "@axe-core/playwright";
+import { chromium } from "playwright";
 
 const root = resolve(import.meta.dirname, "../..");
 const targetDir = process.env.CARGO_TARGET_DIR || join(root, "target");
@@ -32,6 +33,8 @@ const repository = join(temp, "repo");
 const database = join(temp, "factory.sqlite");
 const enrollmentCodeFile = join(temp, "enrollment-code");
 const masterKeyFile = join(temp, "master-key");
+const gatewayConfig = join(temp, "tool-gateway.json");
+const gatewayDisabled = process.env.FACTORY_E2E_GATEWAY === "disabled";
 const workspace = join(temp, "workspaces");
 const supervisorWork = join(temp, "supervisor-work");
 const supervisorState = join(temp, "supervisor-state");
@@ -41,6 +44,31 @@ const processes = [];
 mkdirSync(repository, { recursive: true });
 mkdirSync(workspace, { recursive: true });
 writeFileSync(masterKeyFile, randomBytes(32).toString("hex"), { mode: 0o600 });
+writeFileSync(
+  gatewayConfig,
+  JSON.stringify({
+    maxCallsPerMinute: 60,
+    servers: [
+      {
+        transport: "http",
+        id: "context7",
+        endpoint: "https://mcp.context7.com/mcp",
+      },
+    ],
+    tools: [
+      {
+        id: "context7.query-docs",
+        server: "context7",
+        tool: "query-docs",
+        roles: ["IMPLEMENTER"],
+        readOnly: true,
+        timeoutSecs: 30,
+        maxResponseBytes: 262144,
+      },
+    ],
+  }),
+  { mode: 0o600 },
+);
 writeFileSync(
   enrollmentCodeFile,
   JSON.stringify({
@@ -115,6 +143,35 @@ function launch(command, args, options = {}) {
   return child;
 }
 
+function seedGatewayCall() {
+  const script = `
+import sqlite3, sys
+connection = sqlite3.connect(sys.argv[1], timeout=5)
+for attempt in range(20):
+    try:
+        connection.execute(
+            "INSERT INTO tool_gateway_calls "
+            "(call_id,worker_id,attempt_id,generation,role,tool,args_sha256,"
+            "decision,response_bytes,duration_ms,error,created_at) "
+            "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            ("e2e-gateway-call", "worker-e2e", "attempt-e2e", 1, "IMPLEMENTER",
+             "context7.query-docs", "a" * 64, "ALLOW", 42, 7, None,
+             sys.argv[2]),
+        )
+        connection.commit()
+        connection.close()
+        sys.exit(0)
+    except sqlite3.OperationalError as error:
+        if "locked" not in str(error) or attempt == 19:
+            raise
+        import time
+        time.sleep(0.1)
+`;
+  execFileSync("python3", ["-c", script, database, new Date().toISOString()], {
+    stdio: "ignore",
+  });
+}
+
 let browser;
 try {
   const core = launch(coreBin, [], {
@@ -135,6 +192,9 @@ try {
       FACTORY_PROJECTS_ROOT: process.env.FACTORY_PROJECTS_ROOT?.trim() || temp,
       FACTORY_LEAD_FIXTURE_ASSESSOR: "1",
       FACTORY_ENABLE_AUTONOMOUS_START: "1",
+      ...(gatewayDisabled
+        ? {}
+        : { FACTORY_TOOL_GATEWAY_CONFIG: gatewayConfig }),
     },
   });
   await waitFor(`${coreUrl}/health`);
@@ -200,7 +260,8 @@ try {
     executablePath,
     ...(launchArgs.length > 0 ? { args: launchArgs } : {}),
   });
-  const page = await browser.newPage();
+  const context = await browser.newContext();
+  const page = await context.newPage();
   const consoleErrors = [];
   const pageErrors = [];
   const notFound = [];
@@ -341,6 +402,48 @@ try {
   await page.getByRole("heading", { name: /Core-owned model calls/ }).waitFor();
   await page.getByRole("tab", { name: /Diagnostics/ }).click();
   await page.getByRole("heading", { name: "Service boundaries" }).waitFor();
+  await page
+    .getByRole("heading", { name: "MCP tool gateway", exact: true })
+    .waitFor();
+  if (gatewayDisabled) {
+    await page.getByText("MCP tool gateway is not configured").waitFor();
+  } else {
+    await page.getByText("context7.query-docs").first().waitFor();
+    await page.getByText("Read-only").first().waitFor();
+    await page
+      .getByText("No mediated MCP call has been recorded yet.")
+      .waitFor();
+  }
+  const accessibility = await new AxeBuilder({ page })
+    .include('[data-testid="tool-gateway-panel"]')
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+    .analyze();
+  const blocking = accessibility.violations.filter(
+    (violation) =>
+      violation.impact === "critical" || violation.impact === "serious",
+  );
+  assert.deepEqual(
+    blocking.map((violation) => violation.id),
+    [],
+    `Runtime MCP gateway accessibility violations: ${JSON.stringify(
+      blocking.map((violation) => ({
+        id: violation.id,
+        nodes: violation.nodes.map((node) => node.target),
+      })),
+    )}`,
+  );
+  if (process.env.FACTORY_EVIDENCE_DIR) {
+    mkdirSync(process.env.FACTORY_EVIDENCE_DIR, { recursive: true });
+    await page.screenshot({
+      path: join(
+        process.env.FACTORY_EVIDENCE_DIR,
+        gatewayDisabled
+          ? "runtime-gateway-disabled-1440.png"
+          : "runtime-gateway-enabled-1440.png",
+      ),
+      fullPage: true,
+    });
+  }
   for (const width of [834, 390]) {
     await page.setViewportSize({ width, height: 900 });
     const viewport = await page.evaluate(() => ({
@@ -352,8 +455,99 @@ try {
       viewport.clientWidth,
       `Runtime diagnostics must not overflow the document at ${width}px`,
     );
+    if (width === 390 && process.env.FACTORY_EVIDENCE_DIR) {
+      await page.screenshot({
+        path: join(
+          process.env.FACTORY_EVIDENCE_DIR,
+          gatewayDisabled
+            ? "runtime-gateway-disabled-390.png"
+            : "runtime-gateway-enabled-390.png",
+        ),
+        fullPage: true,
+      });
+    }
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
+  if (!gatewayDisabled) {
+    seedGatewayCall();
+    await page.reload();
+    await page
+      .getByRole("heading", { name: "MCP tool gateway", exact: true })
+      .waitFor();
+    await page.getByText("worker-e2e · gen 1").waitFor();
+    await page.getByText("Allowed").first().waitFor();
+    assert.equal(
+      await page
+        .getByText("No mediated MCP call has been recorded yet.")
+        .count(),
+      0,
+      "a seeded durable call must replace the empty recent-call state",
+    );
+    if (process.env.FACTORY_EVIDENCE_DIR) {
+      await page.screenshot({
+        path: join(
+          process.env.FACTORY_EVIDENCE_DIR,
+          "runtime-gateway-populated-1440.png",
+        ),
+        fullPage: true,
+      });
+    }
+  }
+
+  const themeToggle = page.getByRole("button", { name: /switch theme/i });
+  const densityToggle = page.getByRole("button", { name: /switch density/i });
+  await themeToggle.click();
+  await themeToggle.click();
+  await densityToggle.click();
+  await page
+    .getByRole("heading", { name: "MCP tool gateway", exact: true })
+    .waitFor();
+  const darkAccessibility = await new AxeBuilder({ page })
+    .include('[data-testid="tool-gateway-panel"]')
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+    .analyze();
+  const darkBlocking = darkAccessibility.violations.filter(
+    (violation) =>
+      violation.impact === "critical" || violation.impact === "serious",
+  );
+  assert.deepEqual(
+    darkBlocking.map((violation) => violation.id),
+    [],
+    `Dark/compact MCP gateway accessibility violations: ${darkBlocking
+      .map((violation) => violation.id)
+      .join(", ")}`,
+  );
+  if (process.env.FACTORY_EVIDENCE_DIR) {
+    await page.screenshot({
+      path: join(
+        process.env.FACTORY_EVIDENCE_DIR,
+        `runtime-gateway-${gatewayDisabled ? "disabled" : "enabled"}-dark-compact-1440.png`,
+      ),
+      fullPage: true,
+    });
+  }
+  await page.setViewportSize({ width: 390, height: 900 });
+  const darkViewport = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }));
+  assert.equal(
+    darkViewport.scrollWidth,
+    darkViewport.clientWidth,
+    "dark/compact Runtime diagnostics must not overflow at 390px",
+  );
+  if (process.env.FACTORY_EVIDENCE_DIR) {
+    await page.screenshot({
+      path: join(
+        process.env.FACTORY_EVIDENCE_DIR,
+        `runtime-gateway-${gatewayDisabled ? "disabled" : "enabled"}-dark-compact-390.png`,
+      ),
+      fullPage: true,
+    });
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await densityToggle.click();
+  await themeToggle.click();
 
   await page
     .locator(".sidebar")

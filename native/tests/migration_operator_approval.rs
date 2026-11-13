@@ -351,7 +351,13 @@ async fn migration_0027_preserves_populated_history_and_enforces_new_evidence() 
         1
     );
 
-    // Existing immutable evidence remains immutable.
+    // Existing evidence is immutable once a Campaign exists for the action.
+    sqlx::query::query(
+        "INSERT INTO campaigns VALUES ('camp-frozen','a-frozen','AUTHORIZED','2026-10-27T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     assert!(
         sqlx::query::query("UPDATE action_specs SET spec_json='{}' WHERE action_id='a-frozen'")
             .execute(&pool)

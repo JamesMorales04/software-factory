@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "updated_at": "2026-11-12T03:04:28Z",
+ "updated_at": "2026-11-12T23:10:00Z",
  "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
  "capabilities": {
   "CAP-011": {
@@ -489,7 +489,7 @@
   "CAP-051": {
    "name": "Runtime operational console",
    "user_facing": true,
-   "job": "Inspect Core health, registered Workers, provider sessions, model-call usage, reserved ceilings, cleanup, telemetry and runtime policy without terminal inspection.",
+   "job": "Inspect Core health, registered Workers, provider sessions, model-call usage, reserved ceilings, cleanup, telemetry, MCP tool-gateway diagnostics and runtime policy without terminal inspection.",
    "routes": [
     "/runtime"
    ],
@@ -501,14 +501,16 @@
     "GET /model/calls/unresolved",
     "POST /model/calls/{id}/resolve",
     "GET /observability",
-    "GET /settings/runtime"
+    "GET /settings/runtime",
+    "GET /tool_gateway/status"
    ],
    "user_actions": [
     "inspect Core health and registered Worker records",
     "filter provider sessions by state usage cleanup worker or route",
     "inspect recent and unresolved model-call reservations with measured usage and reservation ceiling",
     "release an AMBIGUOUS or UNKNOWN reservation with an explicit audited reason",
-    "inspect telemetry export and semantic-review policy"
+    "inspect telemetry export and semantic-review policy",
+    "inspect the role-filtered MCP gateway catalog, read-only policy and durable recent call decisions"
    ],
    "states": [
     "loading",
@@ -519,13 +521,16 @@
     "unmeasured-usage",
     "unresolved-reservation",
     "not-exposed",
-    "telemetry-degraded"
+    "telemetry-degraded",
+    "gateway-disabled",
+    "gateway-no-calls",
+    "gateway-degraded"
    ],
    "acceptance": [
     "office/e2e-browser/rust-journey.mjs",
     "office/src/views/Runtime.test.tsx"
    ],
-   "notes": "Sampled measured spend covers usage-known sessions and the latest 200 model calls. Reserved ceiling uses unresolved model-call max cost plus open provider-turn max cost. Unmeasured session count is shown separately; session cost is not claimed as a held ceiling. Supervisor, nested Podman and broker state are not exposed by the current Core API and are shown as unavailable, never inferred. Reservation release is explicit; no automatic release exists."
+   "notes": "Sampled measured spend covers usage-known sessions and the latest 200 model calls. Reserved ceiling uses unresolved model-call max cost plus open provider-turn max cost. Unmeasured session count is shown separately; session cost is not claimed as a held ceiling. Supervisor, nested Podman and broker state are not exposed by the current Core API and are shown as unavailable, never inferred. Reservation release is explicit; no automatic release exists. The MCP gateway panel is Core-backed and read-only: it shows the immutable role-filtered catalog and recent ALLOW/DENY audit rows, never MCP endpoints, tokens or raw arguments. A missing FACTORY_TOOL_GATEWAY_CONFIG renders an explicit disabled state; it is not inferred from an empty call list. GitHub gateway tools are bound to the exact Project repository; a missing or mismatched owner/repo is denied and free-form code search is not exposed."
   },
   "CAP-052": {
    "name": "Provider and runtime Settings workspace",

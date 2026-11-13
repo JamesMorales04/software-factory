@@ -1,0 +1,182 @@
+{
+  "schema": "factory.tool-gateway-worker-office.v1",
+  "recorded_at": "2026-11-13T03:55:00Z",
+  "result": "PASS (author-run Worker/Office gateway, live Context7 and Playwright stdio, host+container Worker/lease gateway E2E; not independent acceptance)",
+  "candidate_sha": "5babcfbb1c428216c0970890bd7ae3dc94dd845e",
+  "branch": "feat/tool-gateway",
+  "environment": {
+    "core": "factory-core development binary built from the rebased candidate",
+    "supervisor": "factory-supervisor development binary built from the candidate",
+    "office": "Vite development server plus the repository Playwright Chromium",
+    "database": "disposable SQLite under a temporary directory",
+    "gateway": "real Core gateway configured with the Context7 HTTP catalog; no remote MCP call"
+  },
+  "browser_observation": {
+    "command": "FACTORY_EVIDENCE_DIR=... node office/e2e-browser/rust-journey.mjs; FACTORY_E2E_GATEWAY=disabled FACTORY_EVIDENCE_DIR=... node office/e2e-browser/rust-journey.mjs",
+    "result": "enabled and disabled runs both returned {\"ok\":true,\"journey\":\"office\"}",
+    "screenshots": [
+      "runtime-gateway-enabled-1440.png",
+      "runtime-gateway-enabled-390.png",
+      "runtime-gateway-disabled-1440.png",
+      "runtime-gateway-disabled-390.png",
+      "runtime-gateway-populated-1440.png",
+      "runtime-gateway-enabled-dark-compact-1440.png",
+      "runtime-gateway-enabled-dark-compact-390.png",
+      "runtime-gateway-disabled-dark-compact-1440.png",
+      "runtime-gateway-disabled-dark-compact-390.png"
+    ],
+    "console": "No unexpected console or page errors were recorded by the journey.",
+    "axe": "Scoped WCAG 2.2 A/AA scan of [data-testid=tool-gateway-panel] returned no critical or serious violations in both modes."
+  },
+  "ui_matrix": [
+    {
+      "id": "UI-001",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "MCP tool gateway panel",
+      "expected": "Enabled badge and Core-backed gateway status are visible",
+      "evidence": "runtime-gateway-enabled-1440.png; journey heading/badge assertions",
+      "result": "PASS"
+    },
+    {
+      "id": "UI-002",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Enabled catalog summary",
+      "expected": "Server context7 (http), one authorized tool and the per-role rate limit render",
+      "evidence": "runtime-gateway-enabled-1440.png",
+      "result": "PASS"
+    },
+    {
+      "id": "UI-003",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Catalog row",
+      "expected": "context7.query-docs renders with its argument hint and Read-only policy",
+      "evidence": "runtime-gateway-enabled-1440.png",
+      "result": "PASS"
+    },
+    {
+      "id": "UI-004",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Empty recent calls",
+      "expected": "Explicit no-call text rather than invented history",
+      "evidence": "runtime-gateway-enabled-1440.png; journey text assertion",
+      "result": "PASS"
+    },
+    {
+      "id": "UI-005",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Responsive layout",
+      "expected": "No document overflow at 834 or 390 px; catalog stacks into labelled rows",
+      "evidence": "runtime-gateway-enabled-390.png, runtime-gateway-disabled-390.png; journey width assertions",
+      "result": "PASS"
+    },
+    {
+      "id": "UI-006",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Accessibility floor",
+      "expected": "No critical or serious axe violations inside the gateway panel",
+      "evidence": "journey scoped axe scan",
+      "result": "PASS"
+    },
+    {
+      "id": "UI-007",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Disabled state",
+      "expected": "Explicit not-configured empty state; no fake catalog or calls",
+      "evidence": "runtime-gateway-disabled-1440.png; journey assertions",
+      "result": "PASS"
+    },
+    {
+      "id": "UI-008",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Populated recent calls",
+      "expected": "ALLOW/DENY, role, latency, bytes and bounded error render; endpoints and raw args are absent",
+      "evidence": "runtime-gateway-populated-1440.png; journey assertions",
+      "result": "PASS (seeded durable row; no live MCP call)"
+    },
+    {
+      "id": "UI-009",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Spanish labels",
+      "expected": "Panel title, states and table labels have Spanish catalog entries",
+      "evidence": "office/src/i18n/catalog.es.ts; i18n tests",
+      "result": "PASS (component)"
+    },
+    {
+      "id": "UI-010",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Keyboard/tab navigation",
+      "expected": "Diagnostics tab is selectable and reports aria-selected=true",
+      "evidence": "journey assertion",
+      "result": "PASS"
+    },
+    {
+      "id": "UI-011",
+      "surface": "/runtime?tab=diagnostics",
+      "control": "Theme and density",
+      "expected": "Dark theme + compact density retain the panel layout and pass the scoped axe scan at 1440 and 390 px",
+      "evidence": "runtime-gateway-enabled-dark-compact-1440.png, runtime-gateway-enabled-dark-compact-390.png, disabled variants; journey assertions",
+      "result": "PASS"
+    }
+  ],
+  "core_evidence": {
+    "operator_status_auth": "PASS (factory-core route test)",
+    "worker_session_auth": "PASS (factory-core route test)",
+    "live_attempt_binding": "PASS (missing live lease returns 403)",
+    "campaign_tool_grant": "PASS (assigned_provider_tools test plus static endpoint check; no live endpoint case)",
+    "durable_audit": "PASS (db::tool_gateway insert, order and immutable UPDATE/DELETE triggers)",
+    "immutable_identity": "PASS (tool_gateway role/server/MCP-name remap tests)",
+    "github_repository_scope": "PASS (strict HTTPS/SSH host parser, deceptive-host rejection, exact owner/repo argument matching and DB grant tests); a live multi-repository token test remains NOT_TESTED",
+    "transport_bounds": "PASS (tool_gateway argument, response, timeout, rate-limit tests)",
+    "worker_tool_pack": "PASS (factory-worker tool grant and hidden-catalog tests)",
+    "provider_paths": "PASS (static inspection plus Worker tests); live OpenCode/Codex gateway turn NOT_TESTED",
+    "worker_gateway_e2e": "PASS on host and in software-factory-dev:local (register, claim, live lease, catalog, Context7/GitHub same-repo ALLOW, cross-repo 403, repository_scope audit; fake MCP upstream)",
+    "cross_repository_denial": "PASS with a deterministic multi-repo fake upstream; real GitHub token remains BLOCKED",
+    "model_driven_gateway_turn": "PASS on host: fixture verifies success/content, fake upstream called exactly once, audit ALLOW error=null response_bytes>0, then write_file candidate; container blocked by provider-sandbox readiness"
+  },
+  "limitations": [
+    "The populated recent-call row is seeded directly in SQLite to exercise the real Core projection and browser table; it is not produced by a live MCP call.",
+    "No independent verifier, Quality Gate acceptance, live provider turn or security review was performed for this slice.",
+    "TRUSTED_LOCAL is not isolated or certified; browser navigation/click/type remain disabled until a controlled network boundary exists.",
+    "Playwright navigation/click/type remain deferred; the live smoke used browser_close with no open tab.",
+    "Container e2e_fixture_dispatch has 3 provider-sandbox readiness failures; host passes 13/13. Full --tests --features test-support is not a supported combination because the test-support environment seam conflicts with Core intake fixtures.",
+    "The browser populated row is seeded; the real Worker-generated row is proven separately by worker-gateway-e2e.json.",
+    "Host --tests has two provider_sandbox failures because host OpenCode is 2.2.5; the canonical dev container with pinned 1.18.32 passes 7/7.",
+    "The model-driven Codex fixture gateway turn passes on host; its container run is one of the three provider-sandbox readiness failures. The direct Core/lease gateway E2E passes in the container.",
+    "Real GitHub Project-repository read passes via a host-provided token aliased to GITHUB_MCP_TOKEN; the token/body are not stored. A real multi-repository token denial remains NOT_TESTED; the scoped fake-upstream E2E covers the denial path."
+  ],
+  "live_mcp": {
+    "context7": {
+      "result": "PASS",
+      "evidence": "context7-live.json",
+      "detail": "query-docs /react/react returned bounded docs; redirect isError returned as tool_error content"
+    },
+    "playwright": {
+      "result": "PASS",
+      "evidence": "playwright-live.json",
+      "detail": "stdio MCP 0.0.84 + pinned headless Chromium; browser_close no-op"
+    },
+    "github": {
+      "result": "PASS",
+      "evidence": "github-live.json",
+      "detail": "real Project-repository pull_request_read; token not stored; real multi-repo scope denial NOT_TESTED, fake-upstream denial PASS"
+    }
+  },
+  "canonical_container": {
+    "provider_sandbox": "7 passed / 0 failed in software-factory-dev:local with pinned OpenCode 1.18.32",
+    "e2e_dispatch_negative": "5 passed / 0 failed with test-support in the dev container",
+    "e2e_fixture_dispatch": "10 passed / 3 provider-sandbox readiness failures in the dev container; host 13/13",
+    "unsupported_combination": "Full --tests --features test-support conflicts with 20 Core intake fixtures that construct their own environment binding; not a gateway failure."
+  },
+  "test_matrix": {
+    "host_lib": "1000 passed / 0 failed / 4 ignored",
+    "host_core": "70 passed",
+    "host_worker": "36 passed",
+    "host_feature_e2e": "e2e_dispatch_negative 5/5, e2e_fixture_dispatch 13/13, direct and model-driven gateway E2E PASS (result verified)",
+    "container_provider_sandbox": "7/7 passed",
+    "container_e2e_dispatch_negative": "5/5 passed",
+    "container_e2e_fixture_dispatch": "10 passed / 3 provider-sandbox readiness failures (direct gateway E2E passes; model-driven is one of the three)",
+    "container_worker_gateway_e2e": "PASS",
+    "unsupported": "Full --tests --features test-support conflicts with 20 Core intake fixtures; not a supported combination",
+    "reason": "The fixture E2E targets require test-support; the default suite omits them and the container provider-sandbox path is environment-dependent."
+  }
+}

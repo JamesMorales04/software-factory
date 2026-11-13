@@ -35,8 +35,9 @@ In both shapes:
   credential, reaches the provider;
 - the provider receives an isolated empty session directory, not the host
   workspace path;
-- only `write_file` and `run_command` can be authorized; a tool request outside
-  that subset is rejected;
+- only `write_file`, `run_command` and the Core-mediated `gateway_call`
+  introduced by [ADR-0044](ADR-0044-core-mediated-mcp-tool-gateway.md) can be
+  authorized; a tool request outside that subset is rejected;
 - `run_command` must exactly match a frozen acceptance check argv, and executes
   only through the rootless-Podman Supervisor in the exact Attempt workspace;
 - the Supervisor applies writes, runs mediated commands and finalizes the
