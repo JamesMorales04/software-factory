@@ -1,11 +1,11 @@
 {
   "schema": "factory.tool-gateway-worker-office.v1",
-  "recorded_at": "2026-11-13T03:40:00Z",
+  "recorded_at": "2026-11-13T03:55:00Z",
   "result": "PASS (author-run Worker/Office gateway, live Context7 and Playwright stdio, host+container Worker/lease gateway E2E; not independent acceptance)",
-  "candidate_sha": "293f849da44ed815e36907e913c7b7925fd7853c",
+  "candidate_sha": "5babcfbb1c428216c0970890bd7ae3dc94dd845e",
   "branch": "feat/tool-gateway",
   "environment": {
-    "core": "factory-core development binary built from the candidate",
+    "core": "factory-core development binary built from the rebased candidate",
     "supervisor": "factory-supervisor development binary built from the candidate",
     "office": "Vite development server plus the repository Playwright Chromium",
     "database": "disposable SQLite under a temporary directory",

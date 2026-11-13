@@ -1,7 +1,7 @@
 {
   "schema": "factory.tool-gateway-live-mcp.v1",
-  "recorded_at": "2026-11-13T03:40:00Z",
-  "candidate_sha": "293f849da44ed815e36907e913c7b7925fd7853c",
+  "recorded_at": "2026-11-13T03:55:00Z",
+  "candidate_sha": "5babcfbb1c428216c0970890bd7ae3dc94dd845e",
   "server": "github-read",
   "tool": "github.pull_request_read",
   "arguments": {
@@ -12,7 +12,7 @@
   },
   "result": "PASS",
   "response_bytes": 9343,
-  "duration_ms": 1326,
+  "duration_ms": 1470,
   "decision": "ALLOW",
   "error": null,
   "notes": "Real GitHub read-only MCP call on the Project repository using a host-provided token aliased to the configured GITHUB_MCP_TOKEN; the token and response body are not stored. Cross-repository denial is covered by the scoped fake-upstream E2E."

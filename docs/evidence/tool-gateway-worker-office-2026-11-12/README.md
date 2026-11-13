@@ -1,6 +1,6 @@
 # Core-mediated MCP tool gateway — Worker and Office slice
 
-**Candidate:** `293f849da44ed815e36907e913c7b7925fd7853c`  
+**Candidate:** `5babcfbb1c428216c0970890bd7ae3dc94dd845e`  
 **Branch:** `feat/tool-gateway`  
 **Date:** 2026-11-12  
 **Evidence level:** implementer self-test. Not independent verification,

@@ -1,7 +1,7 @@
 {
   "schema": "factory.tool-gateway-worker-e2e.v1",
-  "recorded_at": "2026-11-13T02:30:00Z",
-  "candidate_sha": "c57dd57594cb24e4640982fb40cc8f32400411b7",
+  "recorded_at": "2026-11-13T03:55:00Z",
+  "candidate_sha": "5babcfbb1c428216c0970890bd7ae3dc94dd845e",
   "test": "worker_gateway_call_is_bound_to_the_live_lease_and_audited",
   "host_result": "PASS",
   "canonical_container_result": "PASS",
