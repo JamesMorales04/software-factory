@@ -91,7 +91,7 @@ tool, unknown provider outcome or missing authorization is `BLOCKED`/
 ## Multi-agent execution
 
 OpenCode role definitions in `.opencode/agents/qh-*.md` cover the orchestrator
-and DeepSeek implementers only. The review fleet is **Codex/Paseo** with
+and DeepSeek implementers only. The review fleet is **Codex** with
 `codex/gpt-6-luna`; it is documented in
 [codex-review-fleet.md](codex-review-fleet.md). Do not use an OpenCode subagent
 with a Luna model ID as a substitute for a Codex reviewer. These are

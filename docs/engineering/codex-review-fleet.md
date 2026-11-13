@@ -7,8 +7,8 @@ acceptance and not an isolation certification.
 
 | Role | Harness | Provider/model | Reasoning |
 |---|---|---|---|
-| Orchestrator | OpenCode/Paseo | `opencode-go/deepseek-v4.1-flash` | `max` |
-| Implementers | OpenCode/Paseo | `opencode-go/deepseek-v4.1-flash` | `high` |
+| Orchestrator | OpenCode | `opencode-go/deepseek-v4.1-flash` | `max` |
+| Implementers | OpenCode | `opencode-go/deepseek-v4.1-flash` | `high` |
 | Architecture/security reviewer | **Codex** | `codex/gpt-6-luna` | `xhigh` |
 | Rust/testing/operability reviewer | **Codex** | `codex/gpt-6-luna` | `high` |
 | Office/accessibility reviewer | **Codex** | `codex/gpt-6-luna` | `high` |
@@ -21,7 +21,7 @@ merely uses a GPT-6 Luna model ID.
 
 ## Workspace
 
-Create a Paseo workspace pointing at the exact integration worktree, for
+Create an OpenCode workspace pointing at the exact integration worktree, for
 example:
 
 ```text
