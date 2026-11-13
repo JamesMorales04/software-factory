@@ -9250,10 +9250,31 @@ async fn worker_tool_gateway(
         return StatusCode::FORBIDDEN.into_response();
     }
     if input.tool.starts_with("github.") {
-        let Some((owner, repo)) = github_repository_scope(&grant) else {
-            return StatusCode::FORBIDDEN.into_response();
-        };
-        if !github_arguments_match_scope(&input.arguments, &owner, &repo) {
+        let denied = github_repository_scope(&grant).is_none_or(|(owner, repo)| {
+            !github_arguments_match_scope(&input.arguments, &owner, &repo)
+        });
+        if denied {
+            let audit = factory_native::tool_gateway::GatewayAuditRecord {
+                role: factory_native::tool_gateway::GatewayRole::Implementer,
+                tool: input.tool.clone(),
+                args_sha256: factory_native::tool_gateway::arguments_sha256(&input.arguments),
+                decision: "DENY".into(),
+                duration_ms: 0,
+                response_bytes: 0,
+                error: Some("repository_scope".into()),
+            };
+            if let Err(error) = app
+                .db
+                .record_tool_gateway_call(
+                    &input.worker_id,
+                    &input.attempt_id,
+                    input.generation,
+                    &audit,
+                )
+                .await
+            {
+                return api_error(error);
+            }
             return StatusCode::FORBIDDEN.into_response();
         }
     }

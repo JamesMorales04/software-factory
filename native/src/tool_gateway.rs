@@ -1448,7 +1448,7 @@ impl ToolGateway {
     }
 }
 
-fn arguments_sha256(arguments: &Value) -> String {
+pub fn arguments_sha256(arguments: &Value) -> String {
     let bytes = serde_json::to_vec(arguments).unwrap_or_default();
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
