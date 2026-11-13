@@ -241,3 +241,23 @@ cargo run --bin factory-architecture-check -- --root . --base-ref origin/main
 ```
 
 These start and stop provider servers but do not create paid turns. The Codex probe checks initialization and model discovery only. `codex-reconcile` queries a **new** App Server for indexed and locally loaded thread metadata; absence cannot prove cleanup by an earlier process. The OpenCode probe uses a generated per-process password on loopback, reads the server's own bound address, hashes its OpenAPI schema, checks the first SSE `server.connected` event, and creates, inspects, then deletes one session bound to the canonical workspace. This does not test prompt progress, completion, reconnect, or real coding. Probe results are preflight observations, not a provider execution certificate. The hygiene tool enforces the strict zero-legacy tracked-tree gate in CI. Lead fixture assessment is available only with explicit `FACTORY_LEAD_FIXTURE_ASSESSOR=1`; it is not a model. A FIXTURE Lead plan can start under the deterministic FIXTURE authorization when autonomous start is enabled. A MODEL Lead plan requires an explicit `TRUSTED_LOCAL_PROVIDER` authorization matching the frozen proposal and delegation; neither path is live model-quality or ISOLATED certification. CAP-014 commands are `cargo run --bin factory-s4d-evaluate -- corpus|baseline|validate|compare|execute`.
+
+## Deterministic test-support fixtures
+
+`cargo xtask e2e intake` and `intake-full` build this crate with the debug-only
+`test-support` feature. Three fixtures are explicit and are absent from
+production builds:
+
+- `FACTORY_ENVIRONMENT_TEST_BUILDER=1` selects a deterministic environment
+  builder with the fixed `fixture/environment-builder` identity. It performs no
+  Nix build, no network access and returns labelled fixture evidence only.
+- `FACTORY_VERIFIER_LOCAL_ENVIRONMENT_CHECKS=1` lets a debug+`test-support`
+  verifier execute the frozen check argv in the already-imported local candidate
+  volume under the local test backend. Production still refuses to run an
+  environment check without the runtime broker and a frozen builder image.
+- `POST /test-support/intake/{id}/clear-fixture-environment` removes the
+  ActionSpec environment placeholder installed by `test-support`, allowing the
+  journey to bind a real compiled plan and frozen spec. Production code never
+  installs that placeholder and the route does not exist without the feature.
+
+See [the Office browser journey](../office/e2e-browser/README.md#factory-office-browser-tests) for commands and scope.

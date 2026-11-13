@@ -896,11 +896,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
     });
-    match factory_native::planning::environment::RuntimeBrokerEnvironmentBuilder::from_env().await {
-        Ok(Some(builder)) => app.set_environment_builder(builder),
-        Ok(None) => {}
-        Err(error) => {
-            tracing::warn!(%error, "environment builder is unavailable; generated environments remain blocked")
+    #[cfg(feature = "test-support")]
+    let test_builder = factory_native::planning::environment::test_environment_builder_from_env();
+    #[cfg(not(feature = "test-support"))]
+    let test_builder = None;
+    if let Some(builder) = test_builder {
+        #[cfg(feature = "test-support")]
+        tracing::warn!(
+            builder = factory_native::planning::environment::TEST_ENVIRONMENT_BUILDER_IMAGE,
+            "test-support deterministic environment builder is active; receipts are fixture evidence, not a real build"
+        );
+        app.set_environment_builder(builder);
+    } else {
+        match factory_native::planning::environment::RuntimeBrokerEnvironmentBuilder::from_env()
+            .await
+        {
+            Ok(Some(builder)) => app.set_environment_builder(builder),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, "environment builder is unavailable; generated environments remain blocked")
+            }
         }
     }
     {
@@ -1341,6 +1356,10 @@ fn office_api_router(app: Arc<App>) -> Router {
             "/test-support/subscription-dispatch-admissions",
             post(admit_test_subscription_dispatch),
         )
+        .route(
+            "/test-support/intake/{id}/clear-fixture-environment",
+            post(clear_test_intake_environment_binding),
+        )
         .route("/test-support/wave12/seed", post(wave12_support::seed))
         .route(
             "/test-support/wave12/trace-fault/{id}",
@@ -1724,6 +1743,10 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/test-support/subscription-dispatch-admissions",
             post(admit_test_subscription_dispatch),
+        )
+        .route(
+            "/test-support/intake/{id}/clear-fixture-environment",
+            post(clear_test_intake_environment_binding),
         )
         .route("/test-support/wave12/seed", post(wave12_support::seed))
         .route(
@@ -11542,6 +11565,52 @@ fn bounded_agentic_model_error(message: &str) -> String {
     message.chars().take(480).collect()
 }
 
+/// Pre-Campaign Lead model funding available to one intake request.
+///
+/// Production accepts only an exact Owner-confirmed subscription admission for
+/// the frozen Lead route; the monetary envelope is the debug/test-support and
+/// legacy billable fixture path. This preflight mirrors the model gateway's
+/// funding decision so a typed planning error is returned before a paid call
+/// is attempted. The gateway still enforces the same funding independently
+/// before dispatch; this value never grants authority by itself.
+#[derive(Debug, Default, Clone, Copy)]
+struct LeadModelFunding {
+    envelope: bool,
+    subscription: bool,
+}
+
+impl LeadModelFunding {
+    fn funded(self) -> bool {
+        self.envelope || self.subscription
+    }
+}
+
+async fn lead_model_funding(
+    app: &App,
+    intake_request_id: &str,
+    lead_request_id: &str,
+    provider: &str,
+    model: &str,
+) -> Result<LeadModelFunding, Error> {
+    let envelope = app
+        .db
+        .inference_envelope_for_request(intake_request_id)
+        .await?
+        .is_some();
+    let subscription = app
+        .db
+        .subscription_scope_admitted(intake_request_id, provider, model)
+        .await?
+        || app
+            .db
+            .subscription_scope_admitted(lead_request_id, provider, model)
+            .await?;
+    Ok(LeadModelFunding {
+        envelope,
+        subscription,
+    })
+}
+
 fn agentic_model_error(error: factory_native::model_gateway::ModelGatewayError) -> Response {
     use factory_native::model_gateway::ModelGatewayError;
     match error {
@@ -12398,25 +12467,43 @@ async fn run_lead_environment_review(
                 .into_response());
         }
     };
-    match app.db.inference_envelope_for_request(&record.id).await {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return Err(api_error(Error::IntakeConflict {
-                code: "INFERENCE_AUTHORIZATION_REQUIRED",
-                message:
-                    "the Lead environment review is a billable model call and requires an explicit request-scoped inference authorization"
-                        .into(),
-            }));
-        }
-        Err(error) => return Err(api_error(error)),
-    }
-    if let Err(error) = ensure_inference_pricing_quote(
+    // The Lead environment review is a pre-Campaign Lead model call with the
+    // same funding contract as assessment: production requires the exact
+    // Owner-confirmed subscription admission, while the monetary envelope is
+    // the test/legacy billable path. The gateway independently refuses a call
+    // without one of these; this preflight only preserves the typed error.
+    let funding = match lead_model_funding(
         app,
+        &record.id,
+        &record.lead_request_id,
         gateway.provider(),
         gateway.model(),
-        "lead-environment-review",
     )
     .await
+    {
+        Ok(funding) => funding,
+        Err(error) => return Err(api_error(error)),
+    };
+    if !funding.funded() {
+        return Err(api_error(Error::IntakeConflict {
+            code: "INFERENCE_AUTHORIZATION_REQUIRED",
+            message:
+                "the Lead environment review requires an active Owner-confirmed subscription admission or an explicit request-scoped inference authorization"
+                    .into(),
+        }));
+    }
+    // Mirror assessment: a real subscription admission takes precedence over
+    // the legacy/test monetary envelope, so a quote is only required when the
+    // envelope is the sole funding source.
+    if funding.envelope
+        && !funding.subscription
+        && let Err(error) = ensure_inference_pricing_quote(
+            app,
+            gateway.provider(),
+            gateway.model(),
+            "lead-environment-review",
+        )
+        .await
     {
         return Err(api_error(error));
     }
@@ -12976,16 +13063,25 @@ async fn select_stack_option_with_model(
             options,
         )
     })?;
-    match app.db.inference_envelope_for_request(&record.id).await {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return Err(stack_selection_conflict(
-                "STACK_SELECTION_MODEL_UNAVAILABLE",
-                "a stack-selection model call requires an explicit request inference authorization",
-                options,
-            ));
-        }
-        Err(error) => return Err(PlanningCompileFailure::Internal(error)),
+    // A stack-selection call is a pre-Campaign Lead model call. Production
+    // funds it with the exact Owner-confirmed subscription admission created
+    // before assessment; the monetary envelope remains the test/legacy path.
+    // The model gateway enforces the selected funding before dispatch.
+    let funding = lead_model_funding(
+        app,
+        &record.id,
+        &record.lead_request_id,
+        gateway.provider(),
+        gateway.model(),
+    )
+    .await
+    .map_err(PlanningCompileFailure::Internal)?;
+    if !funding.funded() {
+        return Err(stack_selection_conflict(
+            "STACK_SELECTION_MODEL_UNAVAILABLE",
+            "a stack-selection model call requires an active Owner-confirmed subscription admission or an explicit request inference authorization",
+            options,
+        ));
     }
     let grant = app
         .db
@@ -18587,6 +18683,41 @@ async fn admit_test_subscription_dispatch(
     }
     match app.db.admit_test_subscription_dispatch(&input.scope).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+/// Test-only: remove the deterministic ActionSpec fixture environment binding
+/// that `test-support` installs at Action creation. A deterministic browser
+/// journey that compiles and freezes a real environment must replace that
+/// placeholder; production builds do not expose this route, and production
+/// code never installs the fixture binding. This does not grant execution
+/// authority: the caller still has to compile a Core-validated plan, obtain a
+/// recorded Lead review and freeze the exact spec.
+#[cfg(feature = "test-support")]
+async fn clear_test_intake_environment_binding(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    match app
+        .db
+        .clear_test_action_environment(&record.action_id)
+        .await
+    {
+        Ok(()) => Json(json!({
+            "requestId": record.id,
+            "actionId": record.action_id,
+            "cleared": true,
+        }))
+        .into_response(),
         Err(error) => api_error(error),
     }
 }
