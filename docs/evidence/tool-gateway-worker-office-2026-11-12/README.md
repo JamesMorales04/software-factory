@@ -1,6 +1,6 @@
 # Core-mediated MCP tool gateway — Worker and Office slice
 
-**Candidate:** `9ff46eeafcb16179567390b5bda9fe8213c0f8d7`  
+**Candidate:** `437cab261683f253c161eea686fe3cf586c9c772`  
 **Branch:** `feat/tool-gateway`  
 **Date:** 2026-11-12  
 **Evidence level:** implementer self-test. Not independent verification,
@@ -65,6 +65,22 @@ still checks document overflow and page-level rendering.
 | Transport bounds | Args ≤ 64 KiB; response ≤ 256 KiB; timeout ≤ 300 s; rate limit per role/tool | `tool_gateway` tests | PASS |
 | Worker tool pack | `gateway_call` is accepted, requires `write_file`, and is hidden when the assignment has no catalog | `factory-worker` tests | PASS |
 | Provider paths | OpenCode and Codex both route `gateway_call` through the same Core endpoint | Code inspection + Worker tests | PASS (static) |
+
+## Canonical-container test evidence
+
+| Test target | Environment | Result |
+|---|---|---|
+| `provider_sandbox` | `software-factory-dev:local`, pinned OpenCode 1.18.32 | 7 passed / 0 failed |
+| `e2e_dispatch_negative --features test-support` | same dev container | 5 passed / 0 failed |
+| `e2e_fixture_dispatch --features test-support` | same dev container | 9 passed / 3 failed in provider-sandbox readiness; host run of the same target passed 12/12 |
+| Host default `--lib` | host Rust 1.90 | 1000 passed / 0 failed / 4 ignored |
+| Host `factory-core` / `factory-worker` | host Rust 1.90 | 70 / 36 passed |
+
+A full container `--tests --features test-support` run is not a supported
+combination: the test-support environment seam conflicts with 20 Core intake
+fixtures that construct their own environment bindings. The gateway tests
+themselves pass in that run; the default lib suite and the feature-gated E2E
+targets are the supported lanes.
 
 ## Live MCP smoke
 

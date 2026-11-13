@@ -1,8 +1,8 @@
 {
   "schema": "factory.tool-gateway-worker-office.v1",
-  "recorded_at": "2026-11-12T23:40:00Z",
+  "recorded_at": "2026-11-13T02:05:00Z",
   "result": "PASS (author-run Worker/Office gateway, live Context7 and Playwright stdio smoke; not independent acceptance)",
-  "candidate_sha": "9ff46eeafcb16179567390b5bda9fe8213c0f8d7",
+  "candidate_sha": "437cab261683f253c161eea686fe3cf586c9c772",
   "branch": "feat/tool-gateway",
   "environment": {
     "core": "factory-core development binary built from the candidate",
@@ -137,7 +137,8 @@
     "No independent verifier, Quality Gate acceptance, live provider turn or security review was performed for this slice.",
     "TRUSTED_LOCAL is not isolated or certified; browser navigation/click/type remain disabled until a controlled network boundary exists.",
     "GitHub read-only is BLOCKED: no GITHUB_MCP_TOKEN or multi-repository token was available for a live cross-repository denial test.",
-    "Playwright navigation/click/type remain deferred; the live smoke used browser_close with no open tab."
+    "Playwright navigation/click/type remain deferred; the live smoke used browser_close with no open tab.",
+    "Container e2e_fixture_dispatch has 3 provider-sandbox readiness failures; host passes 12/12. Full --tests --features test-support is not a supported combination because the test-support environment seam conflicts with Core intake fixtures."
   ],
   "live_mcp": {
     "context7": {
@@ -155,5 +156,11 @@
       "evidence": "github-live.json",
       "detail": "no GITHUB_MCP_TOKEN/multi-repo token; live cross-repo denial NOT_TESTED"
     }
+  },
+  "canonical_container": {
+    "provider_sandbox": "7 passed / 0 failed in software-factory-dev:local with pinned OpenCode 1.18.32",
+    "e2e_dispatch_negative": "5 passed / 0 failed with test-support in the dev container",
+    "e2e_fixture_dispatch": "9 passed / 3 provider-sandbox readiness failures in the dev container; host run 12/12",
+    "unsupported_combination": "Full --tests --features test-support conflicts with 20 Core intake fixtures that construct their own environment binding; not a gateway failure."
   }
 }

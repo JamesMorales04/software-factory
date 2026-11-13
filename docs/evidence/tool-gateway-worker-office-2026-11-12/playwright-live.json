@@ -1,7 +1,7 @@
 {
   "schema": "factory.tool-gateway-live-mcp.v1",
-  "recorded_at": "2026-11-12T23:40:00Z",
-  "candidate_sha": "9ff46eeafcb16179567390b5bda9fe8213c0f8d7",
+  "recorded_at": "2026-11-13T02:05:00Z",
+  "candidate_sha": "437cab261683f253c161eea686fe3cf586c9c772",
   "server": "playwright",
   "tool": "playwright.browser_close",
   "arguments": {},

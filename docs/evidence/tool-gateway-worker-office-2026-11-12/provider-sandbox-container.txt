@@ -1,0 +1,7 @@
+Command:
+  PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose podman compose \
+    -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev \
+    sh -c 'cargo test --locked -p factory-native --test provider_sandbox'
+
+Environment: software-factory-dev:local, pinned OpenCode 1.18.32
+Result: 7 passed; 0 failed; 0 ignored
