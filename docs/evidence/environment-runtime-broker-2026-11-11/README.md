@@ -1,10 +1,18 @@
 # WP1-C environment runtime broker — Compose observation
 
-**Implementation candidate:** `5f98daec2b92e3adaee0b4f12720ed56a8d6ef58` (the docs-only commit that adds this record is reported in the handoff)
 **Observation source commit:** `4bc082f98e6898643e0379e4086107c962a55db1`
+**Pre-rebase implementation candidate:** `5f98daec2b92e3adaee0b4f12720ed56a8d6ef58`
+**Rebased code candidate:** `5feddc9acde4ddaf851877ae136c58e142a40991`
 **Integration merge base:** `61ff424` (WP1-A `19e2723`, WP1-B `3325831`)
-**Date:** 2026-11-11. **Status:** implementer self-test observation, not
-independent acceptance. **Security:** `TRUSTED_LOCAL`; not isolation certified.
+**Date:** 2026-11-11 (rebased 2026-11-12). **Status:** implementer self-test
+observation, not independent acceptance. **Security:** `TRUSTED_LOCAL`; not
+isolation certified.
+
+The real `resolve`/`build` observation ran at `4bc082f`/`5f98daec`. The rebase
+onto `a4591dac` retained the runtime-broker allowlist and Compose configuration
+but dropped the earlier generic Supervisor image-allowlist change as superseded
+by WP1-D's dedicated environment-check route. The recorded build path and hashes
+were not rerun at `5feddc9a`; no rerun claim is made.
 
 The live `software-factory` Compose project was **not** started, stopped,
 recreated, migrated or modified. The observation used the isolated project name
@@ -106,12 +114,37 @@ Results:
 - Core started in the same isolated project and `/health` reported the builder
   `READY` with the same image/digest.
 
+## Rebase verification at `5feddc9a`
+
+The branch was rebased onto `a4591dac` and the earlier generic Supervisor
+image-allowlist change was dropped as superseded by WP1-D's dedicated
+environment-check route. The following checks ran at the rebased code candidate:
+
+- `cargo fmt --all -- --check` — clean.
+- `cargo clippy -p factory-native --all-targets --all-features --locked -- -D warnings` — clean.
+- `cargo test -p factory-native --lib --locked` — 1000 passed, 4 ignored.
+- `cargo test -p factory-native --bin factory-core --locked` — 70 passed.
+- `cargo test -p factory-native --bin factory-worker --locked` — 36 passed.
+- `cargo test -p factory-native --bin factory-verifier --locked` — 11 passed.
+- `cargo test -p factory-native --bin factory-runtime-broker --locked` — 77 passed.
+- `cargo test -p factory-native --bin factory-supervisor --locked` — 14 passed.
+- `python3 -W error::ResourceWarning -m unittest discover -s deploy/environment-builder/tests`
+  — 87 passed.
+- `FACTORY_REAL_PODMAN_TESTS=1 cargo test -p factory-native --test
+  real_podman_environment_check_staging` — 1 passed.
+- `podman compose -f compose.yaml config --quiet` and with `compose.dev.yaml`
+  — exit 0.
+- `factory-architecture-check --root .` — PASS; parity JSON parses.
+
+The real Compose `resolve`/`build` observation was **not** rerun at this
+candidate. Its request/response hashes remain bound to `4bc082f`/`5f98daec`;
+this record does not claim a new real build at `5feddc9a`.
+
 ## NOT_TESTED
 
-- Worker/Verifier frozen check execution through `builder check`; that is the
-  WP1-D gap and is not wired or claimed. The existing generic check path now
-  verifies an `image@digest` reference against the inspected image identity, but
-  it does not realize the frozen Nix/devenv environment.
+- Worker/Verifier frozen check execution through `builder check` is implemented
+  by WP1-D but was not exercised in this WP1-C observation; the real Compose
+  environment-check remains NOT_TESTED and is not re-claimed here.
 - Full Core intake -> Lead review -> freeze -> builder as a live model-driven
   Campaign. Core startup installation and health were exercised; the typed
   client plus error mapping and plan/spec binding are unit-tested.

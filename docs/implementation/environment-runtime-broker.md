@@ -1,10 +1,14 @@
 # Environment runtime broker integration — WP1-C
 
 **Status:** Implemented WP1-C broker/build slice and WP1-D frozen check execution
-— 2026-11-11. This is not acceptance evidence and does not claim a real
-Nix/devenv build or check in the installed Compose stack. An isolated Compose
-observation (`wp1c-e2e`) verified the bundle digest, nested import, broker
-`READY` and Core `READY`; see the
+— 2026-11-11. This is not independent acceptance. An isolated Compose project
+(`wp1c-e2e2`) verified the bundle digest, nested import, broker `READY` and Core
+`READY`; a follow-up isolated project (`sfwp1c`, observation source `4bc082f`)
+performed a real plan-bound `resolve` and `build` through the broker with an
+`EnvironmentBuildReceipt` (SBOM/output hashes, complete sandbox attestation,
+cleanup) and a warm repeat with identical output/SBOM hashes. The live
+`software-factory` project was not modified, and a real Compose
+environment-check remains NOT_TESTED. See the
 [evidence record](../evidence/environment-runtime-broker-2026-11-11/README.md).
 `TRUSTED_LOCAL`; a container is not isolation certification.
 
@@ -171,15 +175,21 @@ unchanged.
 ## 2. Image identity and allowlist
 
 - `FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGE` is the only image accepted for
-  builder operations. It is imported from the bundle and its digest and
-  inspected image ID are verified; the generic `FACTORY_RUNTIME_IMAGES`
-  allowlist and provider/supervisor/Rust images are never accepted.
+  builder operations. A dedicated `FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGES`
+  allowlist must contain that exact image; the generic `FACTORY_RUNTIME_IMAGES`
+  allowlist and provider/supervisor/Rust images are never accepted. The image
+  is imported from the bundle and its digest and inspected image ID are
+  verified.
 - The broker reads the exact content digest from
   `FACTORY_RUNTIME_ENVIRONMENT_BUILDER_DIGEST_FILE` (Compose:
   `/bundles/environment-builder.digest`) or the explicit `_DIGEST` variable.
-- The bundle service computes `sha256:<rootfs-tar>` and writes it next to
-  `environment-builder-rootfs.tar`; the broker recomputes the bundle SHA-256
-  before `podman import` and labels the imported image with that exact digest.
+- The trusted one-shot bundle service computes `sha256:<rootfs-tar>` after the
+  tar is complete and writes it next to `environment-builder-rootfs.tar`. The
+  broker recomputes the bundle SHA-256, refuses a mismatch, imports the tar and
+  labels the imported image with that exact digest. It never trusts or pulls the
+  mutable tag. The configured builder image is skipped during generic tag
+  prepull, so a missing bundle disables only environment operations rather than
+  failing broker startup.
 - Every request must match the configured image and digest. The broker inspects
   the imported image ID and refuses a changed identity. Generic execution by
   `builder-image@digest` is mapped to the verified imported image ID; an
@@ -276,19 +286,19 @@ fetch/resolve.
 
 - `cargo fmt --all -- --check`
 - `cargo clippy -p factory-native --all-targets --all-features -- -D warnings`
-- `cargo test -p factory-native --lib -- --test-threads=1` — 946 passed,
-  4 ignored.
-- `cargo test -p factory-native --bin factory-core` — 65 passed.
-- `cargo test -p factory-native --bin factory-worker` — 34 passed, including
+- `cargo test -p factory-native --lib --locked` — 1000 passed, 4 ignored.
+- `cargo test -p factory-native --bin factory-core` — 70 passed.
+- `cargo test -p factory-native --bin factory-worker` — 36 passed, including
   the frozen builder-check path, description propagation, bounded
   description-first tool diagnostics, missing Campaign binding refusal, failure
   exit-code mapping, timeout refusal and exact request binding.
 - `cargo test -p factory-native --bin factory-verifier` — 11 passed, including
   the broker builder-check path, description binding, refusal, cleanup and
   missing binding.
-- `cargo test -p factory-native --bin factory-runtime-broker` — 75 passed,
-  including environment-check owner separation, workspace ownership, exact
-  builder identity, description binding, plan/spec/receipt mismatch,
+- `cargo test -p factory-native --bin factory-runtime-broker` — 77 passed,
+  including the dedicated builder-image allowlist, exact builder identity,
+  generic-check digest binding, environment-check owner separation, workspace
+  ownership, description binding, plan/spec/receipt mismatch,
   argv/timeout bounds, success/failure exit mapping, bounded diagnostics,
   active-check cancellation/cleanup, exact-token active binding (a stale token
   cannot remove another check), cancellation tombstones that block a check
@@ -306,7 +316,7 @@ fetch/resolve.
   Podman volume removes a deleted file, applies a modified file, and preserves
   the volume identity/labels.
 - `python3 -W error::ResourceWarning -m unittest discover -s deploy/environment-builder/tests`
-  — 69 passed, including description bounds, failed-check
+  — 87 passed, including description bounds, failed-check
   exit-code/stdout/stderr preservation, bounded redacted stderr tail,
   requested-cwd propagation, typed timeout, offline npm cache, proof that a
   check uses the candidate workspace rather than the build cache, over-budget
@@ -326,6 +336,12 @@ fetch/resolve.
   `defaultNixpkgs=github:NixOS/nixpkgs/ac62194c…`. The live
   `software-factory` project was not modified. See the
   [evidence record](../evidence/environment-runtime-broker-2026-11-11/README.md).
+- Follow-up isolated Compose run (`podman compose -p sfwp1c`, observation source
+  `4bc082f`): real plan-bound `/v1/environments/resolve` and
+  `/v1/environments/build` with exact spec/digest/SBOM/output hashes, complete
+  sandbox attestation, `cleanupConfirmed=true` and a warm repeat with identical
+  output/SBOM hashes. See the evidence record for the exact hashes and the
+  rebase boundary.
 
 **NOT_TESTED / remaining gap:** a real end-to-end `check` through the broker
 against a running Compose stack with a real frozen spec/receipt and a real
@@ -335,5 +351,6 @@ tests only; those tests do not claim a real Nix/devenv environment-check result.
 The live campaign's `npm test` exit 254 was reproduced against the real builder
 image and real npm for an unstaged workspace, and the staging regression is
 covered by a real Git worktree plus archive import. A full live Compose rerun
-with the v16 environment remains open. The earlier WP1-C `resolve`/`build`
-end-to-end gap also remains.
+with the v16 environment remains open. The WP1-C real `resolve`/`build`
+observation was recorded before this rebase at source `4bc082f`; it was not
+rerun at the rebased candidate and no independent acceptance is claimed.
