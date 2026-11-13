@@ -494,6 +494,61 @@ try {
     }
   }
 
+  const themeToggle = page.getByRole("button", { name: /switch theme/i });
+  const densityToggle = page.getByRole("button", { name: /switch density/i });
+  await themeToggle.click();
+  await themeToggle.click();
+  await densityToggle.click();
+  await page
+    .getByRole("heading", { name: "MCP tool gateway", exact: true })
+    .waitFor();
+  const darkAccessibility = await new AxeBuilder({ page })
+    .include('[data-testid="tool-gateway-panel"]')
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+    .analyze();
+  const darkBlocking = darkAccessibility.violations.filter(
+    (violation) =>
+      violation.impact === "critical" || violation.impact === "serious",
+  );
+  assert.deepEqual(
+    darkBlocking.map((violation) => violation.id),
+    [],
+    `Dark/compact MCP gateway accessibility violations: ${darkBlocking
+      .map((violation) => violation.id)
+      .join(", ")}`,
+  );
+  if (process.env.FACTORY_EVIDENCE_DIR) {
+    await page.screenshot({
+      path: join(
+        process.env.FACTORY_EVIDENCE_DIR,
+        `runtime-gateway-${gatewayDisabled ? "disabled" : "enabled"}-dark-compact-1440.png`,
+      ),
+      fullPage: true,
+    });
+  }
+  await page.setViewportSize({ width: 390, height: 900 });
+  const darkViewport = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }));
+  assert.equal(
+    darkViewport.scrollWidth,
+    darkViewport.clientWidth,
+    "dark/compact Runtime diagnostics must not overflow at 390px",
+  );
+  if (process.env.FACTORY_EVIDENCE_DIR) {
+    await page.screenshot({
+      path: join(
+        process.env.FACTORY_EVIDENCE_DIR,
+        `runtime-gateway-${gatewayDisabled ? "disabled" : "enabled"}-dark-compact-390.png`,
+      ),
+      fullPage: true,
+    });
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await densityToggle.click();
+  await themeToggle.click();
+
   await page
     .locator(".sidebar")
     .getByRole("link", { name: "Settings", exact: true })
