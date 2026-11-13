@@ -49,8 +49,24 @@ impl CoreProcess {
         units: usize,
         mode: &str,
     ) -> Self {
+        Self::start_with_lead_fixture_config(database, port, log, units, mode, None)
+    }
+
+    fn start_with_gateway(database: &Path, port: u16, log: &Path, gateway: &Path) -> Self {
+        Self::start_with_lead_fixture_config(database, port, log, 1, "parallel", Some(gateway))
+    }
+
+    fn start_with_lead_fixture_config(
+        database: &Path,
+        port: u16,
+        log: &Path,
+        units: usize,
+        mode: &str,
+        gateway: Option<&Path>,
+    ) -> Self {
         let file = File::create(log).expect("core log");
-        let child = Command::new(env!("CARGO_BIN_EXE_factory-core"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_factory-core"));
+        command
             .env("FACTORY_DATABASE", database)
             .env("FACTORY_BIND", format!("127.0.0.1:{port}"))
             .env("FACTORY_PROVIDER_KIND", "fixture")
@@ -67,9 +83,11 @@ impl CoreProcess {
             .env("FACTORY_ALLOW_TEST_UPSTREAM", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::from(file))
-            .spawn()
-            .expect("spawn factory-core");
+            .stderr(Stdio::from(file));
+        if let Some(gateway) = gateway {
+            command.env("FACTORY_TOOL_GATEWAY_CONFIG", gateway);
+        }
+        let child = command.spawn().expect("spawn factory-core");
         Self {
             child,
             log: log.to_path_buf(),
@@ -509,7 +527,8 @@ fn v2_fixture_authorization(
     })
 }
 
-fn v2_provider_authorization(
+#[allow(clippy::too_many_arguments)]
+fn v2_provider_authorization_with_tools(
     authorization_id: &str,
     delegation_id: &str,
     actor: &str,
@@ -517,6 +536,7 @@ fn v2_provider_authorization(
     provider: &str,
     model: &str,
     authorized_micros: u64,
+    allowed_tools: &[&str],
 ) -> Value {
     json!({
         "authorization_id": authorization_id,
@@ -529,15 +549,37 @@ fn v2_provider_authorization(
         "model": model,
         "provider_mode": "build",
         "delegation_id": delegation_id,
-        "allowed_tools": ["write_file", "run_command"],
+        "allowed_tools": allowed_tools,
         "operations": v2_operations_json(),
         "progress": v2_progress_json(),
         "authorized_micros": authorized_micros,
     })
 }
 
+fn v2_provider_authorization(
+    authorization_id: &str,
+    delegation_id: &str,
+    actor: &str,
+    rationale: &str,
+    provider: &str,
+    model: &str,
+    authorized_micros: u64,
+) -> Value {
+    v2_provider_authorization_with_tools(
+        authorization_id,
+        delegation_id,
+        actor,
+        rationale,
+        provider,
+        model,
+        authorized_micros,
+        &["write_file", "run_command"],
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
-async fn start_request_scoped_provider_campaign(
+#[allow(clippy::too_many_arguments)]
+async fn start_request_scoped_provider_campaign_with_tools(
     client: &reqwest::Client,
     base_url: &str,
     database: &Path,
@@ -549,6 +591,7 @@ async fn start_request_scoped_provider_campaign(
     model: &str,
     objective: &str,
     suffix: &str,
+    allowed_tools: &[&str],
 ) -> Value {
     let classified = operator(
         client,
@@ -649,7 +692,7 @@ async fn start_request_scoped_provider_campaign(
         client,
         reqwest::Method::POST,
         format!("{base_url}/lead/requests/{request_id}/start"),
-        Some(v2_provider_authorization(
+        Some(v2_provider_authorization_with_tools(
             &format!("{suffix}-provider-auth"),
             delegation_id,
             "e2e-operator",
@@ -657,6 +700,7 @@ async fn start_request_scoped_provider_campaign(
             provider,
             model,
             5_000_000,
+            allowed_tools,
         )),
     )
     .await;
@@ -669,6 +713,37 @@ async fn start_request_scoped_provider_campaign(
         admit_test_campaign(database, campaign_id).await;
     }
     projection
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_request_scoped_provider_campaign(
+    client: &reqwest::Client,
+    base_url: &str,
+    database: &Path,
+    project_id: &str,
+    action_id: &str,
+    config_hash: &str,
+    delegation_id: &str,
+    provider: &str,
+    model: &str,
+    objective: &str,
+    suffix: &str,
+) -> Value {
+    start_request_scoped_provider_campaign_with_tools(
+        client,
+        base_url,
+        database,
+        project_id,
+        action_id,
+        config_hash,
+        delegation_id,
+        provider,
+        model,
+        objective,
+        suffix,
+        &["write_file", "run_command"],
+    )
+    .await
 }
 
 #[tokio::test]
@@ -5499,6 +5574,396 @@ async fn recovery_worker_cleans_an_orphaned_provider_session_after_restart() {
     assert_eq!(cleanup.as_deref(), Some("session_delete_verified_absent"));
     pool.close().await;
     provider_server.abort();
+    core.stop();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn worker_gateway_call_is_bound_to_the_live_lease_and_audited() {
+    let root = std::env::temp_dir().join(format!(
+        "factory-e2e-gateway-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let repository = root.join("repo");
+    std::fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "-q"]);
+    git(&repository, &["config", "user.name", "Gateway E2E"]);
+    git(
+        &repository,
+        &["config", "user.email", "gateway@example.invalid"],
+    );
+    std::fs::create_dir_all(repository.join("src")).unwrap();
+    std::fs::write(repository.join("src/seed.txt"), "seed\n").unwrap();
+    git(&repository, &["add", "src/seed.txt"]);
+    git(&repository, &["commit", "-qm", "seed"]);
+    git(
+        &repository,
+        &["remote", "add", "origin", "https://github.com/acme/widgets"],
+    );
+
+    async fn mcp_handler(
+        axum::extract::State(calls): axum::extract::State<Arc<AtomicUsize>>,
+        axum::Json(body): axum::Json<Value>,
+    ) -> axum::Json<Value> {
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+        let method = body.get("method").and_then(Value::as_str);
+        if method == Some("initialize") {
+            return axum::Json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"protocolVersion": "2025-03-26"}
+            }));
+        }
+        if method != Some("tools/call") {
+            return axum::Json(json!({"jsonrpc": "2.0", "id": id, "result": {}}));
+        }
+        calls.fetch_add(1, Ordering::SeqCst);
+        let tool = body["params"]["name"].as_str().unwrap_or_default();
+        let text = if tool == "issue_read" {
+            "github e2e ok"
+        } else {
+            "gateway e2e ok"
+        };
+        axum::Json(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {"content": [{"type": "text", "text": text}]}
+        }))
+    }
+
+    let mcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("MCP listener");
+    let mcp_address = mcp_listener.local_addr().expect("MCP address");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mcp_server = tokio::spawn({
+        let calls = Arc::clone(&calls);
+        async move {
+            axum::serve(
+                mcp_listener,
+                axum::Router::new()
+                    .route("/mcp", axum::routing::post(mcp_handler))
+                    .route("/github", axum::routing::post(mcp_handler))
+                    .with_state(calls),
+            )
+            .await
+            .expect("fake MCP server");
+        }
+    });
+
+    let gateway_path = root.join("gateway.json");
+    std::fs::write(
+        &gateway_path,
+        serde_json::to_vec(&json!({
+            "maxCallsPerMinute": 60,
+            "servers": [
+                {
+                    "transport": "http",
+                    "id": "context7",
+                    "endpoint": format!("http://{mcp_address}/mcp"),
+                    "allowLoopbackHttp": true
+                },
+                {
+                    "transport": "http",
+                    "id": "github-read",
+                    "endpoint": format!("http://{mcp_address}/github"),
+                    "allowLoopbackHttp": true
+                }
+            ],
+            "tools": [
+                {
+                    "id": "context7.query-docs",
+                    "server": "context7",
+                    "tool": "query-docs",
+                    "roles": ["IMPLEMENTER", "REPAIRER"],
+                    "readOnly": true,
+                    "timeoutSecs": 30,
+                    "maxResponseBytes": 262144
+                },
+                {
+                    "id": "github.issue_read",
+                    "server": "github-read",
+                    "tool": "issue_read",
+                    "roles": ["IMPLEMENTER", "REPAIRER"],
+                    "readOnly": true,
+                    "timeoutSecs": 30,
+                    "maxResponseBytes": 262144
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let database = root.join("factory.sqlite");
+    let port = free_port();
+    let base_url = format!("http://127.0.0.1:{port}");
+    let mut core =
+        CoreProcess::start_with_gateway(&database, port, &root.join("core.log"), &gateway_path);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    wait_healthy(&client, &base_url, &mut core).await;
+
+    let project: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/projects"),
+        Some(json!({"repository": repository, "idempotency_key": "gateway-project"})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let project_id = project["id"].as_str().unwrap().to_owned();
+    let config: Value = operator(
+        &client,
+        reqwest::Method::PUT,
+        format!("{base_url}/projects/{project_id}/config"),
+        Some(json!({
+            "expectedRevision": 1,
+            "allowedPaths": ["src"],
+            "capabilities": ["repository-edit", "generic-toolchain"],
+            "qualityProfile": "generic",
+            "active": true
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let config_hash = config["configHash"].as_str().unwrap().to_owned();
+    let action: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/actions"),
+        Some(json!({
+            "project_id": project_id,
+            "objective": "Exercise the mediated gateway from a live Worker lease.",
+            "provider": "opencode",
+            "model": "deepseek-v4.1-flash",
+            "idempotency_key": "gateway-action",
+            "allowed_paths": ["src"],
+            "checks": [
+                {"id":"build","kind":"build","description":"build","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"test","kind":"test","description":"test","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"content","kind":"functional","description":"seed content","command":["grep","-q","seed","src/seed.txt"],"expectExit":0,"timeoutSecs":30},
+                {"id":"negative","kind":"negative","description":"absent content","command":["grep","-q","absent","src/seed.txt"],"expectExit":1,"timeoutSecs":30}
+            ]
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let action_id = action["id"].as_str().unwrap().to_owned();
+
+    seed_v2_grant(
+        &database,
+        &v2_grant(
+            "gateway-grant",
+            &project_id,
+            "opencode",
+            "deepseek-v4.1-flash",
+            true,
+            1,
+        ),
+    )
+    .await;
+    seed_provider_settings(&database, "opencode", "opencode", "deepseek-v4.1-flash").await;
+    let started = start_request_scoped_provider_campaign_with_tools(
+        &client,
+        &base_url,
+        &database,
+        &project_id,
+        &action_id,
+        &config_hash,
+        "gateway-grant",
+        "opencode",
+        "deepseek-v4.1-flash",
+        "Exercise the mediated gateway from a live Worker lease.",
+        "gateway",
+        &["write_file", "run_command", "gateway_call"],
+    )
+    .await;
+    let campaign_id = started["campaign"]["id"].as_str().unwrap().to_owned();
+    let run: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns/{campaign_id}/runs"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let run_id = run["id"]
+        .as_str()
+        .or_else(|| started["run"]["id"].as_str())
+        .unwrap_or_else(|| panic!("run id missing: run={run} started={started}"))
+        .to_owned();
+    let attempt: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/runs/{run_id}/attempts"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let attempt_id = attempt["id"]
+        .as_str()
+        .or_else(|| started["attempt"]["id"].as_str())
+        .unwrap_or_else(|| panic!("attempt id missing: attempt={attempt} started={started}"))
+        .to_owned();
+
+    let registration: Value = client
+        .post(format!("{base_url}/worker/register"))
+        .bearer_auth(BOOTSTRAP_TOKEN)
+        .json(&json!({
+            "worker_id": "gateway-worker",
+            "registration_key": "gateway-registration"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let session_token = registration["session_token"].as_str().unwrap();
+    let claim: Value = client
+        .post(format!("{base_url}/worker/claim"))
+        .bearer_auth(session_token)
+        .json(&json!({"worker_id": "gateway-worker"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let assignment = &claim["assignment"];
+    assert_eq!(
+        assignment["lease"]["attempt_id"].as_str().unwrap(),
+        attempt_id
+    );
+    let generation = assignment["lease"]["generation"].as_i64().unwrap();
+    assert!(
+        assignment["gateway_tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["id"] == "context7.query-docs")
+            && assignment["gateway_tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["id"] == "github.issue_read"),
+        "claim must deliver the Implementer gateway catalog: {assignment}"
+    );
+
+    let wrong_generation = client
+        .post(format!("{base_url}/worker/tool_gateway"))
+        .bearer_auth(session_token)
+        .json(&json!({
+            "workerId": "gateway-worker",
+            "attemptId": attempt_id,
+            "generation": generation + 1,
+            "tool": "context7.query-docs",
+            "arguments": {"libraryId": "/react/react", "query": "hooks"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong_generation.status(), StatusCode::FORBIDDEN);
+
+    let response = client
+        .post(format!("{base_url}/worker/tool_gateway"))
+        .bearer_auth(session_token)
+        .json(&json!({
+            "workerId": "gateway-worker",
+            "attemptId": attempt_id,
+            "generation": generation,
+            "tool": "context7.query-docs",
+            "arguments": {"libraryId": "/react/react", "query": "hooks"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["content"]["content"][0]["text"], "gateway e2e ok");
+
+    let github_ok = client
+        .post(format!("{base_url}/worker/tool_gateway"))
+        .bearer_auth(session_token)
+        .json(&json!({
+            "workerId": "gateway-worker",
+            "attemptId": attempt_id,
+            "generation": generation,
+            "tool": "github.issue_read",
+            "arguments": {"method": "get", "owner": "acme", "repo": "widgets", "issue_number": 1}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(github_ok.status(), StatusCode::OK);
+    let github_body: Value = github_ok.json().await.unwrap();
+    assert_eq!(
+        github_body["content"]["content"][0]["text"],
+        "github e2e ok"
+    );
+
+    let github_other = client
+        .post(format!("{base_url}/worker/tool_gateway"))
+        .bearer_auth(session_token)
+        .json(&json!({
+            "workerId": "gateway-worker",
+            "attemptId": attempt_id,
+            "generation": generation,
+            "tool": "github.issue_read",
+            "arguments": {"method": "get", "owner": "other", "repo": "widgets", "issue_number": 1}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(github_other.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "cross-repo denial must not reach MCP"
+    );
+
+    let db = factory_native::db::Database::open(&database).await.unwrap();
+    let recent = db.recent_tool_gateway_calls(10).await.unwrap();
+    assert_eq!(recent.len(), 3, "{recent:?}");
+    for audit in &recent {
+        assert_eq!(audit.worker_id, "gateway-worker");
+        assert_eq!(audit.attempt_id, attempt_id);
+        assert_eq!(audit.generation, generation);
+        assert_eq!(audit.role, "IMPLEMENTER");
+        assert_eq!(audit.args_sha256.len(), 64);
+    }
+    assert!(recent.iter().any(|audit| {
+        audit.tool == "context7.query-docs" && audit.decision == "ALLOW" && audit.error.is_none()
+    }));
+    assert!(recent.iter().any(|audit| {
+        audit.tool == "github.issue_read" && audit.decision == "ALLOW" && audit.error.is_none()
+    }));
+    assert!(recent.iter().any(|audit| {
+        audit.tool == "github.issue_read"
+            && audit.decision == "DENY"
+            && audit.error.as_deref() == Some("repository_scope")
+    }));
+    db.close().await;
+
+    mcp_server.abort();
     core.stop();
     let _ = std::fs::remove_dir_all(root);
 }
