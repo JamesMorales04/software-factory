@@ -110,6 +110,8 @@ not the installed runtime and not authority.
   role as Implementer and binds the request to the Worker session, live
   Attempt lease and generation.
 - Arguments are bounded and hashed; raw arguments are not written to audit.
+- Audit errors are stable classes (`role_denied`, `transport`, `rate_limited`,
+  etc.), never raw transport URLs, commands or MCP response bodies.
 - Every ALLOW/DENY is persisted in `tool_gateway_calls` with the argument
   digest, decision, latency, response bytes, error class and exact
   Worker/Attempt/generation binding. The in-memory log remains a bounded local

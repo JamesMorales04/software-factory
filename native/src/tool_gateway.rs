@@ -193,6 +193,20 @@ fn role_allowed(spec: &GatewayToolSpec, role: GatewayRole) -> bool {
         && (role != GatewayRole::Reviewer || core_tool_is_read_only(spec))
 }
 
+fn audit_error(error: &GatewayError) -> &'static str {
+    match error {
+        GatewayError::NotConfigured => "not_configured",
+        GatewayError::UnknownTool(_) => "unknown_tool",
+        GatewayError::Denied { .. } => "role_denied",
+        GatewayError::InvalidArguments(_) => "invalid_arguments",
+        GatewayError::RateLimited(_) => "rate_limited",
+        GatewayError::Transport(_) => "transport",
+        GatewayError::ResponseTooLarge => "response_too_large",
+        GatewayError::InvalidResponse(_) => "invalid_response",
+        GatewayError::Config(_) => "configuration",
+    }
+}
+
 fn default_timeout() -> u64 {
     DEFAULT_TIMEOUT_SECS
 }
@@ -1330,7 +1344,7 @@ impl ToolGateway {
                     started,
                     "ALLOW",
                     0,
-                    Some(&error.to_string()),
+                    Some(audit_error(&error)),
                 );
                 GatewayCallReport {
                     outcome: Err(error),
@@ -1355,7 +1369,7 @@ impl ToolGateway {
             started,
             "DENY",
             0,
-            Some(&error.to_string()),
+            Some(audit_error(&error)),
         );
         GatewayCallReport {
             outcome: Err(error),
@@ -1851,6 +1865,7 @@ for line in sys.stdin:
         assert!(matches!(report.outcome, Err(GatewayError::Denied { .. })));
         assert_eq!(report.audit.decision, "DENY");
         assert_eq!(report.audit.role, GatewayRole::Verifier);
+        assert_eq!(report.audit.error.as_deref(), Some("role_denied"));
     }
 
     #[test]
