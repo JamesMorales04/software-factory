@@ -4,6 +4,10 @@
 //! disposable SQLite databases and Git repositories. Each case asserts an
 //! observable HTTP or process outcome. No provider session is involved.
 
+#![cfg(feature = "test-support")]
+// These binary-level E2E fixtures use the explicit `test-support` environment
+// seam. Production builds do not contain it; run this target with
+// `--features test-support`.
 use std::{
     fs::File,
     net::TcpListener,
