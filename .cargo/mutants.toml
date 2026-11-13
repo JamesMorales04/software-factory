@@ -1,0 +1,14 @@
+# Mutation-testing scope for the Factory workspace.
+#
+# `cargo mutants --in-diff` is the PR lane; a full package run is scheduled and
+# never a required per-PR gate. Mutation testing is an adequacy signal, not a
+# replacement for review or coverage.
+test_tool = "cargo"
+timeout_multiplier = 2.0
+exclude_globs = [
+  "native/src/**/tests.rs",
+  "native/src/**/*_tests.rs",
+  "native/tests/**",
+  "scripts/**",
+  "office/**",
+]

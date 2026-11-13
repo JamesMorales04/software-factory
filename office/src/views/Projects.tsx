@@ -140,6 +140,9 @@ export function Projects() {
     }
     repositoryRequested.current = true;
     void loadRepositories();
+    // One-shot bootstrap guarded by repositoryRequested; loadRepositories is
+    // intentionally excluded so a new function identity cannot refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, options?.github.connected]);
 
   async function loadRepositories(event?: React.FormEvent) {
@@ -188,7 +191,7 @@ export function Projects() {
           name: result.project.name || repository.full_name,
         }),
       );
-      navigate(`/projects/${encodeURIComponent(result.project.id)}`);
+      void navigate(`/projects/${encodeURIComponent(result.project.id)}`);
     } catch (cause) {
       setError(errorMessage(cause, t("projects.import.github.errorConnect")));
     } finally {
@@ -267,7 +270,7 @@ export function Projects() {
         zipSync(files, { level: 6 }),
       );
       await refresh();
-      navigate(`/projects/${encodeURIComponent(project.id)}`);
+      void navigate(`/projects/${encodeURIComponent(project.id)}`);
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") return;
       setError(errorMessage(cause, t("projects.computer.error")));
@@ -297,7 +300,7 @@ export function Projects() {
           commit: shortId(project.base_commit, 12),
         }),
       );
-      navigate(`/projects/${encodeURIComponent(project.id)}`);
+      void navigate(`/projects/${encodeURIComponent(project.id)}`);
     } catch (cause) {
       setError(errorMessage(cause, t("projects.error.register")));
     } finally {
@@ -434,7 +437,9 @@ export function Projects() {
                 )}
                 <form
                   className="project-repo-search"
-                  onSubmit={loadRepositories}
+                  onSubmit={(event) => {
+                    void loadRepositories(event);
+                  }}
                 >
                   <label>
                     {t("projects.import.github.searchLabel")}
@@ -561,7 +566,12 @@ export function Projects() {
 
         {tab === "url" && (
           <section role="tabpanel" aria-label={t("projects.import.tab.url")}>
-            <form className="create" onSubmit={onRegisterUrl}>
+            <form
+              className="create"
+              onSubmit={(event) => {
+                void onRegisterUrl(event);
+              }}
+            >
               <p className="muted">{t("projects.import.url.help")}</p>
               <label>
                 {t("projects.import.url.label")}

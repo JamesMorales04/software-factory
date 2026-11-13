@@ -408,7 +408,7 @@ export function Home() {
       const created = await coreApi.createIntakeRequest(input);
       setPolicySetup(null);
       setPolicyAcknowledged(false);
-      navigate(`/requests/${encodeURIComponent(created.id)}`);
+      void navigate(`/requests/${encodeURIComponent(created.id)}`);
     } catch (cause) {
       if (
         cause instanceof CoreApiError &&

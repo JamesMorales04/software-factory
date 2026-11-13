@@ -123,6 +123,23 @@ pub(crate) fn negatives() -> Result<(), String> {
     ])
 }
 
+/// Run the stage-addressed Compose scenario runner.
+///
+/// The runner is development/test infrastructure. It owns stage selection,
+/// resumable state and evidence collection; it does not grant authority or
+/// acceptance, and it never starts a paid provider or contacts GitHub.
+pub(crate) fn scenario(args: &[String]) -> Result<(), String> {
+    let mut command = Command::new("python3");
+    command.arg("scripts/e2e/scenario.py");
+    command.args(args);
+    crate::process::run(command).map_err(|error| {
+        format!(
+            "{error}\nThe scenario runner requires python3 and the Compose/Podman stack. \
+             Run `cargo xtask e2e scenario --doctor` first."
+        )
+    })
+}
+
 pub(crate) fn unsupported(name: &str) -> Result<(), String> {
     Err(format!(
         "E2E suite {name:?} is not implemented. Available suites: {}",
@@ -137,6 +154,7 @@ pub(crate) fn unsupported(name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::office_commands;
+    use std::process::Command;
 
     #[test]
     fn office_journey_builds_candidate_binaries_before_launching_browser() {
@@ -150,6 +168,24 @@ mod tests {
         assert_eq!(
             browser.get_args().collect::<Vec<_>>(),
             ["office/e2e-browser/rust-journey.mjs"]
+        );
+    }
+
+    #[test]
+    fn scenario_runner_forwards_stage_arguments() {
+        // Build the same command shape as `scenario` without running Python.
+        let mut command = Command::new("python3");
+        command.arg("scripts/e2e/scenario.py");
+        command.args(["--from", "gate", "--to", "summary"]);
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "scripts/e2e/scenario.py",
+                "--from",
+                "gate",
+                "--to",
+                "summary"
+            ]
         );
     }
 }

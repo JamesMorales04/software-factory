@@ -91,6 +91,14 @@ Load only what the task needs:
   OpenCode boundaries, terminal evidence and permissions.
 - [Persistence and transactions](references/persistence-and-transactions.md) —
   SQLite/WAL, atomic reservations, receipts and recovery.
+- [Testing](references/testing.md) — nextest, property/snapshot tests, mutation
+  sampling, determinism, negative cases.
+- [Performance](references/performance.md) — measurement, allocation, async
+  blocking, N+1, bounded queues and profiling.
+- [SQLx and migrations](references/sqlx-and-migrations.md) — compile-time
+  queries, transactions, WAL, busy/locked handling and safe migrations.
+- [Unsafe and verification](references/unsafe-and-verification.md) — safety
+  comments, Miri/Kani, FFI and the limits of each proof.
 - [Errors and security](references/errors-and-security.md) — typing failures,
   redaction, path and credential boundaries.
 

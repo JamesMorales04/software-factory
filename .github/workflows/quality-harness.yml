@@ -1,0 +1,58 @@
+name: Quality harness
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  quality-harness:
+    name: Scenario runner and Office quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: office/package-lock.json
+      - name: Install Office dependencies
+        working-directory: office
+        run: npm ci
+      - name: Install Chromium for the component and axe lanes
+        working-directory: office
+        run: npx playwright install --with-deps chromium
+      - name: Run the quality harness lane
+        env:
+          QUALITY_HARNESS_BROWSER_REPEAT: "20"
+        run: bash scripts/ci/quality-harness.sh
+
+  dependency-policy:
+    name: Dependency licenses, bans and sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.90.0
+      - name: Install pinned cargo-deny
+        run: cargo install cargo-deny --version 0.18.4 --locked
+      - name: Check dependency policy
+        run: cargo deny check licenses bans sources

@@ -129,6 +129,8 @@ Stop and report if:
 
 ## 7. References
 
+- [WCAG 2.2 manual matrix](references/wcag-2.2-manual.md) — keyboard, focus,
+  reflow, target size, screen reader and content checks.
 - [Office feature parity](../office-feature-parity/SKILL.md)
 - [Factory Office design](../factory-office-design/SKILL.md)
 - [Feature removal](../feature-removal/SKILL.md)

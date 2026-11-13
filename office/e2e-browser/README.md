@@ -25,6 +25,19 @@ The legacy API journeys and provider-specific views were retired with the former
 implementation. Historical records are archived under
 `docs/evidence/history/`.
 
+## Accessibility scan
+
+`npm run test:a11y` runs `axe-check.mjs` against a running Office URL and writes
+a bounded JSON report. Serious/critical violations fail the command. This is an
+automated floor, not a WCAG conformance claim; keyboard, focus visibility,
+320 px/400 % reflow, screen-reader output and content quality remain manual.
+
+```sh
+FACTORY_OFFICE_URL=http://127.0.0.1:8471 \
+CHROMIUM_EXE=/path/to/chrome \
+npm run test:a11y
+```
+
 ## WP10 quality-first Office acceptance
 
 `wave12-acceptance.mjs` starts an isolated real Rust Core on a dedicated

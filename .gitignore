@@ -24,3 +24,6 @@ __pycache__/
 
 office/node_modules/
 office/e2e-browser/node_modules
+
+# Mutation-testing output.
+mutants.out/

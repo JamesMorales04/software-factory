@@ -73,6 +73,22 @@ Browser acceptance is a frozen spec check of kind `browser` (for example
 Missing Chromium or `playwright-core` yields `NOT_TESTED`; a test failure yields
 `FAIL`; neither is accepted by the Quality Gate.
 
+## Automated accessibility floor
+
+`office` includes `npm run test:a11y` (`e2e-browser/axe-check.mjs`). It runs
+axe-core against a running Office URL and writes a bounded JSON report. Serious
+and critical violations fail the command. This is an automated floor only:
+keyboard order, focus visibility, 320 px/400 % reflow, screen-reader output and
+content quality remain manual checks in the UI-change acceptance skill.
+
+## Playwright Test Agents
+
+`npx playwright init-agents --loop=opencode` can generate planner/generator/
+healer agent definitions for authoring tests. Use planner/generator to draft a
+spec against the real UI, then review and harden the spec. Do not treat a healer
+result as a fix: it restores the quality of the suite it was given and must be
+reviewed as a diff. Generated specs are authoring aids, not acceptance evidence.
+
 ## Playwright MCP evaluation
 
 `@playwright/mcp` (`0.0.83` available at evaluation time) was evaluated and
