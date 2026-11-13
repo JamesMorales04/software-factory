@@ -4762,9 +4762,66 @@ async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
     git(&repository, &["add", "src/seed.txt"]);
     git(&repository, &["commit", "-qm", "seed"]);
 
+    async fn mcp_handler(axum::Json(body): axum::Json<Value>) -> axum::Json<Value> {
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+        if body.get("method").and_then(Value::as_str) == Some("initialize") {
+            return axum::Json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"protocolVersion": "2025-03-26"}
+            }));
+        }
+        axum::Json(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {"content": [{"type": "text", "text": "provider gateway ok"}]}
+        }))
+    }
+    let mcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("MCP listener");
+    let mcp_address = mcp_listener.local_addr().expect("MCP address");
+    tokio::spawn(async move {
+        axum::serve(
+            mcp_listener,
+            axum::Router::new().route("/mcp", axum::routing::post(mcp_handler)),
+        )
+        .await
+        .expect("fake MCP server");
+    });
+    let gateway_path = root.join("gateway.json");
+    std::fs::write(
+        &gateway_path,
+        serde_json::to_vec(&json!({
+            "maxCallsPerMinute": 60,
+            "servers": [{
+                "transport": "http",
+                "id": "context7",
+                "endpoint": format!("http://{mcp_address}/mcp"),
+                "allowLoopbackHttp": true
+            }],
+            "tools": [{
+                "id": "context7.query-docs",
+                "server": "context7",
+                "tool": "query-docs",
+                "roles": ["IMPLEMENTER", "REPAIRER"],
+                "readOnly": true,
+                "timeoutSecs": 30,
+                "maxResponseBytes": 262144
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
     let port = free_port();
     let base_url = format!("http://127.0.0.1:{port}");
-    let mut core = CoreProcess::start(&root.join("factory.sqlite"), port, &root.join("core.log"));
+    let mut core = CoreProcess::start_with_gateway(
+        &root.join("factory.sqlite"),
+        port,
+        &root.join("core.log"),
+        &gateway_path,
+    );
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -4829,7 +4886,7 @@ async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
     )
     .await;
     seed_provider_settings(&root.join("factory.sqlite"), "codex", "codex", "gpt-6-luna").await;
-    start_request_scoped_provider_campaign(
+    start_request_scoped_provider_campaign_with_tools(
         &client,
         &base_url,
         &root.join("factory.sqlite"),
@@ -4841,6 +4898,7 @@ async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
         "gpt-6-luna",
         "Create the Codex provider candidate file.",
         "codex",
+        &["write_file", "run_command", "gateway_call"],
     )
     .await;
     let supervisor_port = free_port();
@@ -4877,6 +4935,7 @@ async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
         .env("FACTORY_WORKER_FIXTURE_IMAGE", FIXTURE_IMAGE)
         .env("FACTORY_PROVIDER_SANDBOX", "bwrap")
         .env("FACTORY_PROVIDER_KIND", "codex")
+        .env("FACTORY_FIXTURE_CODEX_GATEWAY", "1")
         .env(
             "FACTORY_PROVIDER_BINARY",
             env!("CARGO_BIN_EXE_factory-fixture-codex"),
@@ -4999,6 +5058,16 @@ async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
             .any(|(call, decision)| call == "call-100" && decision == "RESULT")
     );
     pool.close().await;
+    let db = factory_native::db::Database::open(&root.join("factory.sqlite"))
+        .await
+        .unwrap();
+    let gateway_calls = db.recent_tool_gateway_calls(10).await.unwrap();
+    assert_eq!(gateway_calls.len(), 1, "{gateway_calls:?}");
+    assert_eq!(gateway_calls[0].worker_id, "codex-worker");
+    assert_eq!(gateway_calls[0].role, "IMPLEMENTER");
+    assert_eq!(gateway_calls[0].tool, "context7.query-docs");
+    assert_eq!(gateway_calls[0].decision, "ALLOW");
+    db.close().await;
     supervisor.stop();
     core.stop();
     let _ = std::fs::remove_dir_all(&provider_session_root);

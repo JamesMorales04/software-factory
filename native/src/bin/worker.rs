@@ -1537,6 +1537,9 @@ async fn start_provider_runtime(
                 }
                 sandbox_env.push(("CODEX_HOME".into(), "/session/.codex".into()));
             }
+            if env::var("FACTORY_FIXTURE_CODEX_GATEWAY").ok().as_deref() == Some("1") {
+                sandbox_env.push(("FACTORY_FIXTURE_CODEX_GATEWAY".into(), "1".into()));
+            }
             if env::var("FACTORY_FIXTURE_PROVIDER_USE_EGRESS")
                 .ok()
                 .as_deref()
