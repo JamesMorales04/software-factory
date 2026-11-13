@@ -111,7 +111,11 @@ not the installed runtime and not authority.
   Attempt lease and generation.
 - Arguments are bounded and hashed; raw arguments are not written to audit.
 - Audit errors are stable classes (`role_denied`, `transport`, `rate_limited`,
-  etc.), never raw transport URLs, commands or MCP response bodies.
+  `tool_error`, etc.), never raw transport URLs, commands or MCP response
+  bodies.
+- An MCP `isError` result is returned to the model as untrusted content and
+  audited as `tool_error`; it is not a policy denial. Context7's library
+  redirect is the observed live example.
 - Every ALLOW/DENY is persisted in `tool_gateway_calls` with the argument
   digest, decision, latency, response bytes, error class and exact
   Worker/Attempt/generation binding. The in-memory log remains a bounded local

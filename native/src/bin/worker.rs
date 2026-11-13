@@ -4329,6 +4329,7 @@ async fn call_gateway_tool(
     }
     let response: factory_native::tool_gateway::WorkerToolGatewayResponse =
         serde_json::from_slice(&bytes)?;
+    let tool_error = response.content.get("isError").and_then(Value::as_bool) == Some(true);
     let text = bounded_tool_text(&serde_json::to_string(&response.content)?);
     post_tool_event(
         context,
@@ -4338,7 +4339,7 @@ async fn call_gateway_tool(
         "MCP result returned",
     )
     .await?;
-    Ok((true, text))
+    Ok((!tool_error, text))
 }
 
 fn decide_tool(

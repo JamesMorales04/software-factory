@@ -216,7 +216,11 @@ fn default_max_response() -> usize {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "transport", rename_all = "snake_case")]
+#[serde(
+    tag = "transport",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum GatewayServerConfig {
     Http {
         id: String,
@@ -858,11 +862,6 @@ impl HttpMcpClient {
             .get("result")
             .cloned()
             .ok_or_else(|| GatewayError::InvalidResponse("MCP returned no result".into()))?;
-        if result.get("isError").and_then(Value::as_bool) == Some(true) {
-            return Err(GatewayError::InvalidResponse(
-                "MCP tool reported an error".into(),
-            ));
-        }
         let bytes = serde_json::to_vec(&result)
             .map_err(|error| GatewayError::InvalidResponse(error.to_string()))?;
         if bytes.len() > max_response_bytes {
@@ -1135,11 +1134,6 @@ impl StdioMcpClient {
             .get("result")
             .cloned()
             .ok_or_else(|| GatewayError::InvalidResponse("stdio MCP returned no result".into()))?;
-        if result.get("isError").and_then(Value::as_bool) == Some(true) {
-            return Err(GatewayError::InvalidResponse(
-                "stdio MCP tool reported an error".into(),
-            ));
-        }
         let bytes = serde_json::to_vec(&result)
             .map_err(|error| GatewayError::InvalidResponse(error.to_string()))?;
         if bytes.len() > max_response_bytes {
@@ -1317,6 +1311,7 @@ impl ToolGateway {
                 let response_bytes = serde_json::to_vec(&content)
                     .map(|bytes| bytes.len())
                     .unwrap_or(0);
+                let tool_error = content.get("isError").and_then(Value::as_bool) == Some(true);
                 let audit = self.record(
                     role,
                     tool_id,
@@ -1324,7 +1319,7 @@ impl ToolGateway {
                     started,
                     "ALLOW",
                     response_bytes,
-                    None,
+                    tool_error.then_some("tool_error"),
                 );
                 GatewayCallReport {
                     outcome: Ok(GatewayOutcome {
@@ -1609,6 +1604,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_tool_errors_are_returned_as_content_and_audited() {
+        use axum::{Json, Router, routing::post};
+
+        async fn handler(Json(body): Json<Value>) -> Json<Value> {
+            let id = body.get("id").cloned().unwrap_or(Value::Null);
+            if body.get("method").and_then(Value::as_str) == Some("initialize") {
+                return Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {"protocolVersion": "2025-03-26"}
+                }));
+            }
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{"type": "text", "text": "library redirected"}],
+                    "isError": true
+                }
+            }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/mcp", post(handler)))
+                .await
+                .expect("fake MCP server");
+        });
+        let mut config = GatewayConfig::example();
+        config.servers = vec![GatewayServerConfig::Http {
+            id: "context7".into(),
+            endpoint: format!("http://{address}/mcp"),
+            bearer_env: None,
+            allow_loopback_http: true,
+        }];
+        config.tools = vec![tool(
+            "context7.query-docs",
+            "context7",
+            "query-docs",
+            &[GatewayRole::Implementer],
+            true,
+        )];
+        let gateway = ToolGateway::from_config(config).expect("gateway");
+        let outcome = gateway
+            .call(
+                GatewayRole::Implementer,
+                "context7.query-docs",
+                json!({"libraryId": "/facebook/react", "query": "hooks"}),
+            )
+            .await
+            .expect("MCP tool error remains content");
+        assert_eq!(outcome.content["isError"], true);
+        assert_eq!(outcome.content["content"][0]["text"], "library redirected");
+        assert_eq!(outcome.audit.error.as_deref(), Some("tool_error"));
+        assert_eq!(outcome.audit.decision, "ALLOW");
+    }
+
+    #[tokio::test]
     async fn http_applies_the_tool_response_bound_while_reading() {
         use axum::{Json, Router, routing::post};
 
@@ -1772,6 +1828,14 @@ for line in sys.stdin:
                 .iter()
                 .any(|tool| tool.id == "github.issue_read")
         );
+        assert!(config.servers.iter().any(|server| matches!(
+            server,
+            GatewayServerConfig::Http {
+                id,
+                bearer_env: Some(variable),
+                ..
+            } if id == "github-read" && variable == "GITHUB_MCP_TOKEN"
+        )));
     }
 
     #[test]
