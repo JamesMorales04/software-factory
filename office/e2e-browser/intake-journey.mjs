@@ -1039,7 +1039,8 @@ try {
     "the environment spec binds the exact plan",
   );
   const readyPlanning = await waitForValue(
-    () => coreApi(`/agentic/requests/${encodeURIComponent(requestId)}/planning`),
+    () =>
+      coreApi(`/agentic/requests/${encodeURIComponent(requestId)}/planning`),
     (value) => value.ready === true,
     "planning ready",
   );
@@ -1546,15 +1547,13 @@ try {
       `/quality/candidates/${encodeURIComponent(candidate.id)}/receipts`,
     );
     assert.equal(
-      persistedReceipts.filter((receipt) => receipt.role === "verifier")
-        .length,
+      persistedReceipts.filter((receipt) => receipt.role === "verifier").length,
       1,
       "persisted verifier receipt",
     );
     assert.equal(
       persistedReceipts.filter(
-        (receipt) =>
-          receipt.role === "reviewer" && receipt.result === "PASS",
+        (receipt) => receipt.role === "reviewer" && receipt.result === "PASS",
       ).length,
       requiredReviewerRoles.length,
       "persisted reviewer receipts cover every frozen role",
