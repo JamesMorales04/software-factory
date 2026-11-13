@@ -1,6 +1,6 @@
 # Native Rust migration closure ledger
 
-**Status:** current migration status authority. Updated 2026-10-26.
+**Status:** current migration status authority. Updated 2026-11-12.
 This ledger separates implemented behavior from verified evidence. It does not
 replace candidate-bound test output, independent review or protected approval.
 
@@ -8,14 +8,14 @@ replace candidate-bound test output, independent review or protected approval.
 
 | Item | Value |
 |---|---|
-| Authoritative main baseline | `003d92ca0dea9c8d397f0a37a04cf90bd479c99f` (PR #27 merged) |
+| Authoritative main baseline | `241744561e20ce51074391c560c315a63f89b8e8` (PRs #98 and #99 merged) |
 | PR #16 behavioral reference | `19cb4951f7a3d42a1ca27b1800cf49401c81ecc6` (closed as superseded) |
 | Product | Software Factory, independent Rust implementation |
 | Legacy implementation | retired from the tracked tree; retained only in Git history and archived provenance |
 | Historical combined candidate | `ea2d92724d57d4f96838d84216f39db04b7c5511` (author-run gates and managed live acceptance); exact-head PR checks are authoritative |
-| Container-native implementation | `30cb0db7efbd1b9d4ed8123b4be3d3f8e2e34e9e` (author-run deterministic Compose evidence; PR #28 not merged) |
+| Container-native implementation | `30cb0db7efbd1b9d4ed8123b4be3d3f8e2e34e9e` (author-run deterministic Compose evidence; PR #28 merged as `f251ea988571665e4eea9ebfd8446e714af7db8c` on 2026-10-27) |
 | Container-native hardening candidate | `d9de876f5533827a5a44b07f00c676ac24d7516c` (post-review quality/provider/policy fixes; deterministic Compose E2E PASS; live inference NOT_TESTED) |
-| Merge state | PRs #17–#27 merged. PR #28 (container-native Compose iteration) remains open. Its hardening candidate has exact-head evidence, a MERGE_READY independent re-review and a passed owner-authorized live OpenCode container UAT, but awaits Product Owner merge approval; it is not merged. |
+| Merge state | PRs #17–#28 are merged, including the container-native Compose iteration (PR #28) on 2026-10-27. PR #98 (quality harness foundation) and PR #99 (Core-mediated MCP tool gateway) merged at `24174456`. Remaining product gaps stay tracked in [container-native status](container-native-status.md), the capability registry and the Office parity matrix. |
 
 PR #16 is a product-concept and provenance reference only. Its implementation is
 not merged, is not built or tested by this repository, and is not authoritative.
