@@ -4762,7 +4762,10 @@ async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
     git(&repository, &["add", "src/seed.txt"]);
     git(&repository, &["commit", "-qm", "seed"]);
 
-    async fn mcp_handler(axum::Json(body): axum::Json<Value>) -> axum::Json<Value> {
+    async fn mcp_handler(
+        axum::extract::State(calls): axum::extract::State<Arc<AtomicUsize>>,
+        axum::Json(body): axum::Json<Value>,
+    ) -> axum::Json<Value> {
         let id = body.get("id").cloned().unwrap_or(Value::Null);
         if body.get("method").and_then(Value::as_str) == Some("initialize") {
             return axum::Json(json!({
@@ -4770,6 +4773,9 @@ async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
                 "id": id,
                 "result": {"protocolVersion": "2025-03-26"}
             }));
+        }
+        if body.get("method").and_then(Value::as_str) == Some("tools/call") {
+            calls.fetch_add(1, Ordering::SeqCst);
         }
         axum::Json(json!({
             "jsonrpc": "2.0",
@@ -4781,13 +4787,19 @@ async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
         .await
         .expect("MCP listener");
     let mcp_address = mcp_listener.local_addr().expect("MCP address");
-    tokio::spawn(async move {
-        axum::serve(
-            mcp_listener,
-            axum::Router::new().route("/mcp", axum::routing::post(mcp_handler)),
-        )
-        .await
-        .expect("fake MCP server");
+    let mcp_calls = Arc::new(AtomicUsize::new(0));
+    tokio::spawn({
+        let mcp_calls = Arc::clone(&mcp_calls);
+        async move {
+            axum::serve(
+                mcp_listener,
+                axum::Router::new()
+                    .route("/mcp", axum::routing::post(mcp_handler))
+                    .with_state(mcp_calls),
+            )
+            .await
+            .expect("fake MCP server");
+        }
     });
     let gateway_path = root.join("gateway.json");
     std::fs::write(
@@ -5067,6 +5079,9 @@ async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
     assert_eq!(gateway_calls[0].role, "IMPLEMENTER");
     assert_eq!(gateway_calls[0].tool, "context7.query-docs");
     assert_eq!(gateway_calls[0].decision, "ALLOW");
+    assert_eq!(gateway_calls[0].error, None);
+    assert!(gateway_calls[0].response_bytes > 0);
+    assert_eq!(mcp_calls.load(Ordering::SeqCst), 1);
     db.close().await;
     supervisor.stop();
     core.stop();

@@ -228,6 +228,14 @@ fn main() {
                                 continue;
                             };
                             if response.get("id").and_then(Value::as_u64) == Some(gateway_id) {
+                                let text = response["result"]["contentItems"][0]["text"]
+                                    .as_str()
+                                    .unwrap_or_default();
+                                if response["result"]["success"].as_bool() != Some(true)
+                                    || !text.contains("provider gateway ok")
+                                {
+                                    return;
+                                }
                                 break;
                             }
                         }
