@@ -44,14 +44,12 @@ const operator = token();
 const enrollmentCode = randomBytes(16).toString("hex");
 const bootstrap = token();
 const verifier = token();
-const reviewer = token();
 const supervisorToken = token();
 const attemptGrantKey = token();
 const supervisorCapabilityKey = token();
 const masterKey = randomBytes(32).toString("hex");
 const workerId = "intake-full-worker";
 const verifierPrincipal = "verifier-intake-full";
-const reviewerPrincipal = "reviewer-intake-full";
 // Create an owned, isolated directory. A fixed shared base such as
 // /tmp/opencode can be root-owned in CI images, and os.tmpdir() may resolve to
 // such a mount through TMPDIR, so default to the writable container /tmp and
@@ -68,6 +66,34 @@ const supervisorState = join(temp, "ss");
 const supervisorVolumes = join(temp, "sv");
 // Keep provider sockets beneath the UNIX sun_path limit (108 bytes).
 const providerSessionRoot = join(temp, "p");
+const reviewerIdentitiesFile = join(temp, "reviewer-identities.json");
+// Core authenticates every reviewer process as one distinct role. Configure
+// the five canonical roles so the journey can run whichever frozen reviewer
+// plan the bounded lane produces; production uses the same configuration.
+const reviewerIdentities = [
+  "FUNCTIONAL",
+  "ARCHITECTURE",
+  "CODE_QUALITY",
+  "SECURITY",
+  "TESTING",
+].map((role) => {
+  const tokenValue = token();
+  const principalId = `reviewer-${role.toLowerCase()}-intake`;
+  const tokenFile = join(temp, `reviewer-${role.toLowerCase()}.token`);
+  writeFileSync(tokenFile, tokenValue, { mode: 0o600 });
+  return { role, token: tokenValue, principalId, tokenFile };
+});
+writeFileSync(
+  reviewerIdentitiesFile,
+  JSON.stringify(
+    reviewerIdentities.map(({ role, principalId, tokenFile }) => ({
+      principalId,
+      role,
+      tokenFile,
+    })),
+  ),
+  { mode: 0o600 },
+);
 const processes = [];
 
 function blockedLiveConfiguration(missing) {
@@ -150,8 +176,77 @@ function git(args) {
 await git(["init", "-q"]);
 await git(["config", "user.name", "Intake E2E"]);
 await git(["config", "user.email", "intake-e2e@example.invalid"]);
-writeFileSync(join(repository, "seed.txt"), "seed\n");
-await git(["add", "seed.txt"]);
+// A bounded existing project with engineering docs and a committed
+// environment. This keeps deterministic routing on DELEGATED (the work is
+// bounded) while planning still has a pinned nixpkgs and lock evidence, so the
+// environment review can freeze without a real Nix builder.
+writeFileSync(
+  join(repository, "Cargo.toml"),
+  `[package]
+name = "intake-e2e-fixture"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+`,
+);
+mkdirSync(join(repository, "src"), { recursive: true });
+writeFileSync(
+  join(repository, "src/main.rs"),
+  `fn main() {
+    println!("intake fixture");
+}
+`,
+);
+writeFileSync(
+  join(repository, "README.md"),
+  "# Intake E2E fixture\n\nDeterministic project used by the intake browser journey.\n",
+);
+writeFileSync(
+  join(repository, "AGENTS.md"),
+  "# Fixture guidance\n\nThis repository is test data. Do not treat it as product guidance.\n",
+);
+mkdirSync(join(repository, "docs"), { recursive: true });
+writeFileSync(
+  join(repository, "docs/architecture.md"),
+  "# Architecture\n\nThe fixture is one bounded Rust binary.\n",
+);
+writeFileSync(
+  join(repository, "flake.nix"),
+  `{
+  description = "Intake E2E fixture environment";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d";
+  outputs = { self, nixpkgs }: { };
+}
+`,
+);
+writeFileSync(
+  join(repository, "flake.lock"),
+  `{
+  "nodes": {
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 0,
+        "narHash": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "ac62194c3917d5f474c1a844b6fd6da2db95077d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": { "inputs": { "nixpkgs": "nixpkgs" } }
+  },
+  "root": "root",
+  "version": 7
+}
+`,
+);
+await git(["add", "."]);
 await git(["commit", "-qm", "seed"]);
 
 function freePort() {
@@ -276,6 +371,85 @@ if (!live) {
       const system =
         body.messages?.find((message) => message.role === "system")?.content ??
         "";
+      if (system.includes("bounded Software Factory Planner")) {
+        const request = JSON.parse(user);
+        const allowedPaths = request.projectConfig?.allowedPaths ?? [];
+        const firstPath = allowedPaths[0] ?? "src";
+        const path = firstPath.includes(".")
+          ? firstPath
+          : `${firstPath.replace(/\/$/, "")}/provider.txt`;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: JSON.stringify({
+                    units: [
+                      {
+                        id: "unit-1",
+                        title: "Implement the bounded fixture change",
+                        objective: request.objective,
+                        dependsOn: [],
+                        paths: [path],
+                        acceptance: [
+                          "The requested change is present in the frozen scope.",
+                        ],
+                      },
+                    ],
+                    assumptions: ["Deterministic fake model gateway."],
+                    risks: ["The planner response is test data."],
+                  }),
+                },
+              },
+            ],
+            usage: {
+              prompt_tokens: 400,
+              completion_tokens: 200,
+              total_tokens: 600,
+            },
+          }),
+        );
+        return;
+      }
+      if (user.includes("EnvironmentPlan:")) {
+        const raw = user.match(
+          /\n\nEnvironmentPlan:\n([\s\S]*?)\n\nJSON Schema:/,
+        )?.[1];
+        assert.ok(raw, "environment review prompt contains the exact plan");
+        const plan = JSON.parse(raw);
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: JSON.stringify({
+                    schemaVersion: 1,
+                    requestId: plan.requestId,
+                    actionId: plan.actionId,
+                    planSha256: plan.planSha256,
+                    planRevision: plan.revision,
+                    riskClass: plan.riskClass,
+                    decision: "APPROVE",
+                    rationale:
+                      "The committed fixture environment is pinned, licensed and has no blocker.",
+                    constraints: [],
+                  }),
+                },
+              },
+            ],
+            usage: {
+              prompt_tokens: 600,
+              completion_tokens: 120,
+              total_tokens: 720,
+            },
+          }),
+        );
+        return;
+      }
       if (system.includes("independent semantic code reviewer")) {
         const candidateCommitSha = user.match(
           /candidateCommitSha: ([0-9a-f]+)/,
@@ -518,7 +692,9 @@ function coreEnvironment() {
     FACTORY_ATTEMPT_GRANT_KEY: attemptGrantKey,
     FACTORY_WORKER_BOOTSTRAP_TOKEN: bootstrap,
     FACTORY_VERIFIER_TOKEN: verifier,
-    FACTORY_REVIEWER_TOKEN: reviewer,
+    FACTORY_VERIFIER_PRINCIPAL: verifierPrincipal,
+    FACTORY_REVIEWER_IDENTITIES_FILE: reviewerIdentitiesFile,
+    FACTORY_ENVIRONMENT_TEST_BUILDER: "1",
     FACTORY_MASTER_KEY_FILE: masterKeyFile,
     // Managed project registration is permitted only inside the operator
     // approved root. The fixture repository lives under this temp root.
@@ -639,13 +815,12 @@ try {
       active: true,
     }),
   });
-  // The full deterministic journey proves a profile whose frozen Lead route
-  // differs from the Implementer route. Each route is priced by its own
-  // deterministic provider connection: Core only prices a model that matches
-  // the configured model of that connection. The fake gateway accepts any
-  // model name.
-  const leadModel = full && !live ? `${model}-lead` : model;
-  const leadProvider = full && !live ? "opencode" : provider;
+  // The Owner-confirmed subscription admission binds the exact frozen Lead and
+  // Implementer routes. Both must therefore use the same admitted
+  // opencode-go subscription pair; the journey does not manufacture a second
+  // billable route or bypass the admission contract.
+  const leadModel = model;
+  const leadProvider = provider;
   await coreApi(`/settings/providers/${encodeURIComponent(provider)}`, {
     method: "PUT",
     body: JSON.stringify({
@@ -657,18 +832,6 @@ try {
       isDefault: true,
     }),
   });
-  if (leadProvider !== provider) {
-    await coreApi(`/settings/providers/${encodeURIComponent(leadProvider)}`, {
-      method: "PUT",
-      body: JSON.stringify({
-        model: leadModel,
-        baseUrl: modelUrl,
-        credential: "fake-lead-provider-credential-0123456789",
-        enabled: true,
-        isDefault: false,
-      }),
-    });
-  }
   const configuredProviders = await coreApi("/settings/providers");
   assert.ok(
     configuredProviders.providers.some(
@@ -787,9 +950,12 @@ try {
 
   await page.getByRole("button", { name: "Run assessment" }).click();
   try {
-    await page
-      .getByRole("button", { name: "Approve frozen plan and start" })
-      .waitFor({ timeout: 30000 });
+    await waitForValue(
+      () => coreApi(`/intake/requests/${encodeURIComponent(requestId)}`),
+      (value) => value.state === "AWAITING_APPROVAL",
+      "intake AWAITING_APPROVAL",
+      30_000,
+    );
   } catch (error) {
     console.error(
       "INTAKE DEBUG PROJECTION",
@@ -805,6 +971,89 @@ try {
   );
   assert.equal(planHash.state, "AWAITING_APPROVAL");
   assert.ok(planHash.plan?.plan_hash, "frozen plan hash");
+
+  // Assessment freezes the Lead plan. The planning lane still has to compile
+  // its artifacts and participant plan, and Core must freeze the exact
+  // environment before approval. The browser exercises the operator approval;
+  // the deterministic Director APIs below are the same operations the Director
+  // uses and are not a second authority.
+  //
+  // test-support installs a placeholder ActionSpec environment at Action
+  // creation. Remove it before the real environment plan/spec binds the exact
+  // Action; the route does not exist in production builds.
+  await coreApi(
+    `/test-support/intake/${encodeURIComponent(requestId)}/clear-fixture-environment`,
+    { method: "POST" },
+  );
+  const planned = await coreApi(
+    `/agentic/requests/${encodeURIComponent(requestId)}/plan`,
+    { method: "POST" },
+  );
+  const compiledPlan = planned.planning?.plan;
+  assert.ok(compiledPlan?.contentSha256, "compiled plan hash");
+  assert.ok(compiledPlan?.revision > 0, "compiled plan revision");
+  const participants = await coreApi(
+    `/agentic/requests/${encodeURIComponent(requestId)}/participants`,
+    { method: "POST" },
+  );
+  assert.equal(
+    participants.compiled?.reviewerCount,
+    participants.compiled?.reviewerRoles?.length,
+    "the participant plan staffs every required reviewer role",
+  );
+  const planning = await coreApi(
+    `/agentic/requests/${encodeURIComponent(requestId)}/planning`,
+  );
+  assert.equal(planning.lane, "DELEGATED", "bounded existing project lane");
+  assert.deepEqual(planning.missingArtifacts, [], "all planning artifacts");
+  assert.equal(planning.participantPlan.ready, true, "participant plan ready");
+  // This bounded DELEGATED lane has no owner-required signal, so Core's
+  // deterministic policy records AUTO_APPROVED. The browser still requires the
+  // explicit operator approval below; this assertion prevents a silent skip.
+  assert.equal(
+    planning.reviewStatus,
+    "AUTO_APPROVED",
+    "deterministic plan review status",
+  );
+  assert.equal(planning.reviewApproved, true, "plan review approved");
+  let environment = await coreApi(
+    `/agentic/requests/${encodeURIComponent(requestId)}/environment`,
+  );
+  if (environment.status !== "FROZEN") {
+    assert.ok(environment.planSha256, "environment plan hash");
+    assert.ok(environment.planRevision > 0, "environment plan revision");
+    environment = await coreApi(
+      `/agentic/requests/${encodeURIComponent(requestId)}/environment/review`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          planSha256: environment.planSha256,
+          planRevision: environment.planRevision,
+        }),
+      },
+    );
+  }
+  assert.equal(environment.status, "FROZEN", "environment frozen");
+  assert.ok(
+    environment.specSha256,
+    "the environment spec binds the exact plan",
+  );
+  const readyPlanning = await waitForValue(
+    () =>
+      coreApi(`/agentic/requests/${encodeURIComponent(requestId)}/planning`),
+    (value) => value.ready === true,
+    "planning ready",
+  );
+  assert.equal(readyPlanning.reviewApproved, true);
+
+  await page.reload();
+  await page.getByLabel("Approval rationale").waitFor();
+  await waitForValue(
+    () => page.getByLabel("Approval rationale").isEnabled(),
+    (enabled) => enabled === true,
+    "approval rationale enabled",
+    30_000,
+  );
 
   if (live) {
     await coreApi(`/intake/requests/${encodeURIComponent(requestId)}/approve`, {
@@ -1035,26 +1284,53 @@ try {
           FACTORY_VERIFIER_IMAGE: "test/image:1",
           FACTORY_VERIFIER_TEST_BACKEND: "local",
           FACTORY_VERIFIER_TEST_VOLUME_ROOT: join(temp, "vv"),
+          FACTORY_VERIFIER_LOCAL_ENVIRONMENT_CHECKS: "1",
         },
       },
       "independent verifier",
     );
-    await runToCompletion(
-      reviewerBin,
-      [],
-      {
-        cwd: temp,
-        env: {
-          ...process.env,
-          FACTORY_CORE_URL: coreUrl,
-          FACTORY_REVIEWER_TOKEN: reviewer,
-          FACTORY_CANDIDATE_ID: candidate.id,
-          FACTORY_REVIEWER_PRINCIPAL: reviewerPrincipal,
-          FACTORY_REVIEW_MECHANISM: "MODEL",
-        },
-      },
-      "independent semantic reviewer",
+    // Core derives the reviewer role from the authenticated identity. Run one
+    // independent process per role required by the frozen participant plan.
+    const requiredReviewerRoles =
+      readyPlanning.participantPlan?.reviewerRoles ??
+      readyPlanning.participantPlan?.requiredRoles ??
+      [];
+    assert.ok(
+      requiredReviewerRoles.length > 0,
+      "the frozen plan requires reviewer roles",
     );
+    for (const role of requiredReviewerRoles) {
+      const identity = reviewerIdentities.find((entry) => entry.role === role);
+      assert.ok(identity, `configured reviewer identity for ${role}`);
+      await runToCompletion(
+        reviewerBin,
+        [],
+        {
+          cwd: temp,
+          env: {
+            ...process.env,
+            FACTORY_CORE_URL: coreUrl,
+            FACTORY_REVIEWER_TOKEN: identity.token,
+            FACTORY_CANDIDATE_ID: candidate.id,
+            FACTORY_REVIEWER_PRINCIPAL: identity.principalId,
+            FACTORY_REVIEWER_ROLE: role,
+            FACTORY_REVIEW_MECHANISM: "MODEL",
+          },
+        },
+        `independent semantic reviewer ${role}`,
+      );
+      const receipt = (
+        await coreApi(
+          `/quality/candidates/${encodeURIComponent(candidate.id)}/receipts`,
+        )
+      ).find(
+        (entry) =>
+          entry.role === "reviewer" &&
+          entry.principal_id === identity.principalId,
+      );
+      assert.ok(receipt, `reviewer receipt for ${role}`);
+      assert.equal(receipt.reviewer_role, role);
+    }
 
     const gate = await waitForValue(
       () =>
@@ -1069,7 +1345,7 @@ try {
     const verifierReceipt = receipts.find(
       (receipt) => receipt.role === "verifier",
     );
-    const reviewerReceipt = receipts.find(
+    const reviewerReceipts = receipts.filter(
       (receipt) => receipt.role === "reviewer",
     );
     assert.ok(verifierReceipt, "verifier receipt");
@@ -1082,17 +1358,27 @@ try {
       verifierReceipt.action_spec_sha256,
       candidate.action_spec_sha256,
     );
-    assert.ok(reviewerReceipt, "reviewer receipt");
-    assert.equal(reviewerReceipt.principal_id, reviewerPrincipal);
-    assert.equal(reviewerReceipt.result, "PASS");
-    assert.equal(reviewerReceipt.evidence, "EXECUTED");
-    assert.equal(reviewerReceipt.mechanism, "MODEL");
-    assert.equal(reviewerReceipt.model_provider, provider);
-    assert.equal(reviewerReceipt.model_name, model);
-    assert.equal(reviewerReceipt.usage_known, true);
-    assert.ok(reviewerReceipt.total_tokens > 0);
-    assert.equal(reviewerReceipt.commit_sha, candidate.commit_sha);
-    assert.equal(reviewerReceipt.tree_sha, candidate.tree_sha);
+    assert.equal(
+      reviewerReceipts.length,
+      requiredReviewerRoles.length,
+      "one reviewer receipt per required frozen role",
+    );
+    assert.deepEqual(
+      new Set(reviewerReceipts.map((receipt) => receipt.reviewer_role)),
+      new Set(requiredReviewerRoles),
+      "reviewer receipts cover the exact frozen roles",
+    );
+    for (const receipt of reviewerReceipts) {
+      assert.equal(receipt.result, "PASS");
+      assert.equal(receipt.evidence, "EXECUTED");
+      assert.equal(receipt.mechanism, "MODEL");
+      assert.equal(receipt.model_provider, provider);
+      assert.equal(receipt.model_name, model);
+      assert.equal(receipt.usage_known, true);
+      assert.ok(receipt.total_tokens > 0);
+      assert.equal(receipt.commit_sha, candidate.commit_sha);
+      assert.equal(receipt.tree_sha, candidate.tree_sha);
+    }
 
     const acceptedCampaign = await coreApi(
       `/campaigns/${encodeURIComponent(campaign.campaign.id)}`,
@@ -1183,19 +1469,20 @@ try {
     await page.getByRole("tab", { name: /Evidence/ }).click();
     const receiptTable = page.getByTestId("candidate-receipts");
     await receiptTable
-      .getByRole("row", { name: /verifier\s+PASS\s+EXECUTED/i })
+      .getByRole("row", { name: /verifier\s+passed\s+executed/i })
       .waitFor();
     await receiptTable
-      .getByRole("row", { name: /reviewer\s+PASS\s+EXECUTED/i })
+      .getByRole("row", { name: /reviewer\s+passed\s+executed/i })
       .waitFor();
     await page
       .getByTestId("receipt-model-provenance")
       .getByText(`${provider}/${model}`, { exact: false })
+      .first()
       .waitFor();
 
     await page.getByRole("tab", { name: /Quality Gate/ }).click();
     const gatePanel = page.getByTestId("quality-gate");
-    await gatePanel.getByText("ACCEPTED", { exact: true }).waitFor();
+    await gatePanel.getByText("Accepted", { exact: true }).waitFor();
 
     await page.getByRole("tab", { name: /Execution/ }).click();
     await page.getByRole("heading", { name: "Runs and attempts" }).waitFor();
@@ -1214,7 +1501,10 @@ try {
     await page.getByRole("heading", { name: objective }).waitFor();
     await page.getByText("Completed", { exact: true }).first().waitFor();
     await page.getByText("Gate ACCEPTED", { exact: true }).waitFor();
-    await page.getByText("AUTHORIZED", { exact: true }).first().waitFor();
+    // The Campaign effective status is the latest accepted Gate, rendered by
+    // the localized StatusBadge; the raw Core campaign status remains
+    // AUTHORIZED and is asserted through the API above.
+    await page.getByText("Accepted", { exact: true }).first().waitFor();
     await page.getByText("1 / 1", { exact: true }).waitFor();
     await page
       .getByText(planHash.plan.plan_hash, { exact: true })
@@ -1256,12 +1546,21 @@ try {
     const persistedReceipts = await coreApi(
       `/quality/candidates/${encodeURIComponent(candidate.id)}/receipts`,
     );
-    assert.deepEqual(
-      persistedReceipts.map((receipt) => [receipt.role, receipt.result]),
-      [
-        ["reviewer", "PASS"],
-        ["verifier", "PASS"],
-      ],
+    assert.equal(
+      persistedReceipts.filter((receipt) => receipt.role === "verifier").length,
+      1,
+      "persisted verifier receipt",
+    );
+    assert.equal(
+      persistedReceipts.filter(
+        (receipt) => receipt.role === "reviewer" && receipt.result === "PASS",
+      ).length,
+      requiredReviewerRoles.length,
+      "persisted reviewer receipts cover every frozen role",
+    );
+    assert.ok(
+      persistedReceipts.every((receipt) => receipt.result === "PASS"),
+      "every persisted receipt remains PASS",
     );
     const persistedDiff = await coreApi(
       `/campaigns/${encodeURIComponent(campaign.campaign.id)}/candidates/${encodeURIComponent(candidate.id)}/diff`,
@@ -1272,7 +1571,7 @@ try {
     await page.getByRole("heading", { name: objective }).waitFor();
     await page.getByText("Completed", { exact: true }).first().waitFor();
     await page.getByText("Gate ACCEPTED", { exact: true }).waitFor();
-    await page.getByText("AUTHORIZED", { exact: true }).first().waitFor();
+    await page.getByText("Accepted", { exact: true }).first().waitFor();
     await page.getByText("1 / 1", { exact: true }).waitFor();
     await page.goto(
       `${viteUrl}/#/campaigns/${encodeURIComponent(campaign.campaign.id)}`,
@@ -1292,7 +1591,7 @@ try {
     await page.getByRole("tab", { name: /Evidence/ }).click();
     await page
       .getByTestId("candidate-receipts")
-      .getByRole("row", { name: /reviewer\s+PASS\s+EXECUTED/i })
+      .getByRole("row", { name: /reviewer\s+passed\s+executed/i })
       .waitFor();
 
     fullResult = {
@@ -1314,9 +1613,12 @@ try {
       candidateTree: candidate.tree_sha,
       changedPaths: diff.changed_paths,
       verifierReceiptId: verifierReceipt.receipt_id,
-      reviewerReceiptId: reviewerReceipt.receipt_id,
-      reviewerMechanism: reviewerReceipt.mechanism,
-      reviewerReservationId: reviewerReceipt.model_reservation_id,
+      reviewerReceiptIds: reviewerReceipts.map((receipt) => receipt.receipt_id),
+      reviewerRoles: requiredReviewerRoles,
+      reviewerMechanism: "MODEL",
+      reviewerReservationIds: reviewerReceipts.map(
+        (receipt) => receipt.model_reservation_id,
+      ),
       gate: gate.outcome,
       gateReasons: gate.reasons,
       campaignStatus: acceptedCampaign.campaign.status,

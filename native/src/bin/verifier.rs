@@ -23,6 +23,8 @@ use factory_native::lead::SpecCheck;
 use factory_native::runtime_broker::{
     EnvironmentCheckRequest, EnvironmentCheckResult, EnvironmentCheckSpec, ResourceOwner,
 };
+#[cfg(all(debug_assertions, feature = "test-support"))]
+use factory_native::runtime_broker::{EnvironmentCheckStatus, bounded_check_diagnostic};
 use factory_native::workspace::{self, WorkspaceAllocator, WorkspaceError};
 use factory_native::workspace_archive;
 use serde_json::json;
@@ -701,12 +703,134 @@ impl VerifierBackend {
                     .into(),
             )),
             #[cfg(debug_assertions)]
-            Self::Local(_) => Err(VerificationError::Infrastructure(
-                "environment checks require the runtime broker and frozen builder image; the local verifier backend has no generic fallback"
-                    .into(),
-            )),
+            Self::Local(backend) => {
+                #[cfg(feature = "test-support")]
+                {
+                    run_local_environment_check(backend, request).await
+                }
+                #[cfg(not(feature = "test-support"))]
+                {
+                    let _ = backend;
+                    Err(VerificationError::Infrastructure(
+                        "environment checks require the runtime broker and frozen builder image; the local verifier backend has no generic fallback"
+                            .into(),
+                    ))
+                }
+            }
         }
     }
+}
+
+/// Test-support-only environment-check execution for deterministic browser
+/// journeys.
+///
+/// It runs the frozen check argv against the already-imported local candidate
+/// volume with a cleared environment. It is selected only by the explicit
+/// `FACTORY_VERIFIER_LOCAL_ENVIRONMENT_CHECKS=1` opt-in in a debug binary built
+/// with `test-support`, never by release or production builds, and it never
+/// substitutes a generic image. The receipt-shaped result is labelled by its
+/// checks and exit codes; production verification continues to require the
+/// runtime broker.
+#[cfg(all(debug_assertions, feature = "test-support"))]
+async fn run_local_environment_check(
+    backend: &LocalVolumeBackend,
+    request: &EnvironmentCheckRequest,
+) -> Result<EnvironmentCheckResult, VerificationError> {
+    if env::var("FACTORY_VERIFIER_LOCAL_ENVIRONMENT_CHECKS")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return Err(VerificationError::Infrastructure(
+            "environment checks require the runtime broker and frozen builder image; the local verifier backend has no generic fallback"
+                .into(),
+        ));
+    }
+    request
+        .validate_shape()
+        .map_err(VerificationError::Infrastructure)?;
+    let cwd = Path::new(&request.check.cwd);
+    if cwd.is_absolute()
+        || cwd
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(VerificationError::Infrastructure(
+            "local environment check cwd escapes its candidate volume".into(),
+        ));
+    }
+    let root = backend
+        .path(&request.workspace_volume)
+        .map_err(VerificationError::Infrastructure)?
+        .join(cwd);
+    if request.check.argv.is_empty() {
+        return Err(VerificationError::Infrastructure(
+            "frozen environment check has no argv".into(),
+        ));
+    }
+    let argv = request.check.argv.clone();
+    let timeout = Duration::from_secs(u64::from(request.check.timeout_secs));
+    let started = std::time::Instant::now();
+    let output = tokio::time::timeout(
+        timeout,
+        tokio::task::spawn_blocking(move || {
+            std::process::Command::new(&argv[0])
+                .args(&argv[1..])
+                .current_dir(root)
+                .env_clear()
+                .env("PATH", command_path())
+                .env("HOME", std::env::temp_dir())
+                .env("TMPDIR", std::env::temp_dir())
+                .output()
+        }),
+    )
+    .await
+    .map_err(|_| VerificationError::Infrastructure("local environment check timed out".into()))?
+    .map_err(|error| {
+        VerificationError::Infrastructure(format!("local environment check runner: {error}"))
+    })?
+    .map_err(|error| {
+        VerificationError::Infrastructure(format!(
+            "local environment check failed to start: {error}"
+        ))
+    })?;
+    let exit_code = output.status.code().unwrap_or(-1);
+    let passed = exit_code == request.check.expect_exit;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout_truncated = stdout.chars().count() > 4096;
+    let stderr_truncated = stderr.chars().count() > 4096;
+    Ok(EnvironmentCheckResult {
+        check_id: request.check.check_id.clone(),
+        spec_sha256: request.spec.spec_sha256.clone(),
+        description: request.check.description.clone(),
+        status: if passed {
+            EnvironmentCheckStatus::Passed
+        } else {
+            EnvironmentCheckStatus::Failed
+        },
+        exit_code: Some(exit_code),
+        expect_exit: request.check.expect_exit,
+        passed,
+        diagnostic: if passed {
+            String::new()
+        } else {
+            bounded_check_diagnostic(
+                &request.check.description,
+                exit_code,
+                request.check.expect_exit,
+                &stderr,
+            )
+        },
+        logs: String::new(),
+        logs_truncated: false,
+        stdout: stdout.chars().take(4096).collect(),
+        stderr: stderr.chars().take(4096).collect(),
+        stdout_truncated,
+        stderr_truncated,
+        cleanup_confirmed: true,
+        duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    })
 }
 
 impl VolumeBackend for VerifierBackend {

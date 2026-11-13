@@ -3630,6 +3630,138 @@ pub fn unavailable_environment_builder() -> SharedEnvironmentBuilder {
     std::sync::Arc::new(UnavailableEnvironmentBuilder)
 }
 
+/// Explicit, feature-gated deterministic builder for browser/API journeys.
+///
+/// It exists only in `test-support` builds and is selected only when
+/// `FACTORY_ENVIRONMENT_TEST_BUILDER=1`. It never runs Nix, never contacts a
+/// network and never produces real build evidence. Production binaries do not
+/// contain it; the returned receipt is labelled by the fixed fixture builder
+/// identity below so no acceptance claim can mistake it for a real build.
+#[cfg(feature = "test-support")]
+pub const TEST_ENVIRONMENT_BUILDER_IMAGE: &str = "fixture/environment-builder";
+#[cfg(feature = "test-support")]
+pub const TEST_ENVIRONMENT_BUILDER_DIGEST: &str =
+    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+#[cfg(feature = "test-support")]
+pub const TEST_ENVIRONMENT_BUILDER_ENV: &str = "FACTORY_ENVIRONMENT_TEST_BUILDER";
+
+#[cfg(feature = "test-support")]
+pub struct TestEnvironmentBuilder {
+    descriptor: EnvironmentBuilderDescriptor,
+}
+
+#[cfg(feature = "test-support")]
+impl std::fmt::Debug for TestEnvironmentBuilder {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TestEnvironmentBuilder")
+            .field("descriptor", &self.descriptor)
+            .finish()
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl TestEnvironmentBuilder {
+    fn new() -> Self {
+        Self {
+            descriptor: EnvironmentBuilderDescriptor {
+                image: TEST_ENVIRONMENT_BUILDER_IMAGE.into(),
+                digest: TEST_ENVIRONMENT_BUILDER_DIGEST.into(),
+                platform: DEFAULT_PLATFORM.into(),
+                policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                default_nixpkgs: DEFAULT_ENVIRONMENT_NIXPKGS.into(),
+                status: EnvironmentBuilderStatus::Ready,
+            },
+        }
+    }
+}
+
+/// Select the deterministic builder only on an explicit opt-in. An absent or
+/// different value keeps the truthful production selection path.
+#[cfg(feature = "test-support")]
+pub fn test_environment_builder_from_env() -> Option<SharedEnvironmentBuilder> {
+    if std::env::var(TEST_ENVIRONMENT_BUILDER_ENV).ok().as_deref() != Some("1") {
+        return None;
+    }
+    Some(std::sync::Arc::new(TestEnvironmentBuilder::new()))
+}
+
+#[cfg(feature = "test-support")]
+impl EnvironmentBuilder for TestEnvironmentBuilder {
+    fn descriptor(&self) -> EnvironmentBuilderDescriptor {
+        self.descriptor.clone()
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        plan: &'a EnvironmentPlan,
+        _workspace: Option<&'a std::path::Path>,
+    ) -> EnvironmentResolutionFuture<'a> {
+        Box::pin(async move {
+            // Deterministic lock data binds the exact plan hash but is not a
+            // real Nix resolution. A test-support build may exercise this path;
+            // production never contains the builder.
+            let content = format!(
+                "{{\n  \"nodes\": {{\n    \"nixpkgs\": {{\n      \"locked\": {{\n        \"owner\": \"NixOS\",\n        \"repo\": \"nixpkgs\",\n        \"rev\": \"{}\",\n        \"type\": \"github\"\n      }}\n    }},\n    \"root\": {{ \"inputs\": {{ \"nixpkgs\": \"nixpkgs\" }} }}\n  }},\n  \"root\": \"root\",\n  \"version\": 7\n}}\n",
+                plan.nix.nixpkgs.rsplit('/').next().unwrap_or_default()
+            );
+            Ok(EnvironmentResolution {
+                schema_version: ENVIRONMENT_SCHEMA_VERSION,
+                plan_sha256: plan.plan_sha256.clone(),
+                files: vec![EnvironmentFile {
+                    path: "flake.lock".into(),
+                    sha256: sha256_hex(content.as_bytes()),
+                    origin: EnvironmentFileOrigin::Generated,
+                    content: Some(content),
+                }],
+                nix_version: "2.28.3".into(),
+                devenv_version: "1.11.2".into(),
+                packages: Vec::new(),
+                closure_licenses: Vec::new(),
+            })
+        })
+    }
+
+    fn build<'a>(
+        &'a self,
+        spec: &'a EnvironmentSpec,
+        _plan: &'a EnvironmentPlan,
+        _workspace: Option<&'a std::path::Path>,
+    ) -> EnvironmentBuilderFuture<'a> {
+        Box::pin(async move {
+            let receipt = EnvironmentBuildReceipt {
+                schema_version: ENVIRONMENT_SCHEMA_VERSION,
+                receipt_id: uuid::Uuid::new_v4().to_string(),
+                spec_sha256: spec.spec_sha256.clone(),
+                platform: spec.platform.clone(),
+                builder_image: spec.builder_image.clone(),
+                builder_image_digest: spec.builder_image_digest.clone(),
+                builder_policy_revision: self.descriptor.policy_revision.clone(),
+                status: EnvironmentBuilderStatus::Succeeded,
+                store_path: String::new(),
+                output_sha256: sha256_hex(spec.spec_sha256.as_bytes()),
+                sbom_sha256: spec.sbom_sha256.clone(),
+                log_ref: String::new(),
+                sandbox_attestation: SandboxAttestation {
+                    non_root: true,
+                    no_secrets: true,
+                    no_host_network: true,
+                    no_host_socket: true,
+                    no_host_mount: true,
+                    sandbox: true,
+                    impure: false,
+                    bounded_resources: true,
+                },
+                blockers: Vec::new(),
+                duration_ms: 0,
+                created_at: Utc::now().to_rfc3339(),
+            };
+            receipt.validate_for(spec)?;
+            Ok(receipt)
+        })
+    }
+}
+
 /// Environment builder that calls the trusted runtime broker. The broker owns
 /// the builder image identity, workspace staging, network proxy, resource
 /// limits and cleanup; Core only supplies a typed plan/spec and a bounded file

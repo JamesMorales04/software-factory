@@ -11,6 +11,38 @@ the decoded Lead assessment/proposal/plan, a Lead-started Campaign WorkGraph,
 the authorization budget projection and an explicit operator Campaign
 cancellation with its recorded recovery state.
 
+`intake-journey.mjs` is the unified Home → request workspace → approval →
+Campaign journey. It starts a disposable real Core with a deterministic
+OpenAI-compatible fake gateway and a fixture project that has engineering docs
+and a committed Nix environment. The fake model returns only test data; Core
+authorization, subscription admission, planning review, environment freeze,
+Campaign start, the Worker, independent verifier and the Quality Gate remain
+real. `cargo xtask e2e intake` covers assessment through operator approval and
+Campaign authorization; `cargo xtask e2e intake-full` also runs the fixture
+Worker, verifier, one reviewer process per frozen role, the Gate, and a Core
+restart/browser reload persistence check.
+
+```sh
+cargo xtask e2e intake
+cargo xtask e2e intake-full
+```
+
+The journey builds Core with the debug-only `test-support` feature. Three
+fixtures are explicitly test-only and are not reachable in a production build:
+
+- `FACTORY_ENVIRONMENT_TEST_BUILDER=1` selects a deterministic environment
+  builder. Its fixed `fixture/environment-builder` image/digest and receipts are
+  labelled fixture evidence; no Nix, network or real build occurs.
+- `FACTORY_VERIFIER_LOCAL_ENVIRONMENT_CHECKS=1` lets the debug+`test-support`
+  verifier run the frozen check argv against the already-imported local
+  candidate volume when the local test backend is selected. Production
+  verification still requires the runtime broker and a frozen builder image.
+- `POST /test-support/intake/{id}/clear-fixture-environment` removes the
+  ActionSpec environment placeholder that `test-support` installs at Action
+  creation, so the journey can bind the real compiled/frozen plan and spec. The
+  route does not exist without `test-support` and production never installs the
+  placeholder.
+
 `harness.mjs`, `browser-close.test.mjs` and `launch-timeout.test.mjs` retain
 generic bounded browser shutdown and launch-timeout fault coverage. They do not
 contact Core or a provider.
