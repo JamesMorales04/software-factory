@@ -2,7 +2,7 @@
 
 **Observation source commit:** `4bc082f98e6898643e0379e4086107c962a55db1`
 **Pre-rebase implementation candidate:** `5f98daec2b92e3adaee0b4f12720ed56a8d6ef58`
-**Rebased code candidate:** `a8017cc1a210b1965c80dc673b8d0dc3131f307c`
+**Rebased code candidate:** `8611e3b0c1b49e4adc5456cb41f733ef0a30ad8c`
 **Integration merge base:** `61ff424` (WP1-A `19e2723`, WP1-B `3325831`)
 **Date:** 2026-11-11 (rebased 2026-11-12). **Status:** implementer self-test
 observation, not independent acceptance. **Security:** `TRUSTED_LOCAL`; not
@@ -12,7 +12,7 @@ The real `resolve`/`build` observation ran at `4bc082f`/`5f98daec`. The rebase
 onto `a4591dac` retained the runtime-broker allowlist and Compose configuration
 but dropped the earlier generic Supervisor image-allowlist change as superseded
 by WP1-D's dedicated environment-check route. The recorded build path and hashes
-were not rerun at `a8017cc1`; no rerun claim is made.
+were not rerun at `8611e3b0`; no rerun claim is made.
 
 The live `software-factory` Compose project was **not** started, stopped,
 recreated, migrated or modified. The observation used the isolated project name
@@ -114,7 +114,7 @@ Results:
 - Core started in the same isolated project and `/health` reported the builder
   `READY` with the same image/digest.
 
-## Rebase verification at `a8017cc1`
+## Rebase verification at `8611e3b0`
 
 The branch was rebased onto `a4591dac` and the earlier generic Supervisor
 image-allowlist change was dropped as superseded by WP1-D's dedicated
@@ -142,7 +142,7 @@ environment-check route. The following checks ran at the rebased code candidate:
 
 The real Compose `resolve`/`build` observation was **not** rerun at this
 candidate. Its request/response hashes remain bound to `4bc082f`/`5f98daec`;
-this record does not claim a new real build at `a8017cc1`.
+this record does not claim a new real build at `8611e3b0`.
 
 ## NOT_TESTED
 
