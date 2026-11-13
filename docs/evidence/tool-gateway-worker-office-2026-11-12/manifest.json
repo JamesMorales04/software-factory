@@ -1,6 +1,6 @@
 {
   "schema": "factory.tool-gateway-worker-office.v1",
-  "recorded_at": "2026-11-13T03:15:00Z",
+  "recorded_at": "2026-11-13T03:25:00Z",
   "result": "PASS (author-run Worker/Office gateway, live Context7 and Playwright stdio, host+container Worker/lease gateway E2E; not independent acceptance)",
   "candidate_sha": "40d7743646bb23afcb2efbf8427f383b78c2cfbb",
   "branch": "feat/tool-gateway",
@@ -137,12 +137,12 @@
     "The populated recent-call row is seeded directly in SQLite to exercise the real Core projection and browser table; it is not produced by a live MCP call.",
     "No independent verifier, Quality Gate acceptance, live provider turn or security review was performed for this slice.",
     "TRUSTED_LOCAL is not isolated or certified; browser navigation/click/type remain disabled until a controlled network boundary exists.",
-    "Real GitHub read-only is BLOCKED: no GITHUB_MCP_TOKEN. Cross-repository behavior is proven with a deterministic fake multi-repository upstream; real-token confirmation remains NOT_TESTED.",
     "Playwright navigation/click/type remain deferred; the live smoke used browser_close with no open tab.",
     "Container e2e_fixture_dispatch has 3 provider-sandbox readiness failures; host passes 13/13. Full --tests --features test-support is not a supported combination because the test-support environment seam conflicts with Core intake fixtures.",
     "The browser populated row is seeded; the real Worker-generated row is proven separately by worker-gateway-e2e.json.",
     "Host --tests has two provider_sandbox failures because host OpenCode is 2.2.5; the canonical dev container with pinned 1.18.32 passes 7/7.",
-    "The model-driven Codex fixture gateway turn passes on host; its container run is one of the three provider-sandbox readiness failures. The direct Core/lease gateway E2E passes in the container."
+    "The model-driven Codex fixture gateway turn passes on host; its container run is one of the three provider-sandbox readiness failures. The direct Core/lease gateway E2E passes in the container.",
+    "Real GitHub Project-repository read passes via a host-provided token aliased to GITHUB_MCP_TOKEN; the token/body are not stored. A real multi-repository token denial remains NOT_TESTED; the scoped fake-upstream E2E covers the denial path."
   ],
   "live_mcp": {
     "context7": {
@@ -156,9 +156,9 @@
       "detail": "stdio MCP 0.0.84 + pinned headless Chromium; browser_close no-op"
     },
     "github": {
-      "result": "BLOCKED",
+      "result": "PASS",
       "evidence": "github-live.json",
-      "detail": "no GITHUB_MCP_TOKEN/multi-repo token; live cross-repo denial NOT_TESTED"
+      "detail": "real Project-repository pull_request_read; token not stored; real multi-repo scope denial NOT_TESTED, fake-upstream denial PASS"
     }
   },
   "canonical_container": {

@@ -109,7 +109,7 @@ targets are the supported lanes.
 | Context7 | `context7.query-docs` with `/react/react` | PASS; bounded documentation content, ALLOW audit | `context7-live.json` |
 | Context7 redirect | `/facebook/react` returns `isError` redirect content | PASS; content returned and audited as `tool_error` | `context7-live.json` note |
 | Playwright | `playwright.browser_close` via stdio MCP 0.0.84 + pinned headless Chromium | PASS; no open tab, successful no-op | `playwright-live.json` |
-| GitHub read-only | same-repository fake upstream + cross-repository denial | PASS for scope enforcement; real GitHub token BLOCKED | `worker-gateway-e2e.json`, `github-live.json` |
+| GitHub read-only | `github.pull_request_read` on `JamesMorales04/software-factory` + fake multi-repo cross-repository denial | PASS; real Project-repository read and scope E2E; real multi-repo token not exercised | `github-live.json`, `worker-gateway-e2e.json` |
 
 ## Browser and network observations
 
@@ -142,7 +142,7 @@ No unexpected console errors or page errors were recorded.
   readiness failures; host passes 13/13 and the new gateway E2E passes in both.
   A full `--tests --features test-support` run is not a supported combination
   because the test-support environment seam conflicts with Core intake fixtures.
-- No independent verifier, Quality Gate acceptance, real GitHub token test or
-  security review was performed for this slice.
+- No independent verifier, Quality Gate acceptance or security review was
+  performed for this slice.
 - `TRUSTED_LOCAL` is not isolated or certified. Browser navigation/click/type
   remain disabled until a controlled network boundary exists.
