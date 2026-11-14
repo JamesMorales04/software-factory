@@ -299,6 +299,11 @@ describe("AppShell", () => {
     await user.selectOptions(select, "es");
 
     expect(await screen.findByRole("link", { name: "Campañas" })).toBeDefined();
+    expect(
+      screen.getByRole("button", {
+        name: "Buscar: abrir la navegación por comandos (atajo K)",
+      }),
+    ).toBeDefined();
     expect(document.querySelector(".topbar-title")?.textContent).toBe(
       "Campañas",
     );
@@ -308,6 +313,22 @@ describe("AppShell", () => {
     await waitFor(() => expect(document.documentElement.lang).toBe("es"));
     expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBe("es");
     expect(screen.getByRole("link", { name: "Nueva solicitud" })).toBeDefined();
+  });
+
+  it("gives the command trigger an accessible name that includes its visible label and shortcut", async () => {
+    renderShell("/");
+    const trigger = screen.getByRole("button", {
+      name: "Search: open command navigation (shortcut K)",
+    });
+    expect(trigger.textContent).toContain("Search");
+    expect(trigger.textContent).toContain("K");
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    await userEvent.keyboard("{Enter}");
+    expect(
+      await screen.findByRole("dialog", { name: "Command navigation" }),
+    ).toBeDefined();
   });
 
   it("opens command navigation with the keyboard and selects a page", async () => {

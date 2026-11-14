@@ -314,11 +314,32 @@ export function RequestWorkspace() {
     !terminal && !planningReady && (isAutopilot || data.plan !== null);
   const reviewBinding = currentPlanningReview(planning);
   const planningReviewStatus = reviewBinding.status;
+  const coreStopped = data.state === "BLOCKED" || data.state === "FAILED";
   const planningWaitingForOwner =
-    planningReviewStatus === "PENDING" && planning?.materialsReady === true;
+    data.state === "AWAITING_APPROVAL" &&
+    planningReviewStatus === "PENDING" &&
+    planning?.materialsReady === true;
   const planningRejected =
     planningReviewStatus === "REJECTED" ||
     planningReviewStatus === "CHANGES_REQUESTED";
+  const planningCalloutTitle = planningWaitingForOwner
+    ? t("request.planning.incompleteTitle")
+    : planningRejected
+      ? t("request.planning.rejectedTitle")
+      : coreStopped
+        ? t("request.planning.stoppedTitle")
+        : isAutopilot
+          ? t("request.planning.preparingTitle")
+          : t("request.planning.incompleteTitle");
+  const planningCalloutBody = planningWaitingForOwner
+    ? t("request.planning.waitingBody")
+    : planningRejected
+      ? t("request.planning.rejectedBody")
+      : coreStopped
+        ? t("request.planning.stoppedBody")
+        : isAutopilot
+          ? t("request.planning.incompleteBodyAutopilot")
+          : t("request.planning.incompleteBody");
   const environmentReady =
     !data.environment?.required || data.environment.status === "FROZEN";
   const planningProblemValues = participantPlan
@@ -595,14 +616,7 @@ export function RequestWorkspace() {
           role="status"
         >
           <p>
-            <strong>
-              {isAutopilot && !planningWaitingForOwner && !planningRejected
-                ? t("request.planning.preparingTitle")
-                : t("request.planning.incompleteTitle")}
-            </strong>{" "}
-            {isAutopilot
-              ? t("request.planning.incompleteBodyAutopilot")
-              : t("request.planning.incompleteBody")}
+            <strong>{planningCalloutTitle}</strong> {planningCalloutBody}
           </p>
           {planning === null ? (
             <p>{t("request.planning.unavailable")}</p>
@@ -624,7 +638,7 @@ export function RequestWorkspace() {
                             ? planningProblemValues.join(", ")
                             : t("request.planning.participantAssignments"),
                       })
-                    : isAutopilot
+                    : isAutopilot && !coreStopped
                       ? t("request.planning.participantMissingAutopilot")
                       : t("request.planning.participantMissing")}
                 </p>
@@ -685,6 +699,25 @@ export function RequestWorkspace() {
               >
                 {t("request.planning.openDirector")}
               </Link>
+            </>
+          ) : coreStopped ? (
+            <>
+              <p className="muted">{t("request.planning.stoppedRecovery")}</p>
+              <div className="request-form-actions">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void load(true)}
+                >
+                  {t("request.retryNow")}
+                </Button>
+                <Link
+                  className={buttonClass("secondary")}
+                  to={`/director?request=${encodeURIComponent(data.id)}`}
+                >
+                  {t("request.planning.openDirector")}
+                </Link>
+              </div>
             </>
           ) : isAutopilot ? (
             <p className="muted">{t("request.planning.autopilotFreshness")}</p>

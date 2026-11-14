@@ -920,6 +920,7 @@ capabilities:
     isolation: []
   limitations:
   - Office recovery and cleanup projections remain incomplete.
+  - The global command trigger now includes its visible localized label and shortcut in the accessible name; this baseline label-content-name-mismatch repair is component-tested, while final authenticated axe/browser acceptance remains NOT_TESTED at the current candidate.
   - Campaign and Lead labels can remain AUTHORIZED/RUNNING after an ACCEPTED Run; the gate and Run states are authoritative.
   - The 2026-11-10 vlog run exercised the read-only Issues board in real Chromium at 1440/768/390, including five target issues under Needs Attention with automatic intake off and the `No issue synchronization recorded` state; it is recorded in docs/evidence/live-vlog-acceptance-2026-11-10.md as implementer/orchestrator evidence, not independent certification. Issue-to-Campaign execution, completed sync and issue write/comment paths remain NOT_TESTED. WP2 now implements frozen issue links, Core-derived delivery state, idempotent issue comment/close receipts and an operator retry. The delivery hooks are available in `native/src/issues/` for WP3, but WP2 does not call them from PR-open or merge handlers; no real authorized GitHub write journey, WP3 auto-merge integration or independent acceptance has been run.
   - Agent Office is read-only; it does not expose stop, model switching, budget changes or tool invocation.
@@ -2871,6 +2872,7 @@ capabilities:
   - The Issues auto-start is browser-side; this capability covers Core-owned unified-intake autopilot only.
   - The policy is limited to R0, one frozen profile revision, fixed paths/capabilities/route/operations/progress and the configured expiry. The current product supports autonomous execution only when the Lead and implementer both use the OpenCode Go subscription route; other profiles stay on manual review.
   - Office preparation readiness, the bounded refresh, the owner-wait stop and the focus/visibility resume are component-tested only; real Compose browser acceptance and independent verification of this slice remain NOT_TESTED.
+  - A BLOCKED or FAILED request with missing artifacts renders a stopped-preparation state with a read-only Retry/focus path; it never claims automatic preparation or refresh. This is component-tested only and browser acceptance remains NOT_TESTED.
   - TRUSTED_LOCAL is broad local access; no isolation or security certification is claimed.
   blockers:
   - Independent live acceptance, autonomous repair and the independent security review remain open.

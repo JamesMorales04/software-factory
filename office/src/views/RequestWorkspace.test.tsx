@@ -527,6 +527,44 @@ describe("RequestWorkspace", () => {
     ).toBeNull();
   });
 
+  it("does not claim automatic preparation for a BLOCKED Core request with missing artifacts", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        mode: "AUTONOMOUS",
+        state: "BLOCKED",
+        stateDetail:
+          "autopilot: intake conflict PLAN_ARTIFACTS_REQUIRED: required planning artifacts are missing",
+        planning: {
+          ...readyPlanning,
+          missingArtifacts: [
+            "PLAN",
+            "STACK",
+            "ARCHITECTURE",
+            "DOCUMENTATION",
+            "SKILL",
+            "DOD",
+            "WORKGRAPH",
+            "SPEC",
+            "OPENSPEC",
+          ],
+          materialsReady: false,
+          ready: false,
+          reviewStatus: null,
+          reviewApproved: false,
+          startReady: false,
+        },
+      }),
+    );
+    renderRequest();
+
+    expect(await screen.findByText("Plan preparation stopped")).toBeDefined();
+    expect(screen.queryByText("Plan preparation in progress")).toBeNull();
+    expect(screen.queryByText(/Core is preparing/)).toBeNull();
+    expect(screen.queryByText(/refreshes automatically/)).toBeNull();
+    expect(screen.getByText(/PLAN, STACK/)).toBeDefined();
+    expect(screen.getByRole("button", { name: "Retry now" })).toBeDefined();
+  });
+
   it("hands a ready pending review to the owner without pretending it is still preparing", async () => {
     mocks.getIntakeRequest.mockResolvedValue(
       makeProjection({

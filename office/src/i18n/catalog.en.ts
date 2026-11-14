@@ -84,7 +84,8 @@ export const en = {
   "shell.expandNavigation": "Expand navigation",
   "shell.collapseNavigation": "Collapse navigation",
   "shell.toggleNavigation": "Toggle navigation",
-  "shell.openCommandNavigation": "Open command navigation",
+  "shell.commandTriggerAria":
+    "{search}: open command navigation (shortcut {shortcut})",
   "shell.search": "Search",
   "shell.mainHeading": "Factory Office command center",
   "shell.unknownRoute": "Unknown route.",
@@ -407,6 +408,16 @@ export const en = {
     "Complete the plan review in the Director before approval.",
   "request.planning.incompleteTitle": "Plan review incomplete",
   "request.planning.preparingTitle": "Plan preparation in progress",
+  "request.planning.waitingBody":
+    "The planning materials are ready and Core is waiting for the owner decision. The exact pending review is shown below.",
+  "request.planning.rejectedTitle": "Plan review rejected",
+  "request.planning.rejectedBody":
+    "Core recorded a rejected or changes-requested review. Automatic preparation is stopped; a new exact owner decision or recompile is required.",
+  "request.planning.stoppedTitle": "Plan preparation stopped",
+  "request.planning.stoppedBody":
+    "Core reports a blocked or failed request. Automatic preparation and refresh are stopped; the missing facts below are Core's last confirmed state. This view does not change the request.",
+  "request.planning.stoppedRecovery":
+    "Use Retry now or return focus to re-read. No automatic start or preparation is claimed while Core is stopped.",
   "request.planning.incompleteBody":
     "Core requires the planning artifacts and the participant plan before this frozen plan can start.",
   "request.planning.incompleteBodyAutopilot":

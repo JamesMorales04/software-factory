@@ -338,7 +338,10 @@ export function AppShell({
                 type="button"
                 className="command-trigger"
                 onClick={() => setPaletteOpen(true)}
-                aria-label={t("shell.openCommandNavigation")}
+                aria-label={t("shell.commandTriggerAria", {
+                  search: t("shell.search"),
+                  shortcut: "K",
+                })}
               >
                 <Search size={16} aria-hidden="true" />
                 <span>{t("shell.search")}</span>

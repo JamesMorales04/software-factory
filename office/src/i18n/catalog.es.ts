@@ -86,7 +86,8 @@ export const es: Catalog = {
   "shell.expandNavigation": "Expandir la navegación",
   "shell.collapseNavigation": "Contraer la navegación",
   "shell.toggleNavigation": "Mostrar u ocultar la navegación",
-  "shell.openCommandNavigation": "Abrir la navegación por comandos",
+  "shell.commandTriggerAria":
+    "{search}: abrir la navegación por comandos (atajo {shortcut})",
   "shell.search": "Buscar",
   "shell.mainHeading": "Centro de mando de Factory Office",
   "shell.unknownRoute": "Ruta desconocida.",
@@ -418,6 +419,16 @@ export const es: Catalog = {
     "Completa la revisión del plan en el Director antes de aprobar.",
   "request.planning.incompleteTitle": "Revisión del plan incompleta",
   "request.planning.preparingTitle": "Preparación del plan en curso",
+  "request.planning.waitingBody":
+    "Los materiales del plan están listos y Core espera la decisión del owner. La revisión pendiente exacta se muestra abajo.",
+  "request.planning.rejectedTitle": "Revisión del plan rechazada",
+  "request.planning.rejectedBody":
+    "Core registró una revisión rechazada o con cambios solicitados. La preparación automática está detenida; se requiere una nueva decisión exacta del owner o una recompilación.",
+  "request.planning.stoppedTitle": "Preparación del plan detenida",
+  "request.planning.stoppedBody":
+    "Core informa de una solicitud bloqueada o fallida. La preparación y el refresco automáticos están detenidos; los hechos faltantes de abajo son el último estado confirmado por Core. Esta vista no cambia la solicitud.",
+  "request.planning.stoppedRecovery":
+    "Pulsa Reintentar ahora o recupera el foco para releer. No se afirma inicio ni preparación automática mientras Core está detenido.",
   "request.planning.incompleteBody":
     "Core requiere los artefactos de planificación y el plan de participantes antes de iniciar este plan congelado.",
   "request.planning.incompleteBodyAutopilot":
