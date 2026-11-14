@@ -232,6 +232,12 @@ class Config:
         return self.run_dir / "cookies.txt"
 
     @property
+    def storage_state(self) -> Path:
+        """Playwright storageState JSON exported from the driver cookie jar."""
+
+        return self.run_dir / "cookies.storage.json"
+
+    @property
     def state_path(self) -> Path:
         return self.run_dir / "state.json"
 
@@ -491,6 +497,47 @@ class Api:
             os.chmod(self.config.cookie_jar, 0o600)
         except OSError:
             pass
+        self._write_storage_state()
+
+    def storage_state(self) -> dict[str, Any]:
+        """Playwright storageState for the exact session cookies in this jar.
+
+        The browser lane must consume the same authenticated session the driver
+        produced. Exporting from the already-parsed LWP cookie jar avoids a
+        second, divergent cookie parser. Cookie values are never logged.
+        """
+
+        cookies = []
+        for cookie in self.jar:
+            rest = getattr(cookie, "_rest", {}) or {}
+            same_site = rest.get("SameSite") or rest.get("samesite")
+            if same_site not in {"Strict", "Lax", "None"}:
+                same_site = None
+            entry: dict[str, Any] = {
+                "name": cookie.name,
+                "value": cookie.value,
+                "domain": cookie.domain or "",
+                "path": cookie.path or "/",
+                "expires": int(cookie.expires) if cookie.expires else -1,
+                "httpOnly": bool(
+                    cookie.has_nonstandard_attr("HttpOnly")
+                    or rest.get("HttpOnly") in (True, "True", "true")
+                ),
+                "secure": bool(cookie.secure),
+            }
+            if same_site:
+                entry["sameSite"] = same_site
+            cookies.append(entry)
+        return {"cookies": cookies, "origins": []}
+
+    def _write_storage_state(self) -> None:
+        path = self.config.storage_state
+        ensure_dir(path.parent)
+        payload = json.dumps(self.storage_state(), indent=2, sort_keys=True) + "\n"
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(payload, encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        temporary.replace(path)
 
     def csrf(self) -> str:
         for cookie in self.jar:

@@ -295,7 +295,7 @@ def settings(context: Context) -> None:
                 "toolCallTimeoutSecs": 600,
                 "maxRequestBytes": 2097152,
                 "maxResponseBytes": 2097152,
-                "maxGenerationTokens": 8192,
+                "maxGenerationTokens": 32768,
                 "maxInFlightOperations": 2,
             },
             "progress": {
@@ -703,6 +703,15 @@ def _fixture_counters(context: Context) -> dict[str, int] | None:
 def autonomous_setup(context: Context) -> None:
     context.state.require("project_id", "project_config_hash")
     _configure_fixture_providers(context)
+    # Structured model output needs 16384 tokens and a bounded retry fits in
+    # 32768. The profile must not depend on provider-default quotas that are
+    # lower than the protocol requirement.
+    structured_tokens = 16384
+    generation_tokens = 32768
+    require(
+        generation_tokens >= structured_tokens * 2,
+        "the generation budget does not cover one structured call plus one retry",
+    )
     role = {
         "provider": "opencode-go",
         "model": "deepseek-v4.1-flash",
@@ -724,7 +733,7 @@ def autonomous_setup(context: Context) -> None:
                 "toolCallTimeoutSecs": 600,
                 "maxRequestBytes": 2097152,
                 "maxResponseBytes": 2097152,
-                "maxGenerationTokens": 8192,
+                "maxGenerationTokens": 32768,
                 "maxInFlightOperations": 2,
             },
             "progress": {
@@ -736,6 +745,13 @@ def autonomous_setup(context: Context) -> None:
         },
     )
     assert_equal(profile.get("executable"), True, "autonomous execution profile is not executable")
+    context.state.set(
+        "autonomous_generation_budget",
+        {
+            "structuredOutputTokens": structured_tokens,
+            "maxGenerationTokens": generation_tokens,
+        },
+    )
     context.api.post(f"/execution-profiles/{profile['id']}/default", {"scope": "global"})
     granted = context.api.post(
         f"/projects/{context.state.get('project_id')}/execution-policy",
@@ -972,7 +988,7 @@ def autonomous_negative(context: Context) -> None:
                 "toolCallTimeoutSecs": 600,
                 "maxRequestBytes": 2097152,
                 "maxResponseBytes": 2097152,
-                "maxGenerationTokens": 8192,
+                "maxGenerationTokens": 32768,
                 "maxInFlightOperations": 2,
             },
             "progress": {

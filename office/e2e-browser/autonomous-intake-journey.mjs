@@ -7,11 +7,20 @@
 // planning or approval endpoints from the browser, and the owner-required flow
 // is opt-in and separate.
 //
+// Authentication handoff: the Python driver exports Playwright `storageState`
+// JSON from its already-parsed LWP cookie jar (`cookies.storage.json`). This
+// journey never parses a second cookie format.
+//
 // Required environment:
-//   FACTORY_OFFICE_URL        e.g. http://core:8765 (Compose campaign network)
-//   FACTORY_COOKIE_JAR        Netscape cookie jar written by the scenario runner
+//   FACTORY_OFFICE_URL        e.g. http://127.0.0.1:8765
+//   FACTORY_STORAGE_STATE     storageState JSON written by the scenario driver
 //   FACTORY_AUTONOMOUS_REQUEST_ID
 // Optional:
+//   FACTORY_OFFICE_UPSTREAM   e.g. http://core:8765. When set, the journey
+//                             starts a verification-only loopback TCP proxy so
+//                             the browser Origin/Host are loopback, which is the
+//                             origin shape Core supports for http. This is a
+//                             verification route, not certified product access.
 //   CHROMIUM_EXE              Chromium binary (default from Playwright cache)
 //   FACTORY_OWNER_REQUIRED=1  exercise the explicit owner-approval path
 //   FACTORY_BROWSER_ARTIFACTS directory for screenshots/console logs
@@ -20,14 +29,14 @@
 // inference or independent verification.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { connect, createServer } from "node:net";
 import { join } from "node:path";
 import { launchBrowser } from "./harness.mjs";
 
-const officeUrl = (
-  process.env.FACTORY_OFFICE_URL || "http://core:8765"
-).replace(/\/$/, "");
 const requestId = process.env.FACTORY_AUTONOMOUS_REQUEST_ID?.trim();
-const cookieJar = process.env.FACTORY_COOKIE_JAR?.trim();
+const storageStatePath = process.env.FACTORY_STORAGE_STATE?.trim();
+const upstream = process.env.FACTORY_OFFICE_UPSTREAM?.trim();
+const directUrl = (process.env.FACTORY_OFFICE_URL || "").trim();
 const ownerRequired = process.env.FACTORY_OWNER_REQUIRED === "1";
 const artifacts =
   process.env.FACTORY_BROWSER_ARTIFACTS?.trim() || "/tmp/autonomous-browser";
@@ -82,44 +91,77 @@ function assertAnyLabel(text, labels, description) {
   record(description, match);
 }
 
-function parseNetscapeCookies(raw, url) {
-  const host = new URL(url).hostname;
-  return raw
-    .split("\n")
-    .filter((line) => line.trim() && !line.startsWith("#"))
-    .map((line) => line.split("\t"))
-    .filter((parts) => parts.length >= 7)
-    .filter((parts) => {
-      const domain = parts[0].replace(/^\./, "");
-      return host === domain || host.endsWith(`.${domain}`);
-    })
-    .map((parts) => ({
-      name: parts[5],
-      value: parts[6],
-      domain: parts[0],
-      path: parts[2] || "/",
-      secure: parts[3] === "TRUE",
-      httpOnly: parts[1] === "TRUE",
-      expires: Number(parts[4]) > 0 ? Number(parts[4]) : -1,
-    }));
+function readStorageState(path) {
+  let payload;
+  try {
+    payload = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    fail(`storageState is not readable JSON: ${error.message}`);
+  }
+  if (!payload || !Array.isArray(payload.cookies)) {
+    fail("storageState is missing a cookies array");
+  }
+  if (payload.cookies.length === 0) fail("storageState has no cookies");
+  for (const cookie of payload.cookies) {
+    if (typeof cookie.name !== "string" || typeof cookie.value !== "string") {
+      fail("storageState contains a malformed cookie");
+    }
+    if (typeof cookie.domain !== "string" || cookie.domain.length === 0) {
+      fail("storageState cookie is missing a domain");
+    }
+  }
+  return payload.cookies;
+}
+
+// Verification-only loopback proxy. Core's supported http Origin shape is a
+// loopback authority equal to the Host; forwarding the request unchanged to the
+// Office upstream keeps Host/Origin as 127.0.0.1:PORT and preserves auth exactly.
+function startLoopbackProxy(targetUrl) {
+  const target = new URL(targetUrl);
+  const targetPort = Number(target.port || "80");
+  return new Promise((resolve, reject) => {
+    const server = createServer((client) => {
+      const upstreamSocket = connect(targetPort, target.hostname);
+      client.on("error", () => upstreamSocket.destroy());
+      upstreamSocket.on("error", () => client.destroy());
+      client.pipe(upstreamSocket);
+      upstreamSocket.pipe(client);
+    });
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () =>
+          new Promise((done) => {
+            server.close(() => done());
+          }),
+      });
+    });
+  });
 }
 
 async function main() {
   if (!requestId) fail("FACTORY_AUTONOMOUS_REQUEST_ID is required");
-  if (!cookieJar) fail("FACTORY_COOKIE_JAR is required");
+  if (!storageStatePath) fail("FACTORY_STORAGE_STATE is required");
+  if (process.env.FACTORY_COOKIE_JAR) {
+    fail(
+      "FACTORY_COOKIE_JAR is no longer part of the contract; use FACTORY_STORAGE_STATE",
+    );
+  }
+  if (!directUrl && !upstream) {
+    fail("set FACTORY_OFFICE_URL or FACTORY_OFFICE_UPSTREAM");
+  }
   mkdirSync(artifacts, { recursive: true });
 
+  const cookies = readStorageState(storageStatePath);
+  const proxy = upstream ? await startLoopbackProxy(upstream) : null;
   const browser = await launchBrowser(chromium, { headless: true });
   try {
-    const cookies = parseNetscapeCookies(
-      readFileSync(cookieJar, "utf8"),
-      officeUrl,
-    );
-    if (cookies.length === 0)
-      fail("cookie jar has no cookie for the Office origin");
     await browser.browser.contexts()[0].addCookies(cookies);
 
     const page = browser.page;
+    const officeUrl = (proxy ? proxy.url : directUrl).replace(/\/$/, "");
     page.on("console", (message) => {
       if (message.type() === "error") consoleErrors.push(message.text());
     });
@@ -145,7 +187,6 @@ async function main() {
         LABELS.approvePlan,
         "explicit owner approve control",
       );
-      // The owner-required lane may legitimately surface the Director review CTA.
       record(
         "owner-required lane",
         "waiting-owner UI with explicit approval control",
@@ -167,7 +208,6 @@ async function main() {
     }
 
     if (!ownerRequired) {
-      // Wait for either Open Campaign (ready) or the waiting-owner paragraph.
       const deadline = Date.now() + 60000;
       let reached = false;
       while (Date.now() < deadline) {
@@ -191,7 +231,6 @@ async function main() {
       );
     }
 
-    // Responsive sanity: the same Core-backed state must remain readable.
     for (const [width, height] of [
       [1440, 900],
       [834, 1112],
@@ -226,6 +265,7 @@ async function main() {
         {
           requestId,
           ownerRequired,
+          originRoute: upstream ? "loopback-proxy" : "direct",
           modelEvidence: "SIMULATED",
           liveInference: "NOT_TESTED",
           independentAcceptance: false,
@@ -237,6 +277,7 @@ async function main() {
     );
   } finally {
     const timedOut = await browser.close();
+    if (proxy) await proxy.close();
     if (timedOut) fail("browser close timed out");
   }
 }
