@@ -26,6 +26,23 @@ This change makes the same runner prepare the existing planning phases:
 Only `AUTONOMOUS` intake requests enter this path. Manual `REVIEW_PLAN`
 profiles keep their existing endpoints and owner decisions.
 
+## Provider output bound
+
+The structured Lead protocol asks for 16,384 output tokens for the first
+attempt and at most 32,768 for the one bounded truncation retry. A new provider
+configuration therefore defaults its durable output envelope to 32,768, derived
+from the existing protocol ceiling rather than an arbitrary maximum. An operator
+may set explicit `maxInputTokens`/`maxOutputTokens` bounds; existing settings
+keep their current values.
+
+Before reserving or dispatching a structured Lead call, Core checks the durable
+provider setting and the latest frozen pricing quote. If either is below the
+protocol requirement it returns
+`AGENTIC_LEAD_OUTPUT_BOUND_INSUFFICIENT` with the configured and required
+bounds. No model call, quote change or envelope increase happens implicitly.
+An already-frozen quote that is too small remains untouched; the operator must
+create a new configuration/revision and a fresh funding admission.
+
 ## Authority boundaries
 
 - The runner never grants authority, approves an owner-required plan, widens
@@ -53,6 +70,28 @@ profiles keep their existing endpoints and owner decisions.
   authority.
 
 ## Idempotency and recovery
+
+- The review policy is a single deterministic function over the frozen PLAN
+  lane, signals and assurance plus the frozen STACK decision. Crash recovery
+  reads those from the PLAN bundle; it never re-derives owner-required behavior
+  from a drifted live triage context.
+- A review that does not bind the current PLAN revision and exact hash is
+  stale. It remains historical evidence but cannot reject or approve the current
+  plan; the endpoint refuses a decision for an older revision.
+- `save_plan_review` reuses an identical review tuple inside one immediate
+  transaction, so retries and concurrent identical owner approvals create one
+  row. If the owner decision is recorded and the following environment phase
+  fails, the response carries `reviewRecorded: true` and the real blocker.
+- The assessment transition shares the per-request lock. An assessment already
+  in progress is a recoverable wait, not a Lead failure.
+- A recoverable prerequisite failure (provider/builder/model unavailable,
+  transient assessment/funding) records a blocked operation without blocking
+  the Lead; a restart, repaired prerequisite or valid owner approval resumes the
+  same request. A terminal failure still blocks the Lead. Ambiguous dispatch is
+  never retried blindly.
+- A blocked environment caused by a builder outage is recompiled in a new
+  revision when the runner resumes; a non-recoverable environment blocker is
+  never replaced silently.
 
 - A completed Campaign short-circuits before any assessment, funding or model
   call.

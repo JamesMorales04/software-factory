@@ -2500,6 +2500,12 @@ struct ProviderSettingsInput {
     credential: Option<String>,
     enabled: bool,
     is_default: bool,
+    /// Explicit provider capability bounds. Existing configurations keep their
+    /// current values; a new configuration derives a protocol-safe default.
+    #[serde(default)]
+    max_input_tokens: Option<u64>,
+    #[serde(default)]
+    max_output_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -2995,6 +3001,15 @@ async fn update_provider_settings(
     {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
     }
+    if input.max_input_tokens.is_some_and(|value| value == 0)
+        || input.max_output_tokens.is_some_and(|value| value == 0)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"provider token bounds must be positive"})),
+        )
+            .into_response();
+    }
     let Some(master_key) = app.master_key.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3056,14 +3071,14 @@ async fn update_provider_settings(
         enabled: input.enabled,
         is_default: input.is_default,
         max_turns: existing.as_ref().map(|value| value.max_turns).unwrap_or(4),
-        max_input_tokens: existing
-            .as_ref()
-            .map(|value| value.max_input_tokens)
+        max_input_tokens: input
+            .max_input_tokens
+            .or_else(|| existing.as_ref().map(|value| value.max_input_tokens))
             .unwrap_or(60_000),
-        max_output_tokens: existing
-            .as_ref()
-            .map(|value| value.max_output_tokens)
-            .unwrap_or(12_000),
+        max_output_tokens: input
+            .max_output_tokens
+            .or_else(|| existing.as_ref().map(|value| value.max_output_tokens))
+            .unwrap_or(PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS),
         max_cost_micros: existing
             .as_ref()
             .map(|value| value.max_cost_micros)
@@ -11487,6 +11502,10 @@ struct AgenticModelOutcome {
 /// (100_000 output tokens in the supported profile) and the shared technical
 /// ceilings remain authoritative and can still refuse or settle the call.
 const AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS: u64 = 16_384;
+/// A fresh provider configuration must cover the whole structured-Lead
+/// protocol, including the one permitted truncation retry. Provider settings
+/// are the durable capability envelope from which Core freezes its quote.
+const PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS: u64 = 32_768;
 /// A stack selection is a tiny structured decision; keep the paid output
 /// bounded well below the full planner budget.
 const STACK_SELECTION_OUTPUT_TOKENS: u64 = 4_096;
@@ -11696,6 +11715,13 @@ async fn call_agentic_lead_model(
             )
                 .into_response()
         })?;
+    ensure_lead_model_output_bound(
+        app,
+        gateway.provider(),
+        gateway.model(),
+        AGENTIC_LEAD_TRUNCATION_RETRY_CEILING,
+    )
+    .await?;
     let principal_id = grant.principal_id.clone();
     let result = call_lead_model_with_truncation_retry(
         &gateway,
@@ -11724,6 +11750,45 @@ async fn call_agentic_lead_model(
         cost_micros: result.cost_micros,
         usage_known: result.usage_known,
     })
+}
+
+/// A fresh provider configuration must be able to carry the whole structured
+/// Lead protocol. Check the durable provider setting and any frozen pricing
+/// quote before reserving or dispatching a model call, so an undersized
+/// configuration becomes an actionable Core error instead of an opaque ledger
+/// rejection after assessment.
+async fn ensure_lead_model_output_bound(
+    app: &App,
+    provider: &str,
+    model: &str,
+    required: u64,
+) -> Result<(), Response> {
+    let settings = app
+        .db
+        .provider_settings(provider)
+        .await
+        .map_err(api_error)?;
+    let mut available = settings.max_output_tokens;
+    if let Ok(quote) = app.db.inference_pricing_quote(provider, model).await {
+        available = available.min(quote.output_tokens);
+    }
+    if available < required {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": format!(
+                    "provider {provider}/{model} output bound {available} is below the structured Lead requirement {required}; update the provider maxOutputTokens or create a new configuration with at least {required}"
+                ),
+                "code": "AGENTIC_LEAD_OUTPUT_BOUND_INSUFFICIENT",
+                "provider": provider,
+                "model": model,
+                "configuredOutputTokens": available,
+                "requiredOutputTokens": required,
+            })),
+        )
+            .into_response());
+    }
+    Ok(())
 }
 
 fn agentic_conflict(code: &'static str, message: impl Into<String>) -> Response {
@@ -13587,7 +13652,6 @@ async fn persist_planning_plan(
     precompiled_stack: Option<CompiledStackDecision>,
 ) -> Result<Value, Response> {
     use factory_native::planning::route::{required_artifacts, required_reviewers};
-    use factory_native::planning::{PlanningLane, R0_AUTONOMY_POINTS};
 
     let lane = context.planning_lane;
     let config = app
@@ -13687,6 +13751,7 @@ async fn persist_planning_plan(
         "openspecRequired": factory_native::planning::route::openspec_required(lane),
         "planReviewRequired": factory_native::planning::route::plan_review_required(lane),
         "signals": context.planning_signals,
+        "assurance": context.assurance(),
         // Persist the exact untrusted environment proposal used by this plan
         // revision so an operator environment recompile reuses the same input
         // instead of re-running a paid stack-selection call.
@@ -13748,14 +13813,12 @@ async fn persist_planning_plan(
         .await
         .map_err(api_error)?;
 
-    let owner_required = context.assurance() >= factory_native::agentic::Assurance::Elevated
-        || context.planning_signals.large
-        || stack.decision.stack_change
-        || stack.decision.autonomy_points > R0_AUTONOMY_POINTS
-        || (lane == PlanningLane::FormalSpec
-            && (context.planning_signals.public_contract
-                || context.planning_signals.data_or_schema
-                || context.planning_signals.security_boundary));
+    let owner_required = plan_review_owner_required(
+        lane,
+        &context.planning_signals,
+        context.assurance(),
+        &stack.decision,
+    );
     let (status, principal, rationale) = if owner_required {
         (
             "PENDING",
@@ -13971,6 +14034,8 @@ async fn plan_agentic_request_inner(app: Arc<App>, id: String) -> Response {
             .collect::<Vec<_>>();
         if !compile_missing.is_empty() {
             if let Some(review) = review.as_ref()
+                && review.plan_revision == plan.revision
+                && review.plan_sha256 == plan.content_sha256
                 && matches!(review.status.as_str(), "CHANGES_REQUESTED" | "REJECTED")
             {
                 return (
@@ -15410,6 +15475,24 @@ async fn review_agentic_plan(
         Ok(context) => context,
         Err(error) => return api_error(error),
     };
+    // A decision may only bind the latest PLAN revision. A stale client view
+    // must not reject or approve a plan that is no longer current.
+    match app.db.latest_planning_artifact(&record.id, "PLAN").await {
+        Ok(current) if current.revision != input.plan_revision => {
+            return planning_conflict(
+                "PLAN_REVIEW_STALE",
+                "the plan review does not bind the latest PLAN revision",
+            );
+        }
+        Ok(_) => {}
+        Err(Error::NotFound) => {
+            return planning_conflict(
+                "PLAN_REVIEW_STALE",
+                "there is no current PLAN revision to review",
+            );
+        }
+        Err(error) => return api_error(error),
+    }
     let plan = match app
         .db
         .planning_artifact(&record.id, "PLAN", input.plan_revision)
@@ -15483,6 +15566,7 @@ async fn review_agentic_plan(
         Ok(review) => review,
         Err(error) => return api_error(error),
     };
+    let mut environment_blocked = false;
     if status == "OWNER_APPROVED" {
         // An Owner plan review is not a Lead environment decision. It may only
         // trigger the frozen Lead model; the model's own decision is recorded.
@@ -15503,8 +15587,9 @@ async fn review_agentic_plan(
         )
         .await
         {
+            Ok(Some((_, None))) => environment_blocked = true,
             Ok(_) => {}
-            Err(response) => return response,
+            Err(response) => return review_recorded_error(response, &review).await,
         }
     }
     if let Some(target) = target {
@@ -15542,7 +15627,33 @@ async fn review_agentic_plan(
         .await
         .ok()
         .flatten();
-    Json(json!({"review": review, "workflow": workflow})).into_response()
+    Json(json!({
+        "review": review,
+        "reviewRecorded": true,
+        "environmentBlocked": environment_blocked,
+        "workflow": workflow,
+    }))
+    .into_response()
+}
+
+/// The owner decision is durable even when the following environment phase
+/// fails. Return the real blocker together with the recorded review instead of
+/// an anonymous error that invites a duplicate approval.
+async fn review_recorded_error(
+    response: Response,
+    review: &factory_native::db::PlanReviewRecord,
+) -> Response {
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap_or_default();
+    let mut value: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
+    if !value.is_object() {
+        value = json!({});
+    }
+    value["review"] = json!(review);
+    value["reviewRecorded"] = json!(true);
+    (status, Json(value)).into_response()
 }
 
 async fn get_agentic_environment(
@@ -18448,6 +18559,8 @@ fn autopilot_step_error(step: &str, status: StatusCode, value: &Value) -> Error 
         "ENVIRONMENT_LEAD_REVIEW_REJECTED" => "ENVIRONMENT_LEAD_REVIEW_REJECTED",
         "ENVIRONMENT_LEAD_MODEL_UNAVAILABLE" => "ENVIRONMENT_LEAD_MODEL_UNAVAILABLE",
         "ENVIRONMENT_BUILDER_UNAVAILABLE" => "ENVIRONMENT_BUILDER_UNAVAILABLE",
+        "ENVIRONMENT_BUILD_FAILED" => "ENVIRONMENT_BUILD_FAILED",
+        "ENVIRONMENT_BUILD_TIMEOUT" => "ENVIRONMENT_BUILD_TIMEOUT",
         "SPEC_DRAFT_REQUIRED" => "SPEC_DRAFT_REQUIRED",
         "SPEC_NOT_FROZEN" => "SPEC_NOT_FROZEN",
         "SPEC_REVISION_CHANGED" => "SPEC_REVISION_CHANGED",
@@ -18460,6 +18573,10 @@ fn autopilot_step_error(step: &str, status: StatusCode, value: &Value) -> Error 
         "AGENTIC_PLAN_INVALID" => "AGENTIC_PLAN_INVALID",
         "AGENTIC_PLAN_OUTPUT_INVALID" => "AGENTIC_PLAN_OUTPUT_INVALID",
         "AGENTIC_MODEL_OUTPUT_TRUNCATED" => "AGENTIC_MODEL_OUTPUT_TRUNCATED",
+        "AGENTIC_MODEL_UNAVAILABLE" => "AGENTIC_MODEL_UNAVAILABLE",
+        "AGENTIC_LEAD_OUTPUT_BOUND_INSUFFICIENT" => "AGENTIC_LEAD_OUTPUT_BOUND_INSUFFICIENT",
+        "ASSESSMENT_TRANSIENT" => "ASSESSMENT_TRANSIENT",
+        "AUTOPILOT_ASSESSMENT_IN_PROGRESS" => "AUTOPILOT_ASSESSMENT_IN_PROGRESS",
         "STACK_SELECTION_REQUIRED" => "STACK_SELECTION_REQUIRED",
         "SKILL_PACK_REQUIRED" => "SKILL_PACK_REQUIRED",
         "INFERENCE_AUTHORIZATION_REQUIRED" => "INFERENCE_AUTHORIZATION_REQUIRED",
@@ -18521,17 +18638,45 @@ async fn withdrawn_conflict(app: &App, lead_request_id: &str) -> Option<Response
     }
 }
 
-/// A pending owner plan review is a decision boundary, not a runner failure.
-/// The scheduler records the blocked readiness without blocking the Lead
-/// request, so an owner approval can re-enqueue the same request.
-fn autopilot_waits_for_owner(error: &Error) -> bool {
-    matches!(
-        error,
-        Error::IntakeConflict {
-            code: "PLAN_REVIEW_REQUIRED",
-            ..
+/// Why the autonomous runner stopped. Waiting for an owner review and waiting
+/// for a recoverable prerequisite must not block the Lead request; a terminal
+/// failure must. Ambiguous dispatch is deliberately terminal because retrying
+/// it could duplicate an external effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutopilotStop {
+    WaitOwner,
+    WaitRecoverable,
+    Terminal,
+}
+
+fn autopilot_stop(error: &Error) -> AutopilotStop {
+    match error {
+        Error::IntakeConflict { code, .. } => match *code {
+            "PLAN_REVIEW_REQUIRED" => AutopilotStop::WaitOwner,
+            "AUTOPILOT_ASSESSMENT_IN_PROGRESS"
+            | "ASSESSMENT_OUTCOME_UNKNOWN"
+            | "ASSESSMENT_TRANSIENT"
+            | "AGENTIC_MODEL_UNAVAILABLE"
+            | "AGENTIC_LEAD_OUTPUT_BOUND_INSUFFICIENT"
+            | "ENVIRONMENT_BUILDER_UNAVAILABLE"
+            | "ENVIRONMENT_BUILD_FAILED"
+            | "ENVIRONMENT_BUILD_TIMEOUT"
+            | "ENVIRONMENT_LEAD_MODEL_UNAVAILABLE"
+            | "INFERENCE_AUTHORIZATION_REQUIRED"
+            | "SUBSCRIPTION_ADMISSION_REQUIRED"
+            | "AUTOPILOT_SUBSCRIPTION_ADMISSION_FAILED" => AutopilotStop::WaitRecoverable,
+            _ => AutopilotStop::Terminal,
+        },
+        Error::RateLimited(_) | Error::Unavailable(_) | Error::Busy => {
+            AutopilotStop::WaitRecoverable
         }
-    )
+        _ => AutopilotStop::Terminal,
+    }
+}
+
+#[cfg(test)]
+fn autopilot_waits_for_owner(error: &Error) -> bool {
+    autopilot_stop(error) == AutopilotStop::WaitOwner
 }
 
 async fn ensure_autopilot_not_withdrawn(app: &App, lead_request_id: &str) -> Result<(), Error> {
@@ -18545,6 +18690,74 @@ async fn ensure_autopilot_not_withdrawn(app: &App, lead_request_id: &str) -> Res
     }
 }
 
+/// Single deterministic policy for whether a plan needs an authenticated
+/// owner review. Compilation and crash recovery must call this same function.
+fn plan_review_owner_required(
+    lane: factory_native::planning::PlanningLane,
+    signals: &factory_native::planning::PlanningSignals,
+    assurance: factory_native::agentic::Assurance,
+    stack: &factory_native::planning::StackDecision,
+) -> bool {
+    use factory_native::planning::{PlanningLane, R0_AUTONOMY_POINTS};
+    assurance >= factory_native::agentic::Assurance::Elevated
+        || signals.large
+        || stack.stack_change
+        || stack.autonomy_points > R0_AUTONOMY_POINTS
+        || (lane == PlanningLane::FormalSpec
+            && (signals.public_contract || signals.data_or_schema || signals.security_boundary))
+}
+
+struct FrozenPlanPolicy {
+    lane: factory_native::planning::PlanningLane,
+    signals: factory_native::planning::PlanningSignals,
+    assurance: factory_native::agentic::Assurance,
+}
+
+/// Read the review policy from the frozen PLAN bundle, never from a live triage
+/// context that may have drifted after a crash.
+fn frozen_plan_policy(
+    artifact: &factory_native::db::PlanningArtifactRecord,
+) -> Result<FrozenPlanPolicy, Error> {
+    let bundle: Value =
+        serde_json::from_str(&artifact.content_json).map_err(|_| Error::IntakeConflict {
+            code: "PLAN_ARTIFACTS_REQUIRED",
+            message: "the frozen PLAN bundle is not decodable".into(),
+        })?;
+    let lane = bundle
+        .get("lane")
+        .and_then(Value::as_str)
+        .and_then(planning_lane_from_code)
+        .ok_or_else(|| Error::IntakeConflict {
+            code: "PLAN_ARTIFACTS_REQUIRED",
+            message: "the frozen PLAN bundle has no valid lane".into(),
+        })?;
+    let signals: factory_native::planning::PlanningSignals = bundle
+        .get("signals")
+        .cloned()
+        .ok_or_else(|| Error::IntakeConflict {
+            code: "PLAN_ARTIFACTS_REQUIRED",
+            message: "the frozen PLAN bundle has no signals".into(),
+        })
+        .and_then(|value| {
+            serde_json::from_value(value).map_err(|_| Error::IntakeConflict {
+                code: "PLAN_ARTIFACTS_REQUIRED",
+                message: "the frozen PLAN signals are not decodable".into(),
+            })
+        })?;
+    // Older bundles predate the explicit assurance field. Fail closed: an
+    // unknown assurance can require an owner review but can never auto-approve.
+    let assurance = bundle
+        .get("assurance")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or(factory_native::agentic::Assurance::Elevated);
+    Ok(FrozenPlanPolicy {
+        lane,
+        signals,
+        assurance,
+    })
+}
+
 /// Recover the deterministic plan review when a process stopped after the
 /// planning artifacts were persisted but before the review row was written.
 /// It never overwrites an existing owner decision and never auto-approves a
@@ -18552,26 +18765,25 @@ async fn ensure_autopilot_not_withdrawn(app: &App, lead_request_id: &str) -> Res
 async fn ensure_plan_review_for_current_plan(
     app: &App,
     record: &factory_native::db::IntakeRequestRecord,
-    context: &AgenticTriageContext,
     plan_revision: u32,
     plan_sha256: &str,
 ) -> Result<(), Error> {
-    use factory_native::planning::{PlanningLane, R0_AUTONOMY_POINTS};
-    match app.db.latest_plan_review(&record.id).await {
-        Ok(review)
-            if review.plan_revision == plan_revision && review.plan_sha256 == plan_sha256 =>
-        {
-            return Ok(());
-        }
-        Ok(review) if matches!(review.status.as_str(), "REJECTED" | "CHANGES_REQUESTED") => {
-            // An explicit owner decision is never replaced. A stale revision
-            // remains visible and readiness fails closed.
-            return Ok(());
-        }
-        Ok(_) => {}
-        Err(Error::NotFound) => {}
-        Err(error) => return Err(error),
+    // Only a review that binds this exact revision and hash is current. A
+    // stale rejected row must not eclipse the live plan or stop recovery.
+    if app
+        .db
+        .plan_reviews(&record.id)
+        .await?
+        .iter()
+        .any(|review| review.plan_revision == plan_revision && review.plan_sha256 == plan_sha256)
+    {
+        return Ok(());
     }
+    let plan_artifact = app
+        .db
+        .planning_artifact(&record.id, "PLAN", plan_revision)
+        .await?;
+    let policy = frozen_plan_policy(&plan_artifact)?;
     let stack = match app
         .db
         .planning_artifact(&record.id, "STACK", plan_revision)
@@ -18587,14 +18799,8 @@ async fn ensure_plan_review_for_current_plan(
         Err(Error::NotFound) => return Ok(()),
         Err(error) => return Err(error),
     };
-    let owner_required = context.assurance() >= factory_native::agentic::Assurance::Elevated
-        || context.planning_signals.large
-        || stack.stack_change
-        || stack.autonomy_points > R0_AUTONOMY_POINTS
-        || (context.planning_lane == PlanningLane::FormalSpec
-            && (context.planning_signals.public_contract
-                || context.planning_signals.data_or_schema
-                || context.planning_signals.security_boundary));
+    let owner_required =
+        plan_review_owner_required(policy.lane, &policy.signals, policy.assurance, &stack);
     let (status, principal, rationale) = if owner_required {
         (
             "PENDING",
@@ -18768,13 +18974,13 @@ async fn prepare_autonomous_plan(
 
     let context = agentic_triage_context(app, record).await?;
     let plan = app.db.latest_planning_artifact(&record.id, "PLAN").await?;
-    ensure_plan_review_for_current_plan(app, record, &context, plan.revision, &plan.content_sha256)
-        .await?;
+    ensure_plan_review_for_current_plan(app, record, plan.revision, &plan.content_sha256).await?;
     let readiness = planning_readiness(app, &record.id, plan.revision, &context).await?;
-    if readiness
-        .review_status
-        .as_deref()
-        .is_some_and(|status| matches!(status, "REJECTED" | "CHANGES_REQUESTED"))
+    if readiness.review_current
+        && readiness
+            .review_status
+            .as_deref()
+            .is_some_and(|status| matches!(status, "REJECTED" | "CHANGES_REQUESTED"))
     {
         // An explicit owner rejection is never repaired or re-planned by the
         // autonomous runner.
@@ -18848,13 +19054,57 @@ async fn prepare_autonomous_environment(
         }
         stored = Some(app.db.latest_environment_plan(&record.id).await?);
     }
+    if let Some(current) = stored.as_ref()
+        && (current.status == "BLOCKED" || !current.plan.blockers.is_empty())
+        && current.plan.blockers.iter().any(|blocker| {
+            matches!(
+                blocker.code,
+                factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentBuilderUnavailable
+                    | factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentBuildFailed
+                    | factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentBuildTimeout
+            )
+        })
+    {
+        // A builder outage is recoverable. A restart or owner approval after
+        // the builder returns recompiles a new revision; it never reuses the
+        // blocked plan and never retries an ambiguous model dispatch.
+        let config = app.db.project_config(&record.project_id).await?;
+        let revision = current.plan.revision.saturating_add(1).max(1);
+        let proposal = stored_stack_environment_proposal(app, record).await;
+        ensure_autopilot_not_withdrawn(app, &record.lead_request_id).await?;
+        if let Err(response) = compile_environment_for_request(
+            app,
+            record,
+            &config,
+            revision,
+            &format!("{:?}", context.risk),
+            proposal,
+        )
+        .await
+        {
+            return Err(autopilot_response_error(response, "environment-compile").await);
+        }
+        stored = Some(app.db.latest_environment_plan(&record.id).await?);
+    }
     let Some(stored) = stored else {
         return Ok(());
     };
     if stored.status == "BLOCKED" || !stored.plan.blockers.is_empty() {
         let blocker = stored.plan.blockers.first();
+        let code = match blocker.map(|blocker| blocker.code) {
+            Some(
+                factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
+            ) => "ENVIRONMENT_BUILDER_UNAVAILABLE",
+            Some(
+                factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentBuildFailed,
+            ) => "ENVIRONMENT_BUILD_FAILED",
+            Some(
+                factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentBuildTimeout,
+            ) => "ENVIRONMENT_BUILD_TIMEOUT",
+            _ => "ENVIRONMENT_PLAN_REQUIRED",
+        };
         return Err(Error::IntakeConflict {
-            code: "ENVIRONMENT_PLAN_REQUIRED",
+            code,
             message: blocker
                 .map(|blocker| format!("{}: {}", blocker.code.as_str(), blocker.message))
                 .unwrap_or_else(|| {
@@ -18986,12 +19236,13 @@ async fn prepare_autonomous_request(
     ensure_autopilot_not_withdrawn(app, &record.lead_request_id).await?;
     let plan = prepare_autonomous_plan(app, record).await?;
     let context = agentic_triage_context(app, record).await?;
+    let plan_artifact = app.db.latest_planning_artifact(&record.id, "PLAN").await?;
+    let frozen_lane = frozen_planning_lane(&plan_artifact).unwrap_or(context.planning_lane);
     // FORMAL_SPEC must reach a complete SPEC/OPENSPEC artifact set before an
     // owner can approve the plan, because the approval endpoint requires
-    // materials_ready. These phases are mechanical; they do not approve the
-    // plan, the environment or the specification.
+    // materials_ready. The frozen PLAN lane, not a drifted live triage, decides.
     prepare_autonomous_environment(app, record, &context).await?;
-    if context.planning_lane == PlanningLane::FormalSpec {
+    if frozen_lane == PlanningLane::FormalSpec {
         prepare_autonomous_spec(app, record).await?;
     }
     if !plan.review_approved {
@@ -19175,22 +19426,7 @@ async fn agentic_scheduler_loop(app: Arc<App>, scheduler: Arc<AgenticScheduler>)
                 .set_agentic_operation_status(&item.request_id, "STARTING")
                 .await;
             if let Err(error) = run_autopilot(&app_for_task, &item.request_id).await {
-                if autopilot_waits_for_owner(&error) {
-                    // A pending owner review is a truthful wait, not a Lead
-                    // failure. The Lead request stays resumable and the
-                    // approval path re-enqueues the same request.
-                    tracing::info!(
-                        %error,
-                        request_id = %item.request_id,
-                        "autopilot is waiting for the owner plan review"
-                    );
-                } else {
-                    fail_autopilot(&app_for_task, &item.request_id, &error).await;
-                }
-                let _ = app_for_task
-                    .db
-                    .set_agentic_operation_status(&item.request_id, "BLOCKED")
-                    .await;
+                record_autopilot_stop(&app_for_task, &item.request_id, &error).await;
             }
             scheduler_for_task.active.fetch_sub(1, Ordering::Relaxed);
             scheduler_for_task.notify.notify_waiters();
@@ -19248,6 +19484,14 @@ async fn run_autopilot_inner(app: &Arc<App>, id: &str) -> Result<(), Error> {
         AxumPath(id.to_owned()),
     )
     .await;
+    if response.status() == StatusCode::SERVICE_UNAVAILABLE {
+        return Err(Error::IntakeConflict {
+            code: "ASSESSMENT_TRANSIENT",
+            message:
+                "the assessment upstream is temporarily unavailable; the same request can resume"
+                    .into(),
+        });
+    }
     if !response.status().is_success() && response.status() != StatusCode::CONFLICT {
         return Err(Error::IntakeConflict {
             code: "AUTOPILOT_ASSESSMENT_FAILED",
@@ -19256,6 +19500,14 @@ async fn run_autopilot_inner(app: &Arc<App>, id: &str) -> Result<(), Error> {
     }
     let record = app.db.intake_request(id).await?;
     let lead = app.db.lead_request(&record.lead_request_id).await?;
+    if lead.state == LeadRequestState::Assessing {
+        return Err(Error::IntakeConflict {
+            code: "AUTOPILOT_ASSESSMENT_IN_PROGRESS",
+            message:
+                "the assessment is in progress or its outcome is unknown; the same request resumes after the assessment or a restart"
+                    .into(),
+        });
+    }
     if lead.campaign_id.is_some() {
         let _ = app.db.set_agentic_operation_status(id, "EXECUTING").await;
         return Ok(());
@@ -19284,6 +19536,30 @@ async fn run_autopilot_inner(app: &Arc<App>, id: &str) -> Result<(), Error> {
     autonomous_start_intake(app, id).await?;
     let _ = app.db.set_agentic_operation_status(id, "EXECUTING").await;
     Ok(())
+}
+
+async fn record_autopilot_stop(app: &Arc<App>, id: &str, error: &Error) {
+    match autopilot_stop(error) {
+        AutopilotStop::WaitOwner => {
+            tracing::info!(
+                %error,
+                request_id = %id,
+                "autopilot is waiting for the owner plan review"
+            );
+        }
+        AutopilotStop::WaitRecoverable => {
+            // Do not block the Lead: a restart, an updated prerequisite or a
+            // valid owner approval can resume the same request. There is no
+            // blind in-process retry.
+            tracing::warn!(
+                %error,
+                request_id = %id,
+                "autopilot is waiting for a recoverable prerequisite"
+            );
+        }
+        AutopilotStop::Terminal => fail_autopilot(app, id, error).await,
+    }
+    let _ = app.db.set_agentic_operation_status(id, "BLOCKED").await;
 }
 
 async fn fail_autopilot(app: &Arc<App>, id: &str, error: &Error) {
@@ -19515,6 +19791,8 @@ async fn assess_intake_request(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let lock = agentic_request_lock(&id);
+    let _guard = lock.lock().await;
     let record = match app.db.intake_request(&id).await {
         Ok(record) => record,
         Err(error) => return api_error(error),
@@ -24732,7 +25010,8 @@ mod tests {
             let value = if bytes.is_empty() {
                 Value::Null
             } else {
-                serde_json::from_slice(&bytes).unwrap()
+                serde_json::from_slice(&bytes)
+                    .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into()))
             };
             (status, value)
         }
@@ -27799,6 +28078,564 @@ mod tests {
             );
 
             app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn lead_model_preflight_rejects_an_undersized_provider_before_dispatch() {
+            let (fixture, app, calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-provider-bound").await;
+            let settings = app.db.provider_settings("opencode-go").await.unwrap();
+            app.db
+                .save_provider_settings(
+                    &ProviderSettingsWrite {
+                        provider: settings.provider.clone(),
+                        kind: settings.kind.clone(),
+                        model: settings.model.clone(),
+                        base_url: settings.base_url.clone(),
+                        auth_mode: settings.auth_mode.clone(),
+                        credential_ciphertext: settings.credential_ciphertext.clone(),
+                        credential_nonce: settings.credential_nonce.clone(),
+                        credential_fingerprint: settings.credential_fingerprint.clone(),
+                        enabled: true,
+                        is_default: true,
+                        max_turns: settings.max_turns,
+                        max_input_tokens: settings.max_input_tokens,
+                        max_output_tokens: 12_000,
+                        max_cost_micros: settings.max_cost_micros,
+                        input_micros_per_million: settings.input_micros_per_million,
+                        output_micros_per_million: settings.output_micros_per_million,
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            let calls_before = calls.lock().unwrap().len();
+            let rejected = plan_agentic_request_inner(Arc::clone(&app), intake_id.clone()).await;
+            assert_eq!(rejected.status(), StatusCode::CONFLICT);
+            let bytes = axum::body::to_bytes(rejected.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["code"], "AGENTIC_LEAD_OUTPUT_BOUND_INSUFFICIENT");
+            assert_eq!(calls.lock().unwrap().len(), calls_before);
+            assert!(matches!(
+                fixture.app.db.agentic_work_graph(&intake_id).await,
+                Err(Error::NotFound)
+            ));
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .lead_model_calls(&request.lead_request_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+
+            app.db
+                .save_provider_settings(
+                    &ProviderSettingsWrite {
+                        max_output_tokens: PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS,
+                        ..ProviderSettingsWrite {
+                            provider: settings.provider.clone(),
+                            kind: settings.kind.clone(),
+                            model: settings.model.clone(),
+                            base_url: settings.base_url.clone(),
+                            auth_mode: settings.auth_mode.clone(),
+                            credential_ciphertext: settings.credential_ciphertext.clone(),
+                            credential_nonce: settings.credential_nonce.clone(),
+                            credential_fingerprint: settings.credential_fingerprint.clone(),
+                            enabled: true,
+                            is_default: true,
+                            max_turns: settings.max_turns,
+                            max_input_tokens: settings.max_input_tokens,
+                            max_output_tokens: 12_000,
+                            max_cost_micros: settings.max_cost_micros,
+                            input_micros_per_million: settings.input_micros_per_million,
+                            output_micros_per_million: settings.output_micros_per_million,
+                        }
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            assert_eq!(PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS, 32_768);
+            if let Some(admission) = app
+                .db
+                .active_subscription_admission_for_request(&intake_id)
+                .await
+                .unwrap()
+            {
+                let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect_with(
+                        sqlx_sqlite::SqliteConnectOptions::new()
+                            .filename(&fixture.path)
+                            .create_if_missing(false),
+                    )
+                    .await
+                    .unwrap();
+                sqlx::query::query(
+                    "DELETE FROM subscription_scope_admissions WHERE admission_id=?1",
+                )
+                .bind(&admission)
+                .execute(&pool)
+                .await
+                .unwrap();
+                pool.close().await;
+            }
+            ensure_autopilot_subscription_admission(&app, &intake_id)
+                .await
+                .unwrap();
+            let accepted = plan_agentic_request_inner(Arc::clone(&app), intake_id.clone()).await;
+            if !accepted.status().is_success() {
+                let bytes = axum::body::to_bytes(accepted.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                panic!("accepted plan failed: {}", String::from_utf8_lossy(&bytes));
+            }
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn autopilot_recovery_review_uses_the_frozen_plan_policy() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-frozen-policy").await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let planned = plan_agentic_request_inner(Arc::clone(&app), intake_id.clone()).await;
+            assert!(planned.status().is_success());
+            let plan = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            let mut bundle: Value = serde_json::from_str(&plan.content_json).unwrap();
+            bundle["lane"] = json!("FORMAL_SPEC");
+            bundle["signals"]["publicContract"] = json!(true);
+            bundle["assurance"] = json!("NONE");
+            let previous_revision = plan.revision;
+            let plan = fixture
+                .app
+                .db
+                .save_planning_artifact(
+                    &intake_id,
+                    "PLAN",
+                    previous_revision + 1,
+                    &bundle.to_string(),
+                )
+                .await
+                .unwrap();
+            let stack = fixture
+                .app
+                .db
+                .planning_artifact(&intake_id, "STACK", previous_revision)
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_planning_artifact(&intake_id, "STACK", plan.revision, &stack.content_json)
+                .await
+                .unwrap();
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query("DELETE FROM plan_reviews WHERE request_id=?1")
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+            ensure_plan_review_for_current_plan(
+                &app,
+                &request,
+                plan.revision,
+                &plan.content_sha256,
+            )
+            .await
+            .unwrap();
+            let review = fixture.app.db.latest_plan_review(&intake_id).await.unwrap();
+            assert_eq!(review.status, "PENDING");
+            assert_eq!(review.plan_revision, plan.revision);
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn recoverable_autopilot_failure_does_not_block_the_lead_and_resumes() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-recoverable").await;
+            let settings = app.db.provider_settings("opencode-go").await.unwrap();
+            let write = ProviderSettingsWrite {
+                provider: settings.provider.clone(),
+                kind: settings.kind.clone(),
+                model: settings.model.clone(),
+                base_url: settings.base_url.clone(),
+                auth_mode: settings.auth_mode.clone(),
+                credential_ciphertext: settings.credential_ciphertext.clone(),
+                credential_nonce: settings.credential_nonce.clone(),
+                credential_fingerprint: settings.credential_fingerprint.clone(),
+                enabled: false,
+                is_default: true,
+                max_turns: settings.max_turns,
+                max_input_tokens: settings.max_input_tokens,
+                max_output_tokens: settings.max_output_tokens,
+                max_cost_micros: settings.max_cost_micros,
+                input_micros_per_million: settings.input_micros_per_million,
+                output_micros_per_million: settings.output_micros_per_million,
+            };
+            app.db
+                .save_provider_settings(&write, "test-operator")
+                .await
+                .unwrap();
+            let error = run_autopilot_inner(&app, &intake_id)
+                .await
+                .expect_err("a disabled provider is recoverable");
+            assert_eq!(autopilot_stop(&error), AutopilotStop::WaitRecoverable);
+            record_autopilot_stop(&app, &intake_id, &error).await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let lead = fixture
+                .app
+                .db
+                .lead_request(&request.lead_request_id)
+                .await
+                .unwrap();
+            assert_ne!(lead.state, factory_native::lead::LeadRequestState::Blocked);
+            assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+            let operation = fixture
+                .app
+                .db
+                .agentic_operation_for_request(&intake_id)
+                .await
+                .unwrap();
+            assert_eq!(operation.status, "BLOCKED");
+
+            app.db
+                .save_provider_settings(
+                    &ProviderSettingsWrite {
+                        enabled: true,
+                        ..write
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            // A provider-settings revision is part of the subscription
+            // admission binding. Simulate the operator renewing that funding
+            // evidence for the repaired configuration.
+            let admission = fixture
+                .app
+                .db
+                .active_subscription_admission_for_request(&intake_id)
+                .await
+                .unwrap();
+            if let Some(admission) = admission {
+                let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect_with(
+                        sqlx_sqlite::SqliteConnectOptions::new()
+                            .filename(&fixture.path)
+                            .create_if_missing(false),
+                    )
+                    .await
+                    .unwrap();
+                sqlx::query::query(
+                    "DELETE FROM subscription_scope_admissions WHERE admission_id=?1",
+                )
+                .bind(&admission)
+                .execute(&pool)
+                .await
+                .unwrap();
+                pool.close().await;
+            }
+            run_autopilot_inner(&app, &intake_id)
+                .await
+                .expect("the same request resumes after the prerequisite is repaired");
+            let resumed = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            assert!(resumed.campaign_id.is_some());
+            assert_eq!(fixture.app.db.campaigns().await.unwrap().len(), 1);
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn stale_rejection_does_not_block_the_current_plan_revision() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-stale-reject").await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let planned = plan_agentic_request_inner(Arc::clone(&app), intake_id.clone()).await;
+            assert!(planned.status().is_success());
+            let plan = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_plan_review(factory_native::db::NewPlanReview {
+                    request_id: &intake_id,
+                    plan_revision: plan.revision,
+                    plan_sha256: &plan.content_sha256,
+                    status: "REJECTED",
+                    principal_id: "operator",
+                    rationale: "Reject the old revision.",
+                    points: 0,
+                })
+                .await
+                .unwrap();
+            let mut bundle: Value = serde_json::from_str(&plan.content_json).unwrap();
+            bundle["planRevision"] = json!(plan.revision + 1);
+            let current = fixture
+                .app
+                .db
+                .save_planning_artifact(&intake_id, "PLAN", plan.revision + 1, &bundle.to_string())
+                .await
+                .unwrap();
+            prepare_autonomous_request(&app, &request)
+                .await
+                .expect("a stale rejection must not block the current revision");
+            let review = fixture.app.db.latest_plan_review(&intake_id).await.unwrap();
+            assert_eq!(review.plan_revision, current.revision);
+            assert_ne!(review.status, "REJECTED");
+            assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn in_progress_assessment_is_a_recoverable_wait() {
+            let (fixture, app, calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-assessing").await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query("UPDATE lead_requests SET state='ASSESSING' WHERE id=?1")
+                .bind(&request.lead_request_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+            let calls_before = calls.lock().unwrap().len();
+            let error = run_autopilot_inner(&app, &intake_id)
+                .await
+                .expect_err("an in-progress assessment is not a terminal failure");
+            assert_eq!(autopilot_stop(&error), AutopilotStop::WaitRecoverable);
+            record_autopilot_stop(&app, &intake_id, &error).await;
+            let lead = fixture
+                .app
+                .db
+                .lead_request(&request.lead_request_id)
+                .await
+                .unwrap();
+            assert_eq!(
+                lead.state,
+                factory_native::lead::LeadRequestState::Assessing
+            );
+            assert_eq!(calls.lock().unwrap().len(), calls_before);
+            assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn owner_plan_review_is_idempotent_and_reports_the_recorded_decision() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-review-idempotent").await;
+            let planned = plan_agentic_request_inner(Arc::clone(&app), intake_id.clone()).await;
+            assert!(planned.status().is_success());
+            let plan = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            let input = || factory_native::db::NewPlanReview {
+                request_id: &intake_id,
+                plan_revision: plan.revision,
+                plan_sha256: &plan.content_sha256,
+                status: "OWNER_APPROVED",
+                principal_id: "operator",
+                rationale: "The owner approved the exact plan.",
+                points: 0,
+            };
+            fixture.app.db.save_plan_review(input()).await.unwrap();
+            fixture.app.db.save_plan_review(input()).await.unwrap();
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .plan_reviews(&intake_id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .filter(|review| review.status == "OWNER_APPROVED")
+                    .count(),
+                1
+            );
+
+            let settings = app.db.provider_settings("opencode-go").await.unwrap();
+            app.db
+                .save_provider_settings(
+                    &ProviderSettingsWrite {
+                        provider: settings.provider.clone(),
+                        kind: settings.kind.clone(),
+                        model: settings.model.clone(),
+                        base_url: settings.base_url.clone(),
+                        auth_mode: settings.auth_mode.clone(),
+                        credential_ciphertext: settings.credential_ciphertext.clone(),
+                        credential_nonce: settings.credential_nonce.clone(),
+                        credential_fingerprint: settings.credential_fingerprint.clone(),
+                        enabled: false,
+                        is_default: true,
+                        max_turns: settings.max_turns,
+                        max_input_tokens: settings.max_input_tokens,
+                        max_output_tokens: settings.max_output_tokens,
+                        max_cost_micros: settings.max_cost_micros,
+                        input_micros_per_million: settings.input_micros_per_million,
+                        output_micros_per_million: settings.output_micros_per_million,
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            let body = json!({
+                "planRevision": plan.revision,
+                "planSha256": plan.content_sha256,
+                "decision": "APPROVE",
+                "rationale": "The owner approved the exact plan.",
+            });
+            let (status, first) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan-review"),
+                Some(body.clone()),
+            )
+            .await;
+            assert!(
+                status.is_client_error() || status.is_server_error(),
+                "{first}"
+            );
+            assert_eq!(first["reviewRecorded"], true, "{first}");
+            assert_eq!(first["review"]["status"], "OWNER_APPROVED", "{first}");
+            let (second_status, _) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan-review"),
+                Some(body),
+            )
+            .await;
+            assert!(
+                second_status.is_client_error() || second_status.is_server_error(),
+                "the environment blocker remains truthful"
+            );
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .plan_reviews(&intake_id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .filter(|review| review.status == "OWNER_APPROVED")
+                    .count(),
+                1,
+                "the same owner decision must not duplicate its evidence"
+            );
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn a_new_provider_configuration_covers_the_structured_lead_protocol() {
+            let key = structured_lead_master_key();
+            let fixture = setup_with(
+                Some(&key),
+                "https://provider.example/v1",
+                "https://provider.example/v1",
+                profile_content(),
+            )
+            .await;
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query("DELETE FROM provider_settings WHERE provider='opencode'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+            let (status, created) = send(
+                &fixture.router,
+                "PUT",
+                "/settings/providers/opencode",
+                Some(json!({
+                    "model": "deepseek-v4.1-flash",
+                    "baseUrl": "https://provider.example/v1",
+                    "credential": "opencode-credential-1234567890",
+                    "enabled": true,
+                    "isDefault": false,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{created}");
+            let settings = fixture.app.db.provider_settings("opencode").await.unwrap();
+            assert_eq!(
+                settings.max_output_tokens,
+                PROVIDER_DEFAULT_MAX_OUTPUT_TOKENS
+            );
+            assert!(settings.max_output_tokens >= AGENTIC_LEAD_TRUNCATION_RETRY_CEILING);
+
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);
@@ -31191,7 +32028,7 @@ mod tests {
                 matches!(
                     error,
                     Error::IntakeConflict {
-                        code: "AUTOPILOT_PREPARATION_FAILED",
+                        code: "AGENTIC_MODEL_UNAVAILABLE",
                         ..
                     }
                 ),
@@ -31239,7 +32076,7 @@ mod tests {
                 blocked
                     .failure_reason
                     .as_deref()
-                    .is_some_and(|reason| reason.contains("AUTOPILOT_PREPARATION_FAILED")),
+                    .is_some_and(|reason| reason.contains("AGENTIC_MODEL_UNAVAILABLE")),
                 "{:?}",
                 blocked.failure_reason
             );

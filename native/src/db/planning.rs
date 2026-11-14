@@ -305,9 +305,33 @@ impl Database {
                 "plan review does not bind the current plan revision",
             ));
         }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        // A retry of the same authenticated decision is the same evidence. This
+        // query and the insert share one immediate transaction, so concurrent
+        // idempotent approvals cannot create duplicate rows.
+        let existing: Option<ReviewRow> = sqlx::query_as::query_as(
+            "SELECT id,request_id,plan_revision,plan_sha256,status,principal_id,rationale,points,reviewed_at
+             FROM plan_reviews
+             WHERE request_id=?1 AND plan_revision=?2 AND plan_sha256=?3
+               AND status=?4 AND principal_id=?5 AND rationale=?6 AND points=?7
+             ORDER BY reviewed_at,id LIMIT 1",
+        )
+        .bind(request_id)
+        .bind(i64::from(plan_revision))
+        .bind(plan_sha256)
+        .bind(status)
+        .bind(principal_id)
+        .bind(rationale)
+        .bind(i64::from(points))
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some(existing) = existing {
+            transaction.commit().await?;
+            return review_from_row(existing);
+        }
         let id = uuid::Uuid::new_v4().to_string();
         let reviewed_at = Utc::now().to_rfc3339();
-        let _write = self.write_lock.lock().await;
         sqlx::query::query(
             "INSERT INTO plan_reviews
              (id,request_id,plan_revision,plan_sha256,status,principal_id,rationale,points,reviewed_at)
@@ -322,8 +346,9 @@ impl Database {
         .bind(rationale)
         .bind(i64::from(points))
         .bind(&reviewed_at)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
+        transaction.commit().await?;
         Ok(PlanReviewRecord {
             id,
             request_id: request_id.to_string(),
