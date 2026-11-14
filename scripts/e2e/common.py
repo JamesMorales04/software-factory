@@ -213,6 +213,7 @@ class Config:
     no_build: bool
     timeout: int
     scenario: str
+    required_stages: list[str] | None = None
 
     @property
     def base(self) -> str:

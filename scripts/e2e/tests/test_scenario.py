@@ -59,6 +59,12 @@ class StageOrderTests(unittest.TestCase):
                 "gate",
                 "restart",
                 "summary",
+                "autonomous_setup",
+                "autonomous_request",
+                "autonomous_campaign",
+                "autonomous_negative",
+                "autonomous_restart",
+                "autonomous_summary",
             ],
         )
 
@@ -87,9 +93,35 @@ class StageOrderTests(unittest.TestCase):
                 json.dumps({"name": "smoke", "stages": ["prepare", "start", "summary"]}),
                 encoding="utf-8",
             )
-            name, stages = _load_scenario(str(path))
+            name, stages, required = _load_scenario(str(path))
             self.assertEqual(name, "smoke")
             self.assertEqual(stages, ["prepare", "start", "summary"])
+            self.assertEqual(required, stages)
+
+    def test_scenario_required_must_be_a_stage_subset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scenario.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "name": "broken-required",
+                        "stages": ["prepare", "start"],
+                        "required": ["prepare", "summary"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ScenarioError):
+                _load_scenario(str(path))
+
+    def test_autonomous_scenario_is_valid_and_skips_review_plan_stages(self) -> None:
+        path = HERE.parent / "scenarios" / "autonomous-intake.json"
+        name, stages, required = _load_scenario(str(path))
+        self.assertEqual(name, "autonomous-intake")
+        self.assertEqual(required, stages)
+        self.assertIn("autonomous_campaign", stages)
+        self.assertNotIn("intake", stages)
+        self.assertNotIn("approve", stages)
 
 
 class StateTests(unittest.TestCase):
@@ -391,13 +423,44 @@ class CleanupTests(unittest.TestCase):
 class PortTests(unittest.TestCase):
     def test_summary_without_restart_is_partial(self) -> None:
         completed = set(stage_order()) - {"restart"}
-        self.assertEqual(completion_status(completed, "PASS", False, False), "PARTIAL")
+        self.assertEqual(
+            completion_status(completed, set(stage_order()), "PASS", False, False),
+            "PARTIAL",
+        )
 
     def test_full_clean_run_is_pass(self) -> None:
-        self.assertEqual(completion_status(set(stage_order()), "PASS", True, False), "PASS")
+        self.assertEqual(
+            completion_status(set(stage_order()), set(stage_order()), "PASS", True, False),
+            "PASS",
+        )
 
     def test_dirty_run_is_never_pass(self) -> None:
-        self.assertEqual(completion_status(set(stage_order()), "PASS", True, True), "PARTIAL")
+        self.assertEqual(
+            completion_status(set(stage_order()), set(stage_order()), "PASS", True, True),
+            "PARTIAL",
+        )
+
+    def test_mandatory_stages_are_scenario_specific(self) -> None:
+        autonomous = {
+            "prepare",
+            "start",
+            "enroll",
+            "import",
+            "autonomous_setup",
+            "autonomous_request",
+            "autonomous_campaign",
+            "autonomous_negative",
+            "autonomous_restart",
+            "autonomous_summary",
+        }
+        self.assertEqual(
+            completion_status(autonomous, autonomous, "PASS", True, False),
+            "PASS",
+        )
+        self.assertEqual(
+            completion_status(autonomous - {"autonomous_campaign"}, autonomous, "PASS", True, False),
+            "PARTIAL",
+        )
 
     def test_free_port_is_bindable(self) -> None:
         port = free_port()

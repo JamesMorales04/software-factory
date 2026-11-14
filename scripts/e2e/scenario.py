@@ -59,9 +59,10 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _load_scenario(path: str | None) -> tuple[str, list[str]]:
+def _load_scenario(path: str | None) -> tuple[str, list[str], list[str]]:
     if not path:
-        return "compose-intake", stage_order()
+        stages = stage_order()
+        return "compose-intake", stages, list(stages)
     scenario_path = Path(path)
     try:
         payload = json.loads(scenario_path.read_text(encoding="utf-8"))
@@ -81,7 +82,15 @@ def _load_scenario(path: str | None) -> tuple[str, list[str]]:
         raise ScenarioError("scenario stages must follow the canonical order")
     if len(set(stages)) != len(stages):
         raise ScenarioError("scenario stages must not repeat")
-    return str(payload.get("name", scenario_path.stem)), stages
+    required = payload.get("required", stages)
+    if not isinstance(required, list) or not required:
+        raise ScenarioError("scenario.required must be a non-empty list")
+    if len(set(required)) != len(required):
+        raise ScenarioError("scenario.required must not repeat")
+    outside = [name for name in required if name not in stages]
+    if outside:
+        raise ScenarioError(f"scenario.required must be a subset of stages: {', '.join(outside)}")
+    return str(payload.get("name", scenario_path.stem)), stages, required
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -126,7 +135,7 @@ def _make_config(args: argparse.Namespace) -> Config:
     project = project_name(args.project or f"software-factory-e2e-{run_id.rsplit('-', 2)[-2]}-{run_id.rsplit('-', 1)[-1]}")
     port = args.port if args.port else free_port()
     snapshot_dir = Path(args.snapshot_dir).expanduser() if args.snapshot_dir else run_dir / "snapshots"
-    scenario_name, stages = _load_scenario(args.scenario)
+    scenario_name, stages, required = _load_scenario(args.scenario)
 
     from_stage = args.from_stage or stages[0]
     to_stage = args.to_stage or stages[-1]
@@ -190,6 +199,7 @@ def _make_config(args: argparse.Namespace) -> Config:
         no_build=args.no_build,
         timeout=args.timeout,
         scenario=scenario_name,
+        required_stages=required,
     )
 
 
@@ -228,12 +238,18 @@ def apply_saved_identity(
         config.port = saved_port
     if state.get("scenario"):
         config.scenario = state.get("scenario")
+    if state.get("required_stages"):
+        config.required_stages = state.get("required_stages")
 
 
-def scenario_definition_sha256(name: str, stages: list[str]) -> str:
+def scenario_definition_sha256(name: str, stages: list[str], required: list[str] | None = None) -> str:
     import hashlib
 
-    payload = json.dumps({"name": name, "stages": stages}, sort_keys=True, separators=(",", ":"))
+    payload = json.dumps(
+        {"name": name, "stages": stages, "required": required if required is not None else stages},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -284,6 +300,7 @@ def validate_resume_binding(
 
 def completion_status(
     completed: set[str],
+    mandatory: set[str],
     summary_status: str | None,
     restart_ok: bool,
     dirty: bool,
@@ -292,7 +309,7 @@ def completion_status(
 
     if dirty:
         return "PARTIAL"
-    if not set(stage_order()).issubset(completed):
+    if not mandatory.issubset(completed):
         return "PARTIAL"
     if summary_status != "PASS" or not restart_ok:
         return "PARTIAL"
@@ -422,7 +439,11 @@ def main(argv: list[str]) -> int:
             state = State.load_or_create(state_path)
             ensure_run_identity(config, state)
 
-        scenario_name, stages = _load_scenario(args.scenario)
+        scenario_name, stages, required = _load_scenario(args.scenario)
+        if args.scenario is None and state_path.exists() and state.get("scenario_stages"):
+            scenario_name = state.get("scenario") or scenario_name
+            stages = state.get("scenario_stages")
+            required = state.get("required_stages") or stages
         selected = _stage_slice(config, stages)
         if config.from_stage != stages[0] and not state_path.exists():
             raise ScenarioError(
@@ -442,7 +463,7 @@ def main(argv: list[str]) -> int:
             )
         head = _git_head(config.root)
         cassette_sha = _file_sha256(config.cassette) if config.cassette else None
-        scenario_sha = scenario_definition_sha256(scenario_name, stages)
+        scenario_sha = scenario_definition_sha256(scenario_name, stages, required)
         validate_resume_binding(
             state,
             candidate_sha=head,
@@ -455,6 +476,8 @@ def main(argv: list[str]) -> int:
         state.set("run_id", config.run_id)
         state.set("scenario", scenario_name)
         state.set("scenario_sha256", scenario_sha)
+        state.set("scenario_stages", stages)
+        state.set("required_stages", required)
         state.set("candidate_sha", head)
         state.set("cassette_sha256", cassette_sha)
         state.set("artifacts_dir", str(config.artifacts_dir))
@@ -519,11 +542,12 @@ def main(argv: list[str]) -> int:
         for item in state.get("stage_results", []):
             latest[item["name"]] = item.get("status", "FAIL")
         completed = {name for name, status in latest.items() if status == "PASS"}
-        all_required = completed.issuperset(set(stage_order()))
+        mandatory = set(config.required_stages or stage_order())
         summary_passed = (state.get("summary") or {}).get("status") == "PASS"
         restart_ok = state.get("restart_persistence") is True
         status = completion_status(
             completed,
+            mandatory,
             (state.get("summary") or {}).get("status"),
             restart_ok,
             dirty,

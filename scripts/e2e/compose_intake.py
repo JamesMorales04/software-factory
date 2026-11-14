@@ -49,7 +49,11 @@ class Context:
     api: Api
 
     def admit_scope(self, scope: str) -> None:
-        self.api.post("/test-support/subscription-dispatch-admissions", {"scope": scope})
+        # Test-support admission returns 204 with no body; use the raw request
+        # path so an empty payload is not treated as a non-JSON failure.
+        self.api.request(
+            "POST", "/test-support/subscription-dispatch-admissions", {"scope": scope}
+        )
 
     def require_api(self) -> Api:
         return self.api
@@ -269,42 +273,7 @@ def delegate(context: Context) -> None:
 @stage("settings", "configure the deterministic model gateway, execution profile and project policy")
 def settings(context: Context) -> None:
     context.state.require("project_id", "project_config_hash")
-    context.api.put(
-        "/settings/providers/opencode",
-        {
-            "model": "deepseek-v4.1-flash",
-            "baseUrl": "https://opencode.ai/inference/go/openai/v1",
-            "credential": "compose-fixture-credential-0123456789",
-            "enabled": True,
-            "isDefault": False,
-            "maxTurns": 4,
-            "maxInputTokens": 20000,
-            "maxOutputTokens": 8000,
-            "maxCostMicros": 500000,
-            "inputMicrosPerMillion": 1000,
-            "outputMicrosPerMillion": 2000,
-        },
-    )
-    context.api.put(
-        "/settings/providers/opencode-go",
-        {
-            "model": "deepseek-v4.1-flash",
-            "baseUrl": "http://model-fixture:8080/v1",
-            "credential": "compose-fixture-credential-0123456789",
-            "enabled": True,
-            "isDefault": True,
-            "maxTurns": 4,
-            "maxInputTokens": 100000,
-            "maxOutputTokens": 12000,
-            "maxCostMicros": 500000,
-            "inputMicrosPerMillion": 1000,
-            "outputMicrosPerMillion": 2000,
-        },
-    )
-    context.api.put(
-        "/settings/runtime",
-        {"semanticReviewEnabled": True, "semanticReviewMaxOutputTokens": 8192},
-    )
+    _configure_fixture_providers(context)
     role = {
         "provider": "opencode-go",
         "model": "deepseek-v4.1-flash",
@@ -659,6 +628,483 @@ def summary(context: Context) -> None:
         "restart_persistence": context.state.get("restart_persistence", False),
         "browser": context.state.get("browser_office", "NOT_RUN"),
         "paid_inference": False,
+    }
+    write_json(context.config.artifacts_dir / "summary.json", result)
+    context.state.set("summary", result)
+
+
+def _configure_fixture_providers(context: Context) -> None:
+    """Configure the deterministic model fixture routes used by every stage."""
+
+    # Core's provider settings schema accepts exactly these fields; sending
+    # extra per-turn limits is rejected with HTTP 422 and is not part of the
+    # scenario contract.
+    context.api.put(
+        "/settings/providers/opencode",
+        {
+            "model": "deepseek-v4.1-flash",
+            "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+            "credential": "compose-fixture-credential-0123456789",
+            "enabled": True,
+            "isDefault": False,
+        },
+    )
+    context.api.put(
+        "/settings/providers/opencode-go",
+        {
+            "model": "deepseek-v4.1-flash",
+            "baseUrl": "http://model-fixture:8080/v1",
+            "credential": "compose-fixture-credential-0123456789",
+            "enabled": True,
+            "isDefault": True,
+        },
+    )
+    context.api.put(
+        "/settings/runtime",
+        {"semanticReviewEnabled": True},
+    )
+
+
+def _fixture_counters(context: Context) -> dict[str, int] | None:
+    """Read test-support per-phase counters from the fixture container.
+
+    The fixture is not published on the host and this is not product telemetry;
+    the harness reads it over the private Compose network through `exec`.
+    """
+
+    script = (
+        "import urllib.request;"
+        "print(urllib.request.urlopen('http://127.0.0.1:8080/counters', timeout=5)"
+        ".read().decode())"
+    )
+    result = context.compose.run(
+        ["exec", "model-fixture", "python3", "-c", script], check=False
+    )
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        counters = payload.get("counters")
+        if isinstance(counters, dict):
+            return {str(key): int(value) for key, value in counters.items()}
+    return None
+
+
+@stage(
+    "autonomous_setup",
+    "configure the deterministic providers, autonomous R0 profile and subscription-confirmed policy",
+)
+def autonomous_setup(context: Context) -> None:
+    context.state.require("project_id", "project_config_hash")
+    _configure_fixture_providers(context)
+    role = {
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "reasoning": "medium",
+    }
+    profile = context.api.post(
+        "/execution-profiles",
+        {
+            "name": "Compose Autonomous R0",
+            "description": "Deterministic autonomous R0 Compose profile",
+            "category": "BALANCED",
+            "roles": {
+                "lead": role,
+                "implementer": role,
+                "semanticReviewer": role,
+            },
+            "operations": {
+                "modelRequestTimeoutSecs": 300,
+                "toolCallTimeoutSecs": 600,
+                "maxRequestBytes": 2097152,
+                "maxResponseBytes": 2097152,
+                "maxGenerationTokens": 8192,
+                "maxInFlightOperations": 2,
+            },
+            "progress": {
+                "diagnoseAfterStagnantCheckpoints": 2,
+                "escalateAfterUnsuccessfulReplans": 1,
+                "observationTimeoutSecs": 300,
+            },
+            "auto_start": {"enabled": True, "risk_classes": ["R0"]},
+        },
+    )
+    assert_equal(profile.get("executable"), True, "autonomous execution profile is not executable")
+    context.api.post(f"/execution-profiles/{profile['id']}/default", {"scope": "global"})
+    granted = context.api.post(
+        f"/projects/{context.state.get('project_id')}/execution-policy",
+        {
+            "execution_profile_id": profile["id"],
+            "expected_revision": profile["revision"],
+            "expected_revision_hash": profile["contentHash"],
+            "project_config_hash": context.state.get("project_config_hash"),
+            "acknowledge": True,
+            "autonomous": True,
+            "subscription_confirmed": True,
+            "idempotency_key": "et1-autonomous-policy",
+        },
+    )
+    delegation = granted.get("delegation") or {}
+    context.state.set("profile_id", profile["id"])
+    context.state.set("profile_revision", profile["revision"])
+    context.state.set("profile_revision_id", profile["revisionId"])
+    context.state.set("profile_hash", profile["contentHash"])
+    context.state.set("delegation_id", delegation.get("id"))
+
+
+@stage(
+    "autonomous_request",
+    "submit one clean AUTONOMOUS intake request without manual planning calls",
+)
+def autonomous_request(context: Context) -> None:
+    context.state.require(
+        "project_id",
+        "profile_id",
+        "project_base_commit",
+        "project_config_hash",
+        "model_dir",
+    )
+    objective = "Add the deterministic Compose fixture endpoint and cover it with the frozen checks."
+    created = context.api.post(
+        "/intake/requests",
+        {
+            "project_id": context.state.get("project_id"),
+            "objective": objective,
+            "execution_profile_id": context.state.get("profile_id"),
+            "mode": "AUTONOMOUS",
+            "idempotency_key": f"et1-autonomous-{context.config.run_id}",
+            "authorized_micros": 5000000,
+        },
+    )
+    intake_id = created["id"]
+    action_id = created["actionId"]
+    lead_request_id = created["leadRequestId"]
+    assert_equal(created.get("mode"), "AUTONOMOUS", "intake request mode")
+    # Test-support subscription admissions only; the request itself is the sole
+    # mutating product call and no planning endpoint is invoked by this harness.
+    context.admit_scope(intake_id)
+    context.admit_scope(lead_request_id)
+    context.admit_scope("*")
+    context.state.set("manual_planning_calls", 0)
+    context.state.set("intake_id", intake_id)
+    context.state.set("intake_action_id", action_id)
+    context.state.set("intake_lead_request_id", lead_request_id)
+    context.state.set("intake_objective", objective)
+    model_context = {
+        "schema": "factory-compose-model-fixture-v1",
+        "projectId": context.state.get("project_id"),
+        "intakeRequestId": intake_id,
+        "requestId": lead_request_id,
+        "actionId": action_id,
+        "objective": objective,
+        "baseRevision": context.state.get("project_base_commit"),
+        "projectConfigHash": context.state.get("project_config_hash"),
+        "qualityProfile": "generic",
+        "allowedPaths": ["src"],
+        "capabilities": ["repository-edit", "generic-toolchain"],
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "checks": [
+            {
+                "id": "build",
+                "kind": "build",
+                "description": "deterministic build",
+                "command": ["true"],
+                "expectExit": 0,
+                "timeoutSecs": 30,
+            },
+            {
+                "id": "test",
+                "kind": "test",
+                "description": "deterministic test",
+                "command": ["true"],
+                "expectExit": 0,
+                "timeoutSecs": 30,
+            },
+            {
+                "id": "functional",
+                "kind": "functional",
+                "description": "provider candidate content exists",
+                "command": ["grep", "-q", "provider candidate", "src/provider.txt"],
+                "expectExit": 0,
+                "timeoutSecs": 30,
+            },
+            {
+                "id": "negative",
+                "kind": "negative",
+                "description": "absent content is rejected",
+                "command": ["grep", "-q", "absent", "src/provider.txt"],
+                "expectExit": 1,
+                "timeoutSecs": 30,
+            },
+        ],
+    }
+    context_path = Path(context.state.get("model_dir")) / "context.json"
+    write_json(context_path, model_context)
+    os.chmod(context_path, 0o644)
+    context.state.set("model_context", str(context_path))
+
+
+@stage(
+    "autonomous_campaign",
+    "observe autopilot preparation: plan, graph, participants, environment and Campaign",
+)
+def autonomous_campaign(context: Context) -> None:
+    context.state.require("intake_id")
+    intake_id = context.state.get("intake_id")
+    deadline = time.monotonic() + context.config.timeout
+    projection: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        projection = context.api.get(f"/intake/requests/{intake_id}")
+        if projection.get("campaignId"):
+            break
+        if projection.get("state") in {"BLOCKED", "FAILED", "REJECTED", "CANCELLED", "AWAITING_APPROVAL"}:
+            break
+        time.sleep(2)
+    state_name = projection.get("state")
+    campaign_id = projection.get("campaignId")
+    planning = projection.get("planning") or {}
+    environment = projection.get("environment") or {}
+    plan = projection.get("plan") or {}
+    if not campaign_id:
+        raise ScenarioError(
+            "autonomous intake produced no Campaign: "
+            f"state={state_name!r} detail={projection.get('stateDetail')!r} "
+            f"authorization={projection.get('authorization')!r} "
+            f"missingArtifacts={planning.get('missingArtifacts')!r} "
+            f"reviewStatus={planning.get('reviewStatus')!r} "
+            f"materialsReady={planning.get('materialsReady')!r} "
+            f"ready={planning.get('ready')!r} environment={environment.get('status')!r}"
+        )
+    # F14/F15: authorization availability and planning.ready are not start-ready.
+    assert_equal(planning.get("ready"), True, "planning readiness")
+    assert_equal(planning.get("missingArtifacts"), [], "planning missing artifacts")
+    participant_plan = planning.get("participantPlan") or {}
+    assert_equal(participant_plan.get("ready"), True, "participant plan readiness")
+    assert_in(
+        str(planning.get("reviewStatus")),
+        ("AUTO_APPROVED", "OWNER_APPROVED"),
+        "plan review status",
+    )
+    assert_equal(planning.get("reviewApproved"), True, "plan review approval")
+    # Core publishes these only after the stage-1 fix. They are optional here so
+    # the baseline can still be observed failing without inventing fields.
+    if "reviewCurrent" in planning:
+        assert_equal(planning.get("reviewCurrent"), True, "plan review freshness")
+    if "startReady" in planning:
+        assert_equal(planning.get("startReady"), True, "Core start-ready flag")
+    assert_equal(environment.get("status"), "FROZEN", "environment freeze")
+    require(bool(environment.get("specSha256")), "environment spec digest is missing")
+    plan_hash = plan.get("planHash") or plan.get("plan_hash")
+    require(bool(plan_hash), "autopilot produced no plan hash")
+    assert_equal(plan_hash, context.state.get("plan_hash") and context.state.get("plan_hash") or plan_hash, "plan hash stability")
+
+    graph = context.api.get(f"/agentic/requests/{intake_id}/plan")
+    units = graph.get("units") or (graph.get("graph") or {}).get("units") or []
+    require(bool(units), "autopilot Plan projection has no work units")
+    graph_sha = graph.get("graphSha256") or (graph.get("graph") or {}).get("graphSha256")
+    require(bool(graph_sha), "autopilot Plan projection has no graph digest")
+    assert_equal(graph.get("provider"), "opencode-go", "WorkGraph provider provenance")
+    assert_equal(graph.get("model"), "deepseek-v4.1-flash", "WorkGraph model provenance")
+
+    participants = context.api.get(f"/agentic/requests/{intake_id}/participants")
+    compiled = participants.get("compiled") or participants
+    assert_equal(compiled.get("ready"), True, "participant plan compiled readiness")
+    assert_equal(
+        compiled.get("graphSha256"),
+        graph_sha,
+        "participant plan graph binding",
+    )
+
+    campaign = context.api.get(f"/campaigns/{campaign_id}")
+    tasks = campaign.get("tasks") or []
+    require(bool(tasks), "autonomous Campaign has no tasks")
+    attempt_id = tasks[0].get("attempt_id") or tasks[0].get("attemptId")
+    require(bool(attempt_id), "autonomous Campaign has no Attempt identity")
+    counters = _fixture_counters(context) or {}
+    require(counters.get("planner", 0) >= 1, "fixture never served a Planner call")
+    require(counters.get("assessment", 0) >= 1, "fixture never served an assessment call")
+    require(
+        counters.get("environment", 0) >= 1,
+        "fixture never served an environment review call",
+    )
+
+    context.state.set("plan_hash", plan_hash)
+    context.state.set("graph_sha256", graph_sha)
+    context.state.set("environment_spec_sha256", environment.get("specSha256"))
+    context.state.set("campaign_id", campaign_id)
+    context.state.set("attempt_id", attempt_id)
+    context.state.set("autonomous_counters", counters)
+    context.state.set("autonomous_state", state_name)
+    context.state.set("autonomous_projection", {
+        "planning": planning,
+        "environment": environment,
+        "authorization": projection.get("authorization"),
+    })
+
+
+@stage(
+    "autonomous_negative",
+    "a profile without an autonomous policy must fail closed with no Campaign",
+)
+def autonomous_negative(context: Context) -> None:
+    context.state.require("project_id")
+    role = {
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "reasoning": "medium",
+    }
+    profile = context.api.post(
+        "/execution-profiles",
+        {
+            "name": "Compose Non-Autonomous Negative",
+            "description": "Deterministic negative profile without autonomous start",
+            "category": "BALANCED",
+            "roles": {"lead": role, "implementer": role, "semanticReviewer": role},
+            "operations": {
+                "modelRequestTimeoutSecs": 300,
+                "toolCallTimeoutSecs": 600,
+                "maxRequestBytes": 2097152,
+                "maxResponseBytes": 2097152,
+                "maxGenerationTokens": 8192,
+                "maxInFlightOperations": 2,
+            },
+            "progress": {
+                "diagnoseAfterStagnantCheckpoints": 2,
+                "escalateAfterUnsuccessfulReplans": 1,
+                "observationTimeoutSecs": 300,
+            },
+            "auto_start": {"enabled": False, "risk_classes": []},
+        },
+    )
+    try:
+        created = context.api.post(
+            "/intake/requests",
+            {
+                "project_id": context.state.get("project_id"),
+                "objective": "Negative autonomous intake without an autonomous policy.",
+                "execution_profile_id": profile["id"],
+                "mode": "AUTONOMOUS",
+                "idempotency_key": f"et1-autonomous-negative-{context.config.run_id}",
+                "authorized_micros": 5000000,
+            },
+        )
+    except ScenarioError as error:
+        message = str(error)
+        require(
+            "AUTONOMOUS_POLICY_REQUIRED" in message
+            or "EXECUTION_POLICY_REQUIRED" in message,
+            f"negative autonomous intake returned an unexpected error: {message}",
+        )
+        context.state.set(
+            "autonomous_negative",
+            {"outcome": "REJECTED", "code": message.split("HTTP", 1)[-1][:200]},
+        )
+        return
+    raise ScenarioError(
+        "autonomous intake without an autonomous policy unexpectedly created a request: "
+        f"{created.get('id')!r}"
+    )
+
+
+@stage(
+    "autonomous_restart",
+    "restart Core without volumes and verify the autonomous plan/Campaign identity persists",
+)
+def autonomous_restart(context: Context) -> None:
+    config = context.config
+    context.state.require(
+        "intake_id",
+        "campaign_id",
+        "plan_hash",
+        "graph_sha256",
+        "environment_spec_sha256",
+    )
+    before = context.api.get(f"/intake/requests/{context.state.get('intake_id')}")
+    context.compose.down(volumes=False)
+    context.compose.up(build=False)
+    wait_url(f"{config.base}/health", 300)
+    wait_core(context.compose, "http://runtime:8770/health", 900)
+    wait_core(context.compose, "http://supervisor:8766/health", 180)
+    wait_core(context.compose, "http://model-fixture:8080/health", 120)
+
+    def worker_ready() -> bool:
+        workers = context.api.get("/workers")
+        return any("compose-worker" in json.dumps(worker) for worker in workers)
+
+    wait_until(worker_ready, 60, "the Compose Worker re-registration")
+    after = context.api.get(f"/intake/requests/{context.state.get('intake_id')}")
+    before_plan = (before.get("plan") or {}).get("planHash")
+    after_plan = (after.get("plan") or {}).get("planHash")
+    assert_equal(after_plan, before_plan, "plan hash persistence")
+    assert_equal(after.get("campaignId"), context.state.get("campaign_id"), "Campaign persistence")
+    after_environment = after.get("environment") or {}
+    assert_equal(
+        after_environment.get("specSha256"),
+        context.state.get("environment_spec_sha256"),
+        "environment spec persistence",
+    )
+    campaigns = context.api.get("/campaigns")
+    action_id = context.state.get("intake_action_id")
+    matching = [
+        campaign
+        for campaign in campaigns
+        if (campaign.get("action_id") or campaign.get("actionId")) == action_id
+    ]
+    assert_equal(len(matching), 1, "exactly one Campaign per autonomous action")
+    campaign = context.api.get(f"/campaigns/{context.state.get('campaign_id')}")
+    tasks = campaign.get("tasks") or []
+    require(bool(tasks), "restarted Campaign has no tasks")
+    assert_equal(
+        tasks[0].get("attempt_id") or tasks[0].get("attemptId"),
+        context.state.get("attempt_id"),
+        "Attempt persistence",
+    )
+    context.state.set("restart_persistence", True)
+
+
+@stage("autonomous_summary", "write the mock-bound autonomous scenario summary")
+def autonomous_summary(context: Context) -> None:
+    context.state.require(
+        "intake_id",
+        "campaign_id",
+        "plan_hash",
+        "graph_sha256",
+        "environment_spec_sha256",
+    )
+    clean = context.state.get("dirty") is not True
+    counters = _fixture_counters(context) or context.state.get("autonomous_counters") or {}
+    passed = (
+        clean
+        and context.state.get("restart_persistence") is True
+        and counters.get("planner", 0) >= 1
+        and context.state.get("manual_planning_calls", 0) == 0
+    )
+    result = {
+        "status": "PASS" if passed else "PARTIAL",
+        "diagnosticOnly": not clean,
+        "mode": "AUTONOMOUS",
+        "intake_request_id": context.state.get("intake_id"),
+        "campaign_id": context.state.get("campaign_id"),
+        "attempt_id": context.state.get("attempt_id"),
+        "plan_hash": context.state.get("plan_hash"),
+        "graph_sha256": context.state.get("graph_sha256"),
+        "environment_spec_sha256": context.state.get("environment_spec_sha256"),
+        "manual_planning_calls": context.state.get("manual_planning_calls", 0),
+        "fixture_counters": counters,
+        "model_evidence": "SIMULATED",
+        "provider_provenance": "opencode-go/deepseek-v4.1-flash (fixture route)",
+        "paid_inference": False,
+        "live_inference": "NOT_TESTED",
+        "restart_persistence": context.state.get("restart_persistence", False),
+        "negative": context.state.get("autonomous_negative"),
+        "browser": context.state.get("browser_office", "NOT_RUN"),
     }
     write_json(context.config.artifacts_dir / "summary.json", result)
     context.state.set("summary", result)

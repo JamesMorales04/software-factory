@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -24,6 +25,43 @@ CASSETTE = None
 CASSETTE_ERROR = None
 HOST = "0.0.0.0"
 PORT = 8080
+
+# Per-phase counters are test-support evidence only. They are read from the
+# fixture container by the scenario harness and never presented as product
+# inference or provider usage.
+PHASES = ("assessment", "planner", "environment", "spec", "semantic_review", "other")
+COUNTERS = {phase: 0 for phase in PHASES}
+COUNTERS_LOCK = threading.Lock()
+
+
+def record_phase(phase):
+    with COUNTERS_LOCK:
+        COUNTERS[phase] = COUNTERS.get(phase, 0) + 1
+        return dict(COUNTERS)
+
+
+def counters():
+    with COUNTERS_LOCK:
+        return dict(COUNTERS)
+
+
+def classify_prompt(system, user=""):
+    if "bounded Software Factory Planner" in system:
+        return "planner"
+    if "bounded Software Factory Spec Manager" in system:
+        return "spec"
+    if "Review exactly one frozen Candidate EnvironmentPlan" in system:
+        return "environment"
+    if "independent semantic code reviewer" in system:
+        return "semantic_review"
+    if "Semantic Assessor" in system or "assessment" in system.lower():
+        return "assessment"
+    # The baseline assessment prompt is identified by its identity block rather
+    # than by a role name; count it as an assessment only when it looks like one.
+    if re.search(r"Project: \S+", user) and re.search(r"Action: \S+", user):
+        return "assessment"
+    return "other"
+
 
 
 def canonical_request_sha256(value):
@@ -165,6 +203,85 @@ def assessment(user, ctx):
     )
 
 
+def planner(user, ctx):
+    payload = json.loads(user)
+    allowed = (payload.get("projectConfig") or {}).get("allowedPaths") or ["src"]
+    scope = str(allowed[0]).rstrip("/") or "src"
+    objective = payload.get("objective") or (ctx or {}).get("objective") or "fixture objective"
+    return chat_response(
+        {
+            "units": [
+                {
+                    "id": "unit-1",
+                    "title": "Implement the requested deterministic change",
+                    "objective": objective,
+                    "dependsOn": [],
+                    "paths": [f"{scope}/provider.txt"],
+                    "acceptance": ["The frozen functional check passes."],
+                }
+            ],
+            "assumptions": ["Deterministic Compose model fixture; not live inference."],
+            "risks": ["Model output is test data."],
+        },
+        400,
+        300,
+    )
+
+
+def environment_review(user):
+    marker = "EnvironmentPlan:\n"
+    start = user.find(marker)
+    if start < 0:
+        raise ValueError("environment review prompt has no EnvironmentPlan")
+    start += len(marker)
+    end = user.find("\n\nJSON Schema:", start)
+    if end < 0:
+        raise ValueError("environment review prompt has no schema boundary")
+    plan = json.loads(user[start:end])
+    return chat_response(
+        {
+            "schemaVersion": 1,
+            "requestId": plan["requestId"],
+            "actionId": plan["actionId"],
+            "planSha256": plan["planSha256"],
+            "planRevision": plan["revision"],
+            "riskClass": plan["riskClass"],
+            "decision": "APPROVE",
+            "rationale": "The deterministic fixture plan is pinned, licensed and bounded.",
+            "constraints": [],
+        },
+        300,
+        80,
+    )
+
+
+def spec_draft(user):
+    payload = json.loads(user)
+    units = ((payload.get("workGraph") or {}).get("units")) or []
+    ids = [unit.get("id") for unit in units if unit.get("id")]
+    if not ids:
+        raise ValueError("spec prompt has no work graph units")
+    requirements = [
+        {
+            "statement": f"Unit {unit_id} exposes the frozen observable behavior.",
+            "workUnitId": unit_id,
+            "acceptance": ["The frozen functional check passes."],
+            "negative": ["The frozen negative check fails for absent content."],
+        }
+        for unit_id in ids
+    ]
+    return chat_response(
+        {
+            "summary": "Observable formal requirements for the deterministic fixture.",
+            "requirements": requirements,
+            "assumptions": ["Deterministic Compose model fixture; not live inference."],
+            "risks": ["Model output is test data."],
+        },
+        400,
+        400,
+    )
+
+
 def semantic_review(user):
     commit = re.search(r"candidateCommitSha: ([0-9a-f]+)", user)
     tree = re.search(r"candidateTreeSha: ([0-9a-f]+)", user)
@@ -194,12 +311,14 @@ class Handler(BaseHTTPRequestHandler):
         # Never log prompt bodies, credentials or downstream URLs.
         sys.stderr.write("compose-model-fixture: " + fmt % args + "\n")
 
-    def send_json(self, status, value):
+    def send_json(self, status, value, *, phase=None):
         body = json.dumps(value).encode("utf-8")
         self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(body)))
         self.send_header("x-factory-test-fixture", "deterministic")
+        if phase:
+            self.send_header("x-factory-fixture-phase", phase)
         self.end_headers()
         self.wfile.write(body)
 
@@ -210,6 +329,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 mode = "cassette" if CASSETTE_PATH is not None else "deterministic"
                 self.send_json(200, {"healthy": True, "fixture": mode})
+        elif self.path in ("/counters", "/v1/counters"):
+            self.send_json(200, {"schema": "factory-model-fixture-counters-v1", "counters": counters()})
         else:
             self.send_json(404, {"error": "not found"})
 
@@ -233,12 +354,22 @@ class Handler(BaseHTTPRequestHandler):
                 "",
             )
             if CASSETTE_PATH is not None:
+                phase = "cassette"
                 response = replay_cassette(body)
-            elif "independent semantic code reviewer" in system:
-                response = semantic_review(user)
             else:
-                response = assessment(user, context())
-            self.send_json(200, response)
+                phase = classify_prompt(system, user)
+                record_phase(phase)
+                if phase == "planner":
+                    response = planner(user, context())
+                elif phase == "environment":
+                    response = environment_review(user)
+                elif phase == "spec":
+                    response = spec_draft(user)
+                elif phase == "semantic_review":
+                    response = semantic_review(user)
+                else:
+                    response = assessment(user, context())
+            self.send_json(200, response, phase=phase)
         except Exception as error:  # noqa: BLE001 - fixture must fail closed
             self.send_json(400, {"error": str(error)})
 

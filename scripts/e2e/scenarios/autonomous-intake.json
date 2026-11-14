@@ -1,0 +1,28 @@
+{
+  "name": "autonomous-intake",
+  "description": "Stage 1: one clean AUTONOMOUS request prepares plan/artifacts/participants/environment and starts a Campaign without manual planning calls or Director clicks.",
+  "stages": [
+    "prepare",
+    "start",
+    "enroll",
+    "import",
+    "autonomous_setup",
+    "autonomous_request",
+    "autonomous_campaign",
+    "autonomous_negative",
+    "autonomous_restart",
+    "autonomous_summary"
+  ],
+  "required": [
+    "prepare",
+    "start",
+    "enroll",
+    "import",
+    "autonomous_setup",
+    "autonomous_request",
+    "autonomous_campaign",
+    "autonomous_negative",
+    "autonomous_restart",
+    "autonomous_summary"
+  ]
+}

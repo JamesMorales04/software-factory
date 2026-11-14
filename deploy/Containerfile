@@ -12,6 +12,7 @@ FROM rust:${RUST_VERSION}-bookworm AS workspace
 
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
+COPY vendor vendor
 COPY factory-cli/Cargo.toml factory-cli/Cargo.toml
 COPY factory-cli/src factory-cli/src
 COPY native/Cargo.toml native/Cargo.toml
