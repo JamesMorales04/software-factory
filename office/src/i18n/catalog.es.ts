@@ -417,8 +417,13 @@ export const es: Catalog = {
   "request.approval.planningDisabled":
     "Completa la revisión del plan en el Director antes de aprobar.",
   "request.planning.incompleteTitle": "Revisión del plan incompleta",
+  "request.planning.preparingTitle": "Preparación del plan en curso",
   "request.planning.incompleteBody":
     "Core requiere los artefactos de planificación y el plan de participantes antes de iniciar este plan congelado.",
+  "request.planning.incompleteBodyAutopilot":
+    "Core está preparando los artefactos de planificación y el plan de participantes para esta solicitud autónoma. La autoridad del owner solo se solicita si Core registra una revisión de plan pendiente.",
+  "request.planning.participantMissingAutopilot":
+    "El plan de participantes aún no está registrado. Core lo registra mientras prepara esta solicitud autónoma.",
   "request.planning.missingArtifacts": "Faltan artefactos: {values}.",
   "request.planning.participantMissing":
     "El plan de participantes no está registrado. Compila el plan y registra el plan de participantes en el Director.",
@@ -431,6 +436,19 @@ export const es: Catalog = {
     "La última revisión del plan es {status}; el plan no puede iniciar hasta que una revisión aprobada vincule la revisión actual.",
   "request.planning.openDirector":
     "Abrir la revisión del plan en el Director (Compilar plan / Registrar plan de participantes)",
+  "request.planning.environment": "Plan de entorno: {status}.",
+  "request.planning.autopilotFreshness":
+    "El autopilot posee estos pasos deterministas en Core. Esta solicitud se refresca automáticamente; la preparación de arriba es el estado confirmado por Core y el bloqueo exacto seguirá visible hasta que Core lo resuelva.",
+  "request.planning.autopilotWaitingOwner":
+    "Core terminó los materiales del plan y espera la decisión del owner. Aprueba la revisión exacta del plan en el Director; Core reanuda la misma solicitud tras la aprobación. El refresco automático está pausado; esta vista relee al recuperar el foco o al pulsar Actualizar.",
+  "request.planning.autopilotRejected":
+    "Core registró una revisión del plan rechazada o con cambios solicitados. Se requiere una nueva decisión exacta del owner o una recompilación antes de continuar. El refresco automático está pausado; usa Actualizar cuando cambie la decisión.",
+  "request.planning.reviewStale":
+    "La revisión registrada del plan no vincula la revisión actual. Core no la trata como una decisión vigente del owner; recompila o revisa el plan actual en el Director.",
+  "request.pollingPaused":
+    "Core no responde a esta solicitud. El refresco automático se pausó tras fallos repetidos; se conserva la última proyección confirmada. Pulsa Reintentar ahora para releerla.",
+  "request.approval.environmentRequired":
+    "Core requiere un plan de entorno congelado antes de aprobar o iniciar (ENVIRONMENT_PLAN_REQUIRED).",
   "request.planning.unavailable":
     "Core no informó de la preparación de la revisión del plan. Recarga esta solicitud antes de aprobar.",
   "request.execution.title": "Ejecución",
@@ -3859,6 +3877,53 @@ export const es: Catalog = {
   "director.planning.title": "Revisión del plan",
   "director.planning.empty":
     "Todavía no hay artefactos de planificación registrados.",
+  "director.planning.staleBadge": "Revisión obsoleta",
+  "director.planning.staleReview":
+    "La revisión registrada del plan no vincula la revisión actual. Compila o recompila el plan actual y revisa esa revisión exacta; la decisión anterior no es evidencia vigente.",
+  "director.preparation.title": "Preparación del plan",
+  "director.preparation.autopilot":
+    "El autopilot posee estos pasos deterministas en Core. Esta vista se refresca mientras la preparación está incompleta; la preparación mostrada es la última proyección confirmada por Core.",
+  "director.preparation.artifacts": "Artefactos del plan",
+  "director.preparation.participants": "Participantes",
+  "director.preparation.review": "Revisión del plan",
+  "director.preparation.environment": "Plan de entorno",
+  "director.preparation.prepared": "Preparado",
+  "director.preparation.missing": "Falta: {values}",
+  "director.preparation.notRequired": "No requerido",
+  "director.preparation.incomplete": "Incompleto",
+  "director.preparation.notRecorded": "No registrado",
+  "director.preparation.approved": "Aprobada",
+  "director.preparation.loading": "Esperando la preparación de Core",
+  "director.preparation.unavailable": "No disponible",
+  "director.preparation.blockers": "{count} bloqueo(s)",
+  "director.preparation.planningReady":
+    "Core informa de que los materiales del plan y la revisión están listos.",
+  "director.preparation.planningNotReady":
+    "Core aún no informa de preparación del plan. Los hechos faltantes o bloqueados de arriba provienen de Core.",
+  "director.preparation.phase.preparing":
+    "Core está preparando los pasos deterministas de planificación. La preparación de abajo es la última proyección confirmada por Core.",
+  "director.preparation.phase.waitingOwner":
+    "Core espera la decisión del owner sobre el plan. El polling se pausa mientras la solicitud espera; una aprobación registrada en otra pestaña o dispositivo se observa al recuperar el foco o al pulsar Actualizar.",
+  "director.preparation.phase.reviewRejected":
+    "La revisión del plan fue rechazada o solicitó cambios. Se requiere una nueva decisión exacta del owner o una recompilación; Core no la autoaprueba.",
+  "director.preparation.phase.recoverableFailure":
+    "Core informó de una preparación bloqueada o fallida. Inspecciona el bloqueo de abajo; esta vista no reintenta automáticamente una acción de pago o con efectos externos.",
+  "director.preparation.phase.executing":
+    "Core informa de ejecución. La preparación del plan ya no es el paso activo.",
+  "director.preparation.phase.terminal":
+    "Core informa de un estado terminal. La preparación y el polling se detienen; abre la Campaña o el historial de la solicitud para consultar el resultado registrado.",
+  "director.preparation.operationInconsistent":
+    "Core informa de una operación en ejecución sin una Campaña autoritativa ni una solicitud en EXECUTING. Esta vista lo trata como inconsistencia, no como ejecución; actualiza cuando Core reconcilie la operación.",
+  "director.preparation.startNotObserved":
+    "Core informó de una operación en cola o iniciando, pero no se observó Campaña ni solicitud en EXECUTING. El polling automático se detuvo; pulsa Actualizar para releer. Esta observación no cancela ni detiene la solicitud, y la telemetría de inicio no es autoridad de Campaña.",
+  "director.preparation.pollingPaused":
+    "Core no responde a las lecturas de preparación. El refresco automático se pausó tras fallos repetidos; se conserva la última proyección confirmada. Pulsa Actualizar para reintentar.",
+  "director.preparation.startBoundary":
+    "La preparación del plan y del entorno no es el inicio de una Campaña. Core realiza la transacción de inicio y el estado de Campaña por separado.",
+  "director.preparation.staleReview":
+    "Obsoleta para la revisión actual del plan",
+  "director.preparation.environmentBoundary":
+    "Core requiere un plan de entorno congelado antes de aprobar o iniciar (ENVIRONMENT_PLAN_REQUIRED).",
   "director.planning.lane": "Carril de planificación",
   "director.planning.workflow": "Estado del flujo",
   "director.planning.revision": "Revisión del plan",

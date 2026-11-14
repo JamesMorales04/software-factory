@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
@@ -24,8 +24,9 @@ import {
 } from "../coreApi";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
-import { EnvironmentPanel } from "./EnvironmentPanel";
+import { EnvironmentPanel, environmentStatusLabel } from "./EnvironmentPanel";
 import { KnowledgePanel } from "./KnowledgePanel";
+import { currentPlanningReview, isTerminalIntakeState } from "./RequestState";
 import "./director.css";
 import "./specs.css";
 
@@ -69,6 +70,15 @@ function reviewerReceiptTone(result: string) {
   return "attention" as const;
 }
 
+type PreparationPhase =
+  | "PREPARING"
+  | "WAITING_OWNER"
+  | "REVIEW_REJECTED"
+  | "RECOVERABLE_FAILURE"
+  | "EXECUTING"
+  | "TERMINAL"
+  | "READY";
+
 export function reviewerAssignmentsMatch(
   detail: AgenticRequestDetail,
 ): boolean {
@@ -92,6 +102,9 @@ export function Director() {
   const [detail, setDetail] = useState<AgenticRequestDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [refreshBusy, setRefreshBusy] = useState(false);
+  const [startPollExhausted, setStartPollExhausted] = useState(false);
+  const [preparationStalled, setPreparationStalled] = useState(false);
   const [triageBusy, setTriageBusy] = useState(false);
   const [triageError, setTriageError] = useState<string | null>(null);
   const [triageNotice, setTriageNotice] = useState<string | null>(null);
@@ -175,6 +188,63 @@ export function Director() {
     selectedId ||
     (portfolio !== null && portfolio.length > 0 ? portfolio[0].id : "");
 
+  const environment = detail?.environment ?? null;
+  const reviewBinding = currentPlanningReview(planning);
+  const reviewStatus = reviewBinding.status;
+  const reviewRejected =
+    reviewStatus === "REJECTED" || reviewStatus === "CHANGES_REQUESTED";
+  const requestTerminal = isTerminalIntakeState(detail?.request.state ?? "");
+  const executionActive =
+    detail?.request.state === "EXECUTING" || detail?.lead.campaignId !== null;
+  const operationInconsistent =
+    detail?.operation?.status === "EXECUTING" &&
+    detail?.lead.campaignId === null &&
+    detail?.request.state !== "EXECUTING";
+  const terminalFailure =
+    detail?.request.state === "BLOCKED" ||
+    detail?.request.state === "FAILED" ||
+    detail?.lead.state === "BLOCKED" ||
+    detail?.lead.state === "FAILED";
+  const environmentBlocked =
+    environment?.required === true &&
+    (environment.status === "BLOCKED" || environment.blockers.length > 0);
+  const startReady = planning?.startReady === true;
+  // A PENDING review is only a real owner wait when Core binds it to the
+  // current PLAN revision and reports the materials as ready. A stale review
+  // or still-missing materials stay in preparation.
+  const waitingForOwner =
+    reviewStatus === "PENDING" &&
+    planning?.reviewCurrent === true &&
+    planning?.materialsReady === true &&
+    planning?.ready !== true;
+  const preparationPhase: PreparationPhase = requestTerminal
+    ? "TERMINAL"
+    : executionActive
+      ? "EXECUTING"
+      : reviewRejected
+        ? "REVIEW_REJECTED"
+        : terminalFailure || environmentBlocked || operationInconsistent
+          ? "RECOVERABLE_FAILURE"
+          : startReady
+            ? "READY"
+            : waitingForOwner
+              ? "WAITING_OWNER"
+              : "PREPARING";
+  const preparationPhaseMessage =
+    preparationPhase === "TERMINAL"
+      ? t("director.preparation.phase.terminal")
+      : preparationPhase === "EXECUTING"
+        ? t("director.preparation.phase.executing")
+        : preparationPhase === "REVIEW_REJECTED"
+          ? t("director.preparation.phase.reviewRejected")
+          : preparationPhase === "RECOVERABLE_FAILURE"
+            ? t("director.preparation.phase.recoverableFailure")
+            : preparationPhase === "READY"
+              ? t("director.preparation.planningReady")
+              : preparationPhase === "WAITING_OWNER"
+                ? t("director.preparation.phase.waitingOwner")
+                : t("director.preparation.phase.preparing");
+
   useEffect(() => {
     // Action-scoped notices belong to the request that produced them. Keeping
     // them across a selection change showed a success message from one request
@@ -200,82 +270,191 @@ export function Director() {
     setAssessmentError(null);
   }, [activeId]);
 
-  useEffect(() => {
-    if (!activeId) {
-      setDetail(null);
-      setDetailError(null);
-      return;
-    }
-    let active = true;
-    setDetail(null);
-    setDetailLoading(true);
-    setDetailError(null);
-    coreApi
-      .getAgenticRequest(activeId)
-      .then((next) => {
-        if (active) {
-          setDetail(next);
-          if (next.operation) setPriorityDraft(String(next.operation.priority));
-        }
-      })
-      .catch((cause) => {
-        if (active) {
-          setDetailError(errorText(cause, t("director.error.detail")));
-        }
-      })
-      .finally(() => {
-        if (active) setDetailLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [activeId, t]);
+  const loadGeneration = useRef(0);
+  const lastResumeReload = useRef(0);
+  const startPollCount = useRef(0);
+  const preparationFailureCount = useRef(0);
 
-  useEffect(() => {
-    if (!activeId) {
-      setPlan(null);
-      setSpec(null);
-      setPlanning(null);
-      return;
-    }
-    let active = true;
-    setPlan(null);
-    setSpec(null);
-    setPlanning(null);
-    setPlanError(null);
-    setSpecError(null);
-    void Promise.allSettled([
-      coreApi.getAgenticPlan(activeId),
-      coreApi.getAgenticSpec(activeId),
-      coreApi.getAgenticPlanning(activeId),
-    ]).then(([planResult, specResult, planningResult]) => {
-      if (!active) return;
+  /**
+   * Core owns every readiness fact. This reload keeps Director's detail, plan,
+   * spec and planning projections on the same generation so a mutation is
+   * never displayed next to stale readiness. A failed fetch preserves the last
+   * confirmed projection and reports the error separately; it is not treated
+   * as a new authoritative state.
+   */
+  const reloadDirector = useCallback(
+    async ({ reset = false }: { reset?: boolean } = {}) => {
+      if (!activeId) {
+        loadGeneration.current += 1;
+        setDetail(null);
+        setDetailError(null);
+        setDetailLoading(false);
+        setPlan(null);
+        setPlanError(null);
+        setSpec(null);
+        setSpecError(null);
+        setPlanning(null);
+        setPlanningError(null);
+        return;
+      }
+      const generation = ++loadGeneration.current;
+      if (reset) {
+        setDetail(null);
+        setDetailLoading(true);
+        setDetailError(null);
+        setPlan(null);
+        setPlanError(null);
+        setSpec(null);
+        setSpecError(null);
+        setPlanning(null);
+        setPlanningError(null);
+      }
+      const [detailResult, planResult, specResult, planningResult] =
+        await Promise.allSettled([
+          coreApi.getAgenticRequest(activeId),
+          coreApi.getAgenticPlan(activeId),
+          coreApi.getAgenticSpec(activeId),
+          coreApi.getAgenticPlanning(activeId),
+        ]);
+      if (generation !== loadGeneration.current) return;
+      const criticalFailure =
+        detailResult.status === "rejected" ||
+        planningResult.status === "rejected";
+      if (criticalFailure) {
+        preparationFailureCount.current += 1;
+        if (preparationFailureCount.current >= 6) {
+          setPreparationStalled(true);
+        }
+      } else {
+        preparationFailureCount.current = 0;
+        setPreparationStalled(false);
+      }
+      if (detailResult.status === "fulfilled") {
+        setDetail(detailResult.value);
+        setDetailError(null);
+        setLastLoadedAt(new Date().toISOString());
+        if (detailResult.value.operation) {
+          setPriorityDraft(String(detailResult.value.operation.priority));
+        }
+      } else {
+        setDetailError(
+          errorText(detailResult.reason, t("director.error.detail")),
+        );
+      }
       if (planResult.status === "fulfilled") {
         setPlan(planResult.value.graph);
+        setPlanError(null);
       } else {
-        setPlan(null);
         setPlanError(errorText(planResult.reason, t("director.plan.error")));
       }
       if (specResult.status === "fulfilled") {
         setSpec(specResult.value);
+        setSpecError(null);
       } else {
-        setSpec(null);
         setSpecError(errorText(specResult.reason, t("director.spec.error")));
       }
       if (planningResult.status === "fulfilled") {
         setPlanning(planningResult.value);
         setPlanningError(null);
       } else {
-        setPlanning(null);
         setPlanningError(
           errorText(planningResult.reason, t("director.planning.error")),
         );
       }
-    });
+      setDetailLoading(false);
+    },
+    [activeId, t],
+  );
+
+  useEffect(() => {
+    void reloadDirector({ reset: true });
     return () => {
-      active = false;
+      loadGeneration.current += 1;
     };
-  }, [activeId, t]);
+  }, [reloadDirector]);
+
+  useEffect(() => {
+    // Reset bounded polling state when the selected request changes.
+    void activeId;
+    startPollCount.current = 0;
+    setStartPollExhausted(false);
+    preparationFailureCount.current = 0;
+    setPreparationStalled(false);
+  }, [activeId]);
+
+  useEffect(() => {
+    // Reset the bounded start window when any authoritative start input moves.
+    void activeId;
+    void startReady;
+    void detail?.lead.campaignId;
+    void detail?.request.state;
+    void detail?.operation?.status;
+    startPollCount.current = 0;
+    setStartPollExhausted(false);
+  }, [
+    activeId,
+    startReady,
+    detail?.lead.campaignId,
+    detail?.request.state,
+    detail?.operation?.status,
+  ]);
+
+  const queuedOrStarting =
+    detail?.operation?.status === "QUEUED" ||
+    detail?.operation?.status === "STARTING";
+  const startsPending =
+    startReady &&
+    queuedOrStarting &&
+    !detail?.lead.campaignId &&
+    !terminalFailure &&
+    !environmentBlocked &&
+    !startPollExhausted;
+  const preparationPending =
+    detail?.request.mode === "AUTONOMOUS" &&
+    !detail?.lead.campaignId &&
+    !environmentBlocked &&
+    !preparationStalled &&
+    queuedOrStarting &&
+    (preparationPhase === "PREPARING" || startsPending);
+
+  useEffect(() => {
+    if (!preparationPending) return;
+    const timer = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      if (startsPending) {
+        startPollCount.current += 1;
+        if (startPollCount.current >= 6) {
+          setStartPollExhausted(true);
+          return;
+        }
+      }
+      void reloadDirector();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [preparationPending, startsPending, reloadDirector]);
+
+  // A stopped wait must still observe an approval recorded by another tab or
+  // device. Focus/visibility are existing browser signals, not a new
+  // subscription: one shared reload with a short de-duplication window avoids
+  // duplicated requests when both events fire together.
+  useEffect(() => {
+    if (preparationPhase !== "WAITING_OWNER") return;
+    const resume = () => {
+      const now = Date.now();
+      if (now - lastResumeReload.current < 1000) return;
+      lastResumeReload.current = now;
+      void reloadDirector();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") resume();
+    };
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", resume);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [preparationPhase, reloadDirector]);
 
   async function runSemanticTriage() {
     if (!activeId) return;
@@ -284,8 +463,7 @@ export function Director() {
     setTriageNotice(null);
     try {
       await coreApi.assessAgenticRequest(activeId);
-      const next = await coreApi.getAgenticRequest(activeId);
-      setDetail(next);
+      await reloadDirector();
       setTriageNotice(t("director.triage.success"));
     } catch (cause) {
       setTriageError(errorText(cause, t("director.triage.error")));
@@ -301,7 +479,7 @@ export function Director() {
     setAssessmentNotice(null);
     try {
       await coreApi.assessIntakeRequest(activeId);
-      setDetail(await coreApi.getAgenticRequest(activeId));
+      await reloadDirector();
       setAssessmentNotice(t("director.plan.assessmentSuccess"));
     } catch (cause) {
       setAssessmentError(errorText(cause, t("director.plan.assessmentError")));
@@ -322,8 +500,7 @@ export function Director() {
     setPriorityNotice(null);
     try {
       await coreApi.setAgenticPriority(activeId, priority);
-      const next = await coreApi.getAgenticRequest(activeId);
-      setDetail(next);
+      await reloadDirector();
       setPriorityNotice(t("director.priority.success"));
     } catch (cause) {
       setPriorityError(errorText(cause, t("director.priority.error")));
@@ -340,8 +517,8 @@ export function Director() {
     try {
       const result = await coreApi.planAgenticRequest(activeId);
       setPlan(result.graph);
+      await reloadDirector();
       setPlanNotice(t("director.plan.success"));
-      setDetail(await coreApi.getAgenticRequest(activeId));
     } catch (cause) {
       setPlanError(errorText(cause, t("director.plan.error")));
     } finally {
@@ -356,7 +533,7 @@ export function Director() {
     setPlanNotice(null);
     try {
       await coreApi.recordAgenticParticipants(activeId);
-      setDetail(await coreApi.getAgenticRequest(activeId));
+      await reloadDirector();
       setPlanNotice(t("director.participants.success"));
     } catch (cause) {
       setPlanError(errorText(cause, t("director.participants.error")));
@@ -372,7 +549,7 @@ export function Director() {
     setSpecNotice(null);
     try {
       const result = await coreApi.authorAgenticSpec(activeId);
-      setSpec(await coreApi.getAgenticSpec(activeId));
+      await reloadDirector();
       setSpecNotice(
         t("director.spec.success", { revision: result.spec.revision }),
       );
@@ -393,7 +570,7 @@ export function Director() {
         activeId,
         spec.draft.preview.specSha256,
       );
-      setSpec(await coreApi.getAgenticSpec(activeId));
+      await reloadDirector();
       setSpecNotice(
         t("director.spec.freezeSuccess", { revision: result.spec.revision }),
       );
@@ -422,8 +599,7 @@ export function Director() {
         decision,
         rationale: reviewRationale.trim(),
       });
-      setPlanning(await coreApi.getAgenticPlanning(activeId));
-      setDetail(await coreApi.getAgenticRequest(activeId));
+      await reloadDirector();
       setReviewRationale("");
       setPlanningNotice(t("director.planning.reviewSuccess"));
     } catch (cause) {
@@ -457,7 +633,7 @@ export function Director() {
         ownerDecision:
           status === "REFUTED" ? findingOwnerDecision.trim() : undefined,
       });
-      setDetail(await coreApi.getAgenticRequest(activeId));
+      await reloadDirector();
       setFindingId("");
       setFindingEvidence("");
       setFindingOwnerDecision("");
@@ -493,6 +669,23 @@ export function Director() {
   }
 
   const selectedEntry = portfolio?.find((entry) => entry.id === activeId);
+  const participantPlan = planning?.participantPlan ?? null;
+  const artifactsPrepared =
+    planning !== null && planning.missingArtifacts.length === 0;
+  const participantsPrepared =
+    participantPlan !== null &&
+    (!participantPlan.required || participantPlan.ready);
+
+  async function refreshDirector() {
+    setRefreshBusy(true);
+    startPollCount.current = 0;
+    setStartPollExhausted(false);
+    try {
+      await Promise.all([loadPortfolio(), reloadDirector()]);
+    } finally {
+      setRefreshBusy(false);
+    }
+  }
 
   return (
     <div className="director-workspace">
@@ -510,21 +703,9 @@ export function Director() {
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => {
-              void loadPortfolio();
-              if (activeId) {
-                setDetailLoading(true);
-                void coreApi
-                  .getAgenticRequest(activeId)
-                  .then(setDetail)
-                  .catch((cause) =>
-                    setDetailError(
-                      errorText(cause, t("director.error.detail")),
-                    ),
-                  )
-                  .finally(() => setDetailLoading(false));
-              }
-            }}
+            busy={refreshBusy}
+            disabled={refreshBusy}
+            onClick={() => void refreshDirector()}
           >
             {t("director.refresh")}
           </Button>
@@ -608,36 +789,31 @@ export function Director() {
           </Panel>
 
           <div className="director-detail">
-            {detailLoading && (
+            {detailLoading && !detail && (
               <LoadingState label={t("director.detail.loading")} />
             )}
-            {detailError && (
+            {detailError && !detail && (
               <ErrorState
                 message={detailError}
                 action={
                   <Button
                     size="sm"
-                    onClick={() => {
-                      if (activeId) {
-                        setDetailLoading(true);
-                        void coreApi
-                          .getAgenticRequest(activeId)
-                          .then(setDetail)
-                          .catch((cause) =>
-                            setDetailError(
-                              errorText(cause, t("director.error.detail")),
-                            ),
-                          )
-                          .finally(() => setDetailLoading(false));
-                      }
-                    }}
+                    onClick={() => void reloadDirector({ reset: true })}
                   >
                     {t("common.retry")}
                   </Button>
                 }
               />
             )}
-            {!detailLoading && !detailError && detail && (
+            {detailError && detail && (
+              <p className="ui-callout ui-callout--danger" role="alert">
+                {detailError}{" "}
+                <Button size="sm" onClick={() => void reloadDirector()}>
+                  {t("common.retry")}
+                </Button>
+              </p>
+            )}
+            {!detailLoading && detail && (
               <>
                 <Panel className="director-hero">
                   {triageNotice && (
@@ -1049,21 +1225,32 @@ export function Director() {
                     {planning?.review && (
                       <Badge
                         tone={
-                          planning.review.status === "PENDING"
+                          !reviewBinding.current
                             ? "attention"
-                            : planning.review.status === "REJECTED" ||
-                                planning.review.status === "CHANGES_REQUESTED"
-                              ? "danger"
-                              : "success"
+                            : planning.review.status === "PENDING"
+                              ? "attention"
+                              : planning.review.status === "REJECTED" ||
+                                  planning.review.status === "CHANGES_REQUESTED"
+                                ? "danger"
+                                : "success"
                         }
                       >
-                        {planning.review.status}
+                        {reviewBinding.current
+                          ? planning.review.status
+                          : t("director.planning.staleBadge")}
                       </Badge>
                     )}
                   </div>
                   {planningError && (
                     <p className="ui-callout ui-callout--danger" role="alert">
-                      {planningError}
+                      {planningError}{" "}
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => void reloadDirector()}
+                      >
+                        {t("common.retry")}
+                      </Button>
                     </p>
                   )}
                   {planningNotice && (
@@ -1071,6 +1258,134 @@ export function Director() {
                       {planningNotice}
                     </p>
                   )}
+                  <div className="director-preparation">
+                    <h3>{t("director.preparation.title")}</h3>
+                    {detail.request.mode === "AUTONOMOUS" &&
+                      preparationPhase === "PREPARING" && (
+                        <p className="muted">
+                          {t("director.preparation.autopilot")}
+                        </p>
+                      )}
+                    <dl className="director-facts director-facts--wide">
+                      <div>
+                        <dt>{t("director.preparation.artifacts")}</dt>
+                        <dd>
+                          {planning === null
+                            ? planningError
+                              ? t("director.preparation.unavailable")
+                              : t("director.preparation.loading")
+                            : artifactsPrepared
+                              ? t("director.preparation.prepared")
+                              : t("director.preparation.missing", {
+                                  values: planning.missingArtifacts.join(", "),
+                                })}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>{t("director.preparation.participants")}</dt>
+                        <dd>
+                          {planning === null
+                            ? planningError
+                              ? t("director.preparation.unavailable")
+                              : t("director.preparation.loading")
+                            : participantPlan === null
+                              ? t("director.preparation.unavailable")
+                              : !participantPlan.required
+                                ? t("director.preparation.notRequired")
+                                : participantsPrepared
+                                  ? t("director.preparation.prepared")
+                                  : participantPlan.present
+                                    ? t("director.preparation.incomplete")
+                                    : t("director.preparation.notRecorded")}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>{t("director.preparation.review")}</dt>
+                        <dd>
+                          {planning === null
+                            ? planningError
+                              ? t("director.preparation.unavailable")
+                              : t("director.preparation.loading")
+                            : planning.reviewApproved
+                              ? t("director.preparation.approved")
+                              : planning.review && !reviewBinding.current
+                                ? t("director.preparation.staleReview")
+                                : (reviewStatus ??
+                                  t("director.preparation.notRecorded"))}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>{t("director.preparation.environment")}</dt>
+                        <dd>
+                          {environment === null
+                            ? t("director.preparation.notRecorded")
+                            : `${environmentStatusLabel(environment.status, t)}${
+                                environment.blockers.length > 0
+                                  ? ` · ${t("director.preparation.blockers", {
+                                      count: environment.blockers.length,
+                                    })}`
+                                  : ""
+                              }`}
+                        </dd>
+                      </div>
+                    </dl>
+                    {planning && (
+                      <p
+                        className={
+                          preparationPhase === "READY"
+                            ? "notice"
+                            : preparationPhase === "PREPARING" ||
+                                preparationPhase === "EXECUTING" ||
+                                preparationPhase === "WAITING_OWNER" ||
+                                preparationPhase === "TERMINAL"
+                              ? "ui-callout ui-callout--info"
+                              : "ui-callout ui-callout--danger"
+                        }
+                        role={
+                          preparationPhase === "REVIEW_REJECTED" ||
+                          preparationPhase === "RECOVERABLE_FAILURE"
+                            ? "alert"
+                            : "status"
+                        }
+                      >
+                        {preparationPhaseMessage}
+                      </p>
+                    )}
+                    {operationInconsistent && (
+                      <p className="ui-callout ui-callout--danger" role="alert">
+                        {t("director.preparation.operationInconsistent")}
+                      </p>
+                    )}
+                    {startPollExhausted && (
+                      <p
+                        className="ui-callout ui-callout--attention"
+                        role="status"
+                      >
+                        {t("director.preparation.startNotObserved")}
+                      </p>
+                    )}
+                    {preparationStalled && (
+                      <p
+                        className="ui-callout ui-callout--attention"
+                        role="status"
+                      >
+                        {t("director.preparation.pollingPaused")}
+                      </p>
+                    )}
+                    {startReady && (
+                      <p className="muted">
+                        {t("director.preparation.startBoundary")}
+                      </p>
+                    )}
+                    {planning?.ready &&
+                      environment?.required === true &&
+                      environment.status !== "FROZEN" &&
+                      !environmentBlocked && (
+                        <p className="muted">
+                          {t("director.preparation.environmentBoundary")}
+                        </p>
+                      )}
+                  </div>
                   {!planning ? (
                     <p className="muted">{t("director.planning.empty")}</p>
                   ) : (
@@ -1158,17 +1473,21 @@ export function Director() {
                       {!planning.reviewApproved && (
                         <p
                           className={`ui-callout ${
-                            planning.reviewStatus === "PENDING"
-                              ? "ui-callout--info"
-                              : "ui-callout--attention"
+                            planning.review && !reviewBinding.current
+                              ? "ui-callout--attention"
+                              : reviewStatus === "PENDING"
+                                ? "ui-callout--info"
+                                : "ui-callout--attention"
                           }`}
                           role="status"
                         >
-                          {planning.reviewStatus === "PENDING"
-                            ? t("director.planning.reviewPending")
-                            : t("director.planning.reviewNotApproved", {
-                                status: planning.reviewStatus ?? "—",
-                              })}
+                          {planning.review && !reviewBinding.current
+                            ? t("director.planning.staleReview")
+                            : reviewStatus === "PENDING"
+                              ? t("director.planning.reviewPending")
+                              : t("director.planning.reviewNotApproved", {
+                                  status: reviewStatus ?? "—",
+                                })}
                         </p>
                       )}
                       {planning.review && (
@@ -1178,50 +1497,60 @@ export function Director() {
                           })}
                         </p>
                       )}
-                      {planning.review?.status === "PENDING" && (
-                        <div className="director-planning-review">
-                          <Textarea
-                            label={t("director.planning.reviewRationale")}
-                            value={reviewRationale}
-                            onChange={(event) =>
-                              setReviewRationale(event.target.value)
-                            }
-                            disabled={reviewBusy !== null}
-                          />
-                          <div className="director-priority">
-                            <Button
-                              size="sm"
-                              busy={reviewBusy === "APPROVE"}
-                              disabled={
-                                reviewBusy !== null || !planning.materialsReady
-                              }
-                              onClick={() => void reviewPlan("APPROVE")}
-                            >
-                              {t("director.planning.approve")}
-                            </Button>
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              busy={reviewBusy === "CHANGES_REQUESTED"}
-                              disabled={reviewBusy !== null}
-                              onClick={() =>
-                                void reviewPlan("CHANGES_REQUESTED")
-                              }
-                            >
-                              {t("director.planning.requestChanges")}
-                            </Button>
-                            <Button
-                              variant="danger"
-                              size="sm"
-                              busy={reviewBusy === "REJECT"}
-                              disabled={reviewBusy !== null}
-                              onClick={() => void reviewPlan("REJECT")}
-                            >
-                              {t("director.planning.reject")}
-                            </Button>
-                          </div>
-                        </div>
+                      {planning.review && !reviewBinding.current && (
+                        <p
+                          className="ui-callout ui-callout--attention"
+                          role="status"
+                        >
+                          {t("director.planning.staleReview")}
+                        </p>
                       )}
+                      {planning.review?.status === "PENDING" &&
+                        reviewBinding.current && (
+                          <div className="director-planning-review">
+                            <Textarea
+                              label={t("director.planning.reviewRationale")}
+                              value={reviewRationale}
+                              onChange={(event) =>
+                                setReviewRationale(event.target.value)
+                              }
+                              disabled={reviewBusy !== null}
+                            />
+                            <div className="director-priority">
+                              <Button
+                                size="sm"
+                                busy={reviewBusy === "APPROVE"}
+                                disabled={
+                                  reviewBusy !== null ||
+                                  !planning.materialsReady
+                                }
+                                onClick={() => void reviewPlan("APPROVE")}
+                              >
+                                {t("director.planning.approve")}
+                              </Button>
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                busy={reviewBusy === "CHANGES_REQUESTED"}
+                                disabled={reviewBusy !== null}
+                                onClick={() =>
+                                  void reviewPlan("CHANGES_REQUESTED")
+                                }
+                              >
+                                {t("director.planning.requestChanges")}
+                              </Button>
+                              <Button
+                                variant="danger"
+                                size="sm"
+                                busy={reviewBusy === "REJECT"}
+                                disabled={reviewBusy !== null}
+                                onClick={() => void reviewPlan("REJECT")}
+                              >
+                                {t("director.planning.reject")}
+                              </Button>
+                            </div>
+                          </div>
+                        )}
                       <dl className="director-facts director-facts--wide">
                         <div>
                           <dt>{t("director.planning.stack")}</dt>
@@ -1291,11 +1620,8 @@ export function Director() {
                       current ? { ...current, environment: next } : current,
                     )
                   }
-                  onPlanRecompiled={() => {
-                    void coreApi
-                      .getAgenticRequest(activeId)
-                      .then((next) => setDetail(next));
-                  }}
+                  onReviewed={() => void reloadDirector()}
+                  onPlanRecompiled={() => void reloadDirector()}
                 />
 
                 <Panel>

@@ -406,8 +406,13 @@ export const en = {
   "request.approval.planningDisabled":
     "Complete the plan review in the Director before approval.",
   "request.planning.incompleteTitle": "Plan review incomplete",
+  "request.planning.preparingTitle": "Plan preparation in progress",
   "request.planning.incompleteBody":
     "Core requires the planning artifacts and the participant plan before this frozen plan can start.",
+  "request.planning.incompleteBodyAutopilot":
+    "Core is preparing the planning artifacts and participant plan for this autonomous request. Owner authority is requested only if Core records a pending plan review.",
+  "request.planning.participantMissingAutopilot":
+    "The participant plan is not recorded yet. Core records it while preparing this autonomous request.",
   "request.planning.missingArtifacts": "Missing artifacts: {values}.",
   "request.planning.participantMissing":
     "The participant plan is not recorded. Compile the plan and record the participant plan in the Director.",
@@ -420,6 +425,19 @@ export const en = {
     "The latest plan review is {status}; the plan cannot start until an approved review binds the current revision.",
   "request.planning.openDirector":
     "Open Director plan review (Compile plan / Record participant plan)",
+  "request.planning.environment": "Environment plan: {status}.",
+  "request.planning.autopilotFreshness":
+    "Autopilot owns these deterministic steps in Core. This request refreshes automatically; the readiness above is Core's confirmed state and the exact blocker remains visible until Core resolves it.",
+  "request.planning.autopilotWaitingOwner":
+    "Core has finished the planning materials and is waiting for the owner plan decision. Approve the exact plan revision in Director; Core resumes the same request after approval. Automatic refresh is paused; this view re-reads on focus or Refresh.",
+  "request.planning.autopilotRejected":
+    "Core recorded a rejected or changes-requested plan review. A new exact owner decision or recompile is required before this request can continue. Automatic refresh is paused; use Refresh after the decision changes.",
+  "request.planning.reviewStale":
+    "The recorded plan review does not bind the current plan revision. Core does not treat it as a current owner decision; recompile or review the current plan in Director.",
+  "request.pollingPaused":
+    "Core is not answering this request. Automatic refresh paused after repeated failures; the last confirmed projection is preserved. Press Retry now to read it again.",
+  "request.approval.environmentRequired":
+    "Core requires a frozen environment plan before approval or start (ENVIRONMENT_PLAN_REQUIRED).",
   "request.planning.unavailable":
     "Core did not report plan-review readiness. Reload this request before approving.",
   "request.execution.title": "Execution",
@@ -3719,6 +3737,52 @@ export const en = {
     "A specification binds this plan. A material change requires a new request or spec revision.",
   "director.planning.title": "Plan review",
   "director.planning.empty": "No planning artifacts are recorded yet.",
+  "director.planning.staleBadge": "Stale review",
+  "director.planning.staleReview":
+    "The recorded plan review does not bind the current plan revision. Compile or recompile the current plan and review that exact revision; the previous decision is not current evidence.",
+  "director.preparation.title": "Preparation readiness",
+  "director.preparation.autopilot":
+    "Autopilot owns these deterministic steps in Core. This view refreshes while preparation is incomplete; readiness below is the last confirmed Core projection.",
+  "director.preparation.artifacts": "Plan artifacts",
+  "director.preparation.participants": "Participants",
+  "director.preparation.review": "Plan review",
+  "director.preparation.environment": "Environment plan",
+  "director.preparation.prepared": "Prepared",
+  "director.preparation.missing": "Missing: {values}",
+  "director.preparation.notRequired": "Not required",
+  "director.preparation.incomplete": "Incomplete",
+  "director.preparation.notRecorded": "Not recorded",
+  "director.preparation.approved": "Approved",
+  "director.preparation.loading": "Waiting for Core readiness",
+  "director.preparation.unavailable": "Unavailable",
+  "director.preparation.blockers": "{count} blocker(s)",
+  "director.preparation.planningReady":
+    "Core reports the planning materials and plan review as ready.",
+  "director.preparation.planningNotReady":
+    "Core does not yet report planning readiness. The missing or blocked facts above come from Core.",
+  "director.preparation.phase.preparing":
+    "Core is preparing the deterministic planning steps. Readiness below is the last confirmed Core projection.",
+  "director.preparation.phase.waitingOwner":
+    "Core is waiting for the owner plan decision. Polling pauses while the request waits; an approval recorded in another tab or device is observed when this view regains focus or you press Refresh.",
+  "director.preparation.phase.reviewRejected":
+    "The plan review rejected or requested changes. A new exact plan decision or recompile is required; Core does not auto-approve it.",
+  "director.preparation.phase.recoverableFailure":
+    "Core reported a blocked or failed preparation. Inspect the blocker below; this view does not retry a paid or externally effectful action automatically.",
+  "director.preparation.phase.executing":
+    "Core reports execution. Planning readiness is no longer the active step.",
+  "director.preparation.phase.terminal":
+    "Core reports a terminal request state. Preparation and polling are stopped; open the Campaign or request history for the recorded outcome.",
+  "director.preparation.operationInconsistent":
+    "Core reports an executing operation without an authoritative Campaign or EXECUTING request. This view treats it as an inconsistency, not execution; refresh after Core reconciles the operation.",
+  "director.preparation.startNotObserved":
+    "Core reported a queued or starting operation but no Campaign or EXECUTING request was observed. Automatic polling stopped; press Refresh to re-check. This observation does not cancel or stop the request, and starting telemetry is not Campaign authority.",
+  "director.preparation.pollingPaused":
+    "Core is not answering the readiness reads. Automatic refresh paused after repeated failures; the last confirmed projection is preserved. Press Refresh to retry.",
+  "director.preparation.startBoundary":
+    "Planning and environment readiness are not a Campaign start. Core performs the start transaction and Campaign state separately.",
+  "director.preparation.staleReview": "Stale for the current plan revision",
+  "director.preparation.environmentBoundary":
+    "Core requires a frozen environment plan before approval or start (ENVIRONMENT_PLAN_REQUIRED).",
   "director.planning.lane": "Planning lane",
   "director.planning.workflow": "Workflow state",
   "director.planning.revision": "Plan revision",

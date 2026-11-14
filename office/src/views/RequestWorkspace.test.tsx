@@ -1,16 +1,18 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type CampaignAuthorization,
   CoreApiError,
+  type EnvironmentStateView,
   type FrozenLeadPlanRecord,
   type IntakeRequestProjection,
   type LeadAssessmentView,
   type LeadPlanProposalView,
   type ParticipantPlanReadinessView,
   type PlanningReadinessView,
+  type PlanReviewRecord,
   type SpecCheck,
 } from "../coreApi";
 import { I18nProvider, type Locale } from "../i18n";
@@ -169,6 +171,8 @@ const readyPlanning: PlanningReadinessView = {
   lane: "FORMAL_SPEC",
   artifacts: [],
   review: null,
+  reviewCurrent: false,
+  reviewRevision: null,
   workflow: null,
   missingArtifacts: [],
   participantPlan: readyParticipantPlan,
@@ -176,6 +180,19 @@ const readyPlanning: PlanningReadinessView = {
   reviewApproved: true,
   materialsReady: true,
   ready: true,
+  startReady: true,
+};
+
+const pendingReview: PlanReviewRecord = {
+  id: "review-pending",
+  requestId: "request-1",
+  planRevision: 1,
+  planSha256: "a".repeat(64),
+  status: "PENDING",
+  principalId: "core:planning",
+  rationale: "Owner decision required.",
+  points: 0,
+  reviewedAt: "2026-11-08T12:00:00Z",
 };
 
 function makeProjection(
@@ -371,6 +388,46 @@ describe("RequestWorkspace", () => {
     expect(await screen.findByText(/Core recorded the approval/)).toBeDefined();
   });
 
+  it("does not enable approval or show start-ready while a required environment is not frozen", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        environment: {
+          required: true,
+          status: "CORE_VALIDATED",
+          plan: null,
+          planId: null,
+          planSha256: null,
+          planRevision: null,
+          conventions: null,
+          reviews: [],
+          leadApproval: null,
+          spec: null,
+          specSha256: null,
+          builder: { descriptor: null, receipt: null },
+          licenseInventory: null,
+          blockers: [],
+        },
+      }),
+    );
+    renderRequest();
+    const approve = await screen.findByRole("button", {
+      name: "Approve frozen plan and start",
+    });
+    expect(screen.getByText(/ENVIRONMENT_PLAN_REQUIRED/)).toBeDefined();
+    expect((approve as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByLabelText("Approval rationale") as HTMLTextAreaElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (
+        screen.getByRole("checkbox", {
+          name: /I reviewed the frozen scope/,
+        }) as HTMLInputElement
+      ).disabled,
+    ).toBe(true);
+  });
+
   it("shows an incomplete plan-review callout and blocks approval", async () => {
     mocks.getIntakeRequest.mockResolvedValue(
       makeProjection({
@@ -416,6 +473,151 @@ describe("RequestWorkspace", () => {
         .getByRole("link", { name: /Open Director plan review/ })
         .getAttribute("href"),
     ).toBe("/director?request=request-1");
+  });
+
+  it("shows autopilot preparation freshness without a routine Director handoff", async () => {
+    const missingEnvironment: EnvironmentStateView = {
+      required: true,
+      status: "MISSING",
+      plan: null,
+      planId: null,
+      planSha256: null,
+      planRevision: null,
+      conventions: null,
+      reviews: [],
+      leadApproval: null,
+      spec: null,
+      specSha256: null,
+      builder: { descriptor: null, receipt: null },
+      licenseInventory: null,
+      blockers: [],
+    };
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        mode: "AUTONOMOUS",
+        environment: missingEnvironment,
+        planning: {
+          ...readyPlanning,
+          missingArtifacts: ["PLAN", "WORKGRAPH"],
+          materialsReady: false,
+          ready: false,
+          participantPlan: {
+            ...readyParticipantPlan,
+            present: false,
+            ready: false,
+            reviewerCount: 0,
+            reviewerRoles: [],
+            missingRoles: readyParticipantPlan.requiredRoles,
+            missingAssignments: readyParticipantPlan.requiredRoles,
+          },
+        },
+      }),
+    );
+    renderRequest();
+
+    expect(
+      await screen.findByText("Plan preparation in progress"),
+    ).toBeDefined();
+    expect(screen.getByText("Environment plan: Missing.")).toBeDefined();
+    expect(
+      screen.getByText(/Autopilot owns these deterministic steps/),
+    ).toBeDefined();
+    expect(
+      screen.queryByRole("link", { name: /Open Director plan review/ }),
+    ).toBeNull();
+  });
+
+  it("hands a ready pending review to the owner without pretending it is still preparing", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        mode: "AUTONOMOUS",
+        planning: {
+          ...readyPlanning,
+          review: pendingReview,
+          reviewCurrent: true,
+          reviewRevision: 1,
+          reviewStatus: "PENDING",
+          reviewApproved: false,
+          ready: false,
+          startReady: false,
+        },
+      }),
+    );
+    renderRequest();
+
+    expect(await screen.findByText("Plan review incomplete")).toBeDefined();
+    expect(
+      screen.getByText(
+        /Core has finished the planning materials and is waiting for the owner plan decision/,
+      ),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("link", { name: /Open Director plan review/ }),
+    ).toBeDefined();
+    expect(
+      screen.queryByText(/Autopilot owns these deterministic steps/),
+    ).toBeNull();
+  });
+
+  it("resumes a stopped owner wait on focus", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        mode: "AUTONOMOUS",
+        planning: {
+          ...readyPlanning,
+          review: pendingReview,
+          reviewCurrent: true,
+          reviewRevision: 1,
+          reviewStatus: "PENDING",
+          reviewApproved: false,
+          ready: false,
+          startReady: false,
+        },
+      }),
+    );
+    renderRequest();
+    expect(await screen.findByText("Plan review incomplete")).toBeDefined();
+    mocks.getIntakeRequest.mockClear();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(mocks.getIntakeRequest).toHaveBeenCalledTimes(1),
+    );
+  });
+
+  it("keeps a pending review with missing materials in preparation", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        mode: "AUTONOMOUS",
+        planning: {
+          ...readyPlanning,
+          missingArtifacts: ["STACK"],
+          materialsReady: false,
+          reviewStatus: "PENDING",
+          reviewApproved: false,
+          ready: false,
+        },
+      }),
+    );
+    renderRequest();
+    expect(
+      await screen.findByText("Plan preparation in progress"),
+    ).toBeDefined();
+    expect(
+      screen.getByText(/Autopilot owns these deterministic steps/),
+    ).toBeDefined();
+    expect(
+      screen.queryByText(
+        /Core has finished the planning materials and is waiting for the owner plan decision/,
+      ),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: /Open Director plan review/ }),
+    ).toBeNull();
   });
 
   it("blocks approval when the participant plan does not match the frozen reviewer plan", async () => {
@@ -468,10 +670,14 @@ describe("RequestWorkspace", () => {
       makeProjection({
         planning: {
           ...readyPlanning,
+          review: pendingReview,
+          reviewCurrent: true,
+          reviewRevision: 1,
           ready: false,
           reviewStatus: "PENDING",
           reviewApproved: false,
           materialsReady: true,
+          startReady: false,
         },
       }),
     );
@@ -492,7 +698,7 @@ describe("RequestWorkspace", () => {
     ).toBe(true);
   });
 
-  it("explains an unavailable authorization and disables approval", async () => {
+  it("explains an unavailable authorization without using it as the approval gate", async () => {
     mocks.getIntakeRequest.mockResolvedValue(
       makeProjection({
         authorization: {
@@ -517,14 +723,24 @@ describe("RequestWorkspace", () => {
     expect(
       (screen.getByLabelText("Approval rationale") as HTMLTextAreaElement)
         .disabled,
-    ).toBe(true);
+    ).toBe(false);
     expect(
       (
         screen.getByRole("checkbox", {
           name: /I reviewed the frozen scope/,
         }) as HTMLInputElement
       ).disabled,
-    ).toBe(true);
+    ).toBe(false);
+    await userEvent.type(
+      screen.getByLabelText("Approval rationale"),
+      "Reviewed the frozen plan and budget.",
+    );
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: /I reviewed the frozen scope/,
+      }),
+    );
+    expect((approve as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("runs the assessment Core operation and refreshes the projection", async () => {

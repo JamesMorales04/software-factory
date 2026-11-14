@@ -761,6 +761,7 @@
    "routes": [
     "/",
     "/requests/:requestId",
+    "/director",
     "/campaigns/:campaignId"
    ],
    "core_api": [
@@ -768,12 +769,17 @@
     "POST /intake/requests",
     "GET /intake/requests/{id}",
     "POST /intake/requests/{id}/cancel",
+    "GET /agentic/requests/{id}",
+    "GET /agentic/requests/{id}/planning",
+    "POST /agentic/requests/{id}/plan-review",
     "GET /campaigns/{id}"
    ],
    "user_actions": [
     "select an R0 autopilot profile and see that the Lead will assess, freeze and start without per-request approval",
     "grant the exact autonomous policy and subscription confirmation once for a Project/profile revision",
     "send an objective in AUTONOMOUS mode and follow assessment, execution and Gate state",
+    "observe prepared/missing/blocked planning readiness while Core prepares the deterministic steps, without a routine preparation click",
+    "approve an exact pending owner plan review when Core reports that the materials are ready, then observe the same request resume",
     "cancel the request through the authoritative Core boundary"
    ],
    "states": [
@@ -782,6 +788,12 @@
     "error",
     "offline",
     "autopilot-policy-required",
+    "autopilot-preparing",
+    "owner-decision-pending",
+    "review-rejected",
+    "preparation-recoverable-failure",
+    "bounded-refresh-stopped",
+    "refresh-on-focus",
     "autopilot-running",
     "blocked",
     "failed",
@@ -792,12 +804,13 @@
    "acceptance": [
     "office/src/views/Home.test.tsx",
     "office/src/views/RequestWorkspace.test.tsx",
+    "office/src/views/Director.test.tsx",
     "native/src/db/intake.rs",
     "docs/evidence/autopilot-r0-2026-11-08/manifest.json",
     "office/e2e-browser/rust-journey.mjs",
     "docs/evidence/autopilot-r0-hardening-2026-11-08/manifest.json"
    ],
-   "notes": "A V2 execution profile whose auto_start policy includes R0 becomes an autopilot profile in Home. The owner grants the autonomous policy and subscription confirmation once; Core then creates the request-scoped subscription admission and runs assessment, plan freeze and StartAuthority::Autonomous. The runner is idempotent, resumes unfinished autonomous requests after restart and records a truthful Blocked state on failure. Manual profiles keep the existing assessment and exact plan approval flow. Autonomous repair, delivery and R1+ remain operator-only. The live run is implementer evidence, not independent acceptance; no SSE or live-stream claim."
+   "notes": "A V2 execution profile whose auto_start policy includes R0 becomes an autopilot profile in Home. The owner grants the autonomous policy and subscription confirmation once; Core then creates the request-scoped subscription admission and runs assessment, plan freeze and StartAuthority::Autonomous. The runner is idempotent, resumes unfinished autonomous requests after restart and records a truthful Blocked state on failure. Manual profiles keep the existing assessment and exact plan approval flow. Autonomous repair, delivery and R1+ remain operator-only. The live run is implementer evidence, not independent acceptance; no SSE or live-stream claim. Office now exposes Core-owned preparation readiness from the existing detail/planning environment projections: Director reloads detail, plan, spec and planning after compile/participant/review/recompile actions and Refresh; the unsupervised request refreshes only while Core reports preparation or a STARTING operation, stops on ready/owner-wait/rejected/blocked/failed/terminal, and resumes from focus/visibility or Refresh when an owner decision was recorded elsewhere. A PENDING review with missing materials remains preparation, not an owner wait. Core publishes `reviewCurrent`, `reviewRevision` and `startReady`; Office treats them as authoritative, waits for an owner only on a current PENDING review with ready materials, and polls a start-ready request only while the operation is QUEUED/STARTING with no Campaign or blocker. A stale review revision is shown as stale, not as a current decision. After the configured bounded start window or repeated read failures, automatic polling stops and requires Refresh. This slice is component-tested only: real Compose browser acceptance of the autonomous preparation and cross-tab resume journey remains NOT_TESTED."
   },
   "CAP-059": {
    "name": "Director and Operation Manager",
@@ -951,7 +964,13 @@
     "environment-recompile-bound",
     "environment-recompile-rationale-required",
     "plan-recompile",
-    "plan-recompile-bound"
+    "plan-recompile-bound",
+    "preparation-readiness",
+    "preparation-refresh",
+    "preparation-refresh-error-retained",
+    "preparation-waiting-owner",
+    "preparation-review-rejected",
+    "preparation-recoverable-failure"
    ],
    "acceptance": [
     "office/src/views/Director.test.tsx",
@@ -962,7 +981,7 @@
     "docs/evidence/live-vlog-acceptance-2026-11-10.md",
     "office/src/views/EnvironmentPanel.test.tsx"
    ],
-   "notes": "The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas. Core validates the graph and compiles the frozen identities deterministically. Planning is lane-routed and every lane requires a plan review; Core auto-approves only within the frozen policy and otherwise requires an authenticated owner decision. Plan approval fails closed until every lane artifact exists and the recorded participant plan binds exactly the frozen reviewer count, roles, assignments and WorkGraph. Planning artifacts are exact revisions bound to a SHA-256. Reviewer findings are durable dispositions and an OPEN finding blocks the Gate even when the reviewer receipt passed. A frozen specification is immutable; authoring creates a new revision. Wave 12 integration adds the supervisor/verifier/provider runtime-broker owner tokens, the six-reviewer fleet, the skill-pack refresh scheduler (source availability is separate from content review), the profile-gated OpenSpec validation job, and brokered dependency acquisition with an internal allowlisted egress proxy. Dependency acquisition is dispatched after provider writes and before offline checks; it is not visible as a new Office action. The 2026-11-10 vlog run exercised the ready planning path in real Chromium: one Planner WorkGraph, 13 FormalSpec design units, nine participant assignments, five required reviewer roles, one specification revision/freeze and an exact intake approval at 1440/768/390. The blocking plan-review states, finding resolve/refute controls, Skills refresh and trace surfaces were not exercised in this browser run and remain NOT_TESTED. Explicit operator recompile actions create a new immutable plan/environment revision only while execution is unbound; the prior rows are preserved, the rationale and prior status/revision/spec hash are audited, and the new environment requires Lead review again. The actions are hidden when a Campaign or authored specification is bound."
+   "notes": "The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas. Core validates the graph and compiles the frozen identities deterministically. Planning is lane-routed and every lane requires a plan review; Core auto-approves only within the frozen policy and otherwise requires an authenticated owner decision. Plan approval fails closed until every lane artifact exists and the recorded participant plan binds exactly the frozen reviewer count, roles, assignments and WorkGraph. Planning artifacts are exact revisions bound to a SHA-256. Reviewer findings are durable dispositions and an OPEN finding blocks the Gate even when the reviewer receipt passed. A frozen specification is immutable; authoring creates a new revision. Wave 12 integration adds the supervisor/verifier/provider runtime-broker owner tokens, the six-reviewer fleet, the skill-pack refresh scheduler (source availability is separate from content review), the profile-gated OpenSpec validation job, and brokered dependency acquisition with an internal allowlisted egress proxy. Dependency acquisition is dispatched after provider writes and before offline checks; it is not visible as a new Office action. The 2026-11-10 vlog run exercised the ready planning path in real Chromium: one Planner WorkGraph, 13 FormalSpec design units, nine participant assignments, five required reviewer roles, one specification revision/freeze and an exact intake approval at 1440/768/390. The blocking plan-review states, finding resolve/refute controls, Skills refresh and trace surfaces were not exercised in this browser run and remain NOT_TESTED. Explicit operator recompile actions create a new immutable plan/environment revision only while execution is unbound; the prior rows are preserved, the rationale and prior status/revision/spec hash are audited, and the new environment requires Lead review again. The actions are hidden when a Campaign or authored specification is bound. Director now reloads detail, plan, spec and planning as one generation after compile, participant record, recompile, review and Refresh, so a mutation cannot be displayed beside stale readiness. A failed read preserves the last confirmed projection and exposes a retry instead of fabricating a missing state. The preparation summary reads only existing Core fields and distinguishes PREPARING, WAITING_OWNER (current PENDING with materials ready), REVIEW_REJECTED, RECOVERABLE_FAILURE, EXECUTING, TERMINAL and READY; polling stops outside preparation, and an owner wait recorded in another tab/device is observed on focus, visibility or Refresh. Core's `reviewCurrent`/`reviewRevision`/`startReady` are authoritative; a stale review is not a current decision and a required environment that is not FROZEN cannot show start-ready. Windowed start polling covers QUEUED/STARTING while start-ready and stops on Campaign/EXECUTING/blocked/failed or after a bounded unobserved-start window. Component tests cover these states at candidate scope; real Compose browser acceptance remains NOT_TESTED."
   },
   "CAP-061": {
    "name": "Spec issue projection and kanban",

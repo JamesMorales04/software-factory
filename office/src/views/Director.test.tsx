@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   setAgenticPriority: vi.fn(),
   getAgenticPlan: vi.fn(),
   planAgenticRequest: vi.fn(),
+  recordAgenticParticipants: vi.fn(),
   getAgenticPlanning: vi.fn(),
   reviewAgenticPlan: vi.fn(),
   getAgenticSpec: vi.fn(),
@@ -224,6 +225,15 @@ const detail: AgenticRequestDetail = {
   semantic: null,
 };
 
+const preparationDetail: AgenticRequestDetail = {
+  ...detail,
+  request: { ...detail.request, state: "ASSESSING" },
+  lead: { state: "READY", campaignId: null, failureReason: null },
+  operation: detail.operation
+    ? { ...detail.operation, status: "STARTING" }
+    : null,
+};
+
 const graph = {
   units: [
     {
@@ -267,6 +277,62 @@ const emptySpec = {
   githubBound: false,
 };
 
+const readyPlanning = {
+  lane: "FORMAL_SPEC",
+  signals: {
+    objective: "Add an ICS export endpoint",
+    greenfield: false,
+    large: true,
+    missingDocs: false,
+    missingStack: false,
+    architectureUncertainty: false,
+    publicContract: true,
+    dataOrSchema: false,
+    securityBoundary: false,
+    crossModule: false,
+    changedFiles: 2,
+    expectedUnits: 2,
+    explicitRepair: false,
+  },
+  artifacts: [],
+  review: null,
+  reviewCurrent: false,
+  reviewRevision: null,
+  workflow: null,
+  missingArtifacts: [],
+  participantPlan: {
+    required: true,
+    present: true,
+    ready: true,
+    reviewerCount: 5,
+    requiredReviewerCount: 5,
+    reviewerRoles: [
+      "FUNCTIONAL",
+      "ARCHITECTURE",
+      "CODE_QUALITY",
+      "SECURITY",
+      "TESTING",
+    ],
+    requiredRoles: [
+      "FUNCTIONAL",
+      "ARCHITECTURE",
+      "CODE_QUALITY",
+      "SECURITY",
+      "TESTING",
+    ],
+    missingRoles: [],
+    unexpectedRoles: [],
+    missingAssignments: [],
+    graphStale: false,
+    problems: [],
+  },
+  reviewStatus: "AUTO_APPROVED",
+  reviewApproved: true,
+  materialsReady: true,
+  ready: true,
+  startReady: true,
+};
+
 function renderDirector() {
   return render(
     <I18nProvider initialLocale="en">
@@ -291,58 +357,11 @@ describe("Director", () => {
       worktreePolicy: "PER_ATTEMPT",
     });
     mocks.getAgenticPlan.mockReset().mockResolvedValue({ graph: planRecord });
-    mocks.getAgenticPlanning.mockReset().mockResolvedValue({
-      lane: "FORMAL_SPEC",
-      signals: {
-        objective: "Add an ICS export endpoint",
-        greenfield: false,
-        large: true,
-        missingDocs: false,
-        missingStack: false,
-        architectureUncertainty: false,
-        publicContract: true,
-        dataOrSchema: false,
-        securityBoundary: false,
-        crossModule: false,
-        changedFiles: 2,
-        expectedUnits: 2,
-        explicitRepair: false,
-      },
-      artifacts: [],
-      review: null,
-      workflow: null,
-      missingArtifacts: [],
-      participantPlan: {
-        required: true,
-        present: true,
-        ready: true,
-        reviewerCount: 5,
-        requiredReviewerCount: 5,
-        reviewerRoles: [
-          "FUNCTIONAL",
-          "ARCHITECTURE",
-          "CODE_QUALITY",
-          "SECURITY",
-          "TESTING",
-        ],
-        requiredRoles: [
-          "FUNCTIONAL",
-          "ARCHITECTURE",
-          "CODE_QUALITY",
-          "SECURITY",
-          "TESTING",
-        ],
-        missingRoles: [],
-        unexpectedRoles: [],
-        missingAssignments: [],
-        graphStale: false,
-        problems: [],
-      },
-      reviewStatus: "AUTO_APPROVED",
-      reviewApproved: true,
-      materialsReady: true,
-      ready: true,
+    mocks.recordAgenticParticipants.mockReset().mockResolvedValue({
+      plan: {},
+      compiled: {},
     });
+    mocks.getAgenticPlanning.mockReset().mockResolvedValue(readyPlanning);
     mocks.reviewAgenticPlan.mockReset();
     mocks.planAgenticRequest.mockReset().mockResolvedValue({
       graph: planRecord,
@@ -610,8 +629,11 @@ describe("Director", () => {
       },
       reviewStatus: "PENDING",
       reviewApproved: false,
+      reviewCurrent: true,
+      reviewRevision: 1,
       materialsReady: true,
       ready: false,
+      startReady: false,
     });
     mocks.reviewAgenticPlan.mockResolvedValue({
       review: {
@@ -709,8 +731,11 @@ describe("Director", () => {
       },
       reviewStatus: "PENDING",
       reviewApproved: false,
+      reviewCurrent: true,
+      reviewRevision: 1,
       materialsReady: false,
       ready: false,
+      startReady: false,
     });
     renderDirector();
     expect(
@@ -846,5 +871,470 @@ describe("Director", () => {
       await screen.findByText("The Director portfolio could not be loaded."),
     ).toBeDefined();
     expect(screen.getByRole("button", { name: "Retry" })).toBeDefined();
+  });
+
+  it("refreshes planning readiness after compiling the plan", async () => {
+    const artifactsMissing = {
+      ...readyPlanning,
+      missingArtifacts: ["PLAN", "WORKGRAPH"],
+      materialsReady: false,
+      ready: false,
+      startReady: false,
+    };
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValueOnce(artifactsMissing)
+      .mockResolvedValue(readyPlanning);
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
+    renderDirector();
+    expect(await screen.findByText("Missing: PLAN, WORKGRAPH")).toBeDefined();
+
+    await userEvent.click(screen.getByRole("button", { name: "Compile plan" }));
+
+    expect(
+      await screen.findByText(
+        "Core reports the planning materials and plan review as ready.",
+      ),
+    ).toBeDefined();
+    expect(screen.queryByText("Missing: PLAN, WORKGRAPH")).toBeNull();
+    expect(mocks.getAgenticPlanning).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes planning readiness after recording the participant plan", async () => {
+    const participantMissing = {
+      ...readyPlanning,
+      participantPlan: {
+        ...readyPlanning.participantPlan,
+        present: false,
+        ready: false,
+        reviewerCount: 0,
+        missingRoles: readyPlanning.participantPlan.requiredRoles,
+        missingAssignments: readyPlanning.participantPlan.requiredRoles,
+      },
+      materialsReady: false,
+      ready: false,
+      startReady: false,
+    };
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValueOnce(participantMissing)
+      .mockResolvedValue(readyPlanning);
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
+    renderDirector();
+    expect(
+      await screen.findByText("Participant plan incomplete"),
+    ).toBeDefined();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Record participant plan" }),
+    );
+
+    expect(
+      await screen.findByText(
+        "Core reports the planning materials and plan review as ready.",
+      ),
+    ).toBeDefined();
+    expect(screen.queryByText("Participant plan incomplete")).toBeNull();
+    expect(mocks.recordAgenticParticipants).toHaveBeenCalledWith("request-1");
+    expect(mocks.getAgenticPlanning).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes the selected planning projection from the Refresh control", async () => {
+    const artifactsMissing = {
+      ...readyPlanning,
+      missingArtifacts: ["PLAN"],
+      materialsReady: false,
+      ready: false,
+      startReady: false,
+    };
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValueOnce(artifactsMissing)
+      .mockResolvedValue(readyPlanning);
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
+    renderDirector();
+    expect(await screen.findByText("Missing: PLAN")).toBeDefined();
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(
+      await screen.findByText(
+        "Core reports the planning materials and plan review as ready.",
+      ),
+    ).toBeDefined();
+    expect(mocks.getAgenticPlanning).toHaveBeenCalledTimes(2);
+    expect(mocks.getAgenticSpec).toHaveBeenCalledTimes(2);
+    expect(mocks.getAgenticPlan).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the last confirmed planning projection on a refresh error and retries", async () => {
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValueOnce(readyPlanning)
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(readyPlanning);
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
+    renderDirector();
+    expect(
+      await screen.findByText(
+        "Core reports the planning materials and plan review as ready.",
+      ),
+    ).toBeDefined();
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(
+      await screen.findByText("Planning artifacts could not be loaded."),
+    ).toBeDefined();
+    expect(
+      screen.getByText(
+        "Core reports the planning materials and plan review as ready.",
+      ),
+    ).toBeDefined();
+
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Planning artifacts could not be loaded."),
+      ).toBeNull(),
+    );
+  });
+
+  it("waits for the owner decision and refreshes readiness after approval", async () => {
+    const pendingPlanning = {
+      ...readyPlanning,
+      review: {
+        id: "review-pending",
+        requestId: "request-1",
+        planRevision: 1,
+        planSha256: "a".repeat(64),
+        status: "PENDING",
+        principalId: "core:planning",
+        rationale: "Owner decision required.",
+        points: 0,
+        reviewedAt: "2026-11-08T12:00:00Z",
+      },
+      reviewStatus: "PENDING",
+      reviewApproved: false,
+      ready: false,
+      reviewCurrent: true,
+      reviewRevision: 1,
+      startReady: false,
+    };
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValueOnce(pendingPlanning)
+      .mockResolvedValue({
+        ...readyPlanning,
+        reviewStatus: "OWNER_APPROVED",
+      });
+    mocks.reviewAgenticPlan.mockResolvedValue({
+      review: {
+        ...pendingPlanning.review,
+        status: "OWNER_APPROVED",
+      },
+      workflow: null,
+    });
+    renderDirector();
+    expect(
+      await screen.findByText(/Core is waiting for the owner plan decision/),
+    ).toBeDefined();
+
+    await userEvent.type(
+      screen.getByLabelText("Review rationale"),
+      "Owner approved.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+
+    expect(mocks.reviewAgenticPlan).toHaveBeenCalledWith("request-1", {
+      planRevision: 1,
+      planSha256: "a".repeat(64),
+      decision: "APPROVE",
+      rationale: "Owner approved.",
+    });
+    expect(
+      await screen.findByText(
+        "Core reports the planning materials and plan review as ready.",
+      ),
+    ).toBeDefined();
+    expect(
+      screen.queryByText(/Core is waiting for the owner plan decision/),
+    ).toBeNull();
+  });
+
+  it("keeps a PENDING review with missing materials in preparation, not owner wait", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
+    mocks.getAgenticPlanning.mockResolvedValue({
+      ...readyPlanning,
+      missingArtifacts: ["STACK"],
+      materialsReady: false,
+      reviewStatus: "PENDING",
+      reviewApproved: false,
+      ready: false,
+      reviewCurrent: true,
+      reviewRevision: 1,
+      startReady: false,
+    });
+    renderDirector();
+    expect(
+      await screen.findByText(
+        /Core is preparing the deterministic planning steps/,
+      ),
+    ).toBeDefined();
+    expect(
+      screen.queryByText(/Core is waiting for the owner plan decision/),
+    ).toBeNull();
+  });
+
+  it("surfaces a rejected plan review without claiming autopilot preparation", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
+    mocks.getAgenticPlanning.mockResolvedValue({
+      ...readyPlanning,
+      reviewStatus: "REJECTED",
+      reviewApproved: false,
+      ready: false,
+      reviewCurrent: true,
+      reviewRevision: 1,
+      startReady: false,
+    });
+    renderDirector();
+    expect(
+      await screen.findByText(/The plan review rejected or requested changes/),
+    ).toBeDefined();
+    expect(
+      screen.queryByText(/Autopilot owns these deterministic steps/),
+    ).toBeNull();
+  });
+
+  it.each(["PENDING", "REJECTED", "OWNER_APPROVED"])(
+    "does not treat a stale %s review as the current decision",
+    async (status) => {
+      mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
+      mocks.getAgenticPlanning.mockResolvedValue({
+        ...readyPlanning,
+        review: {
+          id: "review-stale",
+          requestId: "request-1",
+          planRevision: 1,
+          planSha256: "a".repeat(64),
+          status,
+          principalId: "core:planning",
+          rationale: "Previous revision.",
+          points: 0,
+          reviewedAt: "2026-11-08T12:00:00Z",
+        },
+        reviewStatus: status,
+        reviewCurrent: false,
+        reviewRevision: 2,
+        reviewApproved: false,
+        ready: false,
+        startReady: false,
+      });
+      renderDirector();
+
+      expect(
+        await screen.findByText(
+          /Core is preparing the deterministic planning steps/,
+        ),
+      ).toBeDefined();
+      expect(
+        screen.queryByText(/Core is waiting for the owner plan decision/),
+      ).toBeNull();
+      expect(
+        screen.queryByText(/The plan review rejected or requested changes/),
+      ).toBeNull();
+      expect(
+        screen.queryByText(
+          "Core reports the planning materials and plan review as ready.",
+        ),
+      ).toBeNull();
+    },
+  );
+
+  it("does not show start-ready when a required environment is not frozen", async () => {
+    mocks.getAgenticRequest.mockResolvedValue({
+      ...preparationDetail,
+      environment: {
+        required: true,
+        status: "CORE_VALIDATED",
+        plan: null,
+        planId: null,
+        planSha256: null,
+        planRevision: null,
+        conventions: null,
+        reviews: [],
+        leadApproval: null,
+        spec: null,
+        specSha256: null,
+        builder: { descriptor: null, receipt: null },
+        licenseInventory: null,
+        blockers: [],
+      },
+    });
+    mocks.getAgenticPlanning.mockResolvedValue({
+      ...readyPlanning,
+      startReady: false,
+    });
+    renderDirector();
+
+    expect(await screen.findByText(/ENVIRONMENT_PLAN_REQUIRED/)).toBeDefined();
+    expect(
+      screen.queryByText(
+        "Core reports the planning materials and plan review as ready.",
+      ),
+    ).toBeNull();
+    expect(
+      screen.queryByText(/Core performs the start transaction/),
+    ).toBeNull();
+  });
+
+  it("refreshes a START_READY request while the operation is QUEUED", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getAgenticRequest.mockResolvedValue({
+        ...preparationDetail,
+        operation: preparationDetail.operation
+          ? { ...preparationDetail.operation, status: "QUEUED" }
+          : null,
+      });
+      mocks.getAgenticPlanning.mockResolvedValue(readyPlanning);
+      renderDirector();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      mocks.getAgenticPlanning.mockClear();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+
+      expect(mocks.getAgenticPlanning).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a blocked preparation as a recoverable failure, not autopilot progress", async () => {
+    mocks.getAgenticRequest.mockResolvedValue({
+      ...preparationDetail,
+      request: { ...preparationDetail.request, state: "BLOCKED" },
+      lead: {
+        state: "BLOCKED",
+        campaignId: null,
+        failureReason: "planning blocked",
+      },
+      operation: preparationDetail.operation
+        ? { ...preparationDetail.operation, status: "BLOCKED" }
+        : null,
+    });
+    mocks.getAgenticPlanning.mockResolvedValue({
+      ...readyPlanning,
+      missingArtifacts: ["PLAN"],
+      materialsReady: false,
+      reviewStatus: null,
+      reviewApproved: false,
+      ready: false,
+    });
+    renderDirector();
+    expect(
+      await screen.findByText(/Core reported a blocked or failed preparation/),
+    ).toBeDefined();
+    expect(
+      screen.queryByText(/Autopilot owns these deterministic steps/),
+    ).toBeNull();
+    expect(
+      screen.queryByText(/Core is waiting for the owner plan decision/),
+    ).toBeNull();
+  });
+
+  it("resumes a stopped owner wait on focus without duplicate requests", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
+    mocks.getAgenticPlanning.mockReset().mockResolvedValue({
+      ...readyPlanning,
+      reviewStatus: "PENDING",
+      reviewApproved: false,
+      ready: false,
+      reviewCurrent: true,
+      reviewRevision: 1,
+      startReady: false,
+    });
+    renderDirector();
+    expect(
+      await screen.findByText(/Core is waiting for the owner plan decision/),
+    ).toBeDefined();
+    mocks.getAgenticPlanning.mockClear();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(mocks.getAgenticPlanning).toHaveBeenCalledTimes(1),
+    );
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+    expect(mocks.getAgenticPlanning).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a late response overwrite a newly selected request", async () => {
+    const secondPortfolio = {
+      ...portfolio[0],
+      id: "request-2",
+      objective: "Second request",
+    };
+    const secondDetail: AgenticRequestDetail = {
+      ...detail,
+      request: {
+        ...detail.request,
+        id: "request-2",
+        objective: "Second request",
+      },
+      plan: detail.plan ? { ...detail.plan, id: "plan-2" } : null,
+      operation: detail.operation
+        ? {
+            ...detail.operation,
+            id: "operation-request-2",
+            requestId: "request-2",
+          }
+        : null,
+    };
+    let resolveFirst: ((value: AgenticRequestDetail) => void) | undefined;
+    mocks.listAgenticPortfolio.mockResolvedValue([
+      portfolio[0],
+      secondPortfolio,
+    ]);
+    mocks.getAgenticRequest.mockImplementation((id: string) =>
+      id === "request-1"
+        ? new Promise<AgenticRequestDetail>((resolve) => {
+            resolveFirst = resolve;
+          })
+        : Promise.resolve(secondDetail),
+    );
+    renderDirector();
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Second request/ }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Second request" }),
+    ).toBeDefined();
+
+    await act(async () => {
+      resolveFirst?.(detail);
+      await Promise.resolve();
+    });
+
+    expect(
+      screen.getByRole("heading", { name: "Second request" }),
+    ).toBeDefined();
+    expect(
+      screen.queryByRole("heading", {
+        name: "Add an ICS export endpoint",
+      }),
+    ).toBeNull();
   });
 });

@@ -2845,12 +2845,14 @@ capabilities:
     - native/src/lead_model.rs
     - office/src/views/Home.tsx
     - office/src/views/RequestWorkspace.tsx
+    - office/src/views/Director.tsx
     - office/src/coreApi.ts
     test:
     - native/src/db/intake.rs
     - native/src/bin/core.rs
     - office/src/views/Home.test.tsx
     - office/src/views/RequestWorkspace.test.tsx
+    - office/src/views/Director.test.tsx
     - .agents/skills/ui-change-acceptance/SKILL.md
   acceptance:
     deterministic: An autonomous policy grant persists autonomy only for an exact V2 profile revision whose auto_start policy includes R0; autonomous intake refuses a non-autonomous grant or missing subscription confirmation; Core derives the request-scoped subscription admission from the durable owner confirmation; the background runner is idempotent, resumes unfinished autonomous requests after restart and blocks truthfully on failure; R1+ and protected decisions remain operator-only.
@@ -2868,6 +2870,7 @@ capabilities:
   - Autonomous Gate repair remains disabled. A blocked, failed or repair-required result needs an operator action or a new authorized request against a Project that contains the rejected candidate; a request from the base commit is not an in-place repair.
   - The Issues auto-start is browser-side; this capability covers Core-owned unified-intake autopilot only.
   - The policy is limited to R0, one frozen profile revision, fixed paths/capabilities/route/operations/progress and the configured expiry. The current product supports autonomous execution only when the Lead and implementer both use the OpenCode Go subscription route; other profiles stay on manual review.
+  - Office preparation readiness, the bounded refresh, the owner-wait stop and the focus/visibility resume are component-tested only; real Compose browser acceptance and independent verification of this slice remain NOT_TESTED.
   - TRUSTED_LOCAL is broad local access; no isolation or security certification is claimed.
   blockers:
   - Independent live acceptance, autonomous repair and the independent security review remain open.
@@ -3033,6 +3036,7 @@ capabilities:
   - The OpenSpec projection uses canonical ADDED Requirements/Requirement/Scenario headings and numeric task IDs; the pinned CLI 1.16.1 validator runs as a profile-gated Compose job against a Core-rendered fixture; Core exposes an idempotent archive transition for the latest validated revision with stored-artifact digest and projection drift checks; a real Core-backed run against a projection produced by the model planning pipeline remains NOT_TESTED. See docs/implementation/wp7-openspec-compose-evidence.md.
   - Dependency acquisition is wired through the runtime broker with an internal deny-by-default network, an allowlisted CONNECT proxy, image-ID pinning, operation grants, a per-workspace lock and a Core authorization guard. Dependency setup is optional at broker startup; a bundle, image, network or proxy failure logs one bounded warning, disables only the acquisition endpoint, reports `dependencyAcquisition` in `/health`, and fails disabled requests with a typed 503; the broker still serves health, volumes, checks and provider sessions. The broker binds the configured gateway when present and otherwise uses a dependency-subnet-scoped wildcard listener so rootless bridge creation on first attachment cannot crash startup. FIXTURE execution with a dependency plan is rejected by Core authorization and again by the Worker before allocation/candidate submission. Deterministic HTTP and opt-in real-Podman/live-registry tests pass, but a real Compose acquisition and independent acceptance remain NOT_TESTED. Advisory evidence is a package inventory with status NOT_CHECKED; a pinned advisory database, cargo audit/cargo deny verdicts and license-policy enforcement are NOT_IMPLEMENTED. See docs/implementation/wp4-dependency-broker-evidence.md and docs/operations/compose-deployment.md.
   - A real-model browser self-test planned and froze revisions 1 and 2, and the full E2E campaign consumed the frozen plan, but independent live certification is pending.
+  - Director reload coherence, failure retention and the derived preparation states are component-tested only; real Compose browser acceptance remains NOT_TESTED for this slice.
   - Wave 12 integration evidence and exact command results are recorded in docs/implementation/wave12-integration-evidence.md; it is implementer evidence, not acceptance.
   - WP12 records a reproducible deterministic chaos/cross-workstream matrix and repeat-run acceptance script in docs/implementation/wp12-chaos-matrix.md and scripts/quality-wave12-acceptance.sh. The final integrated run passed 20/20. It is implementer evidence only; live provider, real-Podman dependency, real Compose Campaign/browser and independent acceptance paths remain NOT_TESTED.
   - The 2026-11-10 vlog evidence in docs/evidence/live-vlog-acceptance-2026-11-10.md is implementer/orchestrator evidence; independent acceptance remains pending.

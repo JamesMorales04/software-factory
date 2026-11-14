@@ -20,10 +20,11 @@ import {
 } from "../coreApi";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
-import { EnvironmentPanel } from "./EnvironmentPanel";
+import { EnvironmentPanel, environmentStatusLabel } from "./EnvironmentPanel";
 import { RequestAssessment } from "./RequestAssessment";
 import { RequestPlan } from "./RequestPlan";
 import {
+  currentPlanningReview,
   IntakeModeBadge,
   IntakeStateBadge,
   isTerminalIntakeState,
@@ -61,6 +62,7 @@ export function RequestWorkspace() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [pollStalled, setPollStalled] = useState(false);
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -79,6 +81,8 @@ export function RequestWorkspace() {
   const [cancelReason, setCancelReason] = useState("");
   const [authoredSpecFrozen, setAuthoredSpecFrozen] = useState(false);
   const messageKey = useRef(newIdempotencyKey());
+  const pollFailureCount = useRef(0);
+  const pollResumeAt = useRef(0);
 
   const load = useCallback(
     async (background = false) => {
@@ -95,10 +99,14 @@ export function RequestWorkspace() {
         setLoadError(null);
         setNotFound(false);
         setConnectionError(null);
+        pollFailureCount.current = 0;
+        setPollStalled(false);
         setLastLoadedAt(new Date().toISOString());
       } catch (cause) {
         const message = errorMessage(cause, t("request.load.error"));
         if (background) {
+          pollFailureCount.current += 1;
+          if (pollFailureCount.current >= 6) setPollStalled(true);
           setConnectionError(message);
         } else {
           setLoadError(message);
@@ -138,11 +146,62 @@ export function RequestWorkspace() {
     setMessageBody("");
     setCancelOpen(false);
     setCancelReason("");
+    pollFailureCount.current = 0;
+    setPollStalled(false);
     messageKey.current = newIdempotencyKey();
     void load(false);
-    const timer = setInterval(() => void load(true), 5000);
-    return () => clearInterval(timer);
   }, [load]);
+
+  const pollPlanning = data?.planning ?? null;
+  const pollReviewBinding = currentPlanningReview(pollPlanning);
+  const pollReviewStatus = pollReviewBinding.status;
+  const pollWaitingForOwner =
+    pollReviewStatus === "PENDING" && pollPlanning?.materialsReady === true;
+  const pollReviewRejected =
+    pollReviewStatus === "REJECTED" || pollReviewStatus === "CHANGES_REQUESTED";
+  const pollStoppedByState =
+    data !== null &&
+    (isTerminalIntakeState(data.state) ||
+      data.state === "BLOCKED" ||
+      data.state === "FAILED");
+  const pollingActive =
+    data !== null &&
+    !pollStoppedByState &&
+    !pollWaitingForOwner &&
+    !pollReviewRejected &&
+    !pollStalled;
+  const pollResumable = data !== null && !isTerminalIntakeState(data.state);
+
+  useEffect(() => {
+    if (!pollingActive) return;
+    const timer = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      void load(true);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [pollingActive, load]);
+
+  // A stopped read must observe an owner decision or recovery recorded in
+  // another tab/device. Focus/visibility reuse the existing read; a short
+  // dedupe window prevents duplicate requests.
+  useEffect(() => {
+    if (!pollResumable || pollingActive) return;
+    const resume = () => {
+      const now = Date.now();
+      if (now - pollResumeAt.current < 1000) return;
+      pollResumeAt.current = now;
+      void load(true);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") resume();
+    };
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", resume);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [pollResumable, pollingActive, load]);
 
   async function runAction(
     kind: string,
@@ -252,7 +311,16 @@ export function RequestWorkspace() {
   const participantPlanIncomplete =
     participantPlan?.required === true && participantPlan.ready !== true;
   const planningIncomplete =
-    data.state === "AWAITING_APPROVAL" && data.plan !== null && !planningReady;
+    !terminal && !planningReady && (isAutopilot || data.plan !== null);
+  const reviewBinding = currentPlanningReview(planning);
+  const planningReviewStatus = reviewBinding.status;
+  const planningWaitingForOwner =
+    planningReviewStatus === "PENDING" && planning?.materialsReady === true;
+  const planningRejected =
+    planningReviewStatus === "REJECTED" ||
+    planningReviewStatus === "CHANGES_REQUESTED";
+  const environmentReady =
+    !data.environment?.required || data.environment.status === "FROZEN";
   const planningProblemValues = participantPlan
     ? [
         ...participantPlan.missingRoles,
@@ -267,7 +335,7 @@ export function RequestWorkspace() {
     offline ||
     !approvalReady ||
     !planningReady ||
-    !authorizationAvailable ||
+    !environmentReady ||
     rationale.trim() === "" ||
     !approvedScope;
 
@@ -469,6 +537,18 @@ export function RequestWorkspace() {
         </div>
       )}
 
+      {pollStalled && (
+        <div
+          className="ui-callout ui-callout--attention request-callout"
+          role="status"
+        >
+          <p>{t("request.pollingPaused")}</p>
+          <Button size="sm" onClick={() => void load(true)}>
+            {t("request.retryNow")}
+          </Button>
+        </div>
+      )}
+
       {data.stateDetail && (
         <p
           className={`ui-callout ${
@@ -515,8 +595,14 @@ export function RequestWorkspace() {
           role="status"
         >
           <p>
-            <strong>{t("request.planning.incompleteTitle")}</strong>{" "}
-            {t("request.planning.incompleteBody")}
+            <strong>
+              {isAutopilot && !planningWaitingForOwner && !planningRejected
+                ? t("request.planning.preparingTitle")
+                : t("request.planning.incompleteTitle")}
+            </strong>{" "}
+            {isAutopilot
+              ? t("request.planning.incompleteBodyAutopilot")
+              : t("request.planning.incompleteBody")}
           </p>
           {planning === null ? (
             <p>{t("request.planning.unavailable")}</p>
@@ -538,16 +624,27 @@ export function RequestWorkspace() {
                             ? planningProblemValues.join(", ")
                             : t("request.planning.participantAssignments"),
                       })
-                    : t("request.planning.participantMissing")}
+                    : isAutopilot
+                      ? t("request.planning.participantMissingAutopilot")
+                      : t("request.planning.participantMissing")}
                 </p>
               )}
               {!planning.reviewApproved && (
                 <p>
-                  {planning.reviewStatus === "PENDING"
-                    ? t("request.planning.reviewPending")
-                    : t("request.planning.reviewNotApproved", {
-                        status: planning.reviewStatus ?? "—",
-                      })}
+                  {planning.review && !reviewBinding.current
+                    ? t("request.planning.reviewStale")
+                    : planningReviewStatus === "PENDING"
+                      ? t("request.planning.reviewPending")
+                      : t("request.planning.reviewNotApproved", {
+                          status: planningReviewStatus ?? "—",
+                        })}
+                </p>
+              )}
+              {data.environment && (
+                <p>
+                  {t("request.planning.environment", {
+                    status: environmentStatusLabel(data.environment.status, t),
+                  })}
                 </p>
               )}
               {participantPlan?.present &&
@@ -561,12 +658,44 @@ export function RequestWorkspace() {
                 )}
             </>
           )}
-          <Link
-            className={buttonClass("secondary")}
-            to={`/director?request=${encodeURIComponent(data.id)}`}
-          >
-            {t("request.planning.openDirector")}
-          </Link>
+          {planningWaitingForOwner ? (
+            <>
+              {isAutopilot && (
+                <p className="muted">
+                  {t("request.planning.autopilotWaitingOwner")}
+                </p>
+              )}
+              <Link
+                className={buttonClass("secondary")}
+                to={`/director?request=${encodeURIComponent(data.id)}`}
+              >
+                {t("request.planning.openDirector")}
+              </Link>
+            </>
+          ) : planningRejected ? (
+            <>
+              {isAutopilot && (
+                <p className="muted">
+                  {t("request.planning.autopilotRejected")}
+                </p>
+              )}
+              <Link
+                className={buttonClass("secondary")}
+                to={`/director?request=${encodeURIComponent(data.id)}`}
+              >
+                {t("request.planning.openDirector")}
+              </Link>
+            </>
+          ) : isAutopilot ? (
+            <p className="muted">{t("request.planning.autopilotFreshness")}</p>
+          ) : (
+            <Link
+              className={buttonClass("secondary")}
+              to={`/director?request=${encodeURIComponent(data.id)}`}
+            >
+              {t("request.planning.openDirector")}
+            </Link>
+          )}
         </div>
       )}
 
@@ -732,12 +861,17 @@ export function RequestWorkspace() {
                               t("request.approval.reasonFallback")}
                           </p>
                         )}
+                        {!environmentReady && (
+                          <p className="ui-callout ui-callout--attention">
+                            {t("request.approval.environmentRequired")}
+                          </p>
+                        )}
                         <Textarea
                           label={t("request.approval.rationale")}
                           value={rationale}
                           onChange={(event) => setRationale(event.target.value)}
                           disabled={
-                            !authorizationAvailable || offline || !planningReady
+                            offline || !planningReady || !environmentReady
                           }
                           help={t("request.approval.rationaleHelp")}
                           required
@@ -749,7 +883,7 @@ export function RequestWorkspace() {
                             setApprovedScope(event.target.checked)
                           }
                           disabled={
-                            !authorizationAvailable || offline || !planningReady
+                            offline || !planningReady || !environmentReady
                           }
                         />
                         <div className="request-form-actions">

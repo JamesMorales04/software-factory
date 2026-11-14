@@ -2188,6 +2188,8 @@ export interface PlanningReadinessView {
   lane: PlanningLane;
   artifacts: PlanningArtifactRecord[];
   review: PlanReviewRecord | null;
+  reviewCurrent: boolean;
+  reviewRevision: number | null;
   workflow: PlanningWorkflowRun | null;
   missingArtifacts: string[];
   participantPlan: ParticipantPlanReadinessView;
@@ -2195,6 +2197,7 @@ export interface PlanningReadinessView {
   reviewApproved: boolean;
   materialsReady: boolean;
   ready: boolean;
+  startReady: boolean;
 }
 
 export interface IntakeRequestProjection extends IntakeRequestSummary {
@@ -2737,6 +2740,8 @@ export interface AgenticPlanningProjection {
   };
   artifacts: PlanningArtifactRecord[];
   review: PlanReviewRecord | null;
+  reviewCurrent: boolean;
+  reviewRevision: number | null;
   workflow: PlanningWorkflowRun | null;
   missingArtifacts: string[];
   participantPlan: ParticipantPlanReadinessView;
@@ -2744,6 +2749,7 @@ export interface AgenticPlanningProjection {
   reviewApproved: boolean;
   materialsReady: boolean;
   ready: boolean;
+  startReady: boolean;
 }
 
 export interface AgenticRequestDetail {
