@@ -11717,6 +11717,7 @@ async fn call_agentic_lead_model(
         })?;
     ensure_lead_model_output_bound(
         app,
+        &record.id,
         gateway.provider(),
         gateway.model(),
         AGENTIC_LEAD_TRUNCATION_RETRY_CEILING,
@@ -11759,6 +11760,7 @@ async fn call_agentic_lead_model(
 /// rejection after assessment.
 async fn ensure_lead_model_output_bound(
     app: &App,
+    intake_request_id: &str,
     provider: &str,
     model: &str,
     required: u64,
@@ -11769,7 +11771,15 @@ async fn ensure_lead_model_output_bound(
         .await
         .map_err(api_error)?;
     let mut available = settings.max_output_tokens;
-    if let Ok(quote) = app.db.inference_pricing_quote(provider, model).await {
+    // A subscription-funded call does not consume a monetary quote. Only an
+    // envelope-bound call is constrained by the latest frozen quote.
+    let envelope_bound = app
+        .db
+        .inference_envelope_for_request(intake_request_id)
+        .await
+        .map_err(api_error)?
+        .is_some();
+    if envelope_bound && let Ok(quote) = app.db.inference_pricing_quote(provider, model).await {
         available = available.min(quote.output_tokens);
     }
     if available < required {
