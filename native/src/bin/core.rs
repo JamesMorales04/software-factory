@@ -14638,6 +14638,26 @@ async fn try_freeze_approved_plan(
     let Some(run) = app.db.workflow_run_for_request(request_id).await? else {
         return Ok(());
     };
+    if run.state == WorkflowState::Replanning
+        && owner_approval_reverses_a_rejection(app, &review).await
+    {
+        // A previously rejected/changes-requested revision was approved later
+        // by the owner. Record the audited reversal before freezing so a
+        // recoverable environment failure in the endpoint cannot leave an
+        // effective approval projected as a rejected plan. A gate-driven
+        // replan without that exact review history is not revived here.
+        app.db
+            .transition_workflow(
+                &run.id,
+                WorkflowState::Replanning,
+                WorkflowState::PlanReview,
+                "authenticated owner approval reverses an earlier plan review decision",
+            )
+            .await?;
+    }
+    let Some(run) = app.db.workflow_run_for_request(request_id).await? else {
+        return Ok(());
+    };
     if run.state == WorkflowState::PlanReview {
         app.db
             .transition_workflow(
@@ -14649,6 +14669,32 @@ async fn try_freeze_approved_plan(
             .await?;
     }
     Ok(())
+}
+
+/// True when the given OWNER_APPROVED review is a new decision inserted directly
+/// after a REJECTED/CHANGES_REQUESTED review of the same PLAN revision and hash.
+/// That exact history is the audited owner reversal; an unrelated old approval
+/// or a gate-driven replan does not match it.
+async fn owner_approval_reverses_a_rejection(
+    app: &App,
+    review: &factory_native::db::PlanReviewRecord,
+) -> bool {
+    let Ok(reviews) = app.db.plan_reviews(&review.request_id).await else {
+        return false;
+    };
+    let Some(index) = reviews
+        .iter()
+        .position(|candidate| candidate.id == review.id)
+    else {
+        return false;
+    };
+    index > 0
+        && reviews[index - 1].plan_revision == review.plan_revision
+        && reviews[index - 1].plan_sha256 == review.plan_sha256
+        && matches!(
+            reviews[index - 1].status.as_str(),
+            "REJECTED" | "CHANGES_REQUESTED"
+        )
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -15554,7 +15600,12 @@ async fn review_agentic_plan(
     let (status, target) = match input.decision.as_str() {
         "APPROVE" => ("OWNER_APPROVED", Some(WorkflowState::Frozen)),
         "CHANGES_REQUESTED" => ("CHANGES_REQUESTED", Some(WorkflowState::Replanning)),
-        "REJECT" => ("REJECTED", Some(WorkflowState::Blocked)),
+        // A rejected plan is not approved; the workflow records that a new plan
+        // revision is required. It stays non-terminal so a later authenticated
+        // owner approval of the still-current revision can reverse the decision
+        // through the audited Replanning → PlanReview transition below. The
+        // review status itself remains REJECTED and the runner still stops.
+        "REJECT" => ("REJECTED", Some(WorkflowState::Replanning)),
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -15587,6 +15638,7 @@ async fn review_agentic_plan(
         }
     }
     let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    let previous_review = app.db.latest_plan_review(&record.id).await.ok();
     let review = match app
         .db
         .save_plan_review(factory_native::db::NewPlanReview {
@@ -15601,10 +15653,46 @@ async fn review_agentic_plan(
         .await
     {
         Ok(review) => review,
+        Err(Error::Withdrawn) => {
+            return agentic_conflict(
+                "INTAKE_WITHDRAWN",
+                "the request was withdrawn; the plan review is not recorded",
+            );
+        }
         Err(error) => return api_error(error),
     };
     let mut environment_blocked = false;
     if status == "OWNER_APPROVED" {
+        // A new owner approval after a REJECT/CHANGES_REQUESTED decision is an
+        // audited reversal. Move the non-terminal workflow back to plan review
+        // before the environment phase, so a recoverable environment failure
+        // cannot leave an effective approval projected as a rejected plan.
+        // Only the exact rejection→approval history of the same revision/hash
+        // qualifies; a workflow BLOCKED for another reason is never revived.
+        if previous_review
+            .as_ref()
+            .is_none_or(|previous| previous.id != review.id)
+            && owner_approval_reverses_a_rejection(&app, &review).await
+        {
+            match app.db.workflow_run_for_request(&record.id).await {
+                Ok(Some(run)) if run.state == WorkflowState::Replanning => {
+                    if let Err(error) = app
+                        .db
+                        .transition_workflow(
+                            &run.id,
+                            WorkflowState::Replanning,
+                            WorkflowState::PlanReview,
+                            "authenticated owner approval reverses an earlier plan review decision",
+                        )
+                        .await
+                    {
+                        return api_error(error);
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => return api_error(error),
+            }
+        }
         // An Owner plan review is not a Lead environment decision. It may only
         // trigger the frozen Lead model; the model's own decision is recorded.
         // Bind the latest environment plan revision/hash, never the PLAN
@@ -18730,7 +18818,12 @@ enum AutopilotStop {
 fn autopilot_stop(error: &Error) -> AutopilotStop {
     match error {
         Error::IntakeConflict { code, .. } => match *code {
-            "PLAN_REVIEW_REQUIRED" => AutopilotStop::WaitOwner,
+            // A rejected or changes-requested plan is an owner decision, not a
+            // terminal system failure. The runner never auto-approves or
+            // replans it; it waits for a new authenticated owner decision,
+            // withdrawal or a new request. Keeping the Lead READY lets a later
+            // reversal approval become effective without inventing authority.
+            "PLAN_REVIEW_REQUIRED" | "PLAN_REVIEW_REJECTED" => AutopilotStop::WaitOwner,
             "AUTOPILOT_ASSESSMENT_IN_PROGRESS"
             | "ASSESSMENT_OUTCOME_UNKNOWN"
             | "ASSESSMENT_TRANSIENT"
@@ -29071,6 +29164,244 @@ mod tests {
             assert_eq!(updated["maxInputTokens"], 42_000, "{updated}");
             assert_eq!(updated["maxOutputTokens"], 40_000, "{updated}");
 
+            // A partial PUT is observable through a fresh GET, not only through
+            // its own response body.
+            let (status, listed_after_partial) =
+                send(&fixture.router, "GET", "/settings/providers", None).await;
+            assert_eq!(status, StatusCode::OK, "{listed_after_partial}");
+            let provider = listed_after_partial["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|provider| provider["provider"] == "opencode")
+                .unwrap();
+            assert_eq!(provider["maxInputTokens"], 42_000, "{provider}");
+            assert_eq!(provider["maxOutputTokens"], 40_000, "{provider}");
+
+            // Exact round trip of the protocol retry ceiling. 32768 is the
+            // stored value under test here, not a universal policy for every
+            // provider or every operation.
+            let (status, exact) = send(
+                &fixture.router,
+                "PUT",
+                "/settings/providers/opencode",
+                Some(json!({
+                    "model": "test-model",
+                    "baseUrl": "https://provider.example/v1",
+                    "enabled": true,
+                    "isDefault": false,
+                    "maxInputTokens": 32_768,
+                    "maxOutputTokens": 32_768,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{exact}");
+            assert_eq!(exact["maxInputTokens"], 32_768, "{exact}");
+            assert_eq!(exact["maxOutputTokens"], 32_768, "{exact}");
+            let (status, listed_exact) =
+                send(&fixture.router, "GET", "/settings/providers", None).await;
+            assert_eq!(status, StatusCode::OK, "{listed_exact}");
+            let provider = listed_exact["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|provider| provider["provider"] == "opencode")
+                .unwrap();
+            assert_eq!(provider["maxInputTokens"], 32_768, "{provider}");
+            assert_eq!(provider["maxOutputTokens"], 32_768, "{provider}");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn a_withdrawn_request_cannot_record_a_late_plan_review() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-review-withdrawn").await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            prepare_autonomous_request(&app, &request)
+                .await
+                .expect("initial preparation completes");
+            let plan = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            let reviews_before = fixture.app.db.plan_reviews(&intake_id).await.unwrap();
+            let (status, withdrawal) = send(
+                &fixture.router,
+                "POST",
+                &format!("/lead/requests/{}/withdraw", request.lead_request_id),
+                Some(json!({"reason": "The owner stops this request."})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{withdrawal}");
+
+            let (status, late) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan-review"),
+                Some(json!({
+                    "planRevision": plan.revision,
+                    "planSha256": plan.content_sha256,
+                    "decision": "APPROVE",
+                    "rationale": "A late owner approval after withdrawal.",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{late}");
+            assert_eq!(late["code"], "INTAKE_WITHDRAWN", "{late}");
+            let reviews_after = fixture.app.db.plan_reviews(&intake_id).await.unwrap();
+            assert_eq!(reviews_after.len(), reviews_before.len());
+            assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn an_owner_reversal_restores_the_workflow_and_still_gates_the_start() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-review-workflow-reversal").await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            prepare_autonomous_request(&app, &request)
+                .await
+                .expect("initial preparation completes");
+            let plan = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            // Reproduce an owner-required plan at PLAN_REVIEW. The DIRECT
+            // fixture auto-freezes its deterministic review, so set the
+            // projection and record the pending decision expected at this lane.
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query("UPDATE workflow_runs SET state='PLAN_REVIEW' WHERE request_id=?1")
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+            fixture
+                .app
+                .db
+                .save_plan_review(factory_native::db::NewPlanReview {
+                    request_id: &intake_id,
+                    plan_revision: plan.revision,
+                    plan_sha256: &plan.content_sha256,
+                    status: "PENDING",
+                    principal_id: "core:planning",
+                    rationale: "The owner must decide this plan.",
+                    points: 0,
+                })
+                .await
+                .unwrap();
+
+            let (status, rejected) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan-review"),
+                Some(json!({
+                    "planRevision": plan.revision,
+                    "planSha256": plan.content_sha256,
+                    "decision": "REJECT",
+                    "rationale": "The owner rejects this plan.",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{rejected}");
+            assert_eq!(rejected["review"]["status"], "REJECTED", "{rejected}");
+            assert_eq!(rejected["workflow"]["state"], "REPLANNING", "{rejected}");
+            let error = match prepare_autonomous_plan(&app, &request).await {
+                Ok(_) => panic!("a rejected plan must not prepare for start"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(
+                    error,
+                    Error::IntakeConflict {
+                        code: "PLAN_REVIEW_REJECTED",
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+            assert_eq!(autopilot_stop(&error), AutopilotStop::WaitOwner);
+            record_autopilot_stop(&app, &intake_id, &error).await;
+            let lead = fixture
+                .app
+                .db
+                .lead_request(&request.lead_request_id)
+                .await
+                .unwrap();
+            assert_eq!(lead.state, factory_native::lead::LeadRequestState::Ready);
+            let denied = autonomous_start_intake(&app, &intake_id).await;
+            assert!(
+                matches!(
+                    denied,
+                    Err(Error::IntakeConflict {
+                        code: "PLAN_REVIEW_REJECTED" | "PLAN_REVIEW_REQUIRED",
+                        ..
+                    })
+                ),
+                "{denied:?}"
+            );
+            assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+
+            let (status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan-review"),
+                Some(json!({
+                    "planRevision": plan.revision,
+                    "planSha256": plan.content_sha256,
+                    "decision": "APPROVE",
+                    "rationale": "The owner reverses the rejection and approves.",
+                })),
+            )
+            .await;
+            assert_eq!(approved["reviewRecorded"], true, "{approved}");
+            assert_eq!(approved["review"]["status"], "OWNER_APPROVED", "{approved}");
+            assert!(
+                !status.is_server_error(),
+                "the environment phase must not fail anonymously: {approved}"
+            );
+            let context = agentic_triage_context(
+                &app,
+                &fixture.app.db.intake_request(&intake_id).await.unwrap(),
+            )
+            .await
+            .unwrap();
+            let readiness = planning_readiness(&app, &intake_id, plan.revision, &context)
+                .await
+                .unwrap();
+            assert!(readiness.review_current);
+            assert!(readiness.review_approved);
+            if status.is_success() {
+                assert_eq!(approved["workflow"]["state"], "FROZEN", "{approved}");
+                autonomous_start_intake(&app, &intake_id)
+                    .await
+                    .expect("the effective owner approval starts the same request");
+                let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+                assert!(record.campaign_id.is_some());
+            }
+
+            app.db.close().await;
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);

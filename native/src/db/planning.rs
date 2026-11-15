@@ -307,6 +307,24 @@ impl Database {
         }
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        // A review is an operator decision on a live request. Check the durable
+        // withdrawal marker in the same immediate transaction that writes the
+        // decision, so a withdrawal committed before this write can never be
+        // followed by a recorded approval/rejection. A withdrawal that arrives
+        // after this transaction waits for it and therefore orders after the
+        // decision; the runner still fences the start.
+        let withdrawn: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT lw.request_id
+             FROM intake_requests ir
+             JOIN lead_withdrawals lw ON lw.request_id=ir.lead_request_id
+             WHERE ir.id=?1 LIMIT 1",
+        )
+        .bind(request_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if withdrawn.is_some() {
+            return Err(Error::Withdrawn);
+        }
         // A retry of the same authenticated decision is the same evidence only
         // while it is still the request's latest decision. An identical tuple
         // that precedes an intervening decision must not be reused: doing so
@@ -369,8 +387,9 @@ impl Database {
     pub async fn latest_plan_review(&self, request_id: &str) -> Result<PlanReviewRecord, Error> {
         let row: Option<ReviewRow> = sqlx::query_as::query_as(
             // Insertion order, not wall-clock text, is the decision sequence.
-            // Two reviews can share a timestamp and a random UUID tie-break
-            // would not preserve which decision was recorded last.
+            // `plan_reviews` is append-only and a real SQLite VACUUM preserves
+            // relative rowid order for this TEXT-primary-key table; a future
+            // delete/reinsert path would need an explicit sequence instead.
             "SELECT id,request_id,plan_revision,plan_sha256,status,principal_id,rationale,points,reviewed_at
              FROM plan_reviews WHERE request_id=?1
              ORDER BY rowid DESC LIMIT 1",
@@ -868,6 +887,87 @@ mod tests {
                 .unwrap()
                 .id,
             reapproved.id
+        );
+    }
+
+    #[tokio::test]
+    async fn a_withdrawal_fences_the_same_transaction_that_writes_a_plan_review() {
+        let db = seeded_db("request-review-withdrawn").await;
+        let plan = db
+            .save_planning_artifact(
+                "request-review-withdrawn",
+                "PLAN",
+                1,
+                r#"{"lane":"DELEGATED"}"#,
+            )
+            .await
+            .unwrap();
+        let review = |status: &'static str, rationale: &'static str| NewPlanReview {
+            request_id: "request-review-withdrawn",
+            plan_revision: 1,
+            plan_sha256: &plan.content_sha256,
+            status,
+            principal_id: "operator",
+            rationale,
+            points: 0,
+        };
+        let first = db
+            .save_plan_review(review("PENDING", "The owner must decide."))
+            .await
+            .unwrap();
+        db.withdraw_lead_request("lead", "operator", None, "stop this request")
+            .await
+            .unwrap();
+        let error = match db
+            .save_plan_review(review("OWNER_APPROVED", "A late approval."))
+            .await
+        {
+            Ok(_) => panic!("a withdrawn request must not record a plan review"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, Error::Withdrawn), "{error}");
+        let reviews = db.plan_reviews("request-review-withdrawn").await.unwrap();
+        assert_eq!(reviews.len(), 1);
+        assert_eq!(reviews[0].id, first.id);
+        assert_eq!(reviews[0].status, "PENDING");
+    }
+
+    #[tokio::test]
+    async fn a_withdrawal_prevents_the_first_plan_review_write() {
+        let db = seeded_db("request-review-withdrawn-first").await;
+        let plan = db
+            .save_planning_artifact(
+                "request-review-withdrawn-first",
+                "PLAN",
+                1,
+                r#"{"lane":"DELEGATED"}"#,
+            )
+            .await
+            .unwrap();
+        db.withdraw_lead_request("lead", "operator", None, "stop this request")
+            .await
+            .unwrap();
+        let error = match db
+            .save_plan_review(NewPlanReview {
+                request_id: "request-review-withdrawn-first",
+                plan_revision: 1,
+                plan_sha256: &plan.content_sha256,
+                status: "OWNER_APPROVED",
+                principal_id: "operator",
+                rationale: "A late approval.",
+                points: 0,
+            })
+            .await
+        {
+            Ok(_) => panic!("a withdrawn request must not record a plan review"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, Error::Withdrawn), "{error}");
+        assert!(
+            db.plan_reviews("request-review-withdrawn-first")
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 

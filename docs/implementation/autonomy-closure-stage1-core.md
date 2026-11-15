@@ -65,7 +65,13 @@ envelopes.
 - A plan that requires an owner decision remains `PENDING`. The runner records a
   truthful waiting state and continues after the authenticated owner approval,
   which re-enqueues the same request.
-- A rejected or changes-requested plan is never auto-approved or retried.
+- A rejected or changes-requested plan is never auto-approved or retried. It is
+  an owner wait, not a terminal Lead failure: the Lead stays `READY`, the
+  operation is `BLOCKED`, and the runner returns the typed rejection without
+  calling a model. A later authenticated approval of the still-current PLAN
+  revision is an audited owner reversal: the workflow moves
+  `REPLANNING → PLAN_REVIEW → FROZEN`, and the exact start still revalidates
+  every policy, funding, readiness and scope guard.
 - The exact start transaction still revalidates the frozen policy, delegation,
   charter, funding admission, profile revision, plan/spec/config binding,
   allowed paths and R0 risk.
@@ -102,6 +108,15 @@ envelopes.
 - The effective decision is the latest row in insertion order, not the largest
   wall-clock string. This matters when two reviews share a timestamp or when a
   random UUID would otherwise decide the tie.
+- A plan review is an operator decision on a live request. The same immediate
+  transaction that writes it checks the durable withdrawal marker, so a
+  withdrawal committed before the write can never be followed by a recorded
+  approval/rejection. A withdrawal that arrives later orders after the decision;
+  the runner still fences the start.
+- `rowid` is the decision sequence because the table is append-only. A real
+  SQLite `VACUUM` repro on the `TEXT PRIMARY KEY` schema preserved relative
+  `rowid` order; no speculative migration is added. A future delete/reinsert
+  path would require an explicit sequence instead.
 - If the owner decision is recorded and the following environment phase fails,
   the response carries `reviewRecorded: true` and the real blocker. A
   recoverable environment failure (builder/model/funding unavailable) also
@@ -184,13 +199,20 @@ New Core tests:
   classify it as rejected; a consecutive replay remains one row;
 - concurrent identical retries share one review row, including retries after an
   intervening rejection;
+- a withdrawal committed before a plan review leaves no new row; the endpoint
+  returns `INTAKE_WITHDRAWN` and creates no Campaign;
+- REJECT then APPROVE of the current revision restores `REPLANNING → PLAN_REVIEW
+  → FROZEN`, keeps the Lead in the owner wait without blocking it, denies the
+  start while rejected, and starts only after the authenticated reversal;
 - a deeper live triage floor stops reuse of a weaker frozen PLAN with
   `PLAN_LANE_ELEVATED` (recoverable, no model call, no Campaign);
 - an unchanged unavailable environment builder does not append a blocked
   revision per resume, while a changed builder descriptor recompiles once;
 - transient SQLite pressure is a recoverable wait and a durable constraint is
   terminal;
-- the provider projection carries the stored bounds and the protocol bounds.
+- the provider projection carries the stored bounds and the protocol bounds,
+  including a GET after a partial PUT and an exact `PUT(32768) → GET(32768)`
+  round trip (not a universal policy value).
 
 The deterministic test provider is a local fixture. It is development evidence,
 not live provider or independent acceptance evidence.
@@ -236,7 +258,8 @@ not live provider or independent acceptance evidence.
   risk-elevated plan.
 
 - Withdrawal fences cover the WorkGraph, participant, specification draft,
-  specification freeze, plan review recovery, environment compilation and
-  environment freeze writes touched by the runner. Early malformed-submission
-  blocked-environment writes are not separately fenced because they perform no
-  model call.
+  specification freeze, plan-review recovery, environment compilation and
+  environment freeze writes touched by the runner; the endpoint plan-review
+  write itself checks the withdrawal marker in its own immediate transaction.
+  Early malformed-submission blocked-environment writes are not separately
+  fenced because they perform no model call.
