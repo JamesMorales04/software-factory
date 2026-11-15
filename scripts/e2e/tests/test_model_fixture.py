@@ -204,6 +204,149 @@ def proposal_tokens(proposal):
     return {token.strip().lower() for token in tokens if token and token.strip()}
 
 
+ALLOWED_SPDX_SUBSET = {
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unlicense",
+    "Zlib",
+}
+FLOATING_VERSIONS = {"latest", "stable", "nightly", "current", "*", "master", "main"}
+
+
+def dotted_numeric(value):
+    return bool(value) and value.split(".") and all(
+        segment.isdigit() and segment for segment in value.split(".")
+    )
+
+
+def nix_attr_ok(attr):
+    if not attr or len(attr) > 128:
+        return False
+    return all(
+        part
+        and len(part) <= 64
+        and all(character.isalnum() or character in "-_" for character in part)
+        for part in attr.split(".")
+    )
+
+
+def documented_rust_contract_violations(proposal):
+    """Regression mirror of the documented Rust EnvironmentProposal rules.
+
+    This is NOT the validator oracle: the real ``EnvironmentProposal::validate``
+    result must come from Core (see the harness R4 ficha). It exists so a
+    fixture regression fails a light test before a heavy Compose window.
+    """
+    violations = []
+    allowed = {
+        "toolchains",
+        "packages",
+        "services",
+        "commands",
+        "nixpkgs",
+        "inputs",
+        "browsers",
+        "allowUnfree",
+        "files",
+    }
+    unknown = set(proposal) - allowed
+    if unknown:
+        violations.append(f"unknown proposal fields: {sorted(unknown)}")
+    if proposal.get("files"):
+        violations.append("a model proposal cannot supply generated files")
+    if proposal.get("allowUnfree"):
+        violations.append("allowUnfree must remain false")
+    if proposal.get("nixpkgs") is not None:
+        violations.append("fixture omits nixpkgs to use the builder default")
+
+    toolchains = proposal.get("toolchains") or []
+    if len(toolchains) > 16:
+        violations.append("too many toolchains")
+    seen_toolchains = set()
+    for toolchain in toolchains:
+        toolchain_id = str(toolchain.get("id", ""))
+        version = str(toolchain.get("version", ""))
+        if not toolchain_id or len(toolchain_id) > 64:
+            violations.append(f"toolchain id out of bounds: {toolchain_id!r}")
+        if (
+            not version
+            or any(character.isspace() for character in version)
+            or version.lower() in FLOATING_VERSIONS
+            or version.startswith(("^", "~"))
+            or ">=" in version
+            or "<=" in version
+        ):
+            violations.append(f"toolchain version is not exact: {version!r}")
+        lowered = toolchain_id.lower()
+        if lowered in seen_toolchains:
+            violations.append(f"duplicate toolchain id: {toolchain_id!r}")
+        seen_toolchains.add(lowered)
+
+    packages = proposal.get("packages") or []
+    if len(packages) > 64:
+        violations.append("too many packages")
+    seen_packages = set()
+    for package in packages:
+        name = str(package.get("name", ""))
+        version = str(package.get("version", ""))
+        license_name = str(package.get("license", ""))
+        attr = str(package.get("attr", "")) or name
+        source = str(package.get("source", ""))
+        if not name or len(name) > 200:
+            violations.append(f"package name out of bounds: {name!r}")
+        if not dotted_numeric(version):
+            violations.append(f"package version is not numeric dotted: {version!r}")
+        if license_name in {"", "NONE", "NOASSERTION", "UNLICENSED", "UNKNOWN"}:
+            violations.append(f"package license is not usable: {license_name!r}")
+        elif license_name not in ALLOWED_SPDX_SUBSET:
+            violations.append(f"package license is outside the allowed subset: {license_name!r}")
+        if not nix_attr_ok(attr):
+            violations.append(f"package attr is not a dotted Nix identifier: {attr!r}")
+        if source not in {"nixpkgs", f"nixpkgs:{attr}"}:
+            violations.append(
+                f"package {name!r} source must be exactly nixpkgs or nixpkgs:{attr} (got {source!r})"
+            )
+        lowered = name.lower()
+        if lowered in seen_packages:
+            violations.append(f"duplicate package name: {name!r}")
+        seen_packages.add(lowered)
+
+    for field in ("services", "inputs", "browsers"):
+        if proposal.get(field):
+            violations.append(f"{field} must stay empty in the fixture proposal")
+
+    commands = proposal.get("commands") or {}
+    if len(commands) > 32:
+        violations.append("too many commands")
+    for name, command in commands.items():
+        if not name or len(name) > 64:
+            violations.append(f"command name out of bounds: {name!r}")
+        argv = command.get("argv") or []
+        if not argv:
+            violations.append(f"command {name!r} has an empty argv")
+        for value in argv:
+            if not value or any(ord(character) < 32 for character in value):
+                violations.append(f"command {name!r} has an invalid argv value")
+        cwd = command.get("cwd", ".")
+        if cwd != "." and (cwd.startswith(("/", "~")) or ".." in cwd.split("/") or "\\" in cwd):
+            violations.append(f"command {name!r} cwd escapes the project root")
+        timeout = command.get("timeoutSecs", 300)
+        if not isinstance(timeout, int) or not 1 <= timeout <= 7200:
+            violations.append(f"command {name!r} timeout is out of bounds")
+        expect_exit = command.get("expectExit", 0)
+        if not isinstance(expect_exit, int) or not 0 <= expect_exit <= 255:
+            violations.append(f"command {name!r} expectExit is out of bounds")
+
+    return violations
+
+
 class StackSelectionResponseTests(unittest.TestCase):
     def test_selects_an_authorized_option_and_echoes_its_identity(self) -> None:
         fixture = load_fixture()
@@ -361,6 +504,64 @@ class PhaseTraversalTests(unittest.TestCase):
         self.assertEqual(counters["other"], 0)
         for phase, *_ in phases:
             self.assertEqual(counters[phase], 1, phase)
+
+
+class R4ProposalContractTests(unittest.TestCase):
+    """HF01: every fixture package must pin its exact nixpkgs source."""
+
+    def proposals(self):
+        fixture = load_fixture()
+        proposals = {}
+        for option_id, options in (
+            ("python-service", stack_options()),
+            ("rust-service", [o for o in stack_options() if o["id"] == "rust-service"]),
+            ("typescript-react", [o for o in stack_options(web=True) if o["id"] == "typescript-react"]),
+        ):
+            capabilities = (
+                ("repository-edit", "node-toolchain")
+                if option_id == "typescript-react"
+                else ("repository-edit", "generic-toolchain")
+            )
+            selection = content(
+                fixture.stack_selection(stack_prompt(options, capabilities=capabilities))
+            )
+            proposals[option_id] = selection
+        return fixture, proposals
+
+    def test_every_package_declares_its_exact_nixpkgs_source(self) -> None:
+        _, proposals = self.proposals()
+        for option_id, selection in proposals.items():
+            for package in selection["environmentProposal"]["packages"]:
+                with self.subTest(option=option_id, package=package["name"]):
+                    attr = package.get("attr") or package["name"]
+                    self.assertIn(package.get("source"), {"nixpkgs", f"nixpkgs:{attr}"})
+
+    def test_all_three_environments_satisfy_the_documented_rust_contract(self) -> None:
+        _, proposals = self.proposals()
+        self.assertEqual(len(proposals), 3)
+        for option_id, selection in proposals.items():
+            with self.subTest(option=option_id):
+                self.assertEqual(
+                    documented_rust_contract_violations(selection["environmentProposal"]), []
+                )
+
+    def test_missing_source_is_the_hf01_regression(self) -> None:
+        import copy
+
+        _, proposals = self.proposals()
+        proposal = copy.deepcopy(proposals["python-service"]["environmentProposal"])
+        del proposal["packages"][0]["source"]
+        violations = documented_rust_contract_violations(proposal)
+        self.assertTrue(any("source must be exactly" in item for item in violations), violations)
+
+    def test_top_level_model_fields_are_bounded(self) -> None:
+        _, proposals = self.proposals()
+        for option_id, selection in proposals.items():
+            with self.subTest(option=option_id):
+                self.assertLessEqual(len(selection["optionId"]), 64)
+                self.assertTrue(1 <= len(selection["language"]) <= 64)
+                self.assertTrue(1 <= len(selection["framework"]) <= 64)
+                self.assertTrue(1 <= len(selection["rationale"]) <= 500)
 
 
 class CounterTests(unittest.TestCase):

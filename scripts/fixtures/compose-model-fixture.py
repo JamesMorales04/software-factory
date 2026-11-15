@@ -238,12 +238,14 @@ STACK_ENVIRONMENTS = {
                 "version": "3.12",
                 "license": "MIT",
                 "attr": "python312",
+                "source": "nixpkgs:python312",
             },
             {
                 "name": "fastapi",
                 "version": "0.110.0",
                 "license": "MIT",
                 "attr": "python312Packages.fastapi",
+                "source": "nixpkgs:python312Packages.fastapi",
             },
         ],
         "commands": {
@@ -263,24 +265,28 @@ STACK_ENVIRONMENTS = {
                 "version": "1.75.0",
                 "license": "MIT",
                 "attr": "rustc",
+                "source": "nixpkgs:rustc",
             },
             {
                 "name": "cargo",
                 "version": "1.75.0",
                 "license": "MIT",
                 "attr": "cargo",
+                "source": "nixpkgs:cargo",
             },
             {
                 "name": "axum",
                 "version": "0.7.5",
                 "license": "MIT",
                 "attr": "axum",
+                "source": "nixpkgs:axum",
             },
             {
                 "name": "clap",
                 "version": "4.5.4",
                 "license": "MIT",
                 "attr": "clap",
+                "source": "nixpkgs:clap",
             },
         ],
         "commands": {
@@ -300,12 +306,14 @@ STACK_ENVIRONMENTS = {
                 "version": "20.11.0",
                 "license": "MIT",
                 "attr": "nodejs",
+                "source": "nixpkgs:nodejs",
             },
             {
                 "name": "react",
                 "version": "18.2.0",
                 "license": "MIT",
                 "attr": "react",
+                "source": "nixpkgs:react",
             },
         ],
         "commands": {
