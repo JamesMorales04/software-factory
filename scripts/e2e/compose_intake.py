@@ -149,12 +149,12 @@ def start(context: Context) -> None:
     require(bool(core), "Core container was not created")
     context.state.set("core_container", core)
 
-    wait_url(f"{config.base}/health", 300)
-    wait_url(f"{config.base}/core-api/health", 60)
-    wait_core(context.compose, "http://supervisor:8766/health", 180)
+    wait_url(f"{config.base}/health", config.readiness_timeout)
+    wait_url(f"{config.base}/core-api/health", config.readiness_timeout)
+    wait_core(context.compose, "http://supervisor:8766/health", config.readiness_timeout)
     wait_core(context.compose, "http://runtime:8770/health", config.readiness_timeout)
-    wait_core(context.compose, "http://git-fixture:8080/repo.git/HEAD", 60)
-    wait_core(context.compose, "http://model-fixture:8080/health", 120)
+    wait_core(context.compose, "http://git-fixture:8080/repo.git/HEAD", config.readiness_timeout)
+    wait_core(context.compose, "http://model-fixture:8080/health", config.readiness_timeout)
 
 
 @stage("enroll", "perform first-run owner enrollment and wait for the Worker")
@@ -174,7 +174,7 @@ def enroll(context: Context) -> None:
         workers = context.api.get("/workers")
         return any("compose-worker" in json.dumps(worker) for worker in workers)
 
-    wait_until(worker_ready, 60, "the Compose Worker registration")
+    wait_until(worker_ready, config.readiness_timeout, "the Compose Worker registration")
     context.state.set("enrolled_at", now_utc())
 
 
@@ -559,15 +559,15 @@ def restart(context: Context) -> None:
     context.compose.up(build=False)
     core = context.compose.core_container()
     require(bool(core), "Core container was not recreated")
-    wait_url(f"{config.base}/health", 300)
-    wait_core(context.compose, "http://runtime:8770/health", 900)
-    wait_core(context.compose, "http://supervisor:8766/health", 180)
+    wait_url(f"{config.base}/health", config.readiness_timeout)
+    wait_core(context.compose, "http://runtime:8770/health", config.readiness_timeout)
+    wait_core(context.compose, "http://supervisor:8766/health", config.readiness_timeout)
 
     def worker_ready() -> bool:
         workers = context.api.get("/workers")
         return any("compose-worker" in json.dumps(worker) for worker in workers)
 
-    wait_until(worker_ready, 60, "the Compose Worker re-registration")
+    wait_until(worker_ready, config.readiness_timeout, "the Compose Worker re-registration")
     projects = context.api.get("/projects")
     require(
         any(project.get("id") == context.state.get("project_id") for project in projects),
@@ -1198,16 +1198,16 @@ def autonomous_restart(context: Context) -> None:
     before = context.api.get(f"/intake/requests/{context.state.get('intake_id')}")
     context.compose.down(volumes=False)
     context.compose.up(build=False)
-    wait_url(f"{config.base}/health", 300)
-    wait_core(context.compose, "http://runtime:8770/health", 900)
-    wait_core(context.compose, "http://supervisor:8766/health", 180)
-    wait_core(context.compose, "http://model-fixture:8080/health", 120)
+    wait_url(f"{config.base}/health", config.readiness_timeout)
+    wait_core(context.compose, "http://runtime:8770/health", config.readiness_timeout)
+    wait_core(context.compose, "http://supervisor:8766/health", config.readiness_timeout)
+    wait_core(context.compose, "http://model-fixture:8080/health", config.readiness_timeout)
 
     def worker_ready() -> bool:
         workers = context.api.get("/workers")
         return any("compose-worker" in json.dumps(worker) for worker in workers)
 
-    wait_until(worker_ready, 60, "the Compose Worker re-registration")
+    wait_until(worker_ready, config.readiness_timeout, "the Compose Worker re-registration")
     after = context.api.get(f"/intake/requests/{context.state.get('intake_id')}")
     before_plan = (before.get("plan") or {}).get("planHash")
     after_plan = (after.get("plan") or {}).get("planHash")

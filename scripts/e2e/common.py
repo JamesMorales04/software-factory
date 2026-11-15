@@ -306,6 +306,9 @@ class State:
 
 
 
+_UNSET = object()
+
+
 class SupervisedResult:
     """Result of a supervised process-group run with durable streaming logs."""
 
@@ -317,12 +320,16 @@ class SupervisedResult:
         log_path: Path,
         *,
         timed_out: bool,
+        stdout_path: Path | None = None,
+        stderr_path: Path | None = None,
     ) -> None:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
         self.log_path = log_path
         self.timed_out = timed_out
+        self.stdout_path = stdout_path
+        self.stderr_path = stderr_path
 
 
 def _terminate_process_group(process: subprocess.Popen[str]) -> None:
@@ -371,6 +378,10 @@ def run_supervised(
     stdout_tail = ""
     stderr_tail = ""
     timed_out = False
+    stdout_path = log_path.with_suffix(log_path.suffix + ".stdout")
+    stderr_path = log_path.with_suffix(log_path.suffix + ".stderr")
+    stdout_raw = stdout_path.open("w", encoding="utf-8")
+    stderr_raw = stderr_path.open("w", encoding="utf-8")
     with log_path.open("w", encoding="utf-8") as handle:
         handle.write(f"$ {rendered}\n")
         handle.flush()
@@ -388,6 +399,8 @@ def run_supervised(
             nonlocal stdout_tail, stderr_tail
             assert stream is not None
             for line in iter(stream.readline, ""):
+                (stdout_raw if name == "stdout" else stderr_raw).write(line)
+                (stdout_raw if name == "stdout" else stderr_raw).flush()
                 handle.write(("" if name == "stdout" else "ERR ") + line)
                 handle.flush()
                 if name == "stdout":
@@ -437,8 +450,16 @@ def run_supervised(
             f"supervised command failed ({returncode}, timed_out={timed_out}): {rendered}\n"
             f"stdout:\n{tail(stdout_tail)}\nstderr:\n{tail(stderr_tail)}\nlog={log_path}"
         )
+    stdout_raw.close()
+    stderr_raw.close()
     return SupervisedResult(
-        returncode, stdout_tail, stderr_tail, log_path, timed_out=timed_out
+        returncode,
+        stdout_tail,
+        stderr_tail,
+        log_path,
+        timed_out=timed_out,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
     )
 
 
@@ -467,7 +488,7 @@ class Compose:
         *,
         check: bool = True,
         log_name: str | None = None,
-        timeout: int | None = None,
+        timeout: int | None | object = _UNSET,
     ) -> SupervisedResult:
         args = list(arguments)
         command = self.command() + args
@@ -481,7 +502,9 @@ class Compose:
             cwd=self.config.root,
             env=self.config.environment(),
             log_path=log_path,
-            timeout=self.config.operation_timeout if timeout is None else timeout,
+            timeout=(
+                self.config.operation_timeout if timeout is _UNSET else timeout
+            ),
             check=False,
         )
         with self.log_path.open("a", encoding="utf-8") as handle:
@@ -549,17 +572,52 @@ class Compose:
             raise ScenarioError("Compose reported no services")
         return services
 
-    def _compose_images(self) -> list[str]:
+    def _full_stdout(self, result: SupervisedResult) -> str:
+        """Machine parsers read the complete durable stream, never a tail."""
+
+        if result.stdout_path is not None and result.stdout_path.is_file():
+            return result.stdout_path.read_text(encoding="utf-8")
+        return result.stdout
+
+    def _compose_build_plan(self) -> dict[str, dict[str, Any]]:
+        """Return service -> {image, build} from the complete Compose config.
+
+        Only services that declare ``build:`` are candidate-built images. Image
+        only services (fixtures, upstream base images) are resolved by Compose
+        itself and must not be required as if we had built them.
+        """
+
         result = self.run(["config"], log_name="compose-config")
-        images = sorted(
-            {
-                match.group(1).strip().strip('"')
-                for match in re.finditer(r"^\s*image:\s*(\S+)\s*$", result.stdout, re.M)
-            }
-        )
-        if not images:
-            raise ScenarioError("Compose reported no image names")
-        return images
+        text = self._full_stdout(result)
+        plan: dict[str, dict[str, Any]] = {}
+        in_services = False
+        current: str | None = None
+        for line in text.splitlines():
+            if line == "services:":
+                in_services = True
+                continue
+            if not in_services:
+                continue
+            if line and not line.startswith(" "):
+                break
+            service = re.match(r"^  ([A-Za-z0-9][A-Za-z0-9_.-]*):\s*$", line)
+            if service:
+                current = service.group(1)
+                plan[current] = {"image": "", "build": False}
+                continue
+            if current is None:
+                continue
+            field = re.match(r"^    (build|image):\s*(.*?)\s*$", line)
+            if not field:
+                continue
+            key, value = field.group(1), field.group(2).strip().strip('"')
+            if key == "build":
+                plan[current]["build"] = True
+            else:
+                plan[current]["image"] = value
+        if not plan:
+            raise ScenarioError("Compose reported no services")
+        return plan
 
     def prebuild_sequential(self) -> dict[str, Any]:
         """Build every service one at a time, with no total build deadline.
@@ -570,10 +628,18 @@ class Compose:
         exact candidate SHA plus the resulting image ids for later binding.
         """
 
-        services = self._compose_services()
+        plan = self._compose_build_plan()
+        built_services = [name for name, entry in plan.items() if entry["build"]]
+        upstream = {
+            name: entry["image"]
+            for name, entry in plan.items()
+            if not entry["build"] and entry["image"]
+        }
+        if not built_services:
+            raise ScenarioError("Compose reported no candidate-built services")
         candidate, tree = self._candidate_identity()
-        for index, service in enumerate(services, start=1):
-            log(f"sequential prebuild {index}/{len(services)}: {service}")
+        for index, service in enumerate(built_services, start=1):
+            log(f"sequential prebuild {index}/{len(built_services)}: {service}")
             result = run_supervised(
                 self.command() + ["build", service],
                 cwd=self.config.root,
@@ -588,7 +654,15 @@ class Compose:
                     f"sequential build failed for {service} ({result.returncode}); "
                     f"log={result.log_path}"
                 )
-        images = self._compose_images()
+        images = sorted(
+            {
+                plan[service]["image"]
+                for service in built_services
+                if plan[service]["image"]
+            }
+        )
+        if not images:
+            raise ScenarioError("candidate-built services declare no image names")
         listed = subprocess.run(
             ["podman", "images", "--format", "{{.Repository}}:{{.Tag}} {{.ID}}"],
             text=True,
@@ -619,8 +693,12 @@ class Compose:
             "candidateSha": candidate,
             "candidateTree": tree,
             "createdAt": now_utc(),
-            "services": services,
+            "services": built_services,
             "images": {image: observed[image] for image in images},
+            # Image-only Compose services are resolved upstream by Compose at
+            # start. We record identity when it already exists, but never claim
+            # it as candidate-built provenance and never require it here.
+            "upstreamImages": upstream,
         }
         write_json(self.config.run_dir / "prebuilt.json", binding)
         return binding

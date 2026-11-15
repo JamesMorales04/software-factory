@@ -183,11 +183,12 @@ class BuildBindingTests(unittest.TestCase):
                 def _candidate_identity(self):
                     return ("sha-1", "tree-1")
 
-                def _compose_services(self):
-                    return ["a", "b"]
-
-                def _compose_images(self):
-                    return ["img-a:dev", "img-b:dev"]
+                def _compose_build_plan(self):
+                    return {
+                        "a": {"image": "img-a:dev", "build": True},
+                        "b": {"image": "img-b:dev", "build": True},
+                        "fixture": {"image": "docker.io/library/python:3.12-alpine", "build": False},
+                    }
 
             fake = FakeCompose(compose.config)
             original = common.run_supervised
@@ -218,6 +219,108 @@ class BuildBindingTests(unittest.TestCase):
             self.assertEqual([entry[1] for entry in calls], [None, None])
             self.assertEqual(len(calls), 2)
             self.assertIn("build", calls[0][0])
+
+
+class FullOutputAndUpstreamTests(unittest.TestCase):
+    def make_compose(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = SimpleNamespace(
+                root=root,
+                run_dir=root / "run",
+                artifacts_dir=root / "artifacts",
+                project="software-factory-e2e-test",
+                operation_timeout=30,
+                readiness_timeout=None,
+                run_timeout=None,
+                environment=lambda: os.environ.copy(),
+            )
+            config.run_dir.mkdir(parents=True, exist_ok=True)
+            return common.Compose(config)
+
+    def test_parser_uses_the_complete_stream_not_the_tail(self) -> None:
+        compose = self.make_compose()
+        services = "".join(
+            f"  svc-{index}:\n    build:\n      context: .\n    image: img-{index}:dev\n"
+            for index in range(11)
+        )
+        text = "services:\n" + services + "volumes:\n  data: {}\n"
+        with tempfile.TemporaryDirectory() as directory:
+            stdout_path = Path(directory) / "config.stdout"
+            stdout_path.write_text(text, encoding="utf-8")
+            result = common.SupervisedResult(
+                0, "services:\n  only-tail:", "", Path(directory) / "log",
+                timed_out=False, stdout_path=stdout_path,
+            )
+            compose.run = lambda *args, **kwargs: result  # type: ignore[method-assign]
+            plan = compose._compose_build_plan()
+        self.assertEqual(len(plan), 11)
+        self.assertTrue(all(entry["build"] for entry in plan.values()))
+
+    def test_sequential_prebuild_ignores_upstream_images(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            compose = self.make_compose()
+            compose.config.root = root
+            compose.config.run_dir = root / "run"
+            compose.config.run_dir.mkdir()
+            calls = []
+
+            class FakeCompose(type(compose)):
+                def _candidate_identity(self):
+                    return ("sha-up", "tree-up")
+
+                def _compose_build_plan(self):
+                    return {
+                        "core": {"image": "localhost/sf-core:dev", "build": True},
+                        "fixture": {
+                            "image": "docker.io/library/python:3.12-alpine",
+                            "build": False,
+                        },
+                    }
+
+            fake = FakeCompose(compose.config)
+            original = common.run_supervised
+            original_run = common.subprocess.run
+
+            def fake_run(command, *, cwd, env, log_path, timeout, check, label=""):
+                calls.append((command, timeout))
+                return common.SupervisedResult(0, "", "", log_path, timed_out=False)
+
+            def fake_listing(command, **kwargs):
+                class Result:
+                    returncode = 0
+                    stdout = "localhost/sf-core:dev id-core\n"
+                    stderr = ""
+                return Result()
+
+            common.run_supervised = fake_run
+            common.subprocess.run = fake_listing
+            try:
+                binding = fake.prebuild_sequential()
+            finally:
+                common.run_supervised = original
+                common.subprocess.run = original_run
+        self.assertEqual(binding["images"], {"localhost/sf-core:dev": "id-core"})
+        self.assertEqual(binding["upstreamImages"], {"fixture": "docker.io/library/python:3.12-alpine"})
+        self.assertEqual([entry[1] for entry in calls], [None])
+
+    def test_compose_run_forwards_explicit_none_without_operation_fallback(self) -> None:
+        compose = self.make_compose()
+        (compose.config.artifacts_dir / "logs").mkdir(parents=True, exist_ok=True)
+        captured = {}
+        original = common.run_supervised
+
+        def fake_run(command, *, cwd, env, log_path, timeout, check, label=""):
+            captured["timeout"] = timeout
+            return common.SupervisedResult(0, "", "", log_path, timed_out=False)
+
+        common.run_supervised = fake_run
+        try:
+            compose.run(["up", "-d", "--no-build"], timeout=None)
+        finally:
+            common.run_supervised = original
+        self.assertIsNone(captured["timeout"])
 
 
 class CliContractTests(unittest.TestCase):

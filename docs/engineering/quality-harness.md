@@ -166,3 +166,31 @@ Artifacts:  <manifest, logs, diagnostics, snapshots>
 Negatives:  <invalid resume, bad cassette, missing tool, timeout>
 Limitations:<NOT_TESTED / TRUSTED_LOCAL / no isolation claim>
 ```
+
+## Timeouts, builds and image binding
+
+The runner separates three semantics deliberately; none of them is a
+productivity cap:
+
+| Flag | Default | Applies to |
+|---|---|---|
+| `--operation-timeout` | `120` | one short tool operation with an observable contract (inspect/query) |
+| `--readiness-timeout` | none | optional explicit deadline for a readiness wait; omitted means wait with heartbeat and explicit cancellation |
+| `--run-timeout` | none | optional explicit total cap for the whole run; omitted means no total cap |
+
+There is no global `--timeout`. A silent process is **not** treated as
+no-progress: heartbeats record `activity=undetermined`, and only an explicit
+operation/run deadline or operator cancellation terminates our own process
+group (`SIGTERM`, then `SIGKILL`), reaping children.
+
+`start` builds **sequentially, one service at a time** (no `up --build` fan-out).
+It writes per-service durable logs and `run/prebuilt.json` with the exact
+`candidateSha`, `candidateTree`, built service list and image ids. `up -d
+--no-build` is accepted only when that record matches the current clean
+candidate and every built image id; image-only Compose services (for example
+`python:3.12-alpine`) are resolved upstream by Compose and recorded separately,
+never claimed as candidate-built. A dirty worktree is refused for build
+binding: HEAD alone does not identify compiled source. `--allow-dirty` remains
+diagnostic-only; any stage that builds or starts with `--no-build` requires a
+clean, bound candidate. Machine parsers consume the complete durable stdout
+stream, never the presentation tail.
