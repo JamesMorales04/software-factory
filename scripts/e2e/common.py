@@ -216,7 +216,7 @@ class Config:
     snapshot_dir: Path
     no_build: bool
     operation_timeout: int
-    readiness_timeout: int
+    readiness_timeout: int | None
     run_timeout: int | None
     scenario: str
     required_stages: list[str] | None = None
@@ -467,6 +467,7 @@ class Compose:
         *,
         check: bool = True,
         log_name: str | None = None,
+        timeout: int | None = None,
     ) -> SupervisedResult:
         args = list(arguments)
         command = self.command() + args
@@ -480,7 +481,7 @@ class Compose:
             cwd=self.config.root,
             env=self.config.environment(),
             log_path=log_path,
-            timeout=self.config.operation_timeout,
+            timeout=self.config.operation_timeout if timeout is None else timeout,
             check=False,
         )
         with self.log_path.open("a", encoding="utf-8") as handle:
@@ -499,17 +500,47 @@ class Compose:
         arguments = ["down"] + (["-v"] if volumes else [])
         return self.run(arguments, check=False, log_name="compose-down")
 
-    def _candidate_sha(self) -> str:
-        result = subprocess.run(
+    def _candidate_identity(self) -> tuple[str, str]:
+        """Return the exact clean commit and tree that the build compiles.
+
+        A dirty worktree is refused: HEAD alone does not identify the source
+        that Cargo/Node compiled, so image ids could not be bound honestly.
+        """
+
+        dirty = subprocess.run(
+            ["git", "-C", str(self.config.root), "status", "--porcelain"],
+            text=True,
+            capture_output=True,
+            timeout=self.config.operation_timeout,
+            check=False,
+        )
+        if dirty.returncode != 0:
+            raise ScenarioError(f"cannot inspect the worktree: {tail(dirty.stderr)}")
+        if dirty.stdout.strip():
+            raise ScenarioError(
+                "refusing to build bindings from a dirty worktree: commit or use a clean "
+                "candidate checkout so the source SHA and tree identify the compiled images"
+            )
+        sha = subprocess.run(
             ["git", "-C", str(self.config.root), "rev-parse", "HEAD"],
             text=True,
             capture_output=True,
             timeout=self.config.operation_timeout,
             check=False,
         )
-        if result.returncode != 0:
-            raise ScenarioError(f"cannot resolve the candidate SHA: {tail(result.stderr)}")
-        return result.stdout.strip()
+        tree = subprocess.run(
+            ["git", "-C", str(self.config.root), "rev-parse", "HEAD^{tree}"],
+            text=True,
+            capture_output=True,
+            timeout=self.config.operation_timeout,
+            check=False,
+        )
+        if sha.returncode != 0 or tree.returncode != 0:
+            raise ScenarioError("cannot resolve the candidate SHA/tree")
+        return sha.stdout.strip(), tree.stdout.strip()
+
+    def _candidate_sha(self) -> str:
+        return self._candidate_identity()[0]
 
     def _compose_services(self) -> list[str]:
         result = self.run(["config", "--services"], log_name="compose-services")
@@ -540,7 +571,7 @@ class Compose:
         """
 
         services = self._compose_services()
-        candidate = self._candidate_sha()
+        candidate, tree = self._candidate_identity()
         for index, service in enumerate(services, start=1):
             log(f"sequential prebuild {index}/{len(services)}: {service}")
             result = run_supervised(
@@ -580,6 +611,7 @@ class Compose:
         binding = {
             "schema": "factory-e2e-prebuild-v1",
             "candidateSha": candidate,
+            "candidateTree": tree,
             "createdAt": now_utc(),
             "services": services,
             "images": {image: observed[image] for image in images},
@@ -597,11 +629,12 @@ class Compose:
         binding = json.loads(path.read_text(encoding="utf-8"))
         if binding.get("schema") != "factory-e2e-prebuild-v1":
             raise ScenarioError("refusing --no-build: prebuild record has an unknown schema")
-        candidate = self._candidate_sha()
-        if binding.get("candidateSha") != candidate:
+        candidate, tree = self._candidate_identity()
+        if binding.get("candidateSha") != candidate or binding.get("candidateTree") != tree:
             raise ScenarioError(
                 "refusing --no-build: prebuild images are not bound to the current candidate "
-                f"({binding.get('candidateSha')} != {candidate})"
+                f"({binding.get('candidateSha')}/{binding.get('candidateTree')} != "
+                f"{candidate}/{tree})"
             )
         listed = subprocess.run(
             ["podman", "images", "--format", "{{.Repository}}:{{.Tag}} {{.ID}}"],
@@ -626,10 +659,17 @@ class Compose:
             self.prebuild_sequential()
         else:
             self._verify_prebuilt_binding()
-        self.run(["up", "-d", "--no-build"], check=True, log_name="compose-up")
+        self.run(
+            ["up", "-d", "--no-build"],
+            check=True,
+            log_name="compose-up",
+            timeout=self.config.run_timeout,
+        )
 
     def start(self) -> None:
-        self.run(["start"], check=False, log_name="compose-start")
+        self.run(
+            ["start"], check=False, log_name="compose-start", timeout=self.config.run_timeout
+        )
 
     def stop(self) -> None:
         self.run(["stop"], check=False, log_name="compose-stop")
@@ -683,7 +723,7 @@ class Compose:
             env=self.config.environment(),
             text=True,
             capture_output=True,
-            timeout=self.config.operation_timeout,
+            timeout=self.config.run_timeout,
             check=False,
         )
         if check and result.returncode != 0:
@@ -866,45 +906,64 @@ class Api:
         return self.request("GET", path)
 
 
-def wait_url(url: str, timeout: int, *, interval: float = 1.0) -> None:
-    deadline = time.monotonic() + timeout
+def wait_url(url: str, timeout: int | None, *, interval: float = 1.0) -> None:
+    deadline = None if timeout is None else time.monotonic() + timeout
     last_error: Exception | None = None
-    while time.monotonic() < deadline:
+    last_heartbeat = time.monotonic()
+    while deadline is None or time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=5) as response:
                 if response.status < 500:
                     return
         except (urllib.error.URLError, OSError, TimeoutError) as error:
             last_error = error
+        now = time.monotonic()
+        if now - last_heartbeat >= 30:
+            log(f"waiting for {url}: activity=undetermined last_error={last_error!r}")
+            last_heartbeat = now
         time.sleep(interval)
-    raise ScenarioError(f"timed out after {timeout}s waiting for {url}: {last_error}")
+    raise ScenarioError(f"explicit readiness deadline {timeout}s reached for {url}: {last_error}")
 
 
-def wait_core(compose: Compose, url: str, timeout: int, *, interval: float = 1.0) -> None:
-    deadline = time.monotonic() + timeout
+def wait_core(compose: Compose, url: str, timeout: int | None, *, interval: float = 1.0) -> None:
+    deadline = None if timeout is None else time.monotonic() + timeout
     last_error: Exception | None = None
-    while time.monotonic() < deadline:
+    last_heartbeat = time.monotonic()
+    while deadline is None or time.monotonic() < deadline:
         try:
             compose.exec_core(["curl", "-fsS", url], check=True)
             return
         except (ScenarioError, OSError, subprocess.TimeoutExpired) as error:
             last_error = error
+        now = time.monotonic()
+        if now - last_heartbeat >= 30:
+            log(f"waiting for Core {url}: activity=undetermined last_error={last_error!r}")
+            last_heartbeat = now
         time.sleep(interval)
-    raise ScenarioError(f"timed out after {timeout}s waiting for Core to reach {url}: {last_error}")
+    raise ScenarioError(
+        f"explicit readiness deadline {timeout}s reached waiting for Core {url}: {last_error}"
+    )
 
 
-def wait_until(predicate, timeout: int, description: str, *, interval: float = 1.0) -> Any:
-    deadline = time.monotonic() + timeout
+def wait_until(predicate, timeout: int | None, description: str, *, interval: float = 1.0) -> Any:
+    deadline = None if timeout is None else time.monotonic() + timeout
     last_error: Exception | None = None
-    while time.monotonic() < deadline:
+    last_heartbeat = time.monotonic()
+    while deadline is None or time.monotonic() < deadline:
         try:
             value = predicate()
             if value:
                 return value
         except Exception as error:  # noqa: BLE001 - the caller needs the last diagnostic
             last_error = error
+        now = time.monotonic()
+        if now - last_heartbeat >= 30:
+            log(f"waiting for {description}: activity=undetermined last_error={last_error!r}")
+            last_heartbeat = now
         time.sleep(interval)
-    raise ScenarioError(f"timed out after {timeout}s waiting for {description}: {last_error}")
+    raise ScenarioError(
+        f"explicit readiness deadline {timeout}s reached waiting for {description}: {last_error}"
+    )
 
 
 def assert_equal(actual: Any, expected: Any, description: str) -> None:

@@ -127,6 +127,23 @@ class BuildBindingTests(unittest.TestCase):
         config.run_dir.mkdir(parents=True, exist_ok=True)
         return common.Compose(config)
 
+    def test_dirty_worktree_cannot_bind_build_images(self) -> None:
+        import subprocess as sp
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sp.run(["git", "init", "-q"], cwd=root, check=True)
+            sp.run(["git", "config", "user.email", "t@example.invalid"], cwd=root, check=True)
+            sp.run(["git", "config", "user.name", "t"], cwd=root, check=True)
+            (root / "file.txt").write_text("one", encoding="utf-8")
+            sp.run(["git", "add", "file.txt"], cwd=root, check=True)
+            sp.run(["git", "commit", "-qm", "one"], cwd=root, check=True)
+            (root / "file.txt").write_text("two", encoding="utf-8")
+            compose = self.make_compose(root)
+            with self.assertRaises(common.ScenarioError) as raised:
+                compose._candidate_identity()
+            self.assertIn("dirty worktree", str(raised.exception))
+
     def test_no_build_refuses_without_a_prebuild_record(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             compose = self.make_compose(Path(directory))
@@ -148,8 +165,8 @@ class BuildBindingTests(unittest.TestCase):
                 encoding="utf-8",
             )
             class FakeCompose(type(compose)):
-                def _candidate_sha(self) -> str:
-                    return "current-sha"
+                def _candidate_identity(self):
+                    return ("current-sha", "current-tree")
 
             fake = FakeCompose(compose.config)
             with self.assertRaises(common.ScenarioError) as raised:
@@ -163,8 +180,8 @@ class BuildBindingTests(unittest.TestCase):
             calls = []
 
             class FakeCompose(type(compose)):
-                def _candidate_sha(self) -> str:
-                    return "sha-1"
+                def _candidate_identity(self):
+                    return ("sha-1", "tree-1")
 
                 def _compose_services(self):
                     return ["a", "b"]
@@ -197,6 +214,7 @@ class BuildBindingTests(unittest.TestCase):
                 common.run_supervised = original
                 common.subprocess.run = original_run
             self.assertEqual(binding["candidateSha"], "sha-1")
+            self.assertEqual(binding["candidateTree"], "tree-1")
             self.assertEqual([entry[1] for entry in calls], [None, None])
             self.assertEqual(len(calls), 2)
             self.assertIn("build", calls[0][0])
@@ -208,16 +226,21 @@ class CliContractTests(unittest.TestCase):
 
         args = scenario._parse_args([])
         self.assertEqual(args.operation_timeout, 120)
-        self.assertEqual(args.readiness_timeout, 300)
+        self.assertIsNone(args.readiness_timeout)
         self.assertIsNone(args.run_timeout)
-        self.assertIsNone(args.timeout)
+        with self.assertRaises(SystemExit):
+            scenario._parse_args(["--timeout", "45"])
 
-    def test_deprecated_timeout_flag_is_not_the_build_deadline(self) -> None:
+    def test_autonomous_scenario_resolves_required_slice(self) -> None:
         import scenario
 
-        args = scenario._parse_args(["--timeout", "45"])
-        self.assertEqual(args.timeout, 45)
-        self.assertIsNone(args.run_timeout)
+        path = common.ROOT / "scripts" / "e2e" / "scenarios" / "autonomous-intake.json"
+        name, stages, required = scenario._load_scenario(str(path))
+        self.assertEqual(name, "autonomous-intake")
+        self.assertIn("autonomous_setup", stages)
+        self.assertIn("autonomous_campaign", stages)
+        self.assertNotIn("intake", stages)
+        self.assertIn("autonomous_campaign", required)
 
 
 if __name__ == "__main__":

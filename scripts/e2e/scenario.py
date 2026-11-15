@@ -128,20 +128,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--readiness-timeout",
         type=int,
-        default=int(os.environ.get("FACTORY_E2E_READINESS_TIMEOUT", "300")),
-        help="deadline for waiting on an observable readiness contract (default 300s)",
+        default=None,
+        help="optional explicit deadline for readiness waits; default: no total cap",
     )
     parser.add_argument(
         "--run-timeout",
         type=int,
         default=None,
         help="optional explicit total cap for the whole run; default: no total cap",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=int,
-        default=None,
-        help=argparse.SUPPRESS,
     )
     return parser.parse_args(argv)
 
@@ -220,9 +214,7 @@ def _make_config(args: argparse.Namespace) -> Config:
         restore=args.restore,
         snapshot_dir=snapshot_dir,
         no_build=args.no_build,
-        operation_timeout=(
-            args.timeout if args.timeout is not None else args.operation_timeout
-        ),
+        operation_timeout=args.operation_timeout,
         readiness_timeout=args.readiness_timeout,
         run_timeout=args.run_timeout,
         scenario=scenario_name,
