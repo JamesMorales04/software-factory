@@ -87,7 +87,7 @@ export const es: Catalog = {
   "shell.collapseNavigation": "Contraer la navegación",
   "shell.toggleNavigation": "Mostrar u ocultar la navegación",
   "shell.commandTriggerAria":
-    "{search}: abrir la navegación por comandos (atajo {shortcut})",
+    "{search} {shortcut}: abrir la navegación por comandos",
   "shell.search": "Buscar",
   "shell.mainHeading": "Centro de mando de Factory Office",
   "shell.unknownRoute": "Ruta desconocida.",
@@ -3410,6 +3410,13 @@ export const es: Catalog = {
     "Avanzado: ID de modelo manual (sin verificar)",
   "settings.provider.manualModelHelp":
     "Core mantiene esta ruta sin verificar hasta que el proveedor anuncie el modelo exacto. Los usuarios normales pueden seleccionar arriba un modelo descubierto.",
+  "settings.provider.maxInputTokens": "Máximo de tokens de entrada",
+  "settings.provider.maxOutputTokens": "Máximo de tokens de salida",
+  "settings.provider.boundsNotReported": "Core no lo informa",
+  "settings.provider.boundsHelp":
+    "Core aplica estos límites del proveedor a sus llamadas de modelo. Deja un campo vacío para conservar el valor actual; Core rechaza un límite inferior al requisito congelado del Lead e informa el valor requerido. Las cotizaciones de precio congeladas y las autorizaciones no cambian.",
+  "settings.provider.boundsInvalid":
+    "{field} debe ser un número entero de tokens mayor que cero.",
   "settings.provider.connectionDetails": "Detalles de conexión",
   "settings.provider.enabledLabel": "Habilitado",
   "settings.provider.defaultLabel":
@@ -3963,6 +3970,13 @@ export const es: Catalog = {
   "director.planning.reject": "Rechazar plan",
   "director.planning.reviewSuccess": "La revisión del plan fue registrada.",
   "director.planning.reviewError": "No se pudo registrar la revisión del plan.",
+  "director.planning.reviewRecordedEnvironmentBlocked":
+    "La decisión del owner quedó registrada. Core informó que el entorno está bloqueado, así que la preparación sigue pendiente; esta página no reinicia la ejecución.",
+  "director.planning.reviewRecordedPreparationPending":
+    "La decisión del owner quedó registrada, pero la preparación no terminó: {detail} Actualiza el estado de la solicitud para ver lo que Core registró; esta página no reinicia la ejecución.",
+  "director.planning.decisionRecordedRefresh":
+    "Core registró esta decisión. Actualiza el estado de la solicitud para ver la preparación actualizada.",
+  "director.planning.refreshState": "Actualizar estado",
   "director.planning.error":
     "No se pudieron cargar los artefactos de planificación.",
   "director.planning.stack": "Stack",

@@ -2545,6 +2545,32 @@ export interface PlanReviewRecord {
   reviewedAt: string;
 }
 
+/**
+ * Core records an owner plan decision before it prepares the environment, so
+ * the response carries the durable decision (`reviewRecorded`) and whether the
+ * Lead rejected the prepared environment (`environmentBlocked`). Both are
+ * optional on the wire: absence means Core did not report the fact, and Office
+ * must not infer it from the HTTP status.
+ */
+export interface AgenticPlanReviewOutcome {
+  review: PlanReviewRecord;
+  reviewRecorded?: boolean;
+  environmentBlocked?: boolean;
+  workflow: PlanningWorkflowRun | null;
+}
+
+/**
+ * A decision Core confirms as recorded even when the later environment phase
+ * failed. This is the only proof Office accepts: the real `reviewRecorded`
+ * field of a real error body. It grants no recovery or execution authority.
+ */
+export interface RecordedPlanReview {
+  reviewRecorded: true;
+  environmentBlocked: boolean;
+  message: string;
+  code: string | null;
+}
+
 export interface FindingDispositionRecord {
   id: string;
   requestId: string;
@@ -3285,6 +3311,13 @@ export interface ProviderView {
   revision: number;
   updatedAt: string;
   modelDiscovery: ProviderModelCatalogEntry | null;
+  /**
+   * Effective provider caps Core uses for its Lead-output preflight. Optional
+   * because Core does not project them yet; absence means "not reported", not
+   * a default that Office may invent.
+   */
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
 }
 
 export interface UpdateProviderRequest {
@@ -3293,6 +3326,10 @@ export interface UpdateProviderRequest {
   credential?: string;
   enabled: boolean;
   isDefault: boolean;
+  /** Omit to preserve the current Core value. */
+  maxInputTokens?: number;
+  /** Omit to preserve the current Core value. */
+  maxOutputTokens?: number;
 }
 
 export interface ProviderTestResult extends ProviderModelCatalogEntry {
@@ -3785,6 +3822,25 @@ export class CoreApiError extends Error {
         ? authorization.reason
         : this.code;
   }
+}
+
+/**
+ * Reads the durable decision Core reports after a later phase failed. Only an
+ * explicit `reviewRecorded: true` in the real error body counts; an HTTP
+ * failure on its own is not evidence that anything was persisted.
+ */
+export function recordedPlanReview(cause: unknown): RecordedPlanReview | null {
+  if (!(cause instanceof CoreApiError)) return null;
+  const body = cause.body;
+  if (typeof body !== "object" || body === null) return null;
+  const record = body as Record<string, unknown>;
+  if (record.reviewRecorded !== true) return null;
+  return {
+    reviewRecorded: true,
+    environmentBlocked: record.environmentBlocked === true,
+    message: cause.message,
+    code: cause.code,
+  };
 }
 
 function messageFromBody(status: number, text: string): string {
@@ -4457,13 +4513,13 @@ export const coreApi = {
       rationale: string;
     },
   ) =>
-    request<{
-      review: PlanReviewRecord;
-      workflow: PlanningWorkflowRun | null;
-    }>(`/agentic/requests/${encodeURIComponent(id)}/plan-review`, {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
+    request<AgenticPlanReviewOutcome>(
+      `/agentic/requests/${encodeURIComponent(id)}/plan-review`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ),
   planAgenticRequest: (id: string) =>
     request<{
       graph: AgenticWorkGraphRecord;

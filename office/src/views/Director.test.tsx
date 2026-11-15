@@ -2,7 +2,11 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgenticPortfolioEntry, AgenticRequestDetail } from "../coreApi";
+import {
+  type AgenticPortfolioEntry,
+  type AgenticRequestDetail,
+  CoreApiError,
+} from "../coreApi";
 import { I18nProvider } from "../i18n";
 import { Director } from "./Director";
 
@@ -24,17 +28,10 @@ const mocks = vi.hoisted(() => ({
   getAgenticKnowledge: vi.fn(),
 }));
 
-vi.mock("../coreApi", () => ({
-  coreApi: mocks,
-  CoreApiError: class CoreApiError extends Error {
-    readonly status: number;
-    constructor(status: number, message: string) {
-      super(message);
-      this.name = "CoreApiError";
-      this.status = status;
-    }
-  },
-}));
+vi.mock("../coreApi", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../coreApi")>();
+  return { ...actual, coreApi: mocks };
+});
 
 const portfolio: AgenticPortfolioEntry[] = [
   {
@@ -332,6 +329,63 @@ const readyPlanning = {
   ready: true,
   startReady: true,
 };
+
+const approvedPlanReview = {
+  id: "review-2",
+  requestId: "request-1",
+  planRevision: 1,
+  planSha256: "a".repeat(64),
+  status: "OWNER_APPROVED",
+  principalId: "operator",
+  rationale: "Owner approved.",
+  points: 0,
+  reviewedAt: "2026-11-08T12:01:00Z",
+};
+
+const pendingReviewPlanning = {
+  ...readyPlanning,
+  review: {
+    id: "review-1",
+    requestId: "request-1",
+    planRevision: 1,
+    planSha256: "a".repeat(64),
+    status: "PENDING",
+    principalId: "core:planning",
+    rationale: "Owner decision required.",
+    points: 0,
+    reviewedAt: "2026-11-08T12:00:00Z",
+  },
+  reviewCurrent: true,
+  reviewRevision: 1,
+  reviewStatus: "PENDING",
+  reviewApproved: false,
+  ready: false,
+  startReady: false,
+};
+
+const approvedReviewPlanning = {
+  ...pendingReviewPlanning,
+  review: approvedPlanReview,
+  reviewStatus: "OWNER_APPROVED",
+  reviewApproved: true,
+};
+
+/**
+ * Mirrors the real body produced by Core `review_recorded_error`
+ * (`native/src/bin/core.rs`): the owner decision is durable, then the
+ * environment phase fails and the real blocker is returned with
+ * `reviewRecorded: true`.
+ */
+function recordedDecisionFailureBody() {
+  return {
+    error: "the frozen Lead route is unavailable: provider offline",
+    code: "ENVIRONMENT_LEAD_MODEL_UNAVAILABLE",
+    review: approvedPlanReview,
+    reviewRecorded: true,
+    environmentBlocked: false,
+    workflow: null,
+  };
+}
 
 function renderDirector() {
   return render(
@@ -1278,6 +1332,117 @@ describe("Director", () => {
     });
     await new Promise((resolve) => window.setTimeout(resolve, 50));
     expect(mocks.getAgenticPlanning).toHaveBeenCalledTimes(1);
+  });
+
+  async function openPendingPlanReview() {
+    await screen.findByRole("heading", { name: "Plan review" });
+    await userEvent.type(
+      screen.getByLabelText("Review rationale"),
+      "Owner approved.",
+    );
+  }
+
+  it("acknowledges a recorded approval whose environment preparation is blocked", async () => {
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValueOnce(pendingReviewPlanning)
+      .mockResolvedValue(approvedReviewPlanning);
+    mocks.reviewAgenticPlan.mockResolvedValue({
+      review: approvedPlanReview,
+      reviewRecorded: true,
+      environmentBlocked: true,
+      workflow: null,
+    });
+    renderDirector();
+    await openPendingPlanReview();
+    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+
+    expect(
+      await screen.findByText(/reported the environment as blocked/i),
+    ).toBeDefined();
+    expect(screen.queryByText("The plan review was recorded.")).toBeNull();
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull(),
+    );
+  });
+
+  it("keeps a recorded decision truthful and refreshes after a later preparation failure", async () => {
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValueOnce(pendingReviewPlanning)
+      .mockResolvedValue(approvedReviewPlanning);
+    const body = recordedDecisionFailureBody();
+    mocks.reviewAgenticPlan.mockRejectedValue(
+      new CoreApiError(503, body.error, body),
+    );
+    renderDirector();
+    await openPendingPlanReview();
+    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+
+    expect(
+      await screen.findByText(/preparation did not finish/i),
+    ).toBeDefined();
+    expect(
+      screen.getByText(/the frozen Lead route is unavailable/i),
+    ).toBeDefined();
+    expect(
+      screen.queryByText("The plan review could not be recorded."),
+    ).toBeNull();
+    await waitFor(() =>
+      expect(mocks.getAgenticPlanning.mock.calls.length).toBeGreaterThan(1),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull(),
+    );
+  });
+
+  it("still reports an unrecorded plan-review failure as an error", async () => {
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValue(pendingReviewPlanning);
+    const body = {
+      error: "a plan review requires a rationale",
+      code: "RATIONALE_REQUIRED",
+    };
+    mocks.reviewAgenticPlan.mockRejectedValue(
+      new CoreApiError(400, body.error, body),
+    );
+    renderDirector();
+    await openPendingPlanReview();
+    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+
+    expect(
+      await screen.findByText("a plan review requires a rationale"),
+    ).toBeDefined();
+    expect(screen.queryByText(/owner decision was recorded/i)).toBeNull();
+  });
+
+  it("does not invite a duplicate decision when the post-decision refresh fails", async () => {
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValue(pendingReviewPlanning);
+    const body = recordedDecisionFailureBody();
+    mocks.reviewAgenticPlan.mockRejectedValue(
+      new CoreApiError(503, body.error, body),
+    );
+    renderDirector();
+    await openPendingPlanReview();
+    mocks.getAgenticPlanning.mockRejectedValueOnce(new Error("offline"));
+    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+
+    expect(
+      await screen.findByText(/Core recorded this decision/i),
+    ).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull();
+
+    mocks.getAgenticPlanning.mockResolvedValue(approvedReviewPlanning);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Refresh state" }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText(/Core recorded this decision/i)).toBeNull(),
+    );
+    expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull();
   });
 
   it("does not let a late response overwrite a newly selected request", async () => {

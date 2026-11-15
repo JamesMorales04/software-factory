@@ -301,7 +301,7 @@ describe("AppShell", () => {
     expect(await screen.findByRole("link", { name: "Campañas" })).toBeDefined();
     expect(
       screen.getByRole("button", {
-        name: "Buscar: abrir la navegación por comandos (atajo K)",
+        name: "Buscar K: abrir la navegación por comandos",
       }),
     ).toBeDefined();
     expect(document.querySelector(".topbar-title")?.textContent).toBe(
@@ -317,9 +317,13 @@ describe("AppShell", () => {
 
   it("gives the command trigger an accessible name that includes its visible label and shortcut", async () => {
     renderShell("/");
+    // WCAG label-content-name-mismatch: the visible text renders as
+    // "Search\nK" (innerText), so the accessible name must contain the
+    // contiguous sequence "Search K", not only the two words separately.
     const trigger = screen.getByRole("button", {
-      name: "Search: open command navigation (shortcut K)",
+      name: "Search K: open command navigation",
     });
+    expect(trigger.getAttribute("aria-label")).toContain("Search K");
     expect(trigger.textContent).toContain("Search");
     expect(trigger.textContent).toContain("K");
     trigger.focus();

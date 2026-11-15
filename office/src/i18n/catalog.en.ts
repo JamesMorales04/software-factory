@@ -84,8 +84,7 @@ export const en = {
   "shell.expandNavigation": "Expand navigation",
   "shell.collapseNavigation": "Collapse navigation",
   "shell.toggleNavigation": "Toggle navigation",
-  "shell.commandTriggerAria":
-    "{search}: open command navigation (shortcut {shortcut})",
+  "shell.commandTriggerAria": "{search} {shortcut}: open command navigation",
   "shell.search": "Search",
   "shell.mainHeading": "Factory Office command center",
   "shell.unknownRoute": "Unknown route.",
@@ -3296,6 +3295,13 @@ export const en = {
   "settings.provider.manualModel": "Advanced: manual model ID (unverified)",
   "settings.provider.manualModelHelp":
     "Core keeps this route unverified until the provider advertises the exact model. Ordinary users can select a discovered model above instead.",
+  "settings.provider.maxInputTokens": "Max input tokens",
+  "settings.provider.maxOutputTokens": "Max output tokens",
+  "settings.provider.boundsNotReported": "Not reported by Core",
+  "settings.provider.boundsHelp":
+    "Core applies these provider bounds to its model calls. Leave a field blank to keep the current value; Core rejects a bound below the frozen Lead requirement and reports the required value. Frozen pricing quotes and authorizations are not changed.",
+  "settings.provider.boundsInvalid":
+    "{field} must be a whole number of tokens greater than zero.",
   "settings.provider.connectionDetails": "Connection details",
   "settings.provider.enabledLabel": "Enabled",
   "settings.provider.defaultLabel": "Default route for Core model calls",
@@ -3820,6 +3826,13 @@ export const en = {
   "director.planning.reject": "Reject plan",
   "director.planning.reviewSuccess": "The plan review was recorded.",
   "director.planning.reviewError": "The plan review could not be recorded.",
+  "director.planning.reviewRecordedEnvironmentBlocked":
+    "The owner decision was recorded. Core reported the environment as blocked, so preparation is still pending; this page does not restart execution.",
+  "director.planning.reviewRecordedPreparationPending":
+    "The owner decision was recorded, but preparation did not finish: {detail} Refresh the request state to see what Core recorded; this page does not restart execution.",
+  "director.planning.decisionRecordedRefresh":
+    "Core recorded this decision. Refresh the request state to see the updated preparation.",
+  "director.planning.refreshState": "Refresh state",
   "director.planning.error": "Planning artifacts could not be loaded.",
   "director.planning.stack": "Stack",
   "director.planning.architecture": "Architecture",

@@ -310,6 +310,71 @@ describe("Settings", () => {
     );
   });
 
+  it("shows and raises the Core provider output bound", async () => {
+    const boundedProvider: ProviderView = {
+      ...provider,
+      maxInputTokens: 60_000,
+      maxOutputTokens: 12_000,
+    };
+    mocks.listProviders.mockResolvedValue({ providers: [boundedProvider] });
+    mocks.updateProvider.mockResolvedValue(boundedProvider);
+    renderSettings();
+    await screen.findByRole("heading", { name: "Settings" });
+    const output = screen.getByLabelText("Max output tokens");
+    expect((output as HTMLInputElement).value).toBe("12000");
+    await userEvent.clear(output);
+    await userEvent.type(output, "32768");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Save configuration" }),
+    );
+    await waitFor(() =>
+      expect(mocks.updateProvider).toHaveBeenCalledWith(
+        "codex",
+        expect.objectContaining({
+          maxInputTokens: 60_000,
+          maxOutputTokens: 32_768,
+        }),
+      ),
+    );
+  });
+
+  it("refuses a non-positive provider bound without calling Core", async () => {
+    const boundedProvider: ProviderView = {
+      ...provider,
+      maxOutputTokens: 12_000,
+    };
+    mocks.listProviders.mockResolvedValue({ providers: [boundedProvider] });
+    renderSettings();
+    await screen.findByRole("heading", { name: "Settings" });
+    const output = screen.getByLabelText("Max output tokens");
+    await userEvent.clear(output);
+    await userEvent.type(output, "0");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Save configuration" }),
+    );
+    expect(
+      await screen.findByText(
+        /must be a whole number of tokens greater than zero/i,
+      ),
+    ).toBeDefined();
+    expect(mocks.updateProvider).not.toHaveBeenCalled();
+  });
+
+  it("does not invent provider bounds Core did not report", async () => {
+    renderSettings();
+    await screen.findByRole("heading", { name: "Settings" });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Save configuration" }),
+    );
+    await waitFor(() => expect(mocks.updateProvider).toHaveBeenCalled());
+    const payload = mocks.updateProvider.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(payload).not.toHaveProperty("maxInputTokens");
+    expect(payload).not.toHaveProperty("maxOutputTokens");
+  });
+
   it("shows an audit read failure as unknown, not empty", async () => {
     mocks.providerAudit.mockRejectedValue(new Error("audit unavailable"));
     renderSettings();

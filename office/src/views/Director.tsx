@@ -21,6 +21,7 @@ import {
   type AgenticWorkGraphRecord,
   CoreApiError,
   coreApi,
+  recordedPlanReview,
 } from "../coreApi";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
@@ -139,6 +140,14 @@ export function Director() {
   const [planningNotice, setPlanningNotice] = useState<string | null>(null);
   const [reviewBusy, setReviewBusy] = useState<string | null>(null);
   const [reviewRationale, setReviewRationale] = useState("");
+  // Core records the owner decision before it prepares the environment. When a
+  // later phase fails, the decision is durable even though the projection may
+  // still show the previous review. This local acknowledgement keeps the
+  // recorded fact visible and stops inviting a duplicate decision until a
+  // reload confirms it.
+  const [recordedDecision, setRecordedDecision] = useState<{
+    requestId: string;
+  } | null>(null);
   const [findingId, setFindingId] = useState("");
   const [findingEvidence, setFindingEvidence] = useState("");
   const [findingOwnerDecision, setFindingOwnerDecision] = useState("");
@@ -190,6 +199,7 @@ export function Director() {
 
   const environment = detail?.environment ?? null;
   const reviewBinding = currentPlanningReview(planning);
+  const reviewIsCurrent = reviewBinding.current;
   const reviewStatus = reviewBinding.status;
   const reviewRejected =
     reviewStatus === "REJECTED" || reviewStatus === "CHANGES_REQUESTED";
@@ -259,6 +269,7 @@ export function Director() {
     setPlanningNotice(null);
     setPlanningError(null);
     setReviewRationale("");
+    setRecordedDecision(null);
     setFindingId("");
     setFindingEvidence("");
     setFindingOwnerDecision("");
@@ -456,6 +467,19 @@ export function Director() {
     };
   }, [preparationPhase, reloadDirector]);
 
+  useEffect(() => {
+    if (recordedDecision === null) return;
+    if (recordedDecision.requestId !== activeId) {
+      setRecordedDecision(null);
+      return;
+    }
+    // A reload that no longer reports a current PENDING review has caught up
+    // with the recorded decision; the projection is now the authority again.
+    if (planning !== null && (!reviewIsCurrent || reviewStatus !== "PENDING")) {
+      setRecordedDecision(null);
+    }
+  }, [activeId, planning, recordedDecision, reviewIsCurrent, reviewStatus]);
+
   async function runSemanticTriage() {
     if (!activeId) return;
     setTriageBusy(true);
@@ -589,21 +613,43 @@ export function Director() {
       setPlanningError(t("director.planning.rationaleRequired"));
       return;
     }
+    const requestId = activeId;
     setReviewBusy(decision);
     setPlanningError(null);
     setPlanningNotice(null);
     try {
-      await coreApi.reviewAgenticPlan(activeId, {
+      const outcome = await coreApi.reviewAgenticPlan(requestId, {
         planRevision: planning.review.planRevision,
         planSha256: planning.review.planSha256,
         decision,
         rationale: reviewRationale.trim(),
       });
+      const environmentBlocked = outcome.environmentBlocked === true;
+      setRecordedDecision({ requestId });
       await reloadDirector();
       setReviewRationale("");
-      setPlanningNotice(t("director.planning.reviewSuccess"));
+      setPlanningNotice(
+        environmentBlocked
+          ? t("director.planning.reviewRecordedEnvironmentBlocked")
+          : t("director.planning.reviewSuccess"),
+      );
     } catch (cause) {
-      setPlanningError(errorText(cause, t("director.planning.reviewError")));
+      const recorded = recordedPlanReview(cause);
+      if (recorded === null) {
+        setPlanningError(errorText(cause, t("director.planning.reviewError")));
+        return;
+      }
+      // Core persisted the owner decision and reported the later blocker in the
+      // same response. Re-read the projection and acknowledge the durable fact
+      // instead of asking the owner to approve an already recorded decision.
+      setRecordedDecision({ requestId });
+      setReviewRationale("");
+      await reloadDirector();
+      setPlanningNotice(
+        t("director.planning.reviewRecordedPreparationPending", {
+          detail: recorded.message,
+        }),
+      );
     } finally {
       setReviewBusy(null);
     }
@@ -1506,7 +1552,22 @@ export function Director() {
                         </p>
                       )}
                       {planning.review?.status === "PENDING" &&
-                        reviewBinding.current && (
+                        reviewBinding.current &&
+                        (recordedDecision ? (
+                          <p
+                            className="ui-callout ui-callout--info"
+                            role="status"
+                          >
+                            {t("director.planning.decisionRecordedRefresh")}{" "}
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => void reloadDirector()}
+                            >
+                              {t("director.planning.refreshState")}
+                            </Button>
+                          </p>
+                        ) : (
                           <div className="director-planning-review">
                             <Textarea
                               label={t("director.planning.reviewRationale")}
@@ -1550,7 +1611,7 @@ export function Director() {
                               </Button>
                             </div>
                           </div>
-                        )}
+                        ))}
                       <dl className="director-facts director-facts--wide">
                         <div>
                           <dt>{t("director.planning.stack")}</dt>
