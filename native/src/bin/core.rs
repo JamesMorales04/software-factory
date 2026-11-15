@@ -6964,6 +6964,15 @@ impl<'a> DecisionProjection<'a> {
     ) -> Result<Vec<Value>, Error> {
         let mut items = Vec::new();
         for record in intake_requests {
+            // This item is the manual Lead-plan approval action
+            // (`ApproveIntakePlan`). An AUTONOMOUS request has no manual plan
+            // approval: its owner decision lives in the agentic plan review
+            // (Director / POST /agentic/requests/{id}/plan-review). Excluding it
+            // here prevents a false owner surface without inventing an
+            // autonomous approval action.
+            if record.mode != factory_native::intake::IntakeMode::ReviewPlan {
+                continue;
+            }
             let projection = match self
                 .app
                 .db
@@ -10520,9 +10529,34 @@ async fn autonomous_intake_state(
     {
         return Ok(None);
     }
+    let operation_status = match app.db.agentic_operation_for_request(&record.id).await {
+        Ok(operation) => Some(operation.status),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    let operation_blocked = operation_status.as_deref() == Some("BLOCKED");
     let plan = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
         Ok(plan) => plan,
         Err(Error::NotFound) => {
+            if operation_blocked {
+                let detail = lead
+                    .failure_reason
+                    .as_deref()
+                    .filter(|reason| !reason.trim().is_empty())
+                    .map(|reason| {
+                        format!(
+                            "Autonomous preparation is blocked before the plan was compiled: {reason}"
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        "Autonomous preparation is blocked before the plan was compiled; the operation is BLOCKED. Inspect the blocker and use the existing recovery action for that prerequisite."
+                            .into()
+                    });
+                return Ok(Some(AutonomousIntakeState {
+                    state: IntakeState::Blocked,
+                    detail,
+                }));
+            }
             return Ok(Some(AutonomousIntakeState {
                 state: IntakeState::PlanReady,
                 detail: "Autonomous preparation is in progress; Core is compiling the plan.".into(),
@@ -10561,12 +10595,6 @@ async fn autonomous_intake_state(
             Err(Error::NotFound) => (false, None),
             Err(error) => return Err(error),
         };
-    let operation_status = match app.db.agentic_operation_for_request(&record.id).await {
-        Ok(operation) => Some(operation.status),
-        Err(Error::NotFound) => None,
-        Err(error) => return Err(error),
-    };
-    let operation_blocked = operation_status.as_deref() == Some("BLOCKED");
     let review_status = review
         .as_ref()
         .filter(|_| review_current)
@@ -29799,6 +29827,88 @@ mod tests {
                     .as_str()
                     .is_some_and(|detail| detail.contains("DOD")),
                 "{summary}"
+            );
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn a_blocked_operation_before_the_plan_is_not_reported_as_plan_ready() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-projection-before-plan").await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .latest_planning_artifact(&intake_id, "PLAN")
+                    .await
+                    .is_err(),
+                "the fixture must start before the agentic PLAN exists"
+            );
+            fixture
+                .app
+                .db
+                .set_agentic_operation_status(&intake_id, "BLOCKED")
+                .await
+                .unwrap();
+            let blocked = intake_request_summary_value(&app, &request).await.unwrap();
+            assert_eq!(blocked["state"], "BLOCKED", "{blocked}");
+            assert!(
+                blocked["stateDetail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.contains("before the plan was compiled")),
+                "{blocked}"
+            );
+
+            fixture
+                .app
+                .db
+                .set_agentic_operation_status(&intake_id, "QUEUED")
+                .await
+                .unwrap();
+            let compiling = intake_request_summary_value(&app, &request).await.unwrap();
+            assert_eq!(compiling["state"], "PLAN_READY", "{compiling}");
+            assert!(
+                compiling["stateDetail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.contains("compiling the plan")),
+                "{compiling}"
+            );
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn the_manual_intake_approval_inbox_item_is_review_plan_only() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-inbox-not-manual").await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            prepare_autonomous_request(&app, &request)
+                .await
+                .expect("initial preparation completes");
+            let items = build_decisions(&app).await.unwrap();
+            assert!(
+                items
+                    .iter()
+                    .all(|item| !(item["kind"] == "intake.plan-approval"
+                        && item["subject_id"].as_str() == Some(intake_id.as_str()))),
+                "an AUTONOMOUS request must not expose the manual Lead-plan approval item"
+            );
+            assert!(
+                items
+                    .iter()
+                    .all(|item| item["kind"] != "intake.plan-approval"
+                        || item["subject_id"].as_str() != Some(intake_id.as_str())),
+                "the manual approval action belongs to REVIEW_PLAN only"
             );
 
             app.db.close().await;

@@ -194,6 +194,7 @@ plan review, materials and environment, not from the Lead's inherited
 | Lead `Submitted`/`Assessing`/`Planned` | existing Lead mapping | early assessment/plan stages |
 | Current review `PENDING`/`REJECTED`/`CHANGES_REQUESTED`, materials ready, environment not `BLOCKED` | `AWAITING_APPROVAL` | the only owner-decision wait (includes the R4.1 re-decision) |
 | Environment plan `BLOCKED`/blockers | `BLOCKED` | `stateDetail` carries the real environment blocker |
+| Agentic operation `BLOCKED` before a PLAN exists | `BLOCKED` | `lead.failure_reason` when recorded, otherwise an honest typed “blocked before the plan was compiled; inspect the blocker and use the existing recovery action” (no universal resume promise) |
 | Agentic operation `BLOCKED` with missing artifacts/stale review | `BLOCKED` | `stateDetail` names the missing artifacts or the unbound review |
 | Approved current review, or preparation/rebinding in progress | `PLAN_READY` | no manual authorization; Core prepares and starts, or is rebinding the review |
 
@@ -201,6 +202,13 @@ plan review, materials and environment, not from the Lead's inherited
 review or by a blocked environment. The start authority is unchanged: it still
 revalidates policy, funding, readiness, scope and environment. `reviewRecorded`
 is unchanged.
+
+The Decision Inbox `intake.plan-approval` item and its `ApproveIntakePlan`
+action are the **manual Lead-plan approval** surface and are limited to
+`mode=REVIEW_PLAN`. An AUTONOMOUS request keeps its owner decision in the
+Director/`POST /agentic/requests/{id}/plan-review` surface; no manual approval
+action is invented for it. This removes a false inherited surface, not the
+owner-review capability.
 
 ## Architecture structural labels
 
@@ -256,7 +264,12 @@ New Core tests:
 - an `AUTO_APPROVED` agentic review with a blocked environment projects
   `BLOCKED`, a real current `PENDING` review projects `AWAITING_APPROVAL`, a
   stale review is not owner wait, and incomplete materials with a stopped
-  operation project `BLOCKED` with the missing artifacts.
+  operation project `BLOCKED` with the missing artifacts;
+- a stopped operation before the PLAN exists projects `BLOCKED` with the
+  recorded reason or an honest recovery detail, while a queued operation keeps
+  `PLAN_READY/compiling`;
+- the manual `intake.plan-approval` inbox item and `ApproveIntakePlan` action
+  are absent for AUTONOMOUS and remain for REVIEW_PLAN.
 
 The deterministic test provider is a local fixture. It is development evidence,
 not live provider or independent acceptance evidence.
