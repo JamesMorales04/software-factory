@@ -624,6 +624,7 @@ describe("Director", () => {
   });
 
   it("records an owner plan review decision", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
     mocks.getAgenticPlanning.mockResolvedValue({
       lane: "FORMAL_SPEC",
       signals: {
@@ -731,6 +732,7 @@ describe("Director", () => {
   });
 
   it("blocks plan approval until the participant plan matches the frozen reviewer plan", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
     const requiredRoles = [
       "FUNCTIONAL",
       "ARCHITECTURE",
@@ -1343,6 +1345,7 @@ describe("Director", () => {
   }
 
   it("acknowledges a recorded approval whose environment preparation is blocked", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
     mocks.getAgenticPlanning
       .mockReset()
       .mockResolvedValueOnce(pendingReviewPlanning)
@@ -1368,6 +1371,7 @@ describe("Director", () => {
   });
 
   it("keeps a recorded decision truthful and refreshes after a later preparation failure", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
     mocks.getAgenticPlanning
       .mockReset()
       .mockResolvedValueOnce(pendingReviewPlanning)
@@ -1398,6 +1402,7 @@ describe("Director", () => {
   });
 
   it("still reports an unrecorded plan-review failure as an error", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
     mocks.getAgenticPlanning
       .mockReset()
       .mockResolvedValue(pendingReviewPlanning);
@@ -1419,6 +1424,7 @@ describe("Director", () => {
   });
 
   it("does not invite a duplicate decision when the post-decision refresh fails", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
     mocks.getAgenticPlanning
       .mockReset()
       .mockResolvedValue(pendingReviewPlanning);
@@ -1447,6 +1453,7 @@ describe("Director", () => {
   });
 
   it("does not acknowledge a 2xx review that omits reviewRecorded", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
     mocks.getAgenticPlanning
       .mockReset()
       .mockResolvedValueOnce(pendingReviewPlanning)
@@ -1468,6 +1475,7 @@ describe("Director", () => {
   });
 
   it("does not acknowledge a 2xx review that reports reviewRecorded false", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
     mocks.getAgenticPlanning
       .mockReset()
       .mockResolvedValueOnce(pendingReviewPlanning)
@@ -1492,6 +1500,7 @@ describe("Director", () => {
   });
 
   it("submits one plan review when the button is clicked twice before re-render", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
     mocks.getAgenticPlanning
       .mockReset()
       .mockResolvedValueOnce(pendingReviewPlanning)
@@ -1520,16 +1529,18 @@ describe("Director", () => {
       objective: "Second request",
     };
     const secondDetail: AgenticRequestDetail = {
-      ...detail,
+      ...preparationDetail,
       request: {
-        ...detail.request,
+        ...preparationDetail.request,
         id: "request-2",
         objective: "Second request",
       },
-      plan: detail.plan ? { ...detail.plan, id: "plan-2" } : null,
-      operation: detail.operation
+      plan: preparationDetail.plan
+        ? { ...preparationDetail.plan, id: "plan-2" }
+        : null,
+      operation: preparationDetail.operation
         ? {
-            ...detail.operation,
+            ...preparationDetail.operation,
             id: "operation-request-2",
             requestId: "request-2",
           }
@@ -1541,7 +1552,7 @@ describe("Director", () => {
     ]);
     mocks.getAgenticRequest.mockImplementation((id: string) =>
       id === "request-1"
-        ? Promise.resolve(detail)
+        ? Promise.resolve(preparationDetail)
         : Promise.resolve(secondDetail),
     );
     mocks.getAgenticPlanning
@@ -1601,6 +1612,7 @@ describe("Director", () => {
   });
 
   it("offers a new decision on the same rejected revision", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
     const rejectedReviewPlanning = {
       ...pendingReviewPlanning,
       review: { ...approvedPlanReview, status: "REJECTED" as const },
@@ -1640,6 +1652,7 @@ describe("Director", () => {
   });
 
   it("offers a new decision on the same changes-requested revision", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
     const changesPlanning = {
       ...pendingReviewPlanning,
       review: { ...approvedPlanReview, status: "CHANGES_REQUESTED" as const },
@@ -1684,6 +1697,7 @@ describe("Director", () => {
   });
 
   it("refreshes a stale plan review without retrying the old decision", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
     const mutating = vi.fn();
     mocks.getAgenticPlanning
       .mockReset()
@@ -1722,12 +1736,12 @@ describe("Director", () => {
 
   it("refreshes a withdrawn request and does not acknowledge the decision", async () => {
     const cancelledDetail: AgenticRequestDetail = {
-      ...detail,
-      request: { ...detail.request, state: "CANCELLED" },
+      ...preparationDetail,
+      request: { ...preparationDetail.request, state: "CANCELLED" },
     };
     mocks.getAgenticRequest
       .mockReset()
-      .mockResolvedValueOnce(detail)
+      .mockResolvedValueOnce(preparationDetail)
       .mockResolvedValue(cancelledDetail);
     mocks.getAgenticPlanning.mockReset().mockResolvedValue({
       ...pendingReviewPlanning,
@@ -1754,6 +1768,7 @@ describe("Director", () => {
   });
 
   it("submits one decision on a double click for a rejected revision", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(preparationDetail);
     mocks.getAgenticPlanning
       .mockReset()
       .mockResolvedValueOnce({
@@ -1784,6 +1799,114 @@ describe("Director", () => {
     expect(mocks.reviewAgenticPlan).toHaveBeenCalledTimes(1);
   });
 
+  it("does not offer a new decision while the request is executing", async () => {
+    mocks.getAgenticRequest.mockResolvedValue(detail);
+    mocks.getAgenticPlanning.mockResolvedValue({
+      ...pendingReviewPlanning,
+      review: { ...approvedPlanReview, status: "REJECTED" as const },
+      reviewStatus: "REJECTED",
+      reviewApproved: false,
+    });
+    renderDirector();
+    await screen.findByRole("heading", { name: "Plan review" });
+    expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull();
+    expect(screen.queryByText(/decision on this same revision/i)).toBeNull();
+  });
+
+  it("keeps the new request's rationale when a late decision error arrives", async () => {
+    const secondPortfolio = {
+      ...portfolio[0],
+      id: "request-2",
+      objective: "Second request",
+    };
+    const secondDetail: AgenticRequestDetail = {
+      ...preparationDetail,
+      request: {
+        ...preparationDetail.request,
+        id: "request-2",
+        objective: "Second request",
+      },
+      plan: preparationDetail.plan
+        ? { ...preparationDetail.plan, id: "plan-2" }
+        : null,
+      operation: preparationDetail.operation
+        ? {
+            ...preparationDetail.operation,
+            id: "operation-request-2",
+            requestId: "request-2",
+          }
+        : null,
+    };
+    mocks.listAgenticPortfolio.mockResolvedValue([
+      portfolio[0],
+      secondPortfolio,
+    ]);
+    mocks.getAgenticRequest.mockImplementation((id: string) =>
+      id === "request-1"
+        ? Promise.resolve(preparationDetail)
+        : Promise.resolve(secondDetail),
+    );
+    mocks.getAgenticPlanning.mockImplementation((id: string) =>
+      Promise.resolve(
+        id === "request-1"
+          ? {
+              ...pendingReviewPlanning,
+              review: { ...approvedPlanReview, status: "REJECTED" as const },
+              reviewStatus: "REJECTED",
+              reviewApproved: false,
+            }
+          : pendingReviewPlanning,
+      ),
+    );
+    let rejectReview: ((cause: unknown) => void) | undefined;
+    mocks.reviewAgenticPlan.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectReview = reject;
+        }),
+    );
+    renderDirector();
+    await screen.findByText(/decision on this same revision/i);
+    await userEvent.type(
+      screen.getByLabelText("Review rationale"),
+      "Owner approved.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Second request/ }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Second request" }),
+    ).toBeDefined();
+    // Wait until request-2's own PENDING planning has replaced the stale
+    // request-1 projection, so the field under test is not detached by the
+    // selection reload.
+    await screen.findByText(/awaiting an authenticated owner decision/i);
+    const draft = screen.getByLabelText(
+      "Review rationale",
+    ) as HTMLTextAreaElement;
+    await userEvent.type(draft, "Draft B");
+    expect(draft.value).toBe("Draft B");
+
+    await act(async () => {
+      rejectReview?.(
+        new CoreApiError(503, "environment failed", {
+          error: "environment failed",
+          code: "ENVIRONMENT_LEAD_MODEL_UNAVAILABLE",
+          review: { ...approvedPlanReview, planRevision: 1 },
+          reviewRecorded: true,
+          environmentBlocked: false,
+          workflow: null,
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(
+      (screen.getByLabelText("Review rationale") as HTMLTextAreaElement).value,
+    ).toBe("Draft B");
+  });
+
   it("does not let a late response overwrite a newly selected request", async () => {
     const secondPortfolio = {
       ...portfolio[0],
@@ -1791,16 +1914,18 @@ describe("Director", () => {
       objective: "Second request",
     };
     const secondDetail: AgenticRequestDetail = {
-      ...detail,
+      ...preparationDetail,
       request: {
-        ...detail.request,
+        ...preparationDetail.request,
         id: "request-2",
         objective: "Second request",
       },
-      plan: detail.plan ? { ...detail.plan, id: "plan-2" } : null,
-      operation: detail.operation
+      plan: preparationDetail.plan
+        ? { ...preparationDetail.plan, id: "plan-2" }
+        : null,
+      operation: preparationDetail.operation
         ? {
-            ...detail.operation,
+            ...preparationDetail.operation,
             id: "operation-request-2",
             requestId: "request-2",
           }

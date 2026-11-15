@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
@@ -138,7 +145,10 @@ export function Director() {
   );
   const [planningError, setPlanningError] = useState<string | null>(null);
   const [planningNotice, setPlanningNotice] = useState<string | null>(null);
-  const [reviewBusy, setReviewBusy] = useState<string | null>(null);
+  const [reviewBusy, setReviewBusy] = useState<{
+    requestId: string;
+    decision: string;
+  } | null>(null);
   const [reviewRationale, setReviewRationale] = useState("");
   // Core records the owner decision before it prepares the environment. When a
   // later phase fails, the decision is durable even though the projection may
@@ -200,12 +210,16 @@ export function Director() {
   // it. A single in-flight guard also prevents a double click from posting the
   // same decision twice before React re-renders the disabled button.
   const activeRequestRef = useRef(activeId);
-  const reviewInFlight = useRef(false);
+  // The in-flight guard is scoped per request, so a pending decision for one
+  // request never blocks a valid review of another.
+  const reviewInFlight = useRef<Set<string>>(new Set());
 
   const environment = detail?.environment ?? null;
   const reviewBinding = currentPlanningReview(planning);
   const reviewIsCurrent = reviewBinding.current;
   const reviewStatus = reviewBinding.status;
+  const activeReviewBusy =
+    reviewBusy?.requestId === activeId ? reviewBusy.decision : null;
   const reviewRejected =
     reviewStatus === "REJECTED" || reviewStatus === "CHANGES_REQUESTED";
   const requestTerminal = isTerminalIntakeState(detail?.request.state ?? "");
@@ -223,6 +237,7 @@ export function Director() {
     planning.review !== null &&
     reviewIsCurrent &&
     !requestTerminal &&
+    !executionActive &&
     (reviewStatus === "PENDING" || reviewRevisitable);
   const operationInconsistent =
     detail?.operation?.status === "EXECUTING" &&
@@ -277,7 +292,6 @@ export function Director() {
     // Action-scoped notices belong to the request that produced them. Keeping
     // them across a selection change showed a success message from one request
     // on another request's panel.
-    activeRequestRef.current = activeId;
     if (activeId === "") return;
     setPriorityNotice(null);
     setPriorityError(null);
@@ -298,6 +312,13 @@ export function Director() {
     setTriageError(null);
     setAssessmentNotice(null);
     setAssessmentError(null);
+  }, [activeId]);
+
+  useLayoutEffect(() => {
+    // The in-flight response guard must observe the selected request before any
+    // user event or asynchronous response runs, so a late handler cannot clear
+    // or write state for the request the operator is viewing now.
+    activeRequestRef.current = activeId;
   }, [activeId]);
 
   const loadGeneration = useRef(0);
@@ -627,18 +648,18 @@ export function Director() {
   async function reviewPlan(
     decision: "APPROVE" | "CHANGES_REQUESTED" | "REJECT",
   ) {
-    if (reviewInFlight.current) return;
     if (!activeId || !planning?.review) return;
+    const requestId = activeId;
+    if (reviewInFlight.current.has(requestId)) return;
     if (reviewRationale.trim() === "") {
       setPlanningError(t("director.planning.rationaleRequired"));
       return;
     }
-    const requestId = activeId;
     const planRevision = planning.review.planRevision;
     const planSha256 = planning.review.planSha256;
     const stillCurrent = () => activeRequestRef.current === requestId;
-    reviewInFlight.current = true;
-    setReviewBusy(decision);
+    reviewInFlight.current.add(requestId);
+    setReviewBusy({ requestId, decision });
     setPlanningError(null);
     setPlanningNotice(null);
     try {
@@ -695,18 +716,22 @@ export function Director() {
       // Core persisted the owner decision and reported the later blocker in the
       // same response. Re-read the projection and acknowledge the durable fact
       // instead of asking the owner to approve an already recorded decision.
-      setRecordedDecision({ requestId });
-      setReviewRationale("");
+      // The acknowledgement and rationale clear happen only after the guard:
+      // a stale response from another request must not touch this one.
       await reloadDirector();
       if (!stillCurrent()) return;
+      setRecordedDecision({ requestId });
+      setReviewRationale("");
       setPlanningNotice(
         t("director.planning.reviewRecordedPreparationPending", {
           detail: recorded.message,
         }),
       );
     } finally {
-      reviewInFlight.current = false;
-      setReviewBusy(null);
+      reviewInFlight.current.delete(requestId);
+      setReviewBusy((current) =>
+        current?.requestId === requestId ? null : current,
+      );
     }
   }
 
@@ -1586,7 +1611,7 @@ export function Director() {
                             ? t("director.planning.staleReview")
                             : reviewStatus === "PENDING"
                               ? t("director.planning.reviewPending")
-                              : reviewRevisitable
+                              : reviewRevisitable && reviewDecisionAvailable
                                 ? t("director.planning.reviewRevisit", {
                                     status: reviewStatus ?? "—",
                                   })
@@ -1639,14 +1664,14 @@ export function Director() {
                                   ? t("director.planning.revisitRationaleHelp")
                                   : undefined
                               }
-                              disabled={reviewBusy !== null}
+                              disabled={activeReviewBusy !== null}
                             />
                             <div className="director-priority">
                               <Button
                                 size="sm"
-                                busy={reviewBusy === "APPROVE"}
+                                busy={activeReviewBusy === "APPROVE"}
                                 disabled={
-                                  reviewBusy !== null ||
+                                  activeReviewBusy !== null ||
                                   !planning.materialsReady
                                 }
                                 onClick={() => void reviewPlan("APPROVE")}
@@ -1656,8 +1681,8 @@ export function Director() {
                               <Button
                                 variant="secondary"
                                 size="sm"
-                                busy={reviewBusy === "CHANGES_REQUESTED"}
-                                disabled={reviewBusy !== null}
+                                busy={activeReviewBusy === "CHANGES_REQUESTED"}
+                                disabled={activeReviewBusy !== null}
                                 onClick={() =>
                                   void reviewPlan("CHANGES_REQUESTED")
                                 }
@@ -1667,8 +1692,8 @@ export function Director() {
                               <Button
                                 variant="danger"
                                 size="sm"
-                                busy={reviewBusy === "REJECT"}
-                                disabled={reviewBusy !== null}
+                                busy={activeReviewBusy === "REJECT"}
+                                disabled={activeReviewBusy !== null}
                                 onClick={() => void reviewPlan("REJECT")}
                               >
                                 {t("director.planning.reject")}
