@@ -327,7 +327,12 @@ STACK_ENVIRONMENTS = {
         },
     },
     "rust-cli": {
-        "supported": True,
+        # nixpkgs "clap" 1.2.6 is a different package, not the Rust crate. An
+        # attr's metadata is not crate metadata, so this option is not a
+        # builder-valid fixture environment. It is a fixture gap, not a Factory
+        # capability statement.
+        "supported": False,
+        "reason": "nixpkgs clap 1.2.6 is not the Rust crate; an attr's metadata is not crate metadata",
         "toolchains": [
             {"id": "rustc", "version": "1.86.0"},
             {"id": "cargo", "version": "1.86.0"},

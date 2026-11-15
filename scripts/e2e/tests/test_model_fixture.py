@@ -370,7 +370,6 @@ class StackSelectionResponseTests(unittest.TestCase):
         fixture = load_fixture()
         for option_id, language, framework in (
             ("python-service", "python", "fastapi"),
-            ("rust-cli", "rust", "clap"),
         ):
             with self.subTest(option_id=option_id):
                 options = [option for option in stack_options() if option["id"] == option_id]
@@ -518,10 +517,7 @@ class R4ProposalContractTests(unittest.TestCase):
     def proposals(self):
         fixture = load_fixture()
         proposals = {}
-        for option_id, options in (
-            ("python-service", stack_options()),
-            ("rust-cli", [o for o in stack_options() if o["id"] == "rust-cli"]),
-        ):
+        for option_id, options in (("python-service", stack_options()),):
             selection = content(
                 fixture.stack_selection(
                     stack_prompt(options, capabilities=("repository-edit", "generic-toolchain"))
@@ -540,12 +536,21 @@ class R4ProposalContractTests(unittest.TestCase):
 
     def test_all_three_environments_satisfy_the_documented_rust_contract(self) -> None:
         _, proposals = self.proposals()
-        self.assertEqual(len(proposals), 2)
+        self.assertEqual(len(proposals), 1)
         for option_id, selection in proposals.items():
             with self.subTest(option=option_id):
                 self.assertEqual(
                     documented_rust_contract_violations(selection["environmentProposal"]), []
                 )
+
+    def test_rust_options_are_fail_closed_in_this_pin(self) -> None:
+        fixture = load_fixture()
+        for option_id in ("rust-cli", "rust-service"):
+            with self.subTest(option=option_id):
+                option = next(o for o in stack_options() if o["id"] == option_id)
+                with self.assertRaises(ValueError) as raised:
+                    fixture.stack_selection(stack_prompt([option]))
+                self.assertIn("not builder-valid", str(raised.exception))
 
     def test_missing_source_is_the_hf01_regression(self) -> None:
         import copy
@@ -559,18 +564,13 @@ class R4ProposalContractTests(unittest.TestCase):
     def test_pins_match_the_builder_observation(self) -> None:
         _, proposals = self.proposals()
         python = proposals["python-service"]["environmentProposal"]
-        rust = proposals["rust-cli"]["environmentProposal"]
         self.assertEqual(
             [(p["name"], p["version"], p["license"]) for p in python["packages"]],
             [("fastapi", "0.115.12", "MIT")],
         )
         self.assertEqual(
-            [(p["name"], p["version"], p["license"]) for p in rust["packages"]],
-            [("clap", "1.2.6", "MIT")],
-        )
-        self.assertEqual(
-            [(t["id"], t["version"]) for t in rust["toolchains"]],
-            [("rustc", "1.86.0"), ("cargo", "1.86.0")],
+            [(t["id"], t["version"]) for t in python["toolchains"]],
+            [("python3", "3.12")],
         )
 
     def test_top_level_model_fields_are_bounded(self) -> None:
