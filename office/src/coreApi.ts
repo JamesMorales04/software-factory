@@ -2567,6 +2567,8 @@ export interface AgenticPlanReviewOutcome {
 export interface RecordedPlanReview {
   reviewRecorded: true;
   environmentBlocked: boolean;
+  /** PLAN revision the recorded review binds; null when absent or malformed. */
+  reviewRevision: number | null;
   message: string;
   code: string | null;
 }
@@ -3312,12 +3314,18 @@ export interface ProviderView {
   updatedAt: string;
   modelDiscovery: ProviderModelCatalogEntry | null;
   /**
-   * Effective provider caps Core uses for its Lead-output preflight. Optional
-   * because Core does not project them yet; absence means "not reported", not
-   * a default that Office may invent.
+   * Effective stored provider caps, projected by Core when a settings row
+   * exists. Absence means "not reported" (no row), not a default that Office
+   * may invent.
    */
   maxInputTokens?: number;
   maxOutputTokens?: number;
+  /**
+   * The exact structured Lead requirement and its permitted truncation-retry
+   * ceiling, projected by Core so Office does not duplicate the policy.
+   */
+  leadOutputTokens?: number;
+  leadRetryOutputTokens?: number;
 }
 
 export interface UpdateProviderRequest {
@@ -3835,9 +3843,18 @@ export function recordedPlanReview(cause: unknown): RecordedPlanReview | null {
   if (typeof body !== "object" || body === null) return null;
   const record = body as Record<string, unknown>;
   if (record.reviewRecorded !== true) return null;
+  const review =
+    typeof record.review === "object" && record.review !== null
+      ? (record.review as Record<string, unknown>)
+      : null;
+  const revision = review?.planRevision;
   return {
     reviewRecorded: true,
     environmentBlocked: record.environmentBlocked === true,
+    reviewRevision:
+      typeof revision === "number" && Number.isInteger(revision)
+        ? revision
+        : null,
     message: cause.message,
     code: cause.code,
   };

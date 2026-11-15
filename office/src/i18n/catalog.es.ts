@@ -3414,7 +3414,9 @@ export const es: Catalog = {
   "settings.provider.maxOutputTokens": "Máximo de tokens de salida",
   "settings.provider.boundsNotReported": "Core no lo informa",
   "settings.provider.boundsHelp":
-    "Core aplica estos límites del proveedor a sus llamadas de modelo. Deja un campo vacío para conservar el valor actual; Core rechaza un límite inferior al requisito congelado del Lead e informa el valor requerido. Las cotizaciones de precio congeladas y las autorizaciones no cambian.",
+    "Deja un campo vacío para conservar el valor actual. Core guarda estos límites para las nuevas llamadas al proveedor y acepta un valor positivo incluso por debajo del requisito estructurado del Lead; el preflight posterior del modelo bloquea la llamada e informa el valor requerido. Las cotizaciones de precio congeladas y las autorizaciones no cambian.",
+  "settings.provider.leadRequirement":
+    "Requisito estructurado del Lead: {base} tokens de salida por llamada, con un techo de {retry} tokens en el reintento de truncamiento permitido. Core bloquea una llamada por debajo del requisito.",
   "settings.provider.boundsInvalid":
     "{field} debe ser un número entero de tokens mayor que cero.",
   "settings.provider.connectionDetails": "Detalles de conexión",
@@ -3971,7 +3973,9 @@ export const es: Catalog = {
   "director.planning.reviewSuccess": "La revisión del plan fue registrada.",
   "director.planning.reviewError": "No se pudo registrar la revisión del plan.",
   "director.planning.reviewRecordedEnvironmentBlocked":
-    "La decisión del owner quedó registrada. Core informó que el entorno está bloqueado, así que la preparación sigue pendiente; esta página no reinicia la ejecución.",
+    "La decisión del owner quedó registrada. El Lead rechazó el plan de entorno y Core lo marcó como bloqueado, así que la preparación no continuó. Revisa los bloqueos o recompila el entorno en Director; esta página no reinicia la ejecución.",
+  "director.planning.reviewNotConfirmed":
+    "Core no confirmó que la decisión quedara registrada para esta revisión del plan. La solicitud se actualizó; revisa el estado del plan antes de decidir de nuevo.",
   "director.planning.reviewRecordedPreparationPending":
     "La decisión del owner quedó registrada, pero la preparación no terminó: {detail} Actualiza el estado de la solicitud para ver lo que Core registró; esta página no reinicia la ejecución.",
   "director.planning.decisionRecordedRefresh":

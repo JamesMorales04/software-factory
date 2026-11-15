@@ -315,6 +315,8 @@ describe("Settings", () => {
       ...provider,
       maxInputTokens: 60_000,
       maxOutputTokens: 12_000,
+      leadOutputTokens: 16_384,
+      leadRetryOutputTokens: 32_768,
     };
     mocks.listProviders.mockResolvedValue({ providers: [boundedProvider] });
     mocks.updateProvider.mockResolvedValue(boundedProvider);
@@ -330,12 +332,36 @@ describe("Settings", () => {
     await waitFor(() =>
       expect(mocks.updateProvider).toHaveBeenCalledWith(
         "codex",
-        expect.objectContaining({
-          maxInputTokens: 60_000,
-          maxOutputTokens: 32_768,
-        }),
+        expect.objectContaining({ maxOutputTokens: 32_768 }),
       ),
     );
+    // Only the changed bound is submitted, so an unchanged concurrent value is
+    // not overwritten by this save.
+    const payload = mocks.updateProvider.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(payload).not.toHaveProperty("maxInputTokens");
+  });
+
+  it("shows the structured Lead requirement without duplicating Core policy", async () => {
+    mocks.listProviders.mockResolvedValue({
+      providers: [
+        {
+          ...provider,
+          maxOutputTokens: 12_000,
+          leadOutputTokens: 16_384,
+          leadRetryOutputTokens: 32_768,
+        },
+      ],
+    });
+    renderSettings();
+    await screen.findByRole("heading", { name: "Settings" });
+    expect(screen.getByText(/16384 output tokens per call/i)).toBeDefined();
+    expect(screen.getByText(/32768-token ceiling/i)).toBeDefined();
+    expect(
+      screen.getByText(/accepts a positive value even below/i),
+    ).toBeDefined();
   });
 
   it("refuses a non-positive provider bound without calling Core", async () => {

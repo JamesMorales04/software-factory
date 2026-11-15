@@ -117,9 +117,9 @@ function ProviderCard({
   useEffect(() => {
     setModel(provider.model);
     setBaseUrl(provider.baseUrl);
-    // Core does not project the bounds yet. Keep the value the operator saved
-    // instead of clearing it on the reload; the card is keyed by provider, so a
-    // different provider never inherits it.
+    // Core projects the stored bound when a settings row exists. If a reload
+    // omits it, keep the value the operator saved instead of clearing it; the
+    // card is keyed by provider, so another provider never inherits it.
     if (typeof provider.maxInputTokens === "number") {
       setMaxInput(String(provider.maxInputTokens));
     }
@@ -175,10 +175,12 @@ function ProviderCard({
         ...(credential === "" ? {} : { credential }),
         enabled,
         isDefault,
-        ...(inputBound.value === undefined
+        ...(inputBound.value === undefined ||
+        inputBound.value === provider.maxInputTokens
           ? {}
           : { maxInputTokens: inputBound.value }),
-        ...(outputBound.value === undefined
+        ...(outputBound.value === undefined ||
+        outputBound.value === provider.maxOutputTokens
           ? {}
           : { maxOutputTokens: outputBound.value }),
       });
@@ -503,6 +505,15 @@ function ProviderCard({
             />
           </div>
           <p className="muted">{t("settings.provider.boundsHelp")}</p>
+          {typeof provider.leadOutputTokens === "number" &&
+            typeof provider.leadRetryOutputTokens === "number" && (
+              <p className="muted">
+                {t("settings.provider.leadRequirement", {
+                  base: provider.leadOutputTokens,
+                  retry: provider.leadRetryOutputTokens,
+                })}
+              </p>
+            )}
         </details>
         <details className="settings-advanced">
           <summary>{t("settings.provider.connectionDetails")}</summary>

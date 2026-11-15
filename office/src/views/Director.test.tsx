@@ -1358,8 +1358,9 @@ describe("Director", () => {
     await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
 
     expect(
-      await screen.findByText(/reported the environment as blocked/i),
+      await screen.findByText(/Lead rejected the environment plan/i),
     ).toBeDefined();
+    expect(screen.queryByText(/preparation is still pending/i)).toBeNull();
     expect(screen.queryByText("The plan review was recorded.")).toBeNull();
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull(),
@@ -1443,6 +1444,160 @@ describe("Director", () => {
       expect(screen.queryByText(/Core recorded this decision/i)).toBeNull(),
     );
     expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull();
+  });
+
+  it("does not acknowledge a 2xx review that omits reviewRecorded", async () => {
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValueOnce(pendingReviewPlanning)
+      .mockResolvedValue(approvedReviewPlanning);
+    mocks.reviewAgenticPlan.mockResolvedValue({
+      review: approvedPlanReview,
+      workflow: null,
+    });
+    renderDirector();
+    await openPendingPlanReview();
+    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+
+    expect(
+      await screen.findByText(
+        /did not confirm that the decision was recorded/i,
+      ),
+    ).toBeDefined();
+    expect(screen.queryByText("The plan review was recorded.")).toBeNull();
+  });
+
+  it("does not acknowledge a 2xx review that reports reviewRecorded false", async () => {
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValueOnce(pendingReviewPlanning)
+      .mockResolvedValue(pendingReviewPlanning);
+    mocks.reviewAgenticPlan.mockResolvedValue({
+      review: { ...approvedPlanReview, status: "PENDING" },
+      reviewRecorded: false,
+      environmentBlocked: false,
+      workflow: null,
+    });
+    renderDirector();
+    await openPendingPlanReview();
+    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+
+    expect(
+      await screen.findByText(
+        /did not confirm that the decision was recorded/i,
+      ),
+    ).toBeDefined();
+    expect(screen.queryByText("The plan review was recorded.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Approve plan" })).toBeDefined();
+  });
+
+  it("submits one plan review when the button is clicked twice before re-render", async () => {
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValueOnce(pendingReviewPlanning)
+      .mockResolvedValue(approvedReviewPlanning);
+    mocks.reviewAgenticPlan.mockResolvedValue({
+      review: approvedPlanReview,
+      reviewRecorded: true,
+      environmentBlocked: false,
+      workflow: null,
+    });
+    renderDirector();
+    await openPendingPlanReview();
+    const button = screen.getByRole("button", { name: "Approve plan" });
+    await act(async () => {
+      button.click();
+      button.click();
+      await Promise.resolve();
+    });
+    expect(mocks.reviewAgenticPlan).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not show a late plan-review notice on another selected request", async () => {
+    const secondPortfolio = {
+      ...portfolio[0],
+      id: "request-2",
+      objective: "Second request",
+    };
+    const secondDetail: AgenticRequestDetail = {
+      ...detail,
+      request: {
+        ...detail.request,
+        id: "request-2",
+        objective: "Second request",
+      },
+      plan: detail.plan ? { ...detail.plan, id: "plan-2" } : null,
+      operation: detail.operation
+        ? {
+            ...detail.operation,
+            id: "operation-request-2",
+            requestId: "request-2",
+          }
+        : null,
+    };
+    mocks.listAgenticPortfolio.mockResolvedValue([
+      portfolio[0],
+      secondPortfolio,
+    ]);
+    mocks.getAgenticRequest.mockImplementation((id: string) =>
+      id === "request-1"
+        ? Promise.resolve(detail)
+        : Promise.resolve(secondDetail),
+    );
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValueOnce(pendingReviewPlanning)
+      .mockResolvedValue(approvedReviewPlanning);
+    let resolveReview:
+      | ((value: {
+          review: typeof approvedPlanReview;
+          reviewRecorded: boolean;
+          environmentBlocked: boolean;
+          workflow: null;
+        }) => void)
+      | undefined;
+    mocks.reviewAgenticPlan.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveReview = resolve;
+        }),
+    );
+    renderDirector();
+    await openPendingPlanReview();
+    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Second request/ }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Second request" }),
+    ).toBeDefined();
+
+    await act(async () => {
+      resolveReview?.({
+        review: approvedPlanReview,
+        reviewRecorded: true,
+        environmentBlocked: false,
+        workflow: null,
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("The plan review was recorded.")).toBeNull();
+    expect(
+      screen.queryByText(/did not confirm that the decision was recorded/i),
+    ).toBeNull();
+  });
+
+  it("does not offer a plan decision when the current review is already approved", async () => {
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValue(approvedReviewPlanning);
+    renderDirector();
+    await screen.findByRole("heading", { name: "Plan review" });
+    expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull();
+    expect(
+      screen.queryByText(/awaiting an authenticated owner decision/i),
+    ).toBeNull();
   });
 
   it("does not let a late response overwrite a newly selected request", async () => {

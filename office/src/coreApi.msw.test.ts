@@ -91,6 +91,22 @@ describe("plan-review decision carrier", () => {
     });
   });
 
+  it("preserves a 2xx review that Core did not confirm as recorded", async () => {
+    server.use(
+      http.post("*/core-api/agentic/requests/:id/plan-review", () =>
+        HttpResponse.json({
+          review: recordedReview,
+          reviewRecorded: false,
+          environmentBlocked: false,
+          workflow: null,
+        }),
+      ),
+    );
+    await expect(
+      coreApi.reviewAgenticPlan("request-1", reviewInput),
+    ).resolves.toMatchObject({ reviewRecorded: false });
+  });
+
   it("consumes the recorded decision from a later environment failure", async () => {
     server.use(
       http.post("*/core-api/agentic/requests/:id/plan-review", () =>
@@ -108,6 +124,7 @@ describe("plan-review decision carrier", () => {
     expect(recordedPlanReview(error)).toEqual({
       reviewRecorded: true,
       environmentBlocked: false,
+      reviewRevision: 3,
       message: "the frozen Lead route is unavailable: provider offline",
       code: "ENVIRONMENT_LEAD_MODEL_UNAVAILABLE",
     });

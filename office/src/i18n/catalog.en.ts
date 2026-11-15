@@ -3299,7 +3299,9 @@ export const en = {
   "settings.provider.maxOutputTokens": "Max output tokens",
   "settings.provider.boundsNotReported": "Not reported by Core",
   "settings.provider.boundsHelp":
-    "Core applies these provider bounds to its model calls. Leave a field blank to keep the current value; Core rejects a bound below the frozen Lead requirement and reports the required value. Frozen pricing quotes and authorizations are not changed.",
+    "Leave a field blank to keep the current value. Core stores these bounds for new provider calls and accepts a positive value even below the structured Lead requirement; the later model preflight blocks the call and reports the required value. Frozen pricing quotes and authorizations are not changed.",
+  "settings.provider.leadRequirement":
+    "Structured Lead requirement: {base} output tokens per call, with a {retry}-token ceiling on the permitted truncation retry. Core blocks a call below the requirement.",
   "settings.provider.boundsInvalid":
     "{field} must be a whole number of tokens greater than zero.",
   "settings.provider.connectionDetails": "Connection details",
@@ -3827,7 +3829,9 @@ export const en = {
   "director.planning.reviewSuccess": "The plan review was recorded.",
   "director.planning.reviewError": "The plan review could not be recorded.",
   "director.planning.reviewRecordedEnvironmentBlocked":
-    "The owner decision was recorded. Core reported the environment as blocked, so preparation is still pending; this page does not restart execution.",
+    "The owner decision was recorded. The Lead rejected the environment plan and Core marked it blocked, so preparation did not continue. Review the blockers or recompile the environment in Director; this page does not restart execution.",
+  "director.planning.reviewNotConfirmed":
+    "Core did not confirm that the decision was recorded for this plan revision. The request was refreshed; review the plan state before deciding again.",
   "director.planning.reviewRecordedPreparationPending":
     "The owner decision was recorded, but preparation did not finish: {detail} Refresh the request state to see what Core recorded; this page does not restart execution.",
   "director.planning.decisionRecordedRefresh":

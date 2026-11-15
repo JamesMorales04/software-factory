@@ -196,6 +196,11 @@ export function Director() {
   const activeId =
     selectedId ||
     (portfolio !== null && portfolio.length > 0 ? portfolio[0].id : "");
+  // A plan-review response is only allowed to update the request that issued
+  // it. A single in-flight guard also prevents a double click from posting the
+  // same decision twice before React re-renders the disabled button.
+  const activeRequestRef = useRef(activeId);
+  const reviewInFlight = useRef(false);
 
   const environment = detail?.environment ?? null;
   const reviewBinding = currentPlanningReview(planning);
@@ -259,6 +264,7 @@ export function Director() {
     // Action-scoped notices belong to the request that produced them. Keeping
     // them across a selection change showed a success message from one request
     // on another request's panel.
+    activeRequestRef.current = activeId;
     if (activeId === "") return;
     setPriorityNotice(null);
     setPriorityError(null);
@@ -608,25 +614,44 @@ export function Director() {
   async function reviewPlan(
     decision: "APPROVE" | "CHANGES_REQUESTED" | "REJECT",
   ) {
+    if (reviewInFlight.current) return;
     if (!activeId || !planning?.review) return;
     if (reviewRationale.trim() === "") {
       setPlanningError(t("director.planning.rationaleRequired"));
       return;
     }
     const requestId = activeId;
+    const planRevision = planning.review.planRevision;
+    const planSha256 = planning.review.planSha256;
+    const stillCurrent = () => activeRequestRef.current === requestId;
+    reviewInFlight.current = true;
     setReviewBusy(decision);
     setPlanningError(null);
     setPlanningNotice(null);
     try {
       const outcome = await coreApi.reviewAgenticPlan(requestId, {
-        planRevision: planning.review.planRevision,
-        planSha256: planning.review.planSha256,
+        planRevision,
+        planSha256,
         decision,
         rationale: reviewRationale.trim(),
       });
+      if (!stillCurrent()) return;
+      // Core records the decision before it prepares the environment. Office
+      // may only acknowledge it when the response confirms the recorded
+      // decision for the exact revision it submitted; a 2xx alone is not proof.
+      const confirmed =
+        outcome.reviewRecorded === true &&
+        outcome.review?.planRevision === planRevision;
+      if (!confirmed) {
+        await reloadDirector();
+        if (!stillCurrent()) return;
+        setPlanningNotice(t("director.planning.reviewNotConfirmed"));
+        return;
+      }
       const environmentBlocked = outcome.environmentBlocked === true;
       setRecordedDecision({ requestId });
       await reloadDirector();
+      if (!stillCurrent()) return;
       setReviewRationale("");
       setPlanningNotice(
         environmentBlocked
@@ -635,7 +660,10 @@ export function Director() {
       );
     } catch (cause) {
       const recorded = recordedPlanReview(cause);
-      if (recorded === null) {
+      const confirmed =
+        recorded !== null && recorded.reviewRevision === planRevision;
+      if (!confirmed) {
+        if (!stillCurrent()) return;
         setPlanningError(errorText(cause, t("director.planning.reviewError")));
         return;
       }
@@ -645,12 +673,14 @@ export function Director() {
       setRecordedDecision({ requestId });
       setReviewRationale("");
       await reloadDirector();
+      if (!stillCurrent()) return;
       setPlanningNotice(
         t("director.planning.reviewRecordedPreparationPending", {
           detail: recorded.message,
         }),
       );
     } finally {
+      reviewInFlight.current = false;
       setReviewBusy(null);
     }
   }
@@ -1553,7 +1583,7 @@ export function Director() {
                       )}
                       {planning.review?.status === "PENDING" &&
                         reviewBinding.current &&
-                        (recordedDecision ? (
+                        (recordedDecision?.requestId === activeId ? (
                           <p
                             className="ui-callout ui-callout--info"
                             role="status"
