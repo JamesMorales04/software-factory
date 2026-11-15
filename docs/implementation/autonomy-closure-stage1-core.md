@@ -182,6 +182,42 @@ boolean/identity fields without a new endpoint:
 review remains visible but cannot be presented as the current owner decision.
 `authorization.available` is not a readiness substitute.
 
+## Autonomous intake state projection
+
+For `mode=AUTONOMOUS`, `state` and `stateDetail` are derived from the agentic
+plan review, materials and environment, not from the Lead's inherited
+`Ready → AWAITING_APPROVAL` surface. No new field or endpoint is added.
+
+| Fact | `state` | Meaning |
+|---|---|---|
+| Campaign/Gate/withdrawal | existing precedence | Campaign, Gate and withdrawal remain authoritative |
+| Lead `Submitted`/`Assessing`/`Planned` | existing Lead mapping | early assessment/plan stages |
+| Current review `PENDING`/`REJECTED`/`CHANGES_REQUESTED`, materials ready, environment not `BLOCKED` | `AWAITING_APPROVAL` | the only owner-decision wait (includes the R4.1 re-decision) |
+| Environment plan `BLOCKED`/blockers | `BLOCKED` | `stateDetail` carries the real environment blocker |
+| Agentic operation `BLOCKED` with missing artifacts/stale review | `BLOCKED` | `stateDetail` names the missing artifacts or the unbound review |
+| Approved current review, or preparation/rebinding in progress | `PLAN_READY` | no manual authorization; Core prepares and starts, or is rebinding the review |
+
+`AWAITING_APPROVAL` is therefore never produced by an `AUTO_APPROVED` agentic
+review or by a blocked environment. The start authority is unchanged: it still
+revalidates policy, funding, readiness, scope and environment. `reviewRecorded`
+is unchanged.
+
+## Architecture structural labels
+
+An architecture component is a deterministic structural label
+`<unit-id>: <bounded unit title>`, not the full unit objective. The full request
+objective remains in the architecture context (bounded at `MAX_TEXT_CHARS`) and
+in the request/Lead/WorkGraph records. A model that copies a long objective into
+a unit objective can no longer exceed `MAX_SHORT_CHARS`; `MAX_SHORT_CHARS` and
+the objective are not relaxed or silently truncated.
+
+Other architecture list values derived from the WorkGraph/stack (boundaries,
+acceptance interfaces, observed data/deployment, security surfaces) keep their
+normalized value when it fits. If a value would exceed `MAX_SHORT_CHARS`, Core
+emits a deterministic reference plus a short SHA-256 and leaves the full value in
+the WorkGraph/stack decision instead of truncating it into a misleading fragment.
+
+
 ## Tests
 
 New Core tests:
@@ -212,7 +248,15 @@ New Core tests:
   terminal;
 - the provider projection carries the stored bounds and the protocol bounds,
   including a GET after a partial PUT and an exact `PUT(32768) → GET(32768)`
-  round trip (not a universal policy value).
+  round trip (not a universal policy value);
+- a >996-character unit objective produces a bounded component and preserves
+  the full objective in the architecture context; unicode/control text stays
+  control-free; long acceptance/path values use a digest reference instead of a
+  truncation;
+- an `AUTO_APPROVED` agentic review with a blocked environment projects
+  `BLOCKED`, a real current `PENDING` review projects `AWAITING_APPROVAL`, a
+  stale review is not owner wait, and incomplete materials with a stopped
+  operation project `BLOCKED` with the missing artifacts.
 
 The deterministic test provider is a local fixture. It is development evidence,
 not live provider or independent acceptance evidence.

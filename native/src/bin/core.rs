@@ -10488,6 +10488,167 @@ fn intake_state_from_lead(
     factory_native::intake::IntakeState::from_lead_projection(state)
 }
 
+struct AutonomousIntakeState {
+    state: factory_native::intake::IntakeState,
+    detail: String,
+}
+
+/// Project an AUTONOMOUS request from its agentic plan review, materials and
+/// environment instead of the Lead's inherited owner-approval surface. The
+/// owner decision is real only for a current PENDING/REJECTED/CHANGES_REQUESTED
+/// review with ready materials and no blocked environment. All other states
+/// stay truthful about autonomous preparation and blockers; no state grants
+/// authority or starts a Campaign.
+async fn autonomous_intake_state(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    lead: &factory_native::db::LeadRequestRecord,
+    withdrawal: Option<&factory_native::db::LeadWithdrawalRecord>,
+) -> Result<Option<AutonomousIntakeState>, Error> {
+    use factory_native::intake::IntakeMode;
+    use factory_native::intake::IntakeState;
+    use factory_native::lead::LeadRequestState;
+
+    if record.mode != IntakeMode::Autonomous
+        || lead.campaign_id.is_some()
+        || record.campaign_id.is_some()
+        || !matches!(
+            lead.state,
+            LeadRequestState::Ready | LeadRequestState::Frozen
+        )
+        || withdrawal.is_some()
+    {
+        return Ok(None);
+    }
+    let plan = match app.db.latest_planning_artifact(&record.id, "PLAN").await {
+        Ok(plan) => plan,
+        Err(Error::NotFound) => {
+            return Ok(Some(AutonomousIntakeState {
+                state: IntakeState::PlanReady,
+                detail: "Autonomous preparation is in progress; Core is compiling the plan.".into(),
+            }));
+        }
+        Err(error) => return Err(error),
+    };
+    let review = match app.db.latest_plan_review(&record.id).await {
+        Ok(review) => Some(review),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    let review_current = review.as_ref().is_some_and(|review| {
+        review.plan_revision == plan.revision && review.plan_sha256 == plan.content_sha256
+    });
+    let (environment_blocked, environment_detail) =
+        match app.db.latest_environment_plan(&record.id).await {
+            Ok(plan) => {
+                if plan.status == "BLOCKED" || !plan.plan.blockers.is_empty() {
+                    (
+                        true,
+                        Some(
+                            plan.plan
+                                .blockers
+                                .first()
+                                .map(|blocker| {
+                                    format!("{}: {}", blocker.code.as_str(), blocker.message)
+                                })
+                                .unwrap_or_else(|| "the environment plan is blocked".into()),
+                        ),
+                    )
+                } else {
+                    (false, None)
+                }
+            }
+            Err(Error::NotFound) => (false, None),
+            Err(error) => return Err(error),
+        };
+    let operation_status = match app.db.agentic_operation_for_request(&record.id).await {
+        Ok(operation) => Some(operation.status),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    let operation_blocked = operation_status.as_deref() == Some("BLOCKED");
+    let review_status = review
+        .as_ref()
+        .filter(|_| review_current)
+        .map(|review| review.status.as_str());
+
+    if let Some(status) = review_status
+        && matches!(status, "PENDING" | "REJECTED" | "CHANGES_REQUESTED")
+        && !environment_blocked
+    {
+        let context = agentic_triage_context(app, record).await?;
+        let readiness = planning_readiness(app, &record.id, plan.revision, &context).await?;
+        if readiness.materials_ready {
+            let detail = match status {
+                "PENDING" => {
+                    "Autonomous plan is ready for the authenticated owner decision.".into()
+                }
+                "REJECTED" => {
+                    "The plan was rejected; a new authenticated owner decision is required.".into()
+                }
+                _ => "The owner requested plan changes; a new authenticated decision is required."
+                    .into(),
+            };
+            return Ok(Some(AutonomousIntakeState {
+                state: IntakeState::AwaitingApproval,
+                detail,
+            }));
+        }
+    }
+    if environment_blocked {
+        return Ok(Some(AutonomousIntakeState {
+            state: IntakeState::Blocked,
+            detail: format!(
+                "Autonomous preparation is blocked by the environment: {}",
+                environment_detail.unwrap_or_else(|| "the environment plan is blocked".into())
+            ),
+        }));
+    }
+    if operation_blocked {
+        let context = agentic_triage_context(app, record).await?;
+        let readiness = planning_readiness(app, &record.id, plan.revision, &context).await?;
+        let detail = if !readiness.missing_artifacts.is_empty() {
+            format!(
+                "Autonomous preparation is blocked; missing planning artifacts: {}",
+                readiness.missing_artifacts.join(", ")
+            )
+        } else if !review_current {
+            "Autonomous preparation is blocked; the current plan review is not bound.".into()
+        } else {
+            format!(
+                "Autonomous preparation is blocked; plan review status {}.",
+                review
+                    .as_ref()
+                    .map(|review| review.status.as_str())
+                    .unwrap_or("MISSING")
+            )
+        };
+        return Ok(Some(AutonomousIntakeState {
+            state: IntakeState::Blocked,
+            detail,
+        }));
+    }
+    if review_current
+        && review_status.is_some_and(|status| matches!(status, "AUTO_APPROVED" | "OWNER_APPROVED"))
+    {
+        return Ok(Some(AutonomousIntakeState {
+            state: IntakeState::PlanReady,
+            detail:
+                "Autonomous plan and review are approved; Core is preparing the environment and starting the Campaign."
+                    .into(),
+        }));
+    }
+    let detail = if !review_current {
+        "Autonomous preparation is in progress; the runner is rebinding the current plan review."
+    } else {
+        "Autonomous preparation is in progress; the owner surface activates only when materials and environment are ready."
+    };
+    Ok(Some(AutonomousIntakeState {
+        state: IntakeState::PlanReady,
+        detail: detail.into(),
+    }))
+}
+
 fn intake_state_detail(
     state: factory_native::intake::IntakeState,
     lead: &factory_native::db::LeadRequestRecord,
@@ -10570,15 +10731,22 @@ async fn intake_request_summary_value(
         None => (None, None),
     };
     let withdrawal = app.db.lead_withdrawal(&lead.id).await?;
+    let (state, state_detail) =
+        match autonomous_intake_state(app, record, &lead, withdrawal.as_ref()).await? {
+            Some(projection) => (projection.state, projection.detail),
+            None => (
+                state,
+                intake_state_detail(
+                    state,
+                    &lead,
+                    withdrawal.as_ref(),
+                    campaign_status.as_deref(),
+                    gate_outcome.as_deref(),
+                ),
+            ),
+        };
     let authorization = app.db.intake_authorization_state(&record.id, state).await;
     let spending = inference_spending_value(app, &record.id).await?;
-    let state_detail = intake_state_detail(
-        state,
-        &lead,
-        withdrawal.as_ref(),
-        campaign_status.as_deref(),
-        gate_outcome.as_deref(),
-    );
     let mut value = json!({
         "id": record.id,
         "projectId": record.project_id,
@@ -29400,6 +29568,238 @@ mod tests {
                 let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
                 assert!(record.campaign_id.is_some());
             }
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn autonomous_auto_approved_with_a_blocked_environment_is_not_owner_wait() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-projection-env-blocked").await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            prepare_autonomous_request(&app, &request)
+                .await
+                .expect("initial preparation completes");
+            let plan = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            let review = fixture.app.db.latest_plan_review(&intake_id).await.unwrap();
+            assert_eq!(review.status, "AUTO_APPROVED");
+            assert_eq!(review.plan_sha256, plan.content_sha256);
+            let config = fixture
+                .app
+                .db
+                .project_config(&request.project_id)
+                .await
+                .unwrap();
+            let conventions = factory_native::planning::environment::discover_project_conventions(
+                &request.project_id,
+                std::path::Path::new(&config.repository),
+                &config.base_commit,
+                chrono::Utc::now(),
+            )
+            .unwrap();
+            let revision = fixture
+                .app
+                .db
+                .latest_environment_plan(&intake_id)
+                .await
+                .map(|plan| plan.plan.revision.saturating_add(1))
+                .unwrap_or(1);
+            let blocked = blocked_environment_plan(
+                &request,
+                revision,
+                "R0",
+                &conventions,
+                factory_native::planning::environment::EnvironmentBlocker {
+                    code: factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
+                    message: "the fixture builder is unavailable".into(),
+                },
+                app.environment_builder().descriptor(),
+            );
+            fixture
+                .app
+                .db
+                .save_environment_plan(&blocked)
+                .await
+                .unwrap();
+            let summary = intake_request_summary_value(&app, &request).await.unwrap();
+            assert_eq!(summary["state"], "BLOCKED", "{summary}");
+            assert!(
+                summary["stateDetail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.contains("ENVIRONMENT_BUILDER_UNAVAILABLE")),
+                "{summary}"
+            );
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn autonomous_pending_owner_review_is_the_only_owner_wait() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-projection-owner-wait").await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            prepare_autonomous_request(&app, &request)
+                .await
+                .expect("initial preparation completes");
+            let plan = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_plan_review(factory_native::db::NewPlanReview {
+                    request_id: &intake_id,
+                    plan_revision: plan.revision,
+                    plan_sha256: &plan.content_sha256,
+                    status: "PENDING",
+                    principal_id: "core:planning",
+                    rationale: "The owner must decide this plan.",
+                    points: 0,
+                })
+                .await
+                .unwrap();
+            let summary = intake_request_summary_value(&app, &request).await.unwrap();
+            assert_eq!(summary["state"], "AWAITING_APPROVAL", "{summary}");
+            assert!(
+                summary["stateDetail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.contains("owner decision")),
+                "{summary}"
+            );
+            let detail = intake_request_value(&app, &request, true).await.unwrap();
+            assert_eq!(detail["planning"]["reviewStatus"], "PENDING", "{detail}");
+            assert_eq!(detail["planning"]["reviewCurrent"], true, "{detail}");
+            assert_eq!(detail["planning"]["materialsReady"], true, "{detail}");
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn a_stale_autonomous_review_is_not_projected_as_owner_wait() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-projection-stale").await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            prepare_autonomous_request(&app, &request)
+                .await
+                .expect("initial preparation completes");
+            let plan = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_planning_artifact(
+                    &intake_id,
+                    "PLAN",
+                    plan.revision.saturating_add(1),
+                    &plan.content_json,
+                )
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .set_agentic_operation_status(&intake_id, "QUEUED")
+                .await
+                .unwrap();
+            let summary = intake_request_summary_value(&app, &request).await.unwrap();
+            assert_eq!(summary["state"], "PLAN_READY", "{summary}");
+            assert_ne!(summary["state"], "AWAITING_APPROVAL", "{summary}");
+            assert!(
+                summary["stateDetail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.contains("rebinding")),
+                "{summary}"
+            );
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn incomplete_autonomous_materials_are_blocked_not_owner_wait() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-projection-materials").await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            prepare_autonomous_request(&app, &request)
+                .await
+                .expect("initial preparation completes");
+            let plan = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_plan_review(factory_native::db::NewPlanReview {
+                    request_id: &intake_id,
+                    plan_revision: plan.revision,
+                    plan_sha256: &plan.content_sha256,
+                    status: "PENDING",
+                    principal_id: "core:planning",
+                    rationale: "The owner must decide this plan.",
+                    points: 0,
+                })
+                .await
+                .unwrap();
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            sqlx::query::query("DELETE FROM planning_artifacts WHERE request_id=?1 AND kind='DOD'")
+                .bind(&intake_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+            fixture
+                .app
+                .db
+                .set_agentic_operation_status(&intake_id, "BLOCKED")
+                .await
+                .unwrap();
+            let summary = intake_request_summary_value(&app, &request).await.unwrap();
+            assert_eq!(summary["state"], "BLOCKED", "{summary}");
+            assert_ne!(summary["state"], "AWAITING_APPROVAL", "{summary}");
+            assert!(
+                summary["stateDetail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.contains("DOD")),
+                "{summary}"
+            );
 
             app.db.close().await;
             fixture.app.db.close().await;
