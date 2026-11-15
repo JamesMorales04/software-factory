@@ -29,7 +29,15 @@ PORT = 8080
 # Per-phase counters are test-support evidence only. They are read from the
 # fixture container by the scenario harness and never presented as product
 # inference or provider usage.
-PHASES = ("assessment", "planner", "environment", "spec", "semantic_review", "other")
+PHASES = (
+    "assessment",
+    "lead_stack_selection",
+    "planner",
+    "environment",
+    "spec",
+    "semantic_review",
+    "other",
+)
 COUNTERS = {phase: 0 for phase in PHASES}
 COUNTERS_LOCK = threading.Lock()
 
@@ -46,6 +54,11 @@ def counters():
 
 
 def classify_prompt(system, user=""):
+    # Greenfield stack selection is its own bounded Lead phase; it must be
+    # matched before the generic assessment fallback, because its user prompt is
+    # JSON without the assessment identity block.
+    if "bounded Software Factory Stack Selector" in system:
+        return "lead_stack_selection"
     if "bounded Software Factory Planner" in system:
         return "planner"
     if "bounded Software Factory Spec Manager" in system:
@@ -200,6 +213,163 @@ def assessment(user, ctx):
         },
         500,
         500,
+    )
+
+
+# Deterministic fixture environments for the stack options Core can offer.
+# These are test data only: Core owns the real catalog, validates the selected
+# option and capability, and compiles the environment. The proposal must cover
+# the selected language and framework with an exact toolchain id, package
+# name/nix attribute segment or command executable (see
+# native/src/planning/stack.rs), so each entry carries that token explicitly.
+STACK_SELECTION_PREFERENCE = (
+    "python-service",
+    "rust-service",
+    "rust-cli",
+    "typescript-react",
+)
+
+STACK_ENVIRONMENTS = {
+    "python": {
+        "toolchains": [{"id": "python3", "version": "3.12"}],
+        "packages": [
+            {
+                "name": "python3",
+                "version": "3.12",
+                "license": "MIT",
+                "attr": "python312",
+            },
+            {
+                "name": "fastapi",
+                "version": "0.110.0",
+                "license": "MIT",
+                "attr": "python312Packages.fastapi",
+            },
+        ],
+        "commands": {
+            "build": ["python3", "-m", "compileall", "-q", "src"],
+            "test": ["python3", "-m", "pytest", "-q"],
+            "lint": ["python3", "-m", "ruff", "check", "src"],
+            "format": ["python3", "-m", "ruff", "format", "--check", "src"],
+            "typecheck": ["python3", "-m", "mypy", "src"],
+            "run": ["python3", "-m", "src"],
+        },
+    },
+    "rust": {
+        "toolchains": [{"id": "rustc", "version": "1.75.0"}],
+        "packages": [
+            {
+                "name": "rustc",
+                "version": "1.75.0",
+                "license": "MIT",
+                "attr": "rustc",
+            },
+            {
+                "name": "cargo",
+                "version": "1.75.0",
+                "license": "MIT",
+                "attr": "cargo",
+            },
+            {
+                "name": "axum",
+                "version": "0.7.5",
+                "license": "MIT",
+                "attr": "axum",
+            },
+            {
+                "name": "clap",
+                "version": "4.5.4",
+                "license": "MIT",
+                "attr": "clap",
+            },
+        ],
+        "commands": {
+            "build": ["cargo", "build"],
+            "test": ["cargo", "test"],
+            "lint": ["cargo", "clippy", "--", "-D", "warnings"],
+            "format": ["cargo", "fmt", "--check"],
+            "typecheck": ["cargo", "check"],
+            "run": ["cargo", "run"],
+        },
+    },
+    "typescript": {
+        "toolchains": [{"id": "nodejs", "version": "20.11.0"}],
+        "packages": [
+            {
+                "name": "nodejs",
+                "version": "20.11.0",
+                "license": "MIT",
+                "attr": "nodejs",
+            },
+            {
+                "name": "react",
+                "version": "18.2.0",
+                "license": "MIT",
+                "attr": "react",
+            },
+        ],
+        "commands": {
+            "build": ["npm", "run", "build"],
+            "test": ["npm", "test"],
+            "lint": ["npm", "run", "lint"],
+            "format": ["npm", "run", "format"],
+            "typecheck": ["npm", "run", "typecheck"],
+            "run": ["npm", "start"],
+        },
+    },
+}
+
+
+def stack_selection(user):
+    """One deterministic StackSelectionModel + concrete environment proposal.
+
+    The catalog, capability check and environment coverage are validated by
+    Core; this fixture only returns stable test data for an authorized option.
+    It never adds options, capabilities or paths, and the output is SIMULATED.
+    """
+    payload = json.loads(user)
+    options = payload.get("options") or []
+    capabilities = set(payload.get("capabilities") or [])
+    if not options:
+        raise ValueError("stack selection prompt has no deterministic options")
+    authorized = [
+        option
+        for option in options
+        if isinstance(option, dict)
+        and option.get("requiredCapability") in capabilities
+    ]
+    if not authorized:
+        raise ValueError("stack selection has no authorized deterministic option")
+    by_id = {option.get("id"): option for option in authorized}
+    chosen = next(
+        (by_id[option_id] for option_id in STACK_SELECTION_PREFERENCE if option_id in by_id),
+        authorized[0],
+    )
+    language = str(chosen.get("language") or "").strip().lower()
+    environment = STACK_ENVIRONMENTS.get(language)
+    if environment is None:
+        raise ValueError(f"stack selection has no fixture environment for {language!r}")
+    proposal = {
+        "toolchains": environment["toolchains"],
+        "packages": environment["packages"],
+        "commands": {
+            name: {"argv": list(argv)} for name, argv in environment["commands"].items()
+        },
+    }
+    rationale = (
+        f"Selects {chosen.get('id')} because the objective is a small deterministic "
+        "Compose service and the project authorizes its required capability."
+    )
+    return chat_response(
+        {
+            "optionId": chosen.get("id"),
+            "language": chosen.get("language"),
+            "framework": chosen.get("framework"),
+            "rationale": rationale,
+            "environmentProposal": proposal,
+        },
+        400,
+        300,
     )
 
 
@@ -361,6 +531,8 @@ class Handler(BaseHTTPRequestHandler):
                 record_phase(phase)
                 if phase == "planner":
                     response = planner(user, context())
+                elif phase == "lead_stack_selection":
+                    response = stack_selection(user)
                 elif phase == "environment":
                     response = environment_review(user)
                 elif phase == "spec":
