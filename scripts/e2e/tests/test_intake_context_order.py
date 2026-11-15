@@ -96,3 +96,133 @@ class IntakeContextOrderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OwnerWaitAndErrorScopeTests(unittest.TestCase):
+    def test_auto_approved_preparation_is_not_an_owner_wait(self) -> None:
+        projection = {
+            "state": "AWAITING_APPROVAL",
+            "planning": {
+                "materialsReady": False,
+                "reviewCurrent": True,
+                "reviewStatus": "AUTO_APPROVED",
+            },
+        }
+        self.assertFalse(compose_intake._owner_wait_is_real(projection))
+
+    def test_current_pending_review_with_materials_is_a_real_owner_wait(self) -> None:
+        projection = {
+            "state": "AWAITING_APPROVAL",
+            "planning": {
+                "materialsReady": True,
+                "reviewCurrent": True,
+                "reviewStatus": "PENDING",
+            },
+        }
+        self.assertTrue(compose_intake._owner_wait_is_real(projection))
+
+    def test_only_new_errors_for_this_request_are_relevant(self) -> None:
+        diagnostics = {
+            "errors": {
+                "old-request|assessment": "already seen",
+                "other-request|assessment": "other run",
+                "mine|assessment": "current failure",
+                "|planner": "no identity",
+            }
+        }
+        relevant = compose_intake._fixture_relevant_errors(
+            {"old-request|assessment"}, diagnostics, "mine"
+        )
+        self.assertEqual(relevant, {"mine|assessment": "current failure"})
+
+
+class PerRequestContextTests(unittest.TestCase):
+    def load_fixture(self):
+        import importlib.util
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parents[3]
+        fixture_path = repo / "scripts" / "fixtures" / "compose-model-fixture.py"
+        spec = importlib.util.spec_from_file_location("compose_model_fixture_r6", fixture_path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+
+    def context(self, request_id):
+        return {
+            "projectId": "project-1",
+            "actionId": "action-1",
+            "requestId": request_id,
+            "objective": "Add the deterministic Compose fixture candidate.",
+            "baseRevision": "base-1",
+            "projectConfigHash": "b" * 64,
+            "qualityProfile": "generic",
+            "provider": "fixture",
+            "model": "fixture-model",
+            "allowedPaths": ["src"],
+            "capabilities": ["repository-edit", "generic-toolchain"],
+            "checks": [],
+        }
+
+    def prompt(self):
+        return (
+            "Objective: Add the deterministic Compose fixture candidate."
+            ". Project: project-1. Action: action-1. Request: request-1."
+        )
+
+    def test_two_requests_keep_their_own_identity(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        fixture = self.load_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            model_dir = Path(directory)
+            (model_dir / "contexts").mkdir()
+            fixture.CONTEXT_PATH = model_dir / "context.json"
+            fixture.CONTEXTS_DIR = model_dir / "contexts"
+            first = self.context("request-1")
+            second = self.context("request-2")
+            (model_dir / "contexts" / "request-1.json").write_text(json.dumps(first))
+            (model_dir / "contexts" / "request-2.json").write_text(json.dumps(second))
+            body = json.loads(
+                fixture.assessment(self.prompt())["choices"][0]["message"]["content"]
+            )
+            self.assertEqual(body["requestId"], "request-1")
+            self.assertEqual(fixture.context("request-2")["requestId"], "request-2")
+
+    def test_barrier_reads_the_real_context_file(self) -> None:
+        import json
+        import tempfile
+        import threading
+        from pathlib import Path
+
+        fixture = self.load_fixture()
+        result = {}
+        with tempfile.TemporaryDirectory() as directory:
+            model_dir = Path(directory)
+            fixture.CONTEXT_PATH = model_dir / "context.json"
+            fixture.CONTEXTS_DIR = model_dir / "contexts"
+            fixture.CONTEXT_PATH.write_text(json.dumps(self.context("")))
+            barrier = threading.Barrier(2)
+
+            def dispatch():
+                barrier.wait()
+                result["body"] = json.loads(
+                    fixture.assessment(self.prompt())["choices"][0]["message"]["content"]
+                )
+
+            def finalize():
+                barrier.wait()
+                (model_dir / "contexts").mkdir()
+                (model_dir / "contexts" / "request-1.json").write_text(
+                    json.dumps(self.context("request-1"))
+                )
+
+            threads = [threading.Thread(target=dispatch), threading.Thread(target=finalize)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(result["body"]["requestId"], "request-1")

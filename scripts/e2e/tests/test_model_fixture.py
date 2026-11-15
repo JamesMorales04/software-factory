@@ -148,6 +148,15 @@ def stack_options(*, web=False, include_python=True):
             "requiredCapability": "generic-toolchain",
         }
     ]
+    options.append(
+        {
+            "id": "rust-cli",
+            "language": "rust",
+            "framework": "clap",
+            "summary": "Rust with clap for a small, portable command-line tool.",
+            "requiredCapability": "generic-toolchain",
+        }
+    )
     if include_python:
         options.append(
             {
@@ -361,7 +370,7 @@ class StackSelectionResponseTests(unittest.TestCase):
         fixture = load_fixture()
         for option_id, language, framework in (
             ("python-service", "python", "fastapi"),
-            ("rust-service", "rust", "axum"),
+            ("rust-cli", "rust", "clap"),
         ):
             with self.subTest(option_id=option_id):
                 options = [option for option in stack_options() if option["id"] == option_id]
@@ -389,17 +398,14 @@ class StackSelectionResponseTests(unittest.TestCase):
             self.assertTrue(command["argv"])
             self.assertEqual(command["argv"][0], command["argv"][0].strip())
 
-    def test_selects_the_only_authorized_option_when_capability_is_narrow(self) -> None:
+    def test_fails_closed_for_a_builder_unsupported_option(self) -> None:
         fixture = load_fixture()
         options = stack_options(web=True)
-        selection = content(
+        with self.assertRaises(ValueError) as raised:
             fixture.stack_selection(
                 stack_prompt(options, capabilities=("repository-edit", "node-toolchain"))
             )
-        )
-        self.assertEqual(selection["optionId"], "typescript-react")
-        tokens = proposal_tokens(selection["environmentProposal"])
-        self.assertIn("react", tokens)
+        self.assertIn("not builder-valid", str(raised.exception))
 
     def test_fails_closed_without_an_authorized_option(self) -> None:
         fixture = load_fixture()
@@ -514,16 +520,12 @@ class R4ProposalContractTests(unittest.TestCase):
         proposals = {}
         for option_id, options in (
             ("python-service", stack_options()),
-            ("rust-service", [o for o in stack_options() if o["id"] == "rust-service"]),
-            ("typescript-react", [o for o in stack_options(web=True) if o["id"] == "typescript-react"]),
+            ("rust-cli", [o for o in stack_options() if o["id"] == "rust-cli"]),
         ):
-            capabilities = (
-                ("repository-edit", "node-toolchain")
-                if option_id == "typescript-react"
-                else ("repository-edit", "generic-toolchain")
-            )
             selection = content(
-                fixture.stack_selection(stack_prompt(options, capabilities=capabilities))
+                fixture.stack_selection(
+                    stack_prompt(options, capabilities=("repository-edit", "generic-toolchain"))
+                )
             )
             proposals[option_id] = selection
         return fixture, proposals
@@ -538,7 +540,7 @@ class R4ProposalContractTests(unittest.TestCase):
 
     def test_all_three_environments_satisfy_the_documented_rust_contract(self) -> None:
         _, proposals = self.proposals()
-        self.assertEqual(len(proposals), 3)
+        self.assertEqual(len(proposals), 2)
         for option_id, selection in proposals.items():
             with self.subTest(option=option_id):
                 self.assertEqual(
@@ -553,6 +555,23 @@ class R4ProposalContractTests(unittest.TestCase):
         del proposal["packages"][0]["source"]
         violations = documented_rust_contract_violations(proposal)
         self.assertTrue(any("source must be exactly" in item for item in violations), violations)
+
+    def test_pins_match_the_builder_observation(self) -> None:
+        _, proposals = self.proposals()
+        python = proposals["python-service"]["environmentProposal"]
+        rust = proposals["rust-cli"]["environmentProposal"]
+        self.assertEqual(
+            [(p["name"], p["version"], p["license"]) for p in python["packages"]],
+            [("fastapi", "0.115.12", "MIT")],
+        )
+        self.assertEqual(
+            [(p["name"], p["version"], p["license"]) for p in rust["packages"]],
+            [("clap", "1.2.6", "MIT")],
+        )
+        self.assertEqual(
+            [(t["id"], t["version"]) for t in rust["toolchains"]],
+            [("rustc", "1.86.0"), ("cargo", "1.86.0")],
+        )
 
     def test_top_level_model_fields_are_bounded(self) -> None:
         _, proposals = self.proposals()
@@ -663,7 +682,7 @@ class R5ContextRaceTests(unittest.TestCase):
         fixture.record_error("assessment", "assessment context is not available")
         diagnostics = fixture.diagnostics()
         self.assertEqual(
-            diagnostics["errors"]["assessment"], "assessment context is not available"
+            diagnostics["errors"]["|assessment"], "assessment context is not available"
         )
         fixture.ERRORS.clear()
 

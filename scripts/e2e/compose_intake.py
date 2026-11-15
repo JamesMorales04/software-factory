@@ -708,6 +708,60 @@ def _fixture_counters(context: Context) -> dict[str, int] | None:
     return diagnostics["counters"] if diagnostics else None
 
 
+def _owner_wait_is_real(projection: dict[str, Any]) -> bool:
+    """True only for a genuine explicit owner-approval wait.
+
+    The AUTONOMOUS intake projection inherits the Lead owner state, so
+    ``AWAITING_APPROVAL`` alone is not terminal: the autopilot keeps preparing
+    while the agentic review is ``AUTO_APPROVED``. A real owner wait requires
+    materials ready, a current review and an owner-decision status.
+    """
+
+    if projection.get("state") != "AWAITING_APPROVAL":
+        return False
+    planning = projection.get("planning") or {}
+    review_status = str(planning.get("reviewStatus") or "").upper()
+    return bool(
+        planning.get("materialsReady")
+        and planning.get("reviewCurrent")
+        and review_status in {"PENDING", "CHANGES_REQUESTED", "REJECTED"}
+    )
+
+
+def _fixture_relevant_errors(
+    baseline: set[str], diagnostics: dict[str, Any] | None, lead_id: str
+) -> dict[str, str]:
+    """New fixture errors that belong to this request, never another one."""
+
+    errors = (diagnostics or {}).get("errors") or {}
+    relevant: dict[str, str] = {}
+    for key, message in errors.items():
+        if key in baseline:
+            continue
+        identity, _, phase = str(key).partition("|")
+        if identity == lead_id or (not identity and phase == "assessment"):
+            relevant[str(key)] = str(message)
+    return relevant
+
+
+def _scenario_failure(
+    projection: dict[str, Any], *, label: str, fixture_errors: dict[str, str] | None = None
+) -> ScenarioError:
+    planning = projection.get("planning") or {}
+    environment = projection.get("environment") or {}
+    return ScenarioError(
+        f"{label}: state={projection.get('state')!r} "
+        f"detail={projection.get('stateDetail')!r} campaignId={projection.get('campaignId')!r} "
+        f"reviewStatus={planning.get('reviewStatus')!r} "
+        f"materialsReady={planning.get('materialsReady')!r} "
+        f"ready={planning.get('ready')!r} "
+        f"missingArtifacts={planning.get('missingArtifacts')!r} "
+        f"environment={environment.get('status')!r} "
+        f"environmentBlockers={environment.get('blockers')!r} "
+        f"fixtureErrors={fixture_errors or {}}"
+    )
+
+
 @stage(
     "autonomous_setup",
     "configure the deterministic providers, autonomous R0 profile and subscription-confirmed policy",
@@ -904,18 +958,22 @@ def autonomous_request(context: Context) -> None:
     context.state.set("intake_lead_request_id", lead_request_id)
     context.state.set("intake_objective", objective)
     # Rewrite the authoritative context with the exact ids now that they exist.
-    write_json(
-        context_path,
-        _autonomous_model_context(
-            context,
-            intake_id=intake_id,
-            action_id=action_id,
-            request_id=lead_request_id,
-            objective=objective,
-        ),
+    exact = _autonomous_model_context(
+        context,
+        intake_id=intake_id,
+        action_id=action_id,
+        request_id=lead_request_id,
+        objective=objective,
     )
+    write_json(context_path, exact)
     os.chmod(context_path, 0o644)
+    # Per-request file: a second request in the same container can never
+    # overwrite the first request's identity (assessment reads it by prompt id).
+    request_context = context_path.parent / "contexts" / f"{lead_request_id}.json"
+    write_json(request_context, exact)
+    os.chmod(request_context, 0o644)
     context.state.set("model_context", str(context_path))
+    context.state.set("model_request_context", str(request_context))
 
 
 @stage(
@@ -925,46 +983,51 @@ def autonomous_request(context: Context) -> None:
 def autonomous_campaign(context: Context) -> None:
     context.state.require("intake_id")
     intake_id = context.state.get("intake_id")
+    lead_id = str(context.state.get("intake_lead_request_id") or "")
     deadline = time.monotonic() + context.config.timeout
     projection: dict[str, Any] = {}
+    baseline_errors: set[str] | None = None
     last_diagnostics = 0.0
     while time.monotonic() < deadline:
         projection = context.api.get(f"/intake/requests/{intake_id}")
+        planning = projection.get("planning") or {}
+        environment = projection.get("environment") or {}
         if projection.get("campaignId"):
             break
-        if projection.get("state") in {"BLOCKED", "FAILED", "REJECTED", "CANCELLED", "AWAITING_APPROVAL"}:
+        if environment.get("status") == "BLOCKED" and environment.get("blockers"):
+            break
+        if projection.get("state") in {"BLOCKED", "FAILED", "REJECTED", "CANCELLED"}:
+            break
+        if _owner_wait_is_real(projection):
             break
         # Fail fast with the fixture's real diagnosis instead of waiting out the
         # full preparation timeout. Product policy and limits are untouched.
         now = time.monotonic()
         if now - last_diagnostics >= 5.0:
             last_diagnostics = now
-            diagnostics = _fixture_diagnostics(context) or {}
-            errors = diagnostics.get("errors") or {}
+            diagnostics = _fixture_diagnostics(context)
+            if diagnostics is not None and baseline_errors is None:
+                baseline_errors = set((diagnostics.get("errors") or {}).keys())
+            relevant = _fixture_relevant_errors(
+                baseline_errors or set(), diagnostics, lead_id
+            )
             detail = str(projection.get("stateDetail") or "")
-            if errors or "ambiguous" in detail.lower():
-                raise ScenarioError(
-                    "deterministic model fixture reported a terminal failure before "
-                    "Campaign: "
-                    f"state={projection.get('state')!r} detail={detail!r} "
-                    f"fixture_errors={errors!r}"
+            if relevant or "ambiguous" in detail.lower():
+                raise _scenario_failure(
+                    projection, label="deterministic fixture terminal failure", fixture_errors=relevant
                 )
         time.sleep(2)
     state_name = projection.get("state")
     campaign_id = projection.get("campaignId")
     planning = projection.get("planning") or {}
     environment = projection.get("environment") or {}
-    plan = projection.get("plan") or {}
     if not campaign_id:
-        raise ScenarioError(
-            "autonomous intake produced no Campaign: "
-            f"state={state_name!r} detail={projection.get('stateDetail')!r} "
-            f"authorization={projection.get('authorization')!r} "
-            f"missingArtifacts={planning.get('missingArtifacts')!r} "
-            f"reviewStatus={planning.get('reviewStatus')!r} "
-            f"materialsReady={planning.get('materialsReady')!r} "
-            f"ready={planning.get('ready')!r} environment={environment.get('status')!r}"
+        label = (
+            "autonomous intake awaits explicit owner approval"
+            if _owner_wait_is_real(projection)
+            else "autonomous intake produced no Campaign"
         )
+        raise _scenario_failure(projection, label=label)
     # F14/F15: authorization availability and planning.ready are not start-ready.
     assert_equal(planning.get("ready"), True, "planning readiness")
     assert_equal(planning.get("missingArtifacts"), [], "planning missing artifacts")

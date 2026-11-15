@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 CONTEXT_PATH = Path(os.environ.get("FACTORY_MODEL_CONTEXT", "/context/context.json"))
+CONTEXTS_DIR = CONTEXT_PATH.parent / "contexts"
 CASSETTE_ENV = os.environ.get("FACTORY_MODEL_CASSETTE", "").strip()
 CASSETTE_PATH = Path(CASSETTE_ENV) if CASSETTE_ENV else None
 CASSETTE = None
@@ -57,10 +58,26 @@ def counters():
         return dict(COUNTERS)
 
 
-def record_error(phase, message):
+def record_error(phase, message, identity=""):
+    key = f"{identity}|{phase}"
     with COUNTERS_LOCK:
-        ERRORS[str(phase)] = str(message)[:300]
+        ERRORS[key] = str(message)[:300]
         return dict(ERRORS)
+
+
+def clear_error(phase, identity=""):
+    key = f"{identity}|{phase}"
+    with COUNTERS_LOCK:
+        ERRORS.pop(key, None)
+        return dict(ERRORS)
+
+
+def prompt_identity(user):
+    match = re.search(r"Request: ([^\s.]+)", user)
+    if match:
+        return match.group(1)
+    match = re.search(r'"requestId"\s*:\s*"([^"]+)"', user)
+    return match.group(1) if match else ""
 
 
 def diagnostics():
@@ -124,14 +141,27 @@ def replay_cassette(request):
     return turn["response"]
 
 
-def context():
-    try:
-        with CONTEXT_PATH.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except FileNotFoundError:
-        return None
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError("model context is unreadable") from error
+def context(request_id=""):
+    """Load the request-scoped context, falling back to the shared template.
+
+    The harness writes ``contexts/<requestId>.json`` per request after the POST
+    and keeps ``context.json`` as the pre-POST template. A second request in
+    the same container therefore never overwrites the first request's identity.
+    """
+
+    paths = []
+    if request_id:
+        paths.append(CONTEXTS_DIR / f"{request_id}.json")
+    paths.append(CONTEXT_PATH)
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except FileNotFoundError:
+            continue
+        except (OSError, json.JSONDecodeError) as error:
+            raise RuntimeError("model context is unreadable") from error
+    return None
 
 
 def chat_response(content, input_tokens, output_tokens):
@@ -153,15 +183,17 @@ def valid_prompt_identity(value):
     )
 
 
-def assessment(user, ctx):
-    if ctx is None:
-        raise ValueError("assessment context is not available")
+def assessment(user, ctx=None):
     project = re.search(r"Project: ([^\s.]+)", user)
     action = re.search(r"Action: ([^\s.]+)", user)
     request = re.search(r"Request: ([^\s.]+)", user)
     objective = re.search(r"Objective: ([\s\S]*?)\. Project: ", user)
     if not all((project, action, request, objective)):
         raise ValueError("assessment prompt identities are missing")
+    if ctx is None:
+        ctx = context(request.group(1))
+    if ctx is None:
+        raise ValueError("assessment context is not available")
     if project.group(1) != ctx["projectId"]:
         raise ValueError("assessment prompt identities do not match the context")
     if objective.group(1) != ctx["objective"]:
@@ -260,29 +292,30 @@ def assessment(user, ctx):
 # native/src/planning/stack.rs), so each entry carries that token explicitly.
 STACK_SELECTION_PREFERENCE = (
     "python-service",
-    "rust-service",
     "rust-cli",
+    "rust-service",
     "typescript-react",
 )
 
+# Exact metadata observed from the builder's pinned nixpkgs
+# (github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d, 2026-01-02)
+# with the builder's own metadata expression. Do not invent versions,
+# licences, attributes or expiry: a package the pinned nixpkgs does not
+# provide is unsupported and the fixture fails closed instead of emitting an
+# unbuildable proposal. Toolchains are not package claims; the language is
+# covered by the exact toolchain id and the framework by the real package.
 STACK_ENVIRONMENTS = {
-    "python": {
+    "python-service": {
+        "supported": True,
         "toolchains": [{"id": "python3", "version": "3.12"}],
         "packages": [
             {
-                "name": "python3",
-                "version": "3.12",
-                "license": "MIT",
-                "attr": "python312",
-                "source": "nixpkgs:python312",
-            },
-            {
                 "name": "fastapi",
-                "version": "0.110.0",
+                "version": "0.115.12",
                 "license": "MIT",
                 "attr": "python312Packages.fastapi",
                 "source": "nixpkgs:python312Packages.fastapi",
-            },
+            }
         ],
         "commands": {
             "build": ["python3", "-m", "compileall", "-q", "src"],
@@ -293,37 +326,20 @@ STACK_ENVIRONMENTS = {
             "run": ["python3", "-m", "src"],
         },
     },
-    "rust": {
-        "toolchains": [{"id": "rustc", "version": "1.75.0"}],
+    "rust-cli": {
+        "supported": True,
+        "toolchains": [
+            {"id": "rustc", "version": "1.86.0"},
+            {"id": "cargo", "version": "1.86.0"},
+        ],
         "packages": [
             {
-                "name": "rustc",
-                "version": "1.75.0",
-                "license": "MIT",
-                "attr": "rustc",
-                "source": "nixpkgs:rustc",
-            },
-            {
-                "name": "cargo",
-                "version": "1.75.0",
-                "license": "MIT",
-                "attr": "cargo",
-                "source": "nixpkgs:cargo",
-            },
-            {
-                "name": "axum",
-                "version": "0.7.5",
-                "license": "MIT",
-                "attr": "axum",
-                "source": "nixpkgs:axum",
-            },
-            {
                 "name": "clap",
-                "version": "4.5.4",
+                "version": "1.2.6",
                 "license": "MIT",
                 "attr": "clap",
                 "source": "nixpkgs:clap",
-            },
+            }
         ],
         "commands": {
             "build": ["cargo", "build"],
@@ -334,32 +350,13 @@ STACK_ENVIRONMENTS = {
             "run": ["cargo", "run"],
         },
     },
-    "typescript": {
-        "toolchains": [{"id": "nodejs", "version": "20.11.0"}],
-        "packages": [
-            {
-                "name": "nodejs",
-                "version": "20.11.0",
-                "license": "MIT",
-                "attr": "nodejs",
-                "source": "nixpkgs:nodejs",
-            },
-            {
-                "name": "react",
-                "version": "18.2.0",
-                "license": "MIT",
-                "attr": "react",
-                "source": "nixpkgs:react",
-            },
-        ],
-        "commands": {
-            "build": ["npm", "run", "build"],
-            "test": ["npm", "test"],
-            "lint": ["npm", "run", "lint"],
-            "format": ["npm", "run", "format"],
-            "typecheck": ["npm", "run", "typecheck"],
-            "run": ["npm", "start"],
-        },
+    "rust-service": {
+        "supported": False,
+        "reason": "the pinned nixpkgs has no axum attribute; a version or licence cannot be attributed honestly",
+    },
+    "typescript-react": {
+        "supported": False,
+        "reason": "the pinned nixpkgs has no react attribute; a version or licence cannot be attributed honestly",
     },
 }
 
@@ -389,10 +386,16 @@ def stack_selection(user):
         (by_id[option_id] for option_id in STACK_SELECTION_PREFERENCE if option_id in by_id),
         authorized[0],
     )
-    language = str(chosen.get("language") or "").strip().lower()
-    environment = STACK_ENVIRONMENTS.get(language)
+    environment = STACK_ENVIRONMENTS.get(str(chosen.get("id") or ""))
     if environment is None:
-        raise ValueError(f"stack selection has no fixture environment for {language!r}")
+        raise ValueError(
+            f"stack selection has no fixture environment for {chosen.get('id')!r}"
+        )
+    if not environment.get("supported", False):
+        raise ValueError(
+            f"stack selection {chosen.get('id')!r} is not builder-valid: "
+            f"{environment.get('reason', 'unsupported')}"
+        )
     proposal = {
         "toolchains": environment["toolchains"],
         "packages": environment["packages"],
@@ -581,6 +584,7 @@ class Handler(BaseHTTPRequestHandler):
                 response = replay_cassette(body)
             else:
                 phase = classify_prompt(system, user)
+                identity = prompt_identity(user) if phase == "assessment" else ""
                 record_phase(phase)
                 if phase == "planner":
                     response = planner(user, context())
@@ -593,10 +597,11 @@ class Handler(BaseHTTPRequestHandler):
                 elif phase == "semantic_review":
                     response = semantic_review(user)
                 else:
-                    response = assessment(user, context())
+                    response = assessment(user)
+                clear_error(phase, identity)
             self.send_json(200, response, phase=phase)
         except Exception as error:  # noqa: BLE001 - fixture must fail closed
-            record_error(phase, str(error))
+            record_error(phase, str(error), prompt_identity(user) if "user" in locals() else "")
             self.send_json(400, {"error": str(error)})
 
 
