@@ -119,7 +119,30 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--browser", choices=["none", "chromium"], default=os.environ.get("FACTORY_E2E_BROWSER", "none"))
     parser.add_argument("--project", default=os.environ.get("FACTORY_E2E_PROJECT"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("FACTORY_PORT", "0")))
-    parser.add_argument("--timeout", type=int, default=int(os.environ.get("FACTORY_E2E_TIMEOUT", "600")))
+    parser.add_argument(
+        "--operation-timeout",
+        type=int,
+        default=int(os.environ.get("FACTORY_E2E_OPERATION_TIMEOUT", "120")),
+        help="short deadline for one bounded tool operation (default 120s)",
+    )
+    parser.add_argument(
+        "--readiness-timeout",
+        type=int,
+        default=int(os.environ.get("FACTORY_E2E_READINESS_TIMEOUT", "300")),
+        help="deadline for waiting on an observable readiness contract (default 300s)",
+    )
+    parser.add_argument(
+        "--run-timeout",
+        type=int,
+        default=None,
+        help="optional explicit total cap for the whole run; default: no total cap",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args(argv)
 
 
@@ -197,7 +220,11 @@ def _make_config(args: argparse.Namespace) -> Config:
         restore=args.restore,
         snapshot_dir=snapshot_dir,
         no_build=args.no_build,
-        timeout=args.timeout,
+        operation_timeout=(
+            args.timeout if args.timeout is not None else args.operation_timeout
+        ),
+        readiness_timeout=args.readiness_timeout,
+        run_timeout=args.run_timeout,
         scenario=scenario_name,
         required_stages=required,
     )

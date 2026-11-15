@@ -573,6 +573,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": "invalid request body"})
             return
         phase = "request"
+        identity = ""
         try:
             body = json.loads(self.rfile.read(length))
             messages = body.get("messages") or []
@@ -589,7 +590,7 @@ class Handler(BaseHTTPRequestHandler):
                 response = replay_cassette(body)
             else:
                 phase = classify_prompt(system, user)
-                identity = prompt_identity(user) if phase == "assessment" else ""
+                identity = prompt_identity(user)
                 record_phase(phase)
                 if phase == "planner":
                     response = planner(user, context())
@@ -606,7 +607,7 @@ class Handler(BaseHTTPRequestHandler):
                 clear_error(phase, identity)
             self.send_json(200, response, phase=phase)
         except Exception as error:  # noqa: BLE001 - fixture must fail closed
-            record_error(phase, str(error), prompt_identity(user) if "user" in locals() else "")
+            record_error(phase, str(error), identity)
             self.send_json(400, {"error": str(error)})
 
 

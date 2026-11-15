@@ -676,6 +676,13 @@ class R5ContextRaceTests(unittest.TestCase):
         self.assertEqual(result["body"]["requestId"], "request-1")
         self.assertEqual(result["body"]["proposal"]["actionId"], "action-1")
 
+    def test_error_set_and_clear_use_the_same_identity(self) -> None:
+        fixture = load_fixture()
+        fixture.ERRORS.clear()
+        fixture.record_error("environment", "boom", "lead-1")
+        fixture.clear_error("environment", "lead-1")
+        self.assertEqual(fixture.diagnostics()["errors"], {})
+
     def test_phase_errors_are_exposed_for_fast_diagnosis(self) -> None:
         fixture = load_fixture()
         fixture.ERRORS.clear()

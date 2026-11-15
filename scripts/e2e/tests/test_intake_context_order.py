@@ -94,8 +94,6 @@ class IntakeContextOrderTests(unittest.TestCase):
             self.assertEqual(state.get("model_context"), str(context_path))
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class OwnerWaitAndErrorScopeTests(unittest.TestCase):
@@ -171,6 +169,25 @@ class PerRequestContextTests(unittest.TestCase):
             ". Project: project-1. Action: action-1. Request: request-1."
         )
 
+    def test_per_request_context_does_not_need_the_shared_template(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        fixture = self.load_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            model_dir = Path(directory)
+            (model_dir / "contexts").mkdir()
+            fixture.CONTEXT_PATH = model_dir / "missing-context.json"
+            fixture.CONTEXTS_DIR = model_dir / "contexts"
+            (model_dir / "contexts" / "request-1.json").write_text(
+                json.dumps(self.context("request-1"))
+            )
+            body = json.loads(
+                fixture.assessment(self.prompt())["choices"][0]["message"]["content"]
+            )
+            self.assertEqual(body["requestId"], "request-1")
+
     def test_two_requests_keep_their_own_identity(self) -> None:
         import json
         import tempfile
@@ -226,3 +243,7 @@ class PerRequestContextTests(unittest.TestCase):
             for thread in threads:
                 thread.join()
         self.assertEqual(result["body"]["requestId"], "request-1")
+
+
+if __name__ == "__main__":
+    unittest.main()

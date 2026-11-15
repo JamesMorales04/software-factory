@@ -70,6 +70,18 @@ def stage(name: str, description: str):
     return register
 
 
+def _optional_deadline(config) -> float | None:
+    """Total run deadline only when the operator set one explicitly."""
+
+    if getattr(config, "run_timeout", None) is None:
+        return None
+    return time.monotonic() + int(config.run_timeout)
+
+
+def _deadline_expired(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() >= deadline
+
+
 def _git(cwd: Path, arguments: list[str]) -> str:
     try:
         result = subprocess.run(
@@ -140,7 +152,7 @@ def start(context: Context) -> None:
     wait_url(f"{config.base}/health", 300)
     wait_url(f"{config.base}/core-api/health", 60)
     wait_core(context.compose, "http://supervisor:8766/health", 180)
-    wait_core(context.compose, "http://runtime:8770/health", config.timeout)
+    wait_core(context.compose, "http://runtime:8770/health", config.readiness_timeout)
     wait_core(context.compose, "http://git-fixture:8080/repo.git/HEAD", 60)
     wait_core(context.compose, "http://model-fixture:8080/health", 120)
 
@@ -462,8 +474,9 @@ def gate(context: Context) -> None:
     attempt_id = context.state.get("attempt_id")
     candidate_id = ""
     gate_payload: dict[str, Any] = {}
-    deadline = time.monotonic() + context.config.timeout
-    while time.monotonic() < deadline:
+    deadline = _optional_deadline(context.config)
+    last_heartbeat = time.monotonic()
+    while not _deadline_expired(deadline):
         try:
             candidates = context.api.get("/candidates")
         except ScenarioError:
@@ -984,11 +997,12 @@ def autonomous_campaign(context: Context) -> None:
     context.state.require("intake_id")
     intake_id = context.state.get("intake_id")
     lead_id = str(context.state.get("intake_lead_request_id") or "")
-    deadline = time.monotonic() + context.config.timeout
+    deadline = _optional_deadline(context.config)
     projection: dict[str, Any] = {}
     baseline_errors: set[str] | None = None
     last_diagnostics = 0.0
-    while time.monotonic() < deadline:
+    last_heartbeat = time.monotonic()
+    while not _deadline_expired(deadline):
         projection = context.api.get(f"/intake/requests/{intake_id}")
         planning = projection.get("planning") or {}
         environment = projection.get("environment") or {}
@@ -1016,6 +1030,15 @@ def autonomous_campaign(context: Context) -> None:
                 raise _scenario_failure(
                     projection, label="deterministic fixture terminal failure", fixture_errors=relevant
                 )
+        now_heartbeat = time.monotonic()
+        if now_heartbeat - last_heartbeat >= 30:
+            log(
+                "autonomous_campaign heartbeat: "
+                f"state={projection.get('state')!r} "
+                f"environment={(projection.get('environment') or {}).get('status')!r} "
+                "activity=undetermined (no total deadline; explicit cancellation allowed)"
+            )
+            last_heartbeat = now_heartbeat
         time.sleep(2)
     state_name = projection.get("state")
     campaign_id = projection.get("campaignId")

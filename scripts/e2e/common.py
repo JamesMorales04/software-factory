@@ -17,9 +17,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -30,6 +32,8 @@ from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TIMEOUT = 600
+DEFAULT_OPERATION_TIMEOUT = 120
+DEFAULT_READINESS_TIMEOUT = 300
 RUN_SCHEMA = "factory-e2e-run-v1"
 RUN_SENTINEL = "run.json"
 
@@ -103,7 +107,7 @@ def _bounded_run(
     *,
     cwd: Path,
     env: dict[str, str] | None = None,
-    timeout: int = 60,
+    timeout: int | None = 60,
 ) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -211,7 +215,9 @@ class Config:
     restore: bool
     snapshot_dir: Path
     no_build: bool
-    timeout: int
+    operation_timeout: int
+    readiness_timeout: int
+    run_timeout: int | None
     scenario: str
     required_stages: list[str] | None = None
 
@@ -299,6 +305,143 @@ class State:
         current.append(value)
 
 
+
+class SupervisedResult:
+    """Result of a supervised process-group run with durable streaming logs."""
+
+    def __init__(
+        self,
+        returncode: int,
+        stdout: str,
+        stderr: str,
+        log_path: Path,
+        *,
+        timed_out: bool,
+    ) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.log_path = log_path
+        self.timed_out = timed_out
+
+
+def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+    """Terminate only this process group, reap children and report the exit."""
+
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    process.wait()
+
+
+def run_supervised(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    log_path: Path,
+    timeout: int | None = None,
+    check: bool = True,
+    label: str = "",
+) -> SupervisedResult:
+    """Run one command with streaming durable output and process-group cleanup.
+
+    ``timeout`` is an **explicit operation deadline** only when the caller has an
+    observable contract. Build/start and campaign runs pass ``None``: silence is
+    not treated as no progress and no universal clock is invented. Heartbeats
+    are observability, never a breaker.
+    """
+
+    ensure_dir(log_path.parent)
+    rendered = " ".join(command)
+    log(f"$ {rendered}")
+    started = time.monotonic()
+    stdout_tail = ""
+    stderr_tail = ""
+    timed_out = False
+    with log_path.open("w", encoding="utf-8") as handle:
+        handle.write(f"$ {rendered}\n")
+        handle.flush()
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+
+        def pump(stream, name: str) -> None:
+            nonlocal stdout_tail, stderr_tail
+            assert stream is not None
+            for line in iter(stream.readline, ""):
+                handle.write(("" if name == "stdout" else "ERR ") + line)
+                handle.flush()
+                if name == "stdout":
+                    stdout_tail = (stdout_tail + line)[-8000:]
+                else:
+                    stderr_tail = (stderr_tail + line)[-8000:]
+            stream.close()
+
+        threads = [
+            threading.Thread(target=pump, args=(process.stdout, "stdout"), daemon=True),
+            threading.Thread(target=pump, args=(process.stderr, "stderr"), daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        deadline = None if timeout is None else time.monotonic() + timeout
+        last_heartbeat = time.monotonic()
+        try:
+            while process.poll() is None:
+                now = time.monotonic()
+                if deadline is not None and now >= deadline:
+                    timed_out = True
+                    handle.write(
+                        f"# explicit operation deadline {timeout}s reached; "
+                        "activity=undetermined; terminating our process group\n"
+                    )
+                    handle.flush()
+                    _terminate_process_group(process)
+                    break
+                if now - last_heartbeat >= 30:
+                    handle.write(
+                        f"# heartbeat elapsed={now - started:.0f}s pid={process.pid} "
+                        "activity=undetermined (silent output is allowed)\n"
+                    )
+                    handle.flush()
+                    last_heartbeat = now
+                time.sleep(0.2)
+        except BaseException:
+            _terminate_process_group(process)
+            raise
+        returncode = process.wait()
+        for thread in threads:
+            thread.join(timeout=5)
+        elapsed = time.monotonic() - started
+        handle.write(f"# exit={returncode} elapsed={elapsed:.3f}s timed_out={timed_out}\n")
+    if check and (timed_out or returncode != 0):
+        raise ScenarioError(
+            f"supervised command failed ({returncode}, timed_out={timed_out}): {rendered}\n"
+            f"stdout:\n{tail(stdout_tail)}\nstderr:\n{tail(stderr_tail)}\nlog={log_path}"
+        )
+    return SupervisedResult(
+        returncode, stdout_tail, stderr_tail, log_path, timed_out=timed_out
+    )
+
+
 class Compose:
     """A thin, logged wrapper around the canonical Compose command."""
 
@@ -324,39 +467,31 @@ class Compose:
         *,
         check: bool = True,
         log_name: str | None = None,
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> SupervisedResult:
         args = list(arguments)
         command = self.command() + args
-        started = time.monotonic()
-        rendered = " ".join(command)
-        log(f"$ {rendered}")
-        try:
-            result = subprocess.run(
-                command,
-                cwd=self.config.root,
-                env=self.config.environment(),
-                text=True,
-                capture_output=True,
-                timeout=self.config.timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as error:
-            raise ScenarioError(f"command timed out after {self.config.timeout}s: {rendered}") from error
-        except OSError as error:
-            raise ScenarioError(f"command failed to start ({command[0]}): {error}") from error
-        elapsed = time.monotonic() - started
+        log_path = (
+            ensure_dir(self.config.artifacts_dir / "logs") / f"{log_name}.log"
+            if log_name
+            else self.log_path
+        )
+        result = run_supervised(
+            command,
+            cwd=self.config.root,
+            env=self.config.environment(),
+            log_path=log_path,
+            timeout=self.config.operation_timeout,
+            check=False,
+        )
         with self.log_path.open("a", encoding="utf-8") as handle:
-            handle.write(f"\n$ {rendered}\n{tail(result.stdout)}\n{tail(result.stderr)}\n")
-            handle.write(f"exit={result.returncode} elapsed={elapsed:.3f}s\n")
-        if log_name:
-            ensure_dir(self.config.artifacts_dir / "logs").joinpath(f"{log_name}.log").write_text(
-                f"$ {rendered}\n\nSTDOUT\n{result.stdout}\n\nSTDERR\n{result.stderr}\n",
-                encoding="utf-8",
+            handle.write(
+                f"\n$ {' '.join(command)}\n{tail(result.stdout)}\n{tail(result.stderr)}\n"
+                f"exit={result.returncode} log={log_path}\n"
             )
         if check and result.returncode != 0:
             raise ScenarioError(
-                f"command failed ({result.returncode}): {rendered}\n"
-                f"stdout:\n{tail(result.stdout)}\nstderr:\n{tail(result.stderr)}"
+                f"command failed ({result.returncode}): {' '.join(command)}\n"
+                f"stdout:\n{tail(result.stdout)}\nstderr:\n{tail(result.stderr)}\nlog={log_path}"
             )
         return result
 
@@ -364,9 +499,134 @@ class Compose:
         arguments = ["down"] + (["-v"] if volumes else [])
         return self.run(arguments, check=False, log_name="compose-down")
 
+    def _candidate_sha(self) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(self.config.root), "rev-parse", "HEAD"],
+            text=True,
+            capture_output=True,
+            timeout=self.config.operation_timeout,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ScenarioError(f"cannot resolve the candidate SHA: {tail(result.stderr)}")
+        return result.stdout.strip()
+
+    def _compose_services(self) -> list[str]:
+        result = self.run(["config", "--services"], log_name="compose-services")
+        services = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if not services:
+            raise ScenarioError("Compose reported no services")
+        return services
+
+    def _compose_images(self) -> list[str]:
+        result = self.run(["config"], log_name="compose-config")
+        images = sorted(
+            {
+                match.group(1).strip().strip('"')
+                for match in re.finditer(r"^\s*image:\s*(\S+)\s*$", result.stdout, re.M)
+            }
+        )
+        if not images:
+            raise ScenarioError("Compose reported no image names")
+        return images
+
+    def prebuild_sequential(self) -> dict[str, Any]:
+        """Build every service one at a time, with no total build deadline.
+
+        ``up --build`` fans out parallel builds and produced ten concurrent
+        builds with orphan children after a cancelled parent. This path builds
+        sequentially, streams each build to its own durable log, and records the
+        exact candidate SHA plus the resulting image ids for later binding.
+        """
+
+        services = self._compose_services()
+        candidate = self._candidate_sha()
+        for index, service in enumerate(services, start=1):
+            log(f"sequential prebuild {index}/{len(services)}: {service}")
+            result = run_supervised(
+                self.command() + ["build", service],
+                cwd=self.config.root,
+                env=self.config.environment(),
+                log_path=ensure_dir(self.config.artifacts_dir / "logs")
+                / f"build-{index:02d}-{service}.log",
+                timeout=self.config.run_timeout,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise ScenarioError(
+                    f"sequential build failed for {service} ({result.returncode}); "
+                    f"log={result.log_path}"
+                )
+        images = self._compose_images()
+        listed = subprocess.run(
+            ["podman", "images", "--format", "{{.Repository}}:{{.Tag}} {{.ID}}"],
+            text=True,
+            capture_output=True,
+            timeout=self.config.operation_timeout,
+            check=False,
+        )
+        if listed.returncode != 0:
+            raise ScenarioError(f"cannot list images: {tail(listed.stderr)}")
+        observed = {
+            line.split()[0]: line.split()[1]
+            for line in listed.stdout.splitlines()
+            if len(line.split()) == 2
+        }
+        missing = [image for image in images if image not in observed]
+        if missing:
+            raise ScenarioError(
+                "sequential prebuild did not produce every Compose image: " + ", ".join(missing)
+            )
+        binding = {
+            "schema": "factory-e2e-prebuild-v1",
+            "candidateSha": candidate,
+            "createdAt": now_utc(),
+            "services": services,
+            "images": {image: observed[image] for image in images},
+        }
+        write_json(self.config.run_dir / "prebuilt.json", binding)
+        return binding
+
+    def _verify_prebuilt_binding(self) -> None:
+        path = self.config.run_dir / "prebuilt.json"
+        if not path.is_file():
+            raise ScenarioError(
+                "refusing --no-build: no candidate-bound prebuild record exists; run the "
+                "sequential prebuild first"
+            )
+        binding = json.loads(path.read_text(encoding="utf-8"))
+        if binding.get("schema") != "factory-e2e-prebuild-v1":
+            raise ScenarioError("refusing --no-build: prebuild record has an unknown schema")
+        candidate = self._candidate_sha()
+        if binding.get("candidateSha") != candidate:
+            raise ScenarioError(
+                "refusing --no-build: prebuild images are not bound to the current candidate "
+                f"({binding.get('candidateSha')} != {candidate})"
+            )
+        listed = subprocess.run(
+            ["podman", "images", "--format", "{{.Repository}}:{{.Tag}} {{.ID}}"],
+            text=True,
+            capture_output=True,
+            timeout=self.config.operation_timeout,
+            check=False,
+        )
+        observed = {
+            line.split()[0]: line.split()[1]
+            for line in listed.stdout.splitlines()
+            if len(line.split()) == 2
+        }
+        for image, image_id in (binding.get("images") or {}).items():
+            if observed.get(image) != image_id:
+                raise ScenarioError(
+                    f"refusing --no-build: image {image} is not the built digest {image_id}"
+                )
+
     def up(self, *, build: bool) -> None:
-        arguments = ["up", "-d"] + (["--build"] if build else [])
-        self.run(arguments, check=False, log_name="compose-up")
+        if build:
+            self.prebuild_sequential()
+        else:
+            self._verify_prebuilt_binding()
+        self.run(["up", "-d", "--no-build"], check=True, log_name="compose-up")
 
     def start(self) -> None:
         self.run(["start"], check=False, log_name="compose-start")
@@ -423,7 +683,7 @@ class Compose:
             env=self.config.environment(),
             text=True,
             capture_output=True,
-            timeout=self.config.timeout,
+            timeout=self.config.operation_timeout,
             check=False,
         )
         if check and result.returncode != 0:
@@ -755,7 +1015,7 @@ def snapshot_volumes(config: Config, compose: Compose) -> dict[str, Any]:
             ["podman", "volume", "export", volume, "--output", str(archive)],
             cwd=config.root,
             env=config.environment(),
-            timeout=config.timeout,
+            timeout=config.run_timeout,
         )
         if result.returncode != 0:
             raise ScenarioError(f"failed to export volume {volume}: {tail(result.stderr)}")
@@ -891,7 +1151,7 @@ def restore_volumes(config: Config, compose: Compose) -> dict[str, Any]:
             ["podman", "volume", "import", name, str(archive)],
             cwd=config.root,
             env=config.environment(),
-            timeout=config.timeout,
+            timeout=config.run_timeout,
         )
         if imported.returncode != 0:
             raise ScenarioError(f"failed to import volume {name}: {tail(imported.stderr)}")

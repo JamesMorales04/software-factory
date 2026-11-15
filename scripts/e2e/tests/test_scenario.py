@@ -494,7 +494,9 @@ def _config_for(
         restore=False,
         snapshot_dir=run_dir / "snapshots",
         no_build=False,
-        timeout=60,
+        operation_timeout=60,
+        readiness_timeout=120,
+        run_timeout=None,
         scenario="compose-intake",
     )
 

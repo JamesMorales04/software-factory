@@ -40,7 +40,9 @@ def _config(root: Path) -> Config:
         restore=False,
         snapshot_dir=run_dir / "snapshots",
         no_build=True,
-        timeout=60,
+        operation_timeout=60,
+        readiness_timeout=120,
+        run_timeout=None,
         scenario="autonomous-intake",
     )
 
