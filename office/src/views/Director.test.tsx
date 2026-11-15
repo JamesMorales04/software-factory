@@ -1600,6 +1600,190 @@ describe("Director", () => {
     ).toBeNull();
   });
 
+  it("offers a new decision on the same rejected revision", async () => {
+    const rejectedReviewPlanning = {
+      ...pendingReviewPlanning,
+      review: { ...approvedPlanReview, status: "REJECTED" as const },
+      reviewStatus: "REJECTED",
+      reviewApproved: false,
+    };
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValueOnce(rejectedReviewPlanning)
+      .mockResolvedValue(approvedReviewPlanning);
+    mocks.reviewAgenticPlan.mockResolvedValue({
+      review: approvedPlanReview,
+      reviewRecorded: true,
+      environmentBlocked: false,
+      workflow: null,
+    });
+    renderDirector();
+    expect(
+      await screen.findByText(/decision on this same revision/i),
+    ).toBeDefined();
+    // The previous decision's rationale is shown as history, never prefilled
+    // into the new decision.
+    expect(
+      (screen.getByLabelText("Review rationale") as HTMLTextAreaElement).value,
+    ).toBe("");
+    await openPendingPlanReview();
+    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+    expect(mocks.reviewAgenticPlan).toHaveBeenCalledWith("request-1", {
+      planRevision: 1,
+      planSha256: "a".repeat(64),
+      decision: "APPROVE",
+      rationale: "Owner approved.",
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull(),
+    );
+  });
+
+  it("offers a new decision on the same changes-requested revision", async () => {
+    const changesPlanning = {
+      ...pendingReviewPlanning,
+      review: { ...approvedPlanReview, status: "CHANGES_REQUESTED" as const },
+      reviewStatus: "CHANGES_REQUESTED",
+      reviewApproved: false,
+    };
+    mocks.getAgenticPlanning.mockReset().mockResolvedValue(changesPlanning);
+    mocks.reviewAgenticPlan.mockResolvedValue({
+      review: { ...approvedPlanReview, status: "CHANGES_REQUESTED" as const },
+      reviewRecorded: true,
+      environmentBlocked: false,
+      workflow: null,
+    });
+    renderDirector();
+    expect(
+      await screen.findByText(/decision on this same revision/i),
+    ).toBeDefined();
+    await openPendingPlanReview();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Request changes" }),
+    );
+    expect(mocks.reviewAgenticPlan).toHaveBeenCalledWith("request-1", {
+      planRevision: 1,
+      planSha256: "a".repeat(64),
+      decision: "CHANGES_REQUESTED",
+      rationale: "Owner approved.",
+    });
+  });
+
+  it("does not offer a decision for a historical rejected review", async () => {
+    mocks.getAgenticPlanning.mockReset().mockResolvedValue({
+      ...pendingReviewPlanning,
+      review: { ...approvedPlanReview, status: "REJECTED" as const },
+      reviewCurrent: false,
+      reviewRevision: null,
+      reviewStatus: null,
+    });
+    renderDirector();
+    await screen.findByRole("heading", { name: "Plan review" });
+    expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull();
+    expect(screen.queryByText(/decision on this same revision/i)).toBeNull();
+  });
+
+  it("refreshes a stale plan review without retrying the old decision", async () => {
+    const mutating = vi.fn();
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValueOnce({
+        ...pendingReviewPlanning,
+        review: { ...approvedPlanReview, status: "REJECTED" as const },
+        reviewStatus: "REJECTED",
+        reviewApproved: false,
+      })
+      .mockResolvedValue(approvedReviewPlanning);
+    mocks.reviewAgenticPlan.mockImplementation(() => {
+      mutating();
+      return Promise.reject(
+        new CoreApiError(
+          409,
+          "the plan review does not bind the latest PLAN revision",
+          {
+            code: "PLAN_REVIEW_STALE",
+            error: "the plan review does not bind the latest PLAN revision",
+          },
+        ),
+      );
+    });
+    renderDirector();
+    await openPendingPlanReview();
+    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+    expect(
+      await screen.findByText(/does not bind the latest PLAN revision/i),
+    ).toBeDefined();
+    expect(mutating).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(mocks.getAgenticPlanning.mock.calls.length).toBeGreaterThan(1),
+    );
+    expect(screen.queryByText("The plan review was recorded.")).toBeNull();
+  });
+
+  it("refreshes a withdrawn request and does not acknowledge the decision", async () => {
+    const cancelledDetail: AgenticRequestDetail = {
+      ...detail,
+      request: { ...detail.request, state: "CANCELLED" },
+    };
+    mocks.getAgenticRequest
+      .mockReset()
+      .mockResolvedValueOnce(detail)
+      .mockResolvedValue(cancelledDetail);
+    mocks.getAgenticPlanning.mockReset().mockResolvedValue({
+      ...pendingReviewPlanning,
+      review: { ...approvedPlanReview, status: "REJECTED" as const },
+      reviewStatus: "REJECTED",
+      reviewApproved: false,
+    });
+    const message =
+      "the request was withdrawn; the plan review is not recorded";
+    mocks.reviewAgenticPlan.mockRejectedValue(
+      new CoreApiError(409, message, {
+        code: "INTAKE_WITHDRAWN",
+        error: message,
+      }),
+    );
+    renderDirector();
+    await openPendingPlanReview();
+    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+    expect(await screen.findByText(message)).toBeDefined();
+    expect(screen.queryByText("The plan review was recorded.")).toBeNull();
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull(),
+    );
+  });
+
+  it("submits one decision on a double click for a rejected revision", async () => {
+    mocks.getAgenticPlanning
+      .mockReset()
+      .mockResolvedValueOnce({
+        ...pendingReviewPlanning,
+        review: { ...approvedPlanReview, status: "REJECTED" as const },
+        reviewStatus: "REJECTED",
+        reviewApproved: false,
+      })
+      .mockResolvedValue(approvedReviewPlanning);
+    mocks.reviewAgenticPlan.mockResolvedValue({
+      review: approvedPlanReview,
+      reviewRecorded: true,
+      environmentBlocked: false,
+      workflow: null,
+    });
+    renderDirector();
+    await screen.findByText(/decision on this same revision/i);
+    await userEvent.type(
+      screen.getByLabelText("Review rationale"),
+      "Owner approved.",
+    );
+    const button = screen.getByRole("button", { name: "Approve plan" });
+    await act(async () => {
+      button.click();
+      button.click();
+      await Promise.resolve();
+    });
+    expect(mocks.reviewAgenticPlan).toHaveBeenCalledTimes(1);
+  });
+
   it("does not let a late response overwrite a newly selected request", async () => {
     const secondPortfolio = {
       ...portfolio[0],

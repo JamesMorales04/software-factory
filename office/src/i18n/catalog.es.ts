@@ -3963,6 +3963,10 @@ export const es: Catalog = {
     "La revisión del plan espera una decisión autenticada del owner. Aprueba, solicita cambios o rechaza la revisión exacta del plan.",
   "director.planning.reviewNotApproved":
     "La última revisión del plan es {status}. Aprueba una nueva revisión exacta antes de que el plan pueda iniciar.",
+  "director.planning.reviewRevisit":
+    "La revisión vigente es {status}. Una nueva decisión autenticada sobre esta misma revisión es una decisión nueva y efectiva; no recompila el plan ni autoaprueba, y Core revalida el inicio.",
+  "director.planning.revisitRationaleHelp":
+    "Introduce una justificación nueva; no se reutiliza la de la decisión anterior.",
   "director.planning.rationale": "Justificación de la revisión: {value}",
   "director.planning.reviewRationale": "Justificación de la revisión",
   "director.planning.rationaleRequired":

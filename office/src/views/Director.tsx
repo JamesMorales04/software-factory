@@ -211,6 +211,19 @@ export function Director() {
   const requestTerminal = isTerminalIntakeState(detail?.request.state ?? "");
   const executionActive =
     detail?.request.state === "EXECUTING" || detail?.lead.campaignId !== null;
+  // A current PENDING review is the first decision. A current REJECTED or
+  // CHANGES_REQUESTED review stays revisitable: Core accepts a new
+  // authenticated decision on the same plan revision and records it as the new
+  // effective decision. A stale, terminal or executing request never exposes
+  // the form, and no decision is inferred or auto-submitted.
+  const reviewRevisitable =
+    reviewStatus === "REJECTED" || reviewStatus === "CHANGES_REQUESTED";
+  const reviewDecisionAvailable =
+    planning !== null &&
+    planning.review !== null &&
+    reviewIsCurrent &&
+    !requestTerminal &&
+    (reviewStatus === "PENDING" || reviewRevisitable);
   const operationInconsistent =
     detail?.operation?.status === "EXECUTING" &&
     detail?.lead.campaignId === null &&
@@ -664,6 +677,18 @@ export function Director() {
         recorded !== null && recorded.reviewRevision === planRevision;
       if (!confirmed) {
         if (!stillCurrent()) return;
+        const code = cause instanceof CoreApiError ? cause.code : null;
+        if (
+          code === "PLAN_REVIEW_STALE" ||
+          code === "PLAN_NOT_READY" ||
+          code === "INTAKE_WITHDRAWN"
+        ) {
+          // The projection is the authority for the current revision, the
+          // missing materials or the withdrawn state. Never retry the decision
+          // with the values that Core just rejected.
+          await reloadDirector();
+          if (!stillCurrent()) return;
+        }
         setPlanningError(errorText(cause, t("director.planning.reviewError")));
         return;
       }
@@ -1561,9 +1586,13 @@ export function Director() {
                             ? t("director.planning.staleReview")
                             : reviewStatus === "PENDING"
                               ? t("director.planning.reviewPending")
-                              : t("director.planning.reviewNotApproved", {
-                                  status: reviewStatus ?? "—",
-                                })}
+                              : reviewRevisitable
+                                ? t("director.planning.reviewRevisit", {
+                                    status: reviewStatus ?? "—",
+                                  })
+                                : t("director.planning.reviewNotApproved", {
+                                    status: reviewStatus ?? "—",
+                                  })}
                         </p>
                       )}
                       {planning.review && (
@@ -1581,8 +1610,8 @@ export function Director() {
                           {t("director.planning.staleReview")}
                         </p>
                       )}
-                      {planning.review?.status === "PENDING" &&
-                        reviewBinding.current &&
+                      {planning.review &&
+                        reviewDecisionAvailable &&
                         (recordedDecision?.requestId === activeId ? (
                           <p
                             className="ui-callout ui-callout--info"
@@ -1604,6 +1633,11 @@ export function Director() {
                               value={reviewRationale}
                               onChange={(event) =>
                                 setReviewRationale(event.target.value)
+                              }
+                              help={
+                                reviewRevisitable
+                                  ? t("director.planning.revisitRationaleHelp")
+                                  : undefined
                               }
                               disabled={reviewBusy !== null}
                             />

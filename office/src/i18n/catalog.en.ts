@@ -3819,6 +3819,10 @@ export const en = {
     "The plan review is awaiting an authenticated owner decision. Approve, request changes or reject the exact plan revision.",
   "director.planning.reviewNotApproved":
     "The latest plan review is {status}. Approve a new exact revision before the plan can start.",
+  "director.planning.reviewRevisit":
+    "The current review is {status}. A new authenticated decision on this same revision is a new, effective decision; it does not recompile the plan or auto-approve, and Core revalidates the start.",
+  "director.planning.revisitRationaleHelp":
+    "Enter a new rationale; the previous decision's rationale is not reused.",
   "director.planning.rationale": "Review rationale: {value}",
   "director.planning.reviewRationale": "Review rationale",
   "director.planning.rationaleRequired":
