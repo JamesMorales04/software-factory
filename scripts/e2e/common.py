@@ -598,11 +598,17 @@ class Compose:
         )
         if listed.returncode != 0:
             raise ScenarioError(f"cannot list images: {tail(listed.stderr)}")
-        observed = {
-            line.split()[0]: line.split()[1]
-            for line in listed.stdout.splitlines()
-            if len(line.split()) == 2
-        }
+        observed = {}
+        for line in listed.stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2:
+                repository, image_id = parts
+                observed[repository] = image_id
+                # Podman prints an unqualified local image as localhost/<name>.
+                # Compose config prints it without the implicit localhost
+                # namespace, so both spellings identify the same image.
+                if repository.startswith("localhost/"):
+                    observed[repository.split("/", 1)[1]] = image_id
         missing = [image for image in images if image not in observed]
         if missing:
             raise ScenarioError(
@@ -643,11 +649,14 @@ class Compose:
             timeout=self.config.operation_timeout,
             check=False,
         )
-        observed = {
-            line.split()[0]: line.split()[1]
-            for line in listed.stdout.splitlines()
-            if len(line.split()) == 2
-        }
+        observed = {}
+        for line in listed.stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2:
+                repository, image_id = parts
+                observed[repository] = image_id
+                if repository.startswith("localhost/"):
+                    observed[repository.split("/", 1)[1]] = image_id
         for image, image_id in (binding.get("images") or {}).items():
             if observed.get(image) != image_id:
                 raise ScenarioError(
