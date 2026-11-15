@@ -40,6 +40,10 @@ PHASES = (
 )
 COUNTERS = {phase: 0 for phase in PHASES}
 COUNTERS_LOCK = threading.Lock()
+# Test-support diagnostics: the last failure seen per phase. The scenario
+# harness reads this to fail fast on a terminal ambiguity instead of waiting
+# for the full preparation timeout. It is never product telemetry.
+ERRORS = {}
 
 
 def record_phase(phase):
@@ -51,6 +55,17 @@ def record_phase(phase):
 def counters():
     with COUNTERS_LOCK:
         return dict(COUNTERS)
+
+
+def record_error(phase, message):
+    with COUNTERS_LOCK:
+        ERRORS[str(phase)] = str(message)[:300]
+        return dict(ERRORS)
+
+
+def diagnostics():
+    with COUNTERS_LOCK:
+        return {"counters": dict(COUNTERS), "errors": dict(ERRORS)}
 
 
 def classify_prompt(system, user=""):
@@ -132,6 +147,12 @@ def chat_response(content, input_tokens, output_tokens):
     }
 
 
+def valid_prompt_identity(value):
+    return bool(value) and len(value) <= 128 and not any(
+        character.isspace() or ord(character) < 32 for character in value
+    )
+
+
 def assessment(user, ctx):
     if ctx is None:
         raise ValueError("assessment context is not available")
@@ -141,21 +162,36 @@ def assessment(user, ctx):
     objective = re.search(r"Objective: ([\s\S]*?)\. Project: ", user)
     if not all((project, action, request, objective)):
         raise ValueError("assessment prompt identities are missing")
-    if (
-        project.group(1) != ctx["projectId"]
-        or action.group(1) != ctx["actionId"]
-        or request.group(1) != ctx["requestId"]
-    ):
+    if project.group(1) != ctx["projectId"]:
         raise ValueError("assessment prompt identities do not match the context")
     if objective.group(1) != ctx["objective"]:
         raise ValueError("assessment objective does not match the context")
+    # The requirement is written before the intake POST so the fixture can
+    # answer a dispatch that races ahead of the exact ids. In that window the
+    # dynamic ids are empty in the template; the prompt is the real source and
+    # its format is still checked. Once the harness rewrites the exact ids they
+    # become authoritative and a mismatch fails closed.
+    action_id = ctx.get("actionId") or ""
+    request_id = ctx.get("requestId") or ""
+    if action_id:
+        if action.group(1) != action_id:
+            raise ValueError("assessment prompt identities do not match the context")
+    elif not valid_prompt_identity(action.group(1)):
+        raise ValueError("assessment prompt action identity is malformed")
+    if request_id:
+        if request.group(1) != request_id:
+            raise ValueError("assessment prompt identities do not match the context")
+    elif not valid_prompt_identity(request.group(1)):
+        raise ValueError("assessment prompt request identity is malformed")
+    action_id = action_id or action.group(1)
+    request_id = request_id or request.group(1)
 
     checks = ctx["checks"]
     acceptance = [check for check in checks if check["kind"] != "negative"]
     negative = [check for check in checks if check["kind"] == "negative"]
     proposal = {
         "projectId": ctx["projectId"],
-        "actionId": ctx["actionId"],
+        "actionId": action_id,
         "baseRevision": ctx["baseRevision"],
         "projectConfigHash": ctx["projectConfigHash"],
         "objective": ctx["objective"],
@@ -190,8 +226,8 @@ def assessment(user, ctx):
         {
             "schemaRevision": 1,
             "projectId": ctx["projectId"],
-            "actionId": ctx["actionId"],
-            "requestId": ctx["requestId"],
+            "actionId": action_id,
+            "requestId": request_id,
             "evidenceRefs": ["repository-files"],
             "intent": "change",
             "complexity": "small",
@@ -508,7 +544,15 @@ class Handler(BaseHTTPRequestHandler):
                 mode = "cassette" if CASSETTE_PATH is not None else "deterministic"
                 self.send_json(200, {"healthy": True, "fixture": mode})
         elif self.path in ("/counters", "/v1/counters"):
-            self.send_json(200, {"schema": "factory-model-fixture-counters-v1", "counters": counters()})
+            payload = diagnostics()
+            self.send_json(
+                200,
+                {
+                    "schema": "factory-model-fixture-counters-v1",
+                    "counters": payload["counters"],
+                    "errors": payload["errors"],
+                },
+            )
         else:
             self.send_json(404, {"error": "not found"})
 
@@ -520,6 +564,7 @@ class Handler(BaseHTTPRequestHandler):
         if length <= 0 or length > 2 * 1024 * 1024:
             self.send_json(400, {"error": "invalid request body"})
             return
+        phase = "request"
         try:
             body = json.loads(self.rfile.read(length))
             messages = body.get("messages") or []
@@ -551,6 +596,7 @@ class Handler(BaseHTTPRequestHandler):
                     response = assessment(user, context())
             self.send_json(200, response, phase=phase)
         except Exception as error:  # noqa: BLE001 - fixture must fail closed
+            record_error(phase, str(error))
             self.send_json(400, {"error": str(error)})
 
 

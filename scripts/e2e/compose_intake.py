@@ -665,11 +665,13 @@ def _configure_fixture_providers(context: Context) -> None:
     )
 
 
-def _fixture_counters(context: Context) -> dict[str, int] | None:
-    """Read test-support per-phase counters from the fixture container.
+def _fixture_diagnostics(context: Context) -> dict[str, Any] | None:
+    """Read test-support counters and last phase errors from the fixture.
 
     The fixture is not published on the host and this is not product telemetry;
-    the harness reads it over the private Compose network through `exec`.
+    the harness reads it over the private Compose network through `exec`. The
+    errors let the harness fail fast on a terminal ambiguous assessment instead
+    of waiting out the full preparation timeout.
     """
 
     script = (
@@ -691,9 +693,19 @@ def _fixture_counters(context: Context) -> dict[str, int] | None:
         except json.JSONDecodeError:
             continue
         counters = payload.get("counters")
-        if isinstance(counters, dict):
-            return {str(key): int(value) for key, value in counters.items()}
+        if not isinstance(counters, dict):
+            continue
+        errors = payload.get("errors")
+        return {
+            "counters": {str(key): int(value) for key, value in counters.items()},
+            "errors": errors if isinstance(errors, dict) else {},
+        }
     return None
+
+
+def _fixture_counters(context: Context) -> dict[str, int] | None:
+    diagnostics = _fixture_diagnostics(context)
+    return diagnostics["counters"] if diagnostics else None
 
 
 @stage(
@@ -774,49 +786,27 @@ def autonomous_setup(context: Context) -> None:
     context.state.set("delegation_id", delegation.get("id"))
 
 
-@stage(
-    "autonomous_request",
-    "submit one clean AUTONOMOUS intake request without manual planning calls",
-)
-def autonomous_request(context: Context) -> None:
-    context.state.require(
-        "project_id",
-        "profile_id",
-        "project_base_commit",
-        "project_config_hash",
-        "model_dir",
-    )
-    objective = "Add the deterministic Compose fixture endpoint and cover it with the frozen checks."
-    created = context.api.post(
-        "/intake/requests",
-        {
-            "project_id": context.state.get("project_id"),
-            "objective": objective,
-            "execution_profile_id": context.state.get("profile_id"),
-            "mode": "AUTONOMOUS",
-            "idempotency_key": f"et1-autonomous-{context.config.run_id}",
-            "authorized_micros": 5000000,
-        },
-    )
-    intake_id = created["id"]
-    action_id = created["actionId"]
-    lead_request_id = created["leadRequestId"]
-    assert_equal(created.get("mode"), "AUTONOMOUS", "intake request mode")
-    # Test-support subscription admissions only; the request itself is the sole
-    # mutating product call and no planning endpoint is invoked by this harness.
-    context.admit_scope(intake_id)
-    context.admit_scope(lead_request_id)
-    context.admit_scope("*")
-    context.state.set("manual_planning_calls", 0)
-    context.state.set("intake_id", intake_id)
-    context.state.set("intake_action_id", action_id)
-    context.state.set("intake_lead_request_id", lead_request_id)
-    context.state.set("intake_objective", objective)
-    model_context = {
+def _autonomous_model_context(
+    context: Context,
+    *,
+    intake_id: str,
+    action_id: str,
+    request_id: str,
+    objective: str,
+) -> dict[str, Any]:
+    """Build the deterministic fixture context.
+
+    The static part is written before the intake POST so an assessment that is
+    dispatched immediately can be answered. The dynamic ids stay empty in that
+    template: the fixture resolves them from the real prompt and validates their
+    format, then this harness rewrites the exact ids once the POST has returned.
+    """
+
+    return {
         "schema": "factory-compose-model-fixture-v1",
         "projectId": context.state.get("project_id"),
         "intakeRequestId": intake_id,
-        "requestId": lead_request_id,
+        "requestId": request_id,
         "actionId": action_id,
         "objective": objective,
         "baseRevision": context.state.get("project_base_commit"),
@@ -861,8 +851,69 @@ def autonomous_request(context: Context) -> None:
             },
         ],
     }
+
+
+@stage(
+    "autonomous_request",
+    "submit one clean AUTONOMOUS intake request without manual planning calls",
+)
+def autonomous_request(context: Context) -> None:
+    context.state.require(
+        "project_id",
+        "profile_id",
+        "project_base_commit",
+        "project_config_hash",
+        "model_dir",
+    )
+    objective = "Add the deterministic Compose fixture endpoint and cover it with the frozen checks."
     context_path = Path(context.state.get("model_dir")) / "context.json"
-    write_json(context_path, model_context)
+    # Write the static template BEFORE the POST: Core may dispatch the Lead
+    # assessment within milliseconds, and a missing context would be reported as
+    # an ambiguous upstream outcome (no retry by policy). The dynamic ids are
+    # empty here and are resolved from the real prompt by the fixture.
+    write_json(
+        context_path,
+        _autonomous_model_context(
+            context, intake_id="", action_id="", request_id="", objective=objective
+        ),
+    )
+    os.chmod(context_path, 0o644)
+    created = context.api.post(
+        "/intake/requests",
+        {
+            "project_id": context.state.get("project_id"),
+            "objective": objective,
+            "execution_profile_id": context.state.get("profile_id"),
+            "mode": "AUTONOMOUS",
+            "idempotency_key": f"et1-autonomous-{context.config.run_id}",
+            "authorized_micros": 5000000,
+        },
+    )
+    intake_id = created["id"]
+    action_id = created["actionId"]
+    lead_request_id = created["leadRequestId"]
+    assert_equal(created.get("mode"), "AUTONOMOUS", "intake request mode")
+    # Test-support subscription admissions only; the request itself is the sole
+    # mutating product call and no planning endpoint is invoked by this harness.
+    context.admit_scope(intake_id)
+    context.admit_scope(lead_request_id)
+    context.admit_scope("*")
+    context.state.set("manual_planning_calls", 0)
+    context.state.set("intake_id", intake_id)
+    context.state.set("intake_action_id", action_id)
+    context.state.set("intake_lead_request_id", lead_request_id)
+    context.state.set("intake_objective", objective)
+    # Rewrite the authoritative context with the exact ids now that they exist.
+    write_json(
+        context_path,
+        _autonomous_model_context(
+            context,
+            intake_id=intake_id,
+            action_id=action_id,
+            request_id=lead_request_id,
+            objective=objective,
+        ),
+    )
     os.chmod(context_path, 0o644)
     context.state.set("model_context", str(context_path))
 
@@ -876,12 +927,28 @@ def autonomous_campaign(context: Context) -> None:
     intake_id = context.state.get("intake_id")
     deadline = time.monotonic() + context.config.timeout
     projection: dict[str, Any] = {}
+    last_diagnostics = 0.0
     while time.monotonic() < deadline:
         projection = context.api.get(f"/intake/requests/{intake_id}")
         if projection.get("campaignId"):
             break
         if projection.get("state") in {"BLOCKED", "FAILED", "REJECTED", "CANCELLED", "AWAITING_APPROVAL"}:
             break
+        # Fail fast with the fixture's real diagnosis instead of waiting out the
+        # full preparation timeout. Product policy and limits are untouched.
+        now = time.monotonic()
+        if now - last_diagnostics >= 5.0:
+            last_diagnostics = now
+            diagnostics = _fixture_diagnostics(context) or {}
+            errors = diagnostics.get("errors") or {}
+            detail = str(projection.get("stateDetail") or "")
+            if errors or "ambiguous" in detail.lower():
+                raise ScenarioError(
+                    "deterministic model fixture reported a terminal failure before "
+                    "Campaign: "
+                    f"state={projection.get('state')!r} detail={detail!r} "
+                    f"fixture_errors={errors!r}"
+                )
         time.sleep(2)
     state_name = projection.get("state")
     campaign_id = projection.get("campaignId")

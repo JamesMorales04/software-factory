@@ -564,6 +564,110 @@ class R4ProposalContractTests(unittest.TestCase):
                 self.assertTrue(1 <= len(selection["rationale"]) <= 500)
 
 
+
+class R5ContextRaceTests(unittest.TestCase):
+    """The assessment may be dispatched before the exact intake ids exist."""
+
+    def template(self, directory, *, request_id="", action_id=""):
+        import json as json_module
+        from pathlib import Path
+
+        context = {
+            "schema": "factory-compose-model-fixture-v1",
+            "projectId": "project-1",
+            "intakeRequestId": "",
+            "requestId": request_id,
+            "actionId": action_id,
+            "objective": "Add the deterministic Compose fixture candidate.",
+            "baseRevision": "base-1",
+            "projectConfigHash": "b" * 64,
+            "qualityProfile": "generic",
+            "provider": "fixture",
+            "model": "fixture-model",
+            "allowedPaths": ["src"],
+            "capabilities": ["repository-edit", "generic-toolchain"],
+            "checks": [
+                {
+                    "kind": "functional",
+                    "description": "candidate content present",
+                    "command": ["grep", "-q", "provider candidate", "src/provider.txt"],
+                }
+            ],
+        }
+        path = Path(directory) / "context.json"
+        path.write_text(json_module.dumps(context), encoding="utf-8")
+        return context
+
+    def prompt(self):
+        return (
+            "Objective: Add the deterministic Compose fixture candidate."
+            ". Project: project-1. Action: action-1. Request: request-1."
+        )
+
+    def test_assessment_answers_from_the_static_template_before_exact_ids(self) -> None:
+        import tempfile
+
+        fixture = load_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            context = self.template(directory)
+            body = content(fixture.assessment(self.prompt(), context))
+            self.assertEqual(body["proposal"]["actionId"], "action-1")
+            self.assertEqual(body["requestId"], "request-1")
+
+    def test_exact_ids_become_authoritative_once_written(self) -> None:
+        import tempfile
+
+        fixture = load_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            context = self.template(directory, request_id="other-request", action_id="action-1")
+            with self.assertRaises(ValueError):
+                fixture.assessment(self.prompt(), context)
+
+    def test_missing_context_still_fails_closed(self) -> None:
+        fixture = load_fixture()
+        with self.assertRaises(ValueError):
+            fixture.assessment(self.prompt(), None)
+
+    def test_dispatch_barrier_never_sees_a_missing_context(self) -> None:
+        import tempfile
+        import threading
+
+        fixture = load_fixture()
+        barrier = threading.Barrier(2)
+        result = {}
+
+        with tempfile.TemporaryDirectory() as directory:
+            context = self.template(directory)
+
+            def dispatch():
+                barrier.wait()
+                result["body"] = content(fixture.assessment(self.prompt(), context))
+
+            def finalize():
+                barrier.wait()
+                # The exact-id rewrite happens after the dispatch has begun; the
+                # template written before the POST already makes it answerable.
+                self.template(directory, request_id="request-1", action_id="action-1")
+
+            threads = [threading.Thread(target=dispatch), threading.Thread(target=finalize)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(result["body"]["requestId"], "request-1")
+        self.assertEqual(result["body"]["proposal"]["actionId"], "action-1")
+
+    def test_phase_errors_are_exposed_for_fast_diagnosis(self) -> None:
+        fixture = load_fixture()
+        fixture.ERRORS.clear()
+        fixture.record_error("assessment", "assessment context is not available")
+        diagnostics = fixture.diagnostics()
+        self.assertEqual(
+            diagnostics["errors"]["assessment"], "assessment context is not available"
+        )
+        fixture.ERRORS.clear()
+
+
 class CounterTests(unittest.TestCase):
     def test_counters_are_per_phase_and_monotonic(self) -> None:
         fixture = load_fixture()
