@@ -299,11 +299,10 @@ describe("AppShell", () => {
     await user.selectOptions(select, "es");
 
     expect(await screen.findByRole("link", { name: "Campañas" })).toBeDefined();
-    expect(
-      screen.getByRole("button", {
-        name: "Buscar K: abrir la navegación por comandos",
-      }),
-    ).toBeDefined();
+    const trigger = screen.getByRole("button", {
+      name: "Buscar K: abrir la navegación por comandos",
+    });
+    expect(trigger.textContent).toContain("Buscar K");
     expect(document.querySelector(".topbar-title")?.textContent).toBe(
       "Campañas",
     );
@@ -324,8 +323,10 @@ describe("AppShell", () => {
       name: "Search K: open command navigation",
     });
     expect(trigger.getAttribute("aria-label")).toContain("Search K");
-    expect(trigger.textContent).toContain("Search");
-    expect(trigger.textContent).toContain("K");
+    // WCAG label-content-name-mismatch: axe reads the visible DOM text, so the
+    // contiguous "Search K" sequence must exist in textContent/innerText too,
+    // not only in the accessible name.
+    expect(trigger.textContent).toContain("Search K");
     trigger.focus();
     expect(document.activeElement).toBe(trigger);
 
