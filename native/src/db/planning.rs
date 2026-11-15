@@ -307,28 +307,32 @@ impl Database {
         }
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        // A retry of the same authenticated decision is the same evidence. This
-        // query and the insert share one immediate transaction, so concurrent
-        // idempotent approvals cannot create duplicate rows.
-        let existing: Option<ReviewRow> = sqlx::query_as::query_as(
+        // A retry of the same authenticated decision is the same evidence only
+        // while it is still the request's latest decision. An identical tuple
+        // that precedes an intervening decision must not be reused: doing so
+        // would hide that later decision (for example, approve → reject →
+        // approve with the same rationale would return the first approval while
+        // the effective decision remained REJECTED). The query and the insert
+        // share one immediate transaction, so concurrent retries of the latest
+        // decision cannot create duplicate rows.
+        let latest: Option<ReviewRow> = sqlx::query_as::query_as(
             "SELECT id,request_id,plan_revision,plan_sha256,status,principal_id,rationale,points,reviewed_at
-             FROM plan_reviews
-             WHERE request_id=?1 AND plan_revision=?2 AND plan_sha256=?3
-               AND status=?4 AND principal_id=?5 AND rationale=?6 AND points=?7
-             ORDER BY reviewed_at,id LIMIT 1",
+             FROM plan_reviews WHERE request_id=?1
+             ORDER BY rowid DESC LIMIT 1",
         )
         .bind(request_id)
-        .bind(i64::from(plan_revision))
-        .bind(plan_sha256)
-        .bind(status)
-        .bind(principal_id)
-        .bind(rationale)
-        .bind(i64::from(points))
         .fetch_optional(&mut *transaction)
         .await?;
-        if let Some(existing) = existing {
+        if let Some(latest) = latest
+            && latest.2 == i64::from(plan_revision)
+            && latest.3 == plan_sha256
+            && latest.4 == status
+            && latest.5 == principal_id
+            && latest.6 == rationale
+            && latest.7 == i64::from(points)
+        {
             transaction.commit().await?;
-            return review_from_row(existing);
+            return review_from_row(latest);
         }
         let id = uuid::Uuid::new_v4().to_string();
         let reviewed_at = Utc::now().to_rfc3339();
@@ -364,9 +368,12 @@ impl Database {
 
     pub async fn latest_plan_review(&self, request_id: &str) -> Result<PlanReviewRecord, Error> {
         let row: Option<ReviewRow> = sqlx::query_as::query_as(
+            // Insertion order, not wall-clock text, is the decision sequence.
+            // Two reviews can share a timestamp and a random UUID tie-break
+            // would not preserve which decision was recorded last.
             "SELECT id,request_id,plan_revision,plan_sha256,status,principal_id,rationale,points,reviewed_at
              FROM plan_reviews WHERE request_id=?1
-             ORDER BY reviewed_at DESC,id DESC LIMIT 1",
+             ORDER BY rowid DESC LIMIT 1",
         )
         .bind(request_id)
         .fetch_optional(&self.pool)
@@ -378,7 +385,7 @@ impl Database {
         let rows: Vec<ReviewRow> = sqlx::query_as::query_as(
             "SELECT id,request_id,plan_revision,plan_sha256,status,principal_id,rationale,points,reviewed_at
              FROM plan_reviews WHERE request_id=?1
-             ORDER BY reviewed_at,id",
+             ORDER BY rowid",
         )
         .bind(request_id)
         .fetch_all(&self.pool)
@@ -776,6 +783,179 @@ mod tests {
         );
         let latest = db.latest_plan_review("request-review").await.unwrap();
         assert_eq!(latest.id, review.id);
+    }
+
+    #[tokio::test]
+    async fn plan_review_idempotency_only_reuses_the_latest_identical_decision() {
+        let db = seeded_db("request-review-sequence").await;
+        let plan = db
+            .save_planning_artifact(
+                "request-review-sequence",
+                "PLAN",
+                1,
+                r#"{"lane":"DELEGATED"}"#,
+            )
+            .await
+            .unwrap();
+        let review = |status: &'static str, rationale: &'static str| NewPlanReview {
+            request_id: "request-review-sequence",
+            plan_revision: 1,
+            plan_sha256: &plan.content_sha256,
+            status,
+            principal_id: "operator",
+            rationale,
+            points: 0,
+        };
+        let approved = db
+            .save_plan_review(review("OWNER_APPROVED", "The owner approved the plan."))
+            .await
+            .unwrap();
+        let rejected = db
+            .save_plan_review(review("REJECTED", "The owner rejected the plan."))
+            .await
+            .unwrap();
+        assert_ne!(approved.id, rejected.id);
+        assert_eq!(
+            db.latest_plan_review("request-review-sequence")
+                .await
+                .unwrap()
+                .status,
+            "REJECTED"
+        );
+
+        // The same tuple as the first approval is a new intent after the
+        // intervening rejection: it must be recorded after the rejection and
+        // become the effective decision.
+        let reapproved = db
+            .save_plan_review(review("OWNER_APPROVED", "The owner approved the plan."))
+            .await
+            .unwrap();
+        assert_ne!(reapproved.id, approved.id);
+        assert_ne!(reapproved.id, rejected.id);
+        let latest = db
+            .latest_plan_review("request-review-sequence")
+            .await
+            .unwrap();
+        assert_eq!(latest.id, reapproved.id);
+        assert_eq!(latest.status, "OWNER_APPROVED");
+        let ordered = db.plan_reviews("request-review-sequence").await.unwrap();
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|review| review.status.as_str())
+                .collect::<Vec<_>>(),
+            vec!["OWNER_APPROVED", "REJECTED", "OWNER_APPROVED"]
+        );
+
+        // A consecutive retry of the now-latest decision is the same evidence.
+        let replay = db
+            .save_plan_review(review("OWNER_APPROVED", "The owner approved the plan."))
+            .await
+            .unwrap();
+        assert_eq!(replay.id, reapproved.id);
+        assert_eq!(
+            db.plan_reviews("request-review-sequence")
+                .await
+                .unwrap()
+                .len(),
+            3,
+            "a consecutive replay must not append a duplicate decision"
+        );
+        assert_eq!(
+            db.latest_plan_review("request-review-sequence")
+                .await
+                .unwrap()
+                .id,
+            reapproved.id
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_plan_review_retries_record_exactly_one_latest_decision() {
+        let db = seeded_db("request-review-concurrent").await;
+        let plan = db
+            .save_planning_artifact(
+                "request-review-concurrent",
+                "PLAN",
+                1,
+                r#"{"lane":"DELEGATED"}"#,
+            )
+            .await
+            .unwrap();
+        let input = |status: &'static str, rationale: &'static str| NewPlanReview {
+            request_id: "request-review-concurrent",
+            plan_revision: 1,
+            plan_sha256: &plan.content_sha256,
+            status,
+            principal_id: "operator",
+            rationale,
+            points: 0,
+        };
+        let mut retries = Vec::new();
+        for _ in 0..8 {
+            let db = db.clone();
+            let plan_sha256 = plan.content_sha256.clone();
+            retries.push(tokio::spawn(async move {
+                db.save_plan_review(NewPlanReview {
+                    request_id: "request-review-concurrent",
+                    plan_revision: 1,
+                    plan_sha256: &plan_sha256,
+                    status: "OWNER_APPROVED",
+                    principal_id: "operator",
+                    rationale: "The owner approved the plan.",
+                    points: 0,
+                })
+                .await
+                .unwrap()
+            }));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for retry in retries {
+            ids.insert(retry.await.unwrap().id);
+        }
+        assert_eq!(
+            ids.len(),
+            1,
+            "concurrent retries of the latest decision share one row"
+        );
+
+        db.save_plan_review(input("REJECTED", "The owner rejected the plan."))
+            .await
+            .unwrap();
+        let mut retries = Vec::new();
+        for _ in 0..8 {
+            let db = db.clone();
+            let plan_sha256 = plan.content_sha256.clone();
+            retries.push(tokio::spawn(async move {
+                db.save_plan_review(NewPlanReview {
+                    request_id: "request-review-concurrent",
+                    plan_revision: 1,
+                    plan_sha256: &plan_sha256,
+                    status: "OWNER_APPROVED",
+                    principal_id: "operator",
+                    rationale: "The owner approved the plan.",
+                    points: 0,
+                })
+                .await
+                .unwrap()
+            }));
+        }
+        for retry in retries {
+            retry.await.unwrap();
+        }
+        let ordered = db.plan_reviews("request-review-concurrent").await.unwrap();
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(ordered[0].status, "OWNER_APPROVED");
+        assert_eq!(ordered[1].status, "REJECTED");
+        assert_eq!(ordered[2].status, "OWNER_APPROVED");
+        assert_eq!(
+            db.latest_plan_review("request-review-concurrent")
+                .await
+                .unwrap()
+                .status,
+            "OWNER_APPROVED"
+        );
     }
 
     #[tokio::test]

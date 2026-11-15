@@ -4,6 +4,15 @@
 Core-owned transition added by the stage 1 change. It is not independent
 verification or acceptance.
 
+**R3 repair (2026-11-15):** latest-only plan-review idempotency (approve →
+reject → approve is a new effective decision), truthful ambiguous-assessment
+wait (no false restart resume, no blind paid retry), re-enqueue after a
+recorded approval whose environment phase failed recoverably, effective-lane
+guard against reusing a weaker frozen PLAN, one blocked environment revision per
+builder descriptor change, transient SQLite/quote-error classification and the
+provider-bound projection. See the implementation ficha for the exact tests and
+the residual lock/deadline proposal.
+
 ## Scope
 
 The authorized autonomous intake runner previously called assessment, then
@@ -43,6 +52,12 @@ bounds. No model call, quote change or envelope increase happens implicitly.
 An already-frozen quote that is too small remains untouched; the operator must
 create a new configuration/revision and a fresh funding admission.
 
+The provider projection (`GET/PUT /settings/providers`) exposes the stored
+`maxInputTokens`/`maxOutputTokens` plus the protocol's own
+`leadOutputTokens` (16,384) and `leadRetryOutputTokens` (32,768), so Office does
+not duplicate Core policy. Editing a bound never mutates frozen quotes or
+envelopes.
+
 ## Authority boundaries
 
 - The runner never grants authority, approves an owner-required plan, widens
@@ -78,20 +93,50 @@ create a new configuration/revision and a fresh funding admission.
 - A review that does not bind the current PLAN revision and exact hash is
   stale. It remains historical evidence but cannot reject or approve the current
   plan; the endpoint refuses a decision for an older revision.
-- `save_plan_review` reuses an identical review tuple inside one immediate
-  transaction, so retries and concurrent identical owner approvals create one
-  row. If the owner decision is recorded and the following environment phase
-  fails, the response carries `reviewRecorded: true` and the real blocker.
+- `save_plan_review` reuses an identical review tuple only while it is the
+  request's latest decision, inside one immediate transaction. A consecutive
+  retry (or concurrent identical retries) therefore creates one row. An
+  identical tuple that precedes an intervening decision is a new intent: it is
+  appended, becomes the effective decision and cannot be masked by the older
+  row. This covers approve → reject → approve with the same rationale.
+- The effective decision is the latest row in insertion order, not the largest
+  wall-clock string. This matters when two reviews share a timestamp or when a
+  random UUID would otherwise decide the tie.
+- If the owner decision is recorded and the following environment phase fails,
+  the response carries `reviewRecorded: true` and the real blocker. A
+  recoverable environment failure (builder/model/funding unavailable) also
+  re-enqueues the same request, so repairing the prerequisite resumes through
+  readiness without another owner decision. A terminal environment decision is
+  not requeued.
+- A successful `POST /agentic/requests/{id}/environment/recompile` is an
+  operator-repaired prerequisite and re-enqueues an autonomous request with no
+  Campaign; the runner still revalidates every authority and readiness guard.
 - The assessment transition shares the per-request lock. An assessment already
-  in progress is a recoverable wait, not a Lead failure.
+  in progress is a recoverable wait, not a Lead failure. A durable `ASSESSING`
+  state without a recorded assessment is the ambiguous-dispatch case: Core does
+  not retry a possibly billed call and does not claim that a restart resumes it.
+  The real operator actions are withdrawal (`POST /lead/requests/{id}/withdraw`)
+  or a new request; the runner records one durable
+  `autopilot.assessment_outcome_unknown` event for observability.
 - A recoverable prerequisite failure (provider/builder/model unavailable,
   transient assessment/funding) records a blocked operation without blocking
   the Lead; a restart, repaired prerequisite or valid owner approval resumes the
   same request. A terminal failure still blocks the Lead. Ambiguous dispatch is
   never retried blindly.
 - A blocked environment caused by a builder outage is recompiled in a new
-  revision when the runner resumes; a non-recoverable environment blocker is
+  revision only when the builder descriptor actually changed (for example, the
+  builder returned); repeating the same unavailable builder on every resume
+  does not append a blocked revision. A non-recoverable environment blocker is
   never replaced silently.
+- A live deterministic floor deeper than the frozen PLAN lane is not ignored:
+  the runner stops with a typed `PLAN_LANE_ELEVATED` recoverable wait and asks
+  for the existing deterministic plan recompile plus a new owner review. It does
+  not silently reuse the weaker plan or author a replacement that discards the
+  reviewed revision. Preparation and readiness share the same effective lane
+  (the deeper of the frozen PLAN lane and the current floor).
+- A transient SQLite failure (busy, locked, I/O, full) is a recoverable wait;
+  a durable constraint or programming error remains terminal. A pricing-quote
+  read failure is propagated instead of being treated as “no quote”.
 
 - A completed Campaign short-circuits before any assessment, funding or model
   call.
@@ -133,7 +178,19 @@ New Core tests:
   Campaign;
 - restart from a persisted WorkGraph reuses the graph without a Planner call;
 - a stale review is not reported as current/approved;
-- withdrawal before preparation makes no model call and creates no Campaign.
+- withdrawal before preparation makes no model call and creates no Campaign;
+- approve → reject → approve with the same rationale appends a new effective
+  approval, the latest review approves current readiness and the runner does not
+  classify it as rejected; a consecutive replay remains one row;
+- concurrent identical retries share one review row, including retries after an
+  intervening rejection;
+- a deeper live triage floor stops reuse of a weaker frozen PLAN with
+  `PLAN_LANE_ELEVATED` (recoverable, no model call, no Campaign);
+- an unchanged unavailable environment builder does not append a blocked
+  revision per resume, while a changed builder descriptor recompiles once;
+- transient SQLite pressure is a recoverable wait and a durable constraint is
+  terminal;
+- the provider projection carries the stored bounds and the protocol bounds.
 
 The deterministic test provider is a local fixture. It is development evidence,
 not live provider or independent acceptance evidence.
@@ -153,10 +210,31 @@ not live provider or independent acceptance evidence.
 - The manual `POST /agentic/requests/{id}/plan` path still returns an existing
   plan without repairing a missing review row. The autonomous runner recovers
   that state; the manual endpoint recovery is a separate small change.
-- An owner plan approval that triggers a failing environment review can leave
-  the approval row written while the endpoint returns an error. Retrying the
-  same authenticated decision is safe in the current deterministic review
-  path, but a deduplicated transaction is not part of stage 1.
+- An owner plan approval that triggers a failing environment review still
+  returns the recorded review plus the real blocker; a recoverable failure now
+  re-enqueues the request, and a successful environment recompile re-enqueues it
+  as well. Terminal environment decisions are not retried.
+- `ASSESSING` without a recorded assessment has no reconciliation endpoint in
+  this change. The message and this contract are now truthful (withdraw or new
+  request; no automatic paid retry). An audited operator reconciliation that
+  releases or re-issues the reservation would require a separate authorized
+  transition; it is not invented here.
+- The `/assess` handler still holds the per-request lock during the bounded
+  model call, and the shared gateway has no total request deadline. A hung
+  upstream can therefore block approve/recompile of the same request and hold
+  one scheduler permit. A client-side timeout is deliberately not added: it
+  could abort a call the upstream still bills and invite duplicate inference.
+  The correct repair is a durable assessment lease plus explicit cancellation /
+  outcome reconciliation (`assess` dispatched → known outcome), which is a
+  separate architectural change. Reproduction for that change: a fixture
+  upstream that accepts the connection and never responds; start `POST
+  /agentic/requests/{id}/assess`, wait, then `POST /plan-review` and
+  `/environment/recompile` and observe both waiting on the same lock while the
+  scheduler permit stays held.
+- A deeper live triage floor requires the existing deterministic plan recompile
+  and a new owner review; stage 1 does not auto-recompile or auto-approve a
+  risk-elevated plan.
+
 - Withdrawal fences cover the WorkGraph, participant, specification draft,
   specification freeze, plan review recovery, environment compilation and
   environment freeze writes touched by the runner. Early malformed-submission

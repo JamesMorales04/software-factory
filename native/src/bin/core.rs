@@ -2883,7 +2883,7 @@ fn provider_view(
     catalog: &factory_native::provider_catalog::ProviderCatalogEntry,
     discovery: Option<&factory_native::provider_catalog::ProviderModelCatalogEntry>,
 ) -> serde_json::Value {
-    json!({
+    let mut view = json!({
         "modelDiscovery": discovery,
         "provider": catalog.provider,
         "kind": catalog.kind,
@@ -2899,10 +2899,22 @@ fn provider_view(
         "isDefault": settings.is_some_and(|settings| settings.is_default),
         "model": settings.map(|settings| settings.model.clone()).unwrap_or_else(|| catalog.default_model.into()),
         "baseUrl": settings.map(|settings| settings.base_url.clone()).unwrap_or_else(|| catalog.default_base_url.into()),
+        // The structured Lead protocol bound and its one permitted truncation
+        // retry. Office projects these so an operator sees the exact
+        // requirement instead of duplicating Core policy.
+        "leadOutputTokens": AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS,
+        "leadRetryOutputTokens": AGENTIC_LEAD_TRUNCATION_RETRY_CEILING,
         "credentialFingerprint": settings.map(|settings| settings.credential_fingerprint.clone()).unwrap_or_default(),
         "revision": settings.map(|settings| settings.revision).unwrap_or(0),
         "updatedAt": settings.map(|settings| settings.updated_at.clone()).unwrap_or_default(),
-    })
+    });
+    // Absence of a stored bound means "not reported", not a value Office may
+    // invent. A configured provider reports the effective stored integers.
+    if let Some(settings) = settings {
+        view["maxInputTokens"] = json!(settings.max_input_tokens);
+        view["maxOutputTokens"] = json!(settings.max_output_tokens);
+    }
+    view
 }
 
 async fn subscription_funding_readiness(
@@ -11779,8 +11791,14 @@ async fn ensure_lead_model_output_bound(
         .await
         .map_err(api_error)?
         .is_some();
-    if envelope_bound && let Ok(quote) = app.db.inference_pricing_quote(provider, model).await {
-        available = available.min(quote.output_tokens);
+    if envelope_bound {
+        match app.db.inference_pricing_quote(provider, model).await {
+            Ok(quote) => available = available.min(quote.output_tokens),
+            // A missing quote is refused later by the reservation with its own
+            // typed error; a read failure must not be swallowed as "no quote".
+            Err(Error::NotFound) => {}
+            Err(error) => return Err(api_error(error)),
+        }
     }
     if available < required {
         return Err((
@@ -11901,10 +11919,21 @@ fn planning_lane_rank(lane: factory_native::planning::PlanningLane) -> u8 {
     }
 }
 
-/// The lane recorded with the frozen plan is authoritative for approval. A
-/// later filesystem state may raise the deterministic floor, so readiness uses
-/// the deeper of the frozen lane and the current floor and can never weaken a
-/// plan that was approved at a stronger lane.
+/// The effective lane is the deeper of the frozen PLAN lane and the current
+/// deterministic floor. A later filesystem state may raise the floor, so
+/// readiness and preparation can never weaken a plan that was authored or
+/// approved at a stronger lane.
+fn effective_planning_lane(
+    frozen: Option<factory_native::planning::PlanningLane>,
+    live: factory_native::planning::PlanningLane,
+) -> factory_native::planning::PlanningLane {
+    match frozen {
+        Some(frozen) if planning_lane_rank(frozen) > planning_lane_rank(live) => frozen,
+        _ => live,
+    }
+}
+
+/// The lane recorded with the frozen plan is authoritative for approval.
 fn frozen_planning_lane(
     artifact: &factory_native::db::PlanningArtifactRecord,
 ) -> Option<factory_native::planning::PlanningLane> {
@@ -14973,12 +15002,10 @@ async fn planning_readiness(
     let current_plan_sha256 = plan_artifact
         .as_ref()
         .map(|artifact| artifact.content_sha256.clone());
-    let lane = match plan_artifact.as_ref().and_then(frozen_planning_lane) {
-        Some(frozen) if planning_lane_rank(frozen) > planning_lane_rank(context.planning_lane) => {
-            frozen
-        }
-        _ => context.planning_lane,
-    };
+    let lane = effective_planning_lane(
+        plan_artifact.as_ref().and_then(frozen_planning_lane),
+        context.planning_lane,
+    );
     let reviewer_plan = factory_native::planning::route::required_reviewers(lane, assurance);
     let lane_code = planning_lane_code(lane);
     for kind in ["STACK", "ARCHITECTURE", "DOCUMENTATION", "SKILL", "DOD"] {
@@ -15599,7 +15626,9 @@ async fn review_agentic_plan(
         {
             Ok(Some((_, None))) => environment_blocked = true,
             Ok(_) => {}
-            Err(response) => return review_recorded_error(response, &review).await,
+            Err(response) => {
+                return review_recorded_error(&app, &record, response, &review).await;
+            }
         }
     }
     if let Some(target) = target {
@@ -15648,8 +15677,12 @@ async fn review_agentic_plan(
 
 /// The owner decision is durable even when the following environment phase
 /// fails. Return the real blocker together with the recorded review instead of
-/// an anonymous error that invites a duplicate approval.
+/// an anonymous error that invites a duplicate approval. When the failure is a
+/// recoverable prerequisite, re-enqueue the same request so repairing it can
+/// resume through the normal readiness path without another owner decision.
 async fn review_recorded_error(
+    app: &Arc<App>,
+    record: &factory_native::db::IntakeRequestRecord,
     response: Response,
     review: &factory_native::db::PlanReviewRecord,
 ) -> Response {
@@ -15661,9 +15694,36 @@ async fn review_recorded_error(
     if !value.is_object() {
         value = json!({});
     }
+    let recoverable = value
+        .get("code")
+        .and_then(Value::as_str)
+        .is_some_and(environment_review_failure_is_recoverable);
+    if recoverable
+        && record.mode == factory_native::intake::IntakeMode::Autonomous
+        && record.campaign_id.is_none()
+    {
+        enqueue_autopilot(app, &record.id).await;
+    }
     value["review"] = json!(review);
     value["reviewRecorded"] = json!(true);
     (status, Json(value)).into_response()
+}
+
+/// Environment-phase failures that a repaired prerequisite can clear. They are
+/// the same class the autonomous runner treats as a recoverable wait; a
+/// terminal environment decision is never retried.
+fn environment_review_failure_is_recoverable(code: &str) -> bool {
+    matches!(
+        code,
+        "ENVIRONMENT_BUILDER_UNAVAILABLE"
+            | "ENVIRONMENT_BUILD_FAILED"
+            | "ENVIRONMENT_BUILD_TIMEOUT"
+            | "ENVIRONMENT_LEAD_MODEL_UNAVAILABLE"
+            | "AGENTIC_MODEL_UNAVAILABLE"
+            | "AGENTIC_LEAD_OUTPUT_BOUND_INSUFFICIENT"
+            | "INFERENCE_AUTHORIZATION_REQUIRED"
+            | "SUBSCRIPTION_ADMISSION_REQUIRED"
+    )
 }
 
 async fn get_agentic_environment(
@@ -15886,6 +15946,14 @@ async fn recompile_agentic_environment(
         .await
     {
         return api_error(error);
+    }
+    // A successful recompile is an operator-repaired prerequisite. Re-enqueue
+    // the same autonomous request so the runner can recompile the review/spec
+    // and continue; this grants no authority and the runner still revalidates
+    // readiness before any Campaign start.
+    if record.mode == factory_native::intake::IntakeMode::Autonomous && record.campaign_id.is_none()
+    {
+        enqueue_autopilot(&app, &record.id).await;
     }
     match environment_projection_for_request(&app, &record).await {
         Ok(value) => Json(value).into_response(),
@@ -18666,6 +18734,7 @@ fn autopilot_stop(error: &Error) -> AutopilotStop {
             "AUTOPILOT_ASSESSMENT_IN_PROGRESS"
             | "ASSESSMENT_OUTCOME_UNKNOWN"
             | "ASSESSMENT_TRANSIENT"
+            | "PLAN_LANE_ELEVATED"
             | "AGENTIC_MODEL_UNAVAILABLE"
             | "AGENTIC_LEAD_OUTPUT_BOUND_INSUFFICIENT"
             | "ENVIRONMENT_BUILDER_UNAVAILABLE"
@@ -18680,7 +18749,25 @@ fn autopilot_stop(error: &Error) -> AutopilotStop {
         Error::RateLimited(_) | Error::Unavailable(_) | Error::Busy => {
             AutopilotStop::WaitRecoverable
         }
+        Error::Sqlx(error) if database_error_is_transient(error) => {
+            // A transient SQLite failure (busy/locked/I/O/full) is not a
+            // terminal product decision. Waiting keeps the Lead alive so a
+            // restart or a repaired database can resume the same request.
+            AutopilotStop::WaitRecoverable
+        }
         _ => AutopilotStop::Terminal,
+    }
+}
+
+/// SQLite primary result codes that describe transient infrastructure
+/// pressure rather than a durable constraint or programming defect.
+fn database_error_is_transient(error: &sqlx::Error) -> bool {
+    match error {
+        sqlx::Error::Io(_) => true,
+        sqlx::Error::Database(database) => {
+            matches!(database.code().as_deref(), Some("5" | "6" | "10" | "13"))
+        }
+        _ => false,
     }
 }
 
@@ -18984,6 +19071,22 @@ async fn prepare_autonomous_plan(
 
     let context = agentic_triage_context(app, record).await?;
     let plan = app.db.latest_planning_artifact(&record.id, "PLAN").await?;
+    let frozen_lane = frozen_planning_lane(&plan).unwrap_or(context.planning_lane);
+    if planning_lane_rank(context.planning_lane) > planning_lane_rank(frozen_lane) {
+        // The deterministic floor deepened after the PLAN was authored. Reusing
+        // the weaker plan would ignore legitimate risk elevation; silently
+        // authoring a replacement would discard the reviewed revision. Both are
+        // refused. The operator has an existing deterministic recompile action
+        // that produces a new revision and a new owner decision.
+        return Err(Error::IntakeConflict {
+            code: "PLAN_LANE_ELEVATED",
+            message: format!(
+                "the deterministic triage floor is now {} but the frozen PLAN was authored at {}; recompile the plan and obtain a new owner review before autonomous execution",
+                planning_lane_code(context.planning_lane),
+                planning_lane_code(frozen_lane)
+            ),
+        });
+    }
     ensure_plan_review_for_current_plan(app, record, plan.revision, &plan.content_sha256).await?;
     let readiness = planning_readiness(app, &record.id, plan.revision, &context).await?;
     if readiness.review_current
@@ -19037,6 +19140,7 @@ async fn prepare_autonomous_environment(
         Err(Error::NotFound) => None,
         Err(error) => return Err(error),
     };
+    let mut compiled_now = false;
     if stored.is_none() {
         if !action.spec.environment_required {
             return Ok(());
@@ -19062,9 +19166,11 @@ async fn prepare_autonomous_environment(
         {
             return Err(autopilot_response_error(response, "environment-compile").await);
         }
+        compiled_now = true;
         stored = Some(app.db.latest_environment_plan(&record.id).await?);
     }
     if let Some(current) = stored.as_ref()
+        && !compiled_now
         && (current.status == "BLOCKED" || !current.plan.blockers.is_empty())
         && current.plan.blockers.iter().any(|blocker| {
             matches!(
@@ -19074,6 +19180,11 @@ async fn prepare_autonomous_environment(
                     | factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentBuildTimeout
             )
         })
+        // A builder outage is recoverable, but retrying the same unavailable
+        // builder on every resume would only append blocked revisions. Recompile
+        // when the builder descriptor actually changed (for example, the
+        // builder returned); otherwise report the existing typed blocker.
+        && current.plan.builder != app.environment_builder().descriptor()
     {
         // A builder outage is recoverable. A restart or owner approval after
         // the builder returns recompiles a new revision; it never reuses the
@@ -19247,12 +19358,16 @@ async fn prepare_autonomous_request(
     let plan = prepare_autonomous_plan(app, record).await?;
     let context = agentic_triage_context(app, record).await?;
     let plan_artifact = app.db.latest_planning_artifact(&record.id, "PLAN").await?;
-    let frozen_lane = frozen_planning_lane(&plan_artifact).unwrap_or(context.planning_lane);
+    let effective_lane =
+        effective_planning_lane(frozen_planning_lane(&plan_artifact), context.planning_lane);
     // FORMAL_SPEC must reach a complete SPEC/OPENSPEC artifact set before an
     // owner can approve the plan, because the approval endpoint requires
-    // materials_ready. The frozen PLAN lane, not a drifted live triage, decides.
+    // materials_ready. Preparation uses the same effective lane as readiness
+    // (the deeper of the frozen PLAN lane and the current deterministic floor),
+    // so a legitimate risk elevation is never ignored and cannot leave a plan
+    // permanently missing SPEC/OPENSPEC.
     prepare_autonomous_environment(app, record, &context).await?;
-    if frozen_lane == PlanningLane::FormalSpec {
+    if effective_lane == PlanningLane::FormalSpec {
         prepare_autonomous_spec(app, record).await?;
     }
     if !plan.review_approved {
@@ -19511,10 +19626,24 @@ async fn run_autopilot_inner(app: &Arc<App>, id: &str) -> Result<(), Error> {
     let record = app.db.intake_request(id).await?;
     let lead = app.db.lead_request(&record.lead_request_id).await?;
     if lead.state == LeadRequestState::Assessing {
+        // A durable ASSESSING state without a recorded assessment is the
+        // ambiguous-dispatch case: the process may have died after the paid
+        // call was dispatched and before its outcome was recorded. Core cannot
+        // know whether the upstream billed the call, so it must not retry it
+        // automatically and must not claim that a restart resumes it. The
+        // operator's real action is withdrawal (or a new request).
+        let _ = app
+            .db
+            .record_event_once(
+                &format!("request:{id}"),
+                "autopilot.assessment_outcome_unknown",
+                "the Lead is ASSESSING without a recorded assessment; Core does not retry a possibly billed dispatch automatically",
+            )
+            .await;
         return Err(Error::IntakeConflict {
             code: "AUTOPILOT_ASSESSMENT_IN_PROGRESS",
             message:
-                "the assessment is in progress or its outcome is unknown; the same request resumes after the assessment or a restart"
+                "the assessment dispatch outcome is unknown (durable ASSESSING state without a recorded assessment); Core does not retry a possibly billed call automatically. Withdraw this request or submit a new one."
                     .into(),
         });
     }
@@ -27747,20 +27876,22 @@ mod tests {
                     .graph_sha256,
                 graph.graph_sha256
             );
-            let calls = calls.lock().unwrap();
-            assert!(
-                calls.iter().all(|call| {
-                    let system = call["messages"]
-                        .as_array()
-                        .and_then(|messages| {
-                            messages.iter().find(|message| message["role"] == "system")
-                        })
-                        .and_then(|message| message["content"].as_str())
-                        .unwrap_or_default();
-                    !system.contains("Software Factory Planner")
-                }),
-                "a persisted WorkGraph must not call the Planner again: {calls:?}"
-            );
+            {
+                let calls = calls.lock().unwrap();
+                assert!(
+                    calls.iter().all(|call| {
+                        let system = call["messages"]
+                            .as_array()
+                            .and_then(|messages| {
+                                messages.iter().find(|message| message["role"] == "system")
+                            })
+                            .and_then(|message| message["content"].as_str())
+                            .unwrap_or_default();
+                        !system.contains("Software Factory Planner")
+                    }),
+                    "a persisted WorkGraph must not call the Planner again: {calls:?}"
+                );
+            }
 
             app.db.close().await;
             fixture.app.db.close().await;
@@ -28468,6 +28599,12 @@ mod tests {
                 .await
                 .expect_err("an in-progress assessment is not a terminal failure");
             assert_eq!(autopilot_stop(&error), AutopilotStop::WaitRecoverable);
+            let message = error.to_string();
+            assert!(message.contains("outcome is unknown"), "{message}");
+            assert!(
+                !message.to_lowercase().contains("resumes"),
+                "Core must not promise a resume it cannot deliver: {message}"
+            );
             record_autopilot_stop(&app, &intake_id, &error).await;
             let lead = fixture
                 .app
@@ -28483,6 +28620,457 @@ mod tests {
             assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
 
             app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn owner_reversal_after_an_intervening_rejection_is_a_new_effective_decision() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-review-reversal").await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            prepare_autonomous_request(&app, &request)
+                .await
+                .expect("initial preparation completes");
+            let plan = fixture
+                .app
+                .db
+                .latest_planning_artifact(&intake_id, "PLAN")
+                .await
+                .unwrap();
+            let first = fixture
+                .app
+                .db
+                .save_plan_review(factory_native::db::NewPlanReview {
+                    request_id: &intake_id,
+                    plan_revision: plan.revision,
+                    plan_sha256: &plan.content_sha256,
+                    status: "OWNER_APPROVED",
+                    principal_id: "operator",
+                    rationale: "The owner approved the exact plan.",
+                    points: 0,
+                })
+                .await
+                .unwrap();
+            let rejected = fixture
+                .app
+                .db
+                .save_plan_review(factory_native::db::NewPlanReview {
+                    request_id: &intake_id,
+                    plan_revision: plan.revision,
+                    plan_sha256: &plan.content_sha256,
+                    status: "REJECTED",
+                    principal_id: "operator",
+                    rationale: "The owner rejected the exact plan.",
+                    points: 0,
+                })
+                .await
+                .unwrap();
+            assert_ne!(first.id, rejected.id);
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .latest_plan_review(&intake_id)
+                    .await
+                    .unwrap()
+                    .status,
+                "REJECTED"
+            );
+
+            // The same tuple as the first approval is a new intent after the
+            // intervening rejection. It must become the effective decision.
+            let body = json!({
+                "planRevision": plan.revision,
+                "planSha256": plan.content_sha256,
+                "decision": "APPROVE",
+                "rationale": "The owner approved the exact plan.",
+            });
+            let (_status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan-review"),
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(approved["reviewRecorded"], true, "{approved}");
+            assert_eq!(approved["review"]["status"], "OWNER_APPROVED", "{approved}");
+            let effective = approved["review"]["id"].as_str().unwrap();
+            assert_ne!(effective, first.id);
+            assert_ne!(effective, rejected.id);
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .latest_plan_review(&intake_id)
+                    .await
+                    .unwrap()
+                    .id,
+                effective
+            );
+
+            let context = agentic_triage_context(
+                &app,
+                &fixture.app.db.intake_request(&intake_id).await.unwrap(),
+            )
+            .await
+            .unwrap();
+            let readiness = planning_readiness(&app, &intake_id, plan.revision, &context)
+                .await
+                .unwrap();
+            assert!(readiness.review_current);
+            assert!(
+                readiness.review_approved,
+                "the latest approval is effective"
+            );
+
+            // A consecutive replay of the same decision is still idempotent.
+            let (_status, replay) = send(
+                &fixture.router,
+                "POST",
+                &format!("/agentic/requests/{intake_id}/plan-review"),
+                Some(body),
+            )
+            .await;
+            assert_eq!(replay["review"]["id"], effective, "{replay}");
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .plan_reviews(&intake_id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .filter(|review| review.status == "OWNER_APPROVED")
+                    .count(),
+                2,
+                "the reversal row and its replay are the only approvals after the rejection"
+            );
+
+            // The runner must not classify the latest approval as the older
+            // rejected decision.
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let prepared = prepare_autonomous_plan(&app, &request)
+                .await
+                .expect("the effective approval resumes preparation");
+            assert!(prepared.review_approved);
+            assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn a_deeper_triage_floor_stops_reuse_of_a_weaker_frozen_plan() {
+            let (fixture, app, calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-lane-elevated").await;
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            prepare_autonomous_request(&app, &request)
+                .await
+                .expect("the deterministic DIRECT plan prepares");
+            // Removing the committed documentation raises the live floor to
+            // FORMAL_SPEC after the PLAN was authored at the weaker lane.
+            std::fs::remove_file(fixture.repository.join("README.md")).unwrap();
+            std::fs::remove_dir_all(fixture.repository.join("docs")).unwrap();
+            let calls_before = calls.lock().unwrap().len();
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let error = match prepare_autonomous_plan(&app, &request).await {
+                Ok(_) => panic!("a deeper floor cannot reuse the weaker frozen plan"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(
+                    error,
+                    Error::IntakeConflict {
+                        code: "PLAN_LANE_ELEVATED",
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+            assert_eq!(autopilot_stop(&error), AutopilotStop::WaitRecoverable);
+            assert_eq!(calls.lock().unwrap().len(), calls_before);
+            assert!(fixture.app.db.campaigns().await.unwrap().is_empty());
+            let lead = fixture
+                .app
+                .db
+                .lead_request(&request.lead_request_id)
+                .await
+                .unwrap();
+            assert_eq!(lead.state, factory_native::lead::LeadRequestState::Ready);
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn an_unavailable_builder_does_not_append_a_blocked_revision_per_resume() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-environment-churn").await;
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            // Reproduce an Action that requires an environment without the
+            // fixture's pre-bound test environment (which would conflict with a
+            // real compiled plan).
+            fixture
+                .app
+                .db
+                .clear_test_action_environment(&record.action_id)
+                .await
+                .unwrap();
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            let (spec_json,): (String,) =
+                sqlx::query_as::query_as("SELECT spec_json FROM action_specs WHERE action_id=?1")
+                    .bind(&record.action_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let mut spec: factory_native::db::ActionSpec =
+                serde_json::from_str(&spec_json).unwrap();
+            spec.environment_required = true;
+            let spec_json = serde_json::to_string(&spec).unwrap();
+            let spec_sha = factory_native::planning::environment::sha256_hex(spec_json.as_bytes());
+            sqlx::query::query(
+                "UPDATE action_specs SET spec_json=?1,spec_sha256=?2 WHERE action_id=?3",
+            )
+            .bind(&spec_json)
+            .bind(&spec_sha)
+            .bind(&record.action_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+            assert!(
+                fixture
+                    .app
+                    .db
+                    .action(&record.action_id)
+                    .await
+                    .unwrap()
+                    .spec
+                    .environment_required,
+                "the test Action must require an environment"
+            );
+            app.set_environment_builder(
+                factory_native::planning::environment::unavailable_environment_builder(),
+            );
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            let conventions = factory_native::planning::environment::discover_project_conventions(
+                &record.project_id,
+                std::path::Path::new(&config.repository),
+                &config.base_commit,
+                chrono::Utc::now(),
+            )
+            .unwrap();
+            let blocked = blocked_environment_plan(
+                &record,
+                1,
+                "R0",
+                &conventions,
+                factory_native::planning::environment::EnvironmentBlocker {
+                    code: factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
+                    message: "the fixture builder is unavailable".into(),
+                },
+                app.environment_builder().descriptor(),
+            );
+            fixture
+                .app
+                .db
+                .save_environment_plan(&blocked)
+                .await
+                .unwrap();
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let context = agentic_triage_context(&app, &record).await.unwrap();
+            for attempt in 0..2 {
+                let error = prepare_autonomous_environment(&app, &record, &context)
+                    .await
+                    .expect_err("the unavailable builder blocks the environment");
+                assert!(
+                    matches!(
+                        error,
+                        Error::IntakeConflict {
+                            code: "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                            ..
+                        }
+                    ),
+                    "attempt {attempt}: {error}"
+                );
+                assert!(
+                    fixture
+                        .app
+                        .db
+                        .environment_plan(&intake_id, 2)
+                        .await
+                        .is_err(),
+                    "attempt {attempt}: the same unavailable builder must not append a revision"
+                );
+            }
+            // A changed builder descriptor is the recovery signal; it compiles
+            // exactly one new revision (the review phase may still fail).
+            if let Some(builder) =
+                factory_native::planning::environment::test_environment_builder_from_env()
+            {
+                app.set_environment_builder(builder);
+                let _ = prepare_autonomous_environment(&app, &record, &context).await;
+                assert!(
+                    fixture.app.db.environment_plan(&intake_id, 2).await.is_ok(),
+                    "a changed builder must recompile the blocked environment once"
+                );
+            }
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[test]
+        fn only_recoverable_environment_failures_requeue_after_a_recorded_decision() {
+            assert!(environment_review_failure_is_recoverable(
+                "ENVIRONMENT_BUILDER_UNAVAILABLE"
+            ));
+            assert!(environment_review_failure_is_recoverable(
+                "ENVIRONMENT_LEAD_MODEL_UNAVAILABLE"
+            ));
+            assert!(environment_review_failure_is_recoverable(
+                "SUBSCRIPTION_ADMISSION_REQUIRED"
+            ));
+            assert!(!environment_review_failure_is_recoverable(
+                "ENVIRONMENT_LEAD_REVIEW_REJECTED"
+            ));
+            assert!(!environment_review_failure_is_recoverable(
+                "ENVIRONMENT_HASH_MISMATCH"
+            ));
+        }
+
+        #[test]
+        fn transient_database_pressure_is_a_recoverable_wait() {
+            assert_eq!(
+                autopilot_stop(&Error::Sqlx(sqlx::Error::Io(std::io::Error::other(
+                    "disk busy",
+                )))),
+                AutopilotStop::WaitRecoverable
+            );
+            assert_eq!(autopilot_stop(&Error::Busy), AutopilotStop::WaitRecoverable);
+            assert_eq!(
+                autopilot_stop(&Error::Constraint("foreign key violation".into())),
+                AutopilotStop::Terminal
+            );
+        }
+
+        #[test]
+        fn provider_projection_exposes_the_stored_and_required_lead_bounds() {
+            let catalog = factory_native::provider_catalog::entry("opencode-go").unwrap();
+            let view = provider_view(None, catalog, None);
+            assert!(view.get("maxInputTokens").is_none());
+            assert!(view.get("maxOutputTokens").is_none());
+            assert_eq!(
+                view["leadOutputTokens"],
+                json!(AGENTIC_LEAD_STRUCTURED_OUTPUT_TOKENS)
+            );
+            assert_eq!(
+                view["leadRetryOutputTokens"],
+                json!(AGENTIC_LEAD_TRUNCATION_RETRY_CEILING)
+            );
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn provider_bounds_are_projected_and_preserved_across_partial_updates() {
+            let key = structured_lead_master_key();
+            let fixture = setup_with(
+                Some(&key),
+                "https://provider.example/v1",
+                "https://provider.example/v1",
+                profile_content(),
+            )
+            .await;
+            let credential = "provider-test-credential-0123456789";
+            let (status, created) = send(
+                &fixture.router,
+                "PUT",
+                "/settings/providers/opencode",
+                Some(json!({
+                    "model": "test-model",
+                    "baseUrl": "https://provider.example/v1",
+                    "credential": credential,
+                    "enabled": true,
+                    "isDefault": false,
+                    "maxInputTokens": 42_000,
+                    "maxOutputTokens": 33_000,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{created}");
+            assert_eq!(created["maxInputTokens"], 42_000, "{created}");
+            assert_eq!(created["maxOutputTokens"], 33_000, "{created}");
+
+            let (status, listed) = send(&fixture.router, "GET", "/settings/providers", None).await;
+            assert_eq!(status, StatusCode::OK, "{listed}");
+            let provider = listed["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|provider| provider["provider"] == "opencode")
+                .unwrap();
+            assert_eq!(provider["maxInputTokens"], 42_000, "{provider}");
+            assert_eq!(provider["maxOutputTokens"], 33_000, "{provider}");
+
+            // Omitting a bound preserves the stored value; it never invents a
+            // default or reads the profile/quote.
+            let (status, preserved) = send(
+                &fixture.router,
+                "PUT",
+                "/settings/providers/opencode",
+                Some(json!({
+                    "model": "test-model",
+                    "baseUrl": "https://provider.example/v1",
+                    "enabled": true,
+                    "isDefault": false,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{preserved}");
+            assert_eq!(preserved["maxInputTokens"], 42_000, "{preserved}");
+            assert_eq!(preserved["maxOutputTokens"], 33_000, "{preserved}");
+
+            let (status, updated) = send(
+                &fixture.router,
+                "PUT",
+                "/settings/providers/opencode",
+                Some(json!({
+                    "model": "test-model",
+                    "baseUrl": "https://provider.example/v1",
+                    "enabled": true,
+                    "isDefault": false,
+                    "maxOutputTokens": 40_000,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{updated}");
+            assert_eq!(updated["maxInputTokens"], 42_000, "{updated}");
+            assert_eq!(updated["maxOutputTokens"], 40_000, "{updated}");
+
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);
@@ -31039,12 +31627,14 @@ mod tests {
                     .is_ok(),
                 "autopilot must freeze the environment before start"
             );
-            let calls = calls.lock().unwrap();
-            assert_eq!(
-                calls.len(),
-                2,
-                "one Planner and one Lead environment review"
-            );
+            {
+                let calls = calls.lock().unwrap();
+                assert_eq!(
+                    calls.len(),
+                    2,
+                    "one Planner and one Lead environment review"
+                );
+            }
 
             let operation = fixture
                 .app
