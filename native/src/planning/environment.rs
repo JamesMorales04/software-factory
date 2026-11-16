@@ -2548,37 +2548,52 @@ const DENIED_SPDX: &[&str] = &[
 ];
 
 /// Closure-wide policy accepts common copyleft licences that are not denied,
-/// while still rejecting every unfree/denied/unknown transitive package.
-const CLOSURE_ALLOWED_SPDX: &[&str] = &[
-    "0BSD",
-    "Apache-2.0",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "BSD-4-Clause",
-    "BSL-1.0",
-    "CC0-1.0",
-    "curl",
-    "GPL-2.0-only",
-    "GPL-2.0-or-later",
-    "GPL-3.0-only",
-    "GPL-3.0-or-later",
-    "LGPL-2.0-only",
-    "LGPL-2.0-or-later",
-    "ISC",
-    "LGPL-2.1-only",
-    "LGPL-2.1-or-later",
-    "LGPL-3.0-only",
-    "LGPL-3.0-or-later",
-    "MIT",
-    "MIT-0",
-    "MPL-2.0",
-    "NCSA",
-    "OpenSSL",
-    "PostgreSQL",
-    "publicDomain",
-    "Unlicense",
-    "Zlib",
-];
+/// while still rejecting every unfree/denied/unknown transitive package. The
+/// closure-only additions live in one shared, versioned catalogue also read by
+/// the builder's Python validator, so the two enforcement points cannot drift.
+/// Selected-package `ALLOWED_SPDX` and `DENIED_SPDX` stay separate on purpose:
+/// a closure-wide allowance is not a selected-package grant.
+const CLOSURE_CATALOG: &str = include_str!(
+    "../../../deploy/environment-builder/environment_builder/closure_allowed_spdx.json"
+);
+
+fn closure_allowed_spdx() -> &'static BTreeSet<String> {
+    static SET: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        let document: serde_json::Value = serde_json::from_str(CLOSURE_CATALOG)
+            .expect("the shared closure licence catalogue is valid JSON");
+        assert_eq!(
+            document["schema"].as_u64(),
+            Some(1),
+            "unsupported closure licence catalogue schema"
+        );
+        let ids = document["ids"]
+            .as_array()
+            .expect("closure catalogue ids must be an array");
+        let mut additions = BTreeSet::new();
+        for id in ids {
+            let id = id.as_str().expect("closure catalogue ids must be strings");
+            assert!(
+                additions.insert(id.to_owned()),
+                "the closure catalogue must not contain duplicate ids"
+            );
+        }
+        let canonical = format!(
+            "{}\n",
+            additions.iter().cloned().collect::<Vec<_>>().join("\n")
+        );
+        assert_eq!(
+            document["sha256"].as_str(),
+            Some(sha256_hex(canonical.as_bytes()).as_str()),
+            "the shared closure catalogue hash is inconsistent"
+        );
+        ALLOWED_SPDX
+            .iter()
+            .map(|id| (*id).to_owned())
+            .chain(additions)
+            .collect()
+    })
+}
 
 fn validate_license_expression(value: &str) -> Result<(), EnvironmentError> {
     let value = value.trim();
@@ -2633,7 +2648,7 @@ fn validate_closure_license_expression(value: &str) -> Result<(), EnvironmentErr
             format!("the closure license expression {value} is denied by policy"),
         ));
     }
-    if CLOSURE_ALLOWED_SPDX.contains(&value) {
+    if closure_allowed_spdx().contains(value) {
         return Ok(());
     }
     let normalized = value
@@ -2643,9 +2658,9 @@ fn validate_closure_license_expression(value: &str) -> Result<(), EnvironmentErr
         .replace(" WITH ", " ");
     let atoms = normalized.split_whitespace().collect::<Vec<_>>();
     if !atoms.is_empty()
-        && atoms
-            .iter()
-            .all(|atom| CLOSURE_ALLOWED_SPDX.contains(atom) || atom.starts_with("LLVM-exception"))
+        && atoms.iter().all(|atom| {
+            closure_allowed_spdx().contains(*atom) || atom.starts_with("LLVM-exception")
+        })
     {
         return Ok(());
     }
@@ -5471,6 +5486,66 @@ mod tests {
             error.code,
             EnvironmentBlockerCode::EnvironmentLicenseUnknown
         );
+    }
+
+    #[test]
+    fn closure_accepts_bsd4_clause_uc_and_python20_while_selected_stays_closed() {
+        let expression = "GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later \
+                          AND LGPL-2.1-or-later AND BSD-3-Clause AND BSD-4-Clause-UC \
+                          AND publicDomain";
+        validate_closure_license_expression(expression)
+            .expect("the builder-authorised BSD-4-Clause-UC closure atom must be accepted");
+        assert!(
+            validate_license_expression(expression).is_err(),
+            "the selected-package allowlist must not be broadened"
+        );
+        validate_closure_license_expression("Python-2.0")
+            .expect("the authorised Python-2.0 closure atom must be accepted");
+        assert!(validate_license_expression("Python-2.0").is_err());
+        assert!(validate_closure_license_expression("AGPL-3.0-only").is_err());
+        assert!(validate_closure_license_expression("LicenseRef-Not-A-Catalogue-Id").is_err());
+        assert!(validate_closure_license_expression("PSF-2.0").is_err());
+    }
+
+    #[test]
+    fn closure_catalog_is_shared_and_complete() {
+        let document: serde_json::Value = serde_json::from_str(CLOSURE_CATALOG).unwrap();
+        assert_eq!(document["schema"], 1);
+        let ids: BTreeSet<String> = document["ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| id.as_str().unwrap().to_owned())
+            .collect();
+        let expected: BTreeSet<String> = ALLOWED_SPDX
+            .iter()
+            .map(|id| (*id).to_owned())
+            .chain(ids.iter().cloned())
+            .collect();
+        assert_eq!(closure_allowed_spdx(), &expected);
+        for identifier in ["BSD-4-Clause-UC", "Python-2.0"] {
+            assert!(closure_allowed_spdx().contains(identifier));
+            assert!(!ALLOWED_SPDX.contains(&identifier));
+        }
+    }
+
+    #[test]
+    fn real_33_entry_inventory_is_accepted_by_core_closure_validator() {
+        #[derive(Deserialize)]
+        struct Fixture {
+            count: usize,
+            entries: Vec<ClosureLicense>,
+        }
+        let fixture: Fixture = serde_json::from_str(include_str!(
+            "../../../deploy/environment-builder/tests/fixtures/closure-license-inventory-33.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture.count, 33);
+        assert_eq!(fixture.entries.len(), 33);
+        for entry in &fixture.entries {
+            validate_closure_license_expression(&entry.license)
+                .unwrap_or_else(|error| panic!("{} {}: {error}", entry.name, entry.version));
+        }
     }
 
     #[test]

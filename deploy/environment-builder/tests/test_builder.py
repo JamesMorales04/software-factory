@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -822,6 +823,50 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(BuilderError) as raised:
             validate_license_expression("Python-2.0")
         self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+
+    def test_closure_catalog_is_shared_and_complete(self) -> None:
+        import environment_builder.policy as policy
+
+        path = Path(policy.__file__).with_name("closure_allowed_spdx.json")
+        document = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(document["schema"], 1)
+        self.assertEqual(document["revision"], "nix-devenv-closure-catalog-v1")
+        ids = document["ids"]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(
+            hashlib.sha256(("\n".join(sorted(ids)) + "\n").encode("utf-8")).hexdigest(),
+            document["sha256"],
+        )
+        self.assertEqual(
+            set(policy.CLOSURE_ALLOWED_SPDX),
+            set(policy.ALLOWED_SPDX) | set(ids),
+        )
+        for identifier in ("BSD-4-Clause-UC", "Python-2.0"):
+            self.assertIn(identifier, policy.CLOSURE_ALLOWED_SPDX)
+            self.assertNotIn(identifier, policy.ALLOWED_SPDX)
+
+    def test_real_33_entry_inventory_is_accepted_by_the_shared_closure_catalog(
+        self,
+    ) -> None:
+        fixture = json.loads(
+            (HERE / "fixtures" / "closure-license-inventory-33.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        entries = fixture["entries"]
+        self.assertEqual(fixture["count"], 33)
+        self.assertEqual(len(entries), 33)
+        validated = validate_closure_licenses(entries)
+        self.assertEqual(len(validated), 33)
+        self.assertEqual(
+            {entry["name"] for entry in validated},
+            {entry["name"] for entry in entries},
+        )
+        self.assertIn(
+            "util-linux-minimal", {entry["name"] for entry in validated}
+        )
+        self.assertIn("python3", {entry["name"] for entry in validated})
+        self.assertIn("typing-extensions", {entry["name"] for entry in validated})
 
     def test_all_closure_license_violations_are_retained_in_one_pass(self) -> None:
         entries = [

@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "revision": "nix-devenv-closure-catalog-v1",
+  "sha256": "94c02f175387bba688c1bc34a5ec19a47eb48decf3563ea9a837622989bbd7a3",
+  "ids": [
+    "BSD-4-Clause",
+    "BSD-4-Clause-UC",
+    "GPL-2.0-only",
+    "GPL-2.0-or-later",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "LGPL-2.0-only",
+    "LGPL-2.0-or-later",
+    "NCSA",
+    "OpenSSL",
+    "PostgreSQL",
+    "Public Domain",
+    "Python-2.0",
+    "curl",
+    "publicDomain"
+  ]
+}

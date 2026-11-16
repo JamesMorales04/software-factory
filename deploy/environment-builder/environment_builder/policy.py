@@ -83,25 +83,30 @@ DENIED_SPDX: Final[frozenset[str]] = frozenset(
 
 # Closure-wide licensing accepts common copyleft licences that are not denied
 # by product policy, while still rejecting every unfree/denied/unknown package.
-CLOSURE_ALLOWED_SPDX: Final[frozenset[str]] = ALLOWED_SPDX | frozenset(
-    {
-        "GPL-2.0-only",
-        "GPL-2.0-or-later",
-        "GPL-3.0-only",
-        "GPL-3.0-or-later",
-        "LGPL-2.0-only",
-        "LGPL-2.0-or-later",
-        "BSD-4-Clause",
-        "BSD-4-Clause-UC",
-        "curl",
-        "OpenSSL",
-        "PostgreSQL",
-        "Python-2.0",
-        "NCSA",
-        "Public Domain",
-        "publicDomain",
-    }
-)
+# The closure-only additions live in one shared, versioned catalogue
+# (closure_allowed_spdx.json) consumed by both this builder and Core's Rust
+# validator, so the two enforcement points cannot drift. Selected-package
+# ALLOWED_SPDX and DENIED_SPDX stay separate on purpose: a closure-wide
+# allowance is not a selected-package grant and does not change deny/unfree.
+def _load_closure_catalog() -> frozenset[str]:
+    path = Path(__file__).with_name("closure_allowed_spdx.json")
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if document.get("schema") != 1:
+        raise RuntimeError("unsupported closure licence catalogue schema")
+    ids = document.get("ids")
+    if not isinstance(ids, list) or not all(
+        isinstance(item, str) and item for item in ids
+    ):
+        raise RuntimeError("invalid closure licence catalogue ids")
+    if len(set(ids)) != len(ids):
+        raise RuntimeError("closure licence catalogue contains duplicate ids")
+    canonical = "\n".join(sorted(ids)) + "\n"
+    if sha256_text(canonical) != document.get("sha256"):
+        raise RuntimeError("closure licence catalogue hash is inconsistent")
+    return frozenset(ids)
+
+
+CLOSURE_ALLOWED_SPDX: Final[frozenset[str]] = ALLOWED_SPDX | _load_closure_catalog()
 MAX_CLOSURE_PACKAGES: Final[int] = 4096
 
 # Patterns that make a generated/project environment untrusted code instead of

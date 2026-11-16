@@ -1,0 +1,237 @@
+{
+  "source": "evidencia/ffb00c221d86e29fb4542b275fffca51155cf752/license-inventory-ffb00c22-UTC/closure-license-inventory.json",
+  "count": 33,
+  "entries": [
+    {
+      "path": "/nix/store/00000000000000000000000000000000-libffi",
+      "name": "libffi",
+      "version": "3.4.8",
+      "license": "MIT",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000001-xgcc",
+      "name": "xgcc",
+      "version": "14.3.0-libgcc",
+      "license": "GPL-3.0-or-later",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000002-util-linux-minimal",
+      "name": "util-linux-minimal",
+      "version": "2.41.1",
+      "license": "GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND BSD-3-Clause AND BSD-4-Clause-UC AND publicDomain",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000003-openssl",
+      "name": "openssl",
+      "version": "3.4.3",
+      "license": "Apache-2.0",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000004-tzdata",
+      "name": "tzdata",
+      "version": "2025b",
+      "license": "BSD-3-Clause AND publicDomain",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000005-typing-inspection",
+      "name": "typing-inspection",
+      "version": "0.4.0",
+      "license": "MIT",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000006-mailcap",
+      "name": "mailcap",
+      "version": "2.1.54",
+      "license": "MIT",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000007-mpdecimal",
+      "name": "mpdecimal",
+      "version": "4.0.0",
+      "license": "BSD-2-Clause",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000008-xz",
+      "name": "xz",
+      "version": "5.8.1",
+      "license": "GPL-2.0-or-later AND LGPL-2.1-or-later",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000009-pydantic-core",
+      "name": "pydantic-core",
+      "version": "2.33.2",
+      "license": "MIT",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/0000000000000000000000000000000a-annotated-types",
+      "name": "annotated-types",
+      "version": "0.7.0",
+      "license": "MIT",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/0000000000000000000000000000000b-fastapi",
+      "name": "fastapi",
+      "version": "0.115.12",
+      "license": "MIT",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/0000000000000000000000000000000c-idna",
+      "name": "idna",
+      "version": "3.10",
+      "license": "BSD-3-Clause",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/0000000000000000000000000000000d-starlette",
+      "name": "starlette",
+      "version": "0.46.1",
+      "license": "BSD-3-Clause",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/0000000000000000000000000000000e-gcc",
+      "name": "gcc",
+      "version": "14.3.0",
+      "license": "GPL-3.0-or-later",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/0000000000000000000000000000000f-libxcrypt",
+      "name": "libxcrypt",
+      "version": "4.4.38",
+      "license": "LGPL-2.1-or-later",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000010-libunistring",
+      "name": "libunistring",
+      "version": "1.3",
+      "license": "LGPL-3.0-or-later",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000011-gcc",
+      "name": "gcc",
+      "version": "14.3.0",
+      "license": "GPL-3.0-or-later",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000012-anyio",
+      "name": "anyio",
+      "version": "4.9.0",
+      "license": "MIT",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000013-zlib",
+      "name": "zlib",
+      "version": "1.3.1",
+      "license": "Zlib",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000014-sniffio",
+      "name": "sniffio",
+      "version": "1.3.1",
+      "license": "Apache-2.0",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000015-glibc",
+      "name": "glibc",
+      "version": "2.40",
+      "license": "LGPL-2.0-or-later",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000016-python3",
+      "name": "python3",
+      "version": "3.12.12",
+      "license": "Python-2.0",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000017-expat",
+      "name": "expat",
+      "version": "2.7.3",
+      "license": "MIT",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000018-readline",
+      "name": "readline",
+      "version": "8.2p13",
+      "license": "GPL-3.0-or-later",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000019-sqlite",
+      "name": "sqlite",
+      "version": "3.48.0",
+      "license": "publicDomain",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/0000000000000000000000000000001a-bash",
+      "name": "bash",
+      "version": "5.2p37",
+      "license": "GPL-3.0-or-later",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/0000000000000000000000000000001b-typing-extensions",
+      "name": "typing-extensions",
+      "version": "4.13.2",
+      "license": "Python-2.0",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/0000000000000000000000000000001c-pydantic",
+      "name": "pydantic",
+      "version": "2.11.4",
+      "license": "MIT",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/0000000000000000000000000000001d-bzip2",
+      "name": "bzip2",
+      "version": "1.0.8",
+      "license": "BSD-4-Clause",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/0000000000000000000000000000001e-libidn2",
+      "name": "libidn2",
+      "version": "2.3.8",
+      "license": "LGPL-3.0-or-later AND GPL-2.0-or-later AND GPL-3.0-or-later",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/0000000000000000000000000000001f-ncurses",
+      "name": "ncurses",
+      "version": "6.5",
+      "license": "MIT",
+      "unfree": false
+    },
+    {
+      "path": "/nix/store/00000000000000000000000000000020-gdbm",
+      "name": "gdbm",
+      "version": "1.25",
+      "license": "GPL-3.0-or-later",
+      "unfree": false
+    }
+  ]
+}
