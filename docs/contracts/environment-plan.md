@@ -319,6 +319,34 @@ not license the packages.
   hash, license expression, attribution text and any override. The inventory is
   part of the frozen spec and delivery evidence.
 
+### 7.3 Context verdict and shared catalogue
+
+The closure licence catalogue is **one data asset**, not a per-language list.
+Core and the environment builder consume the same file; its identity is the
+canonical hash of its sorted identifiers plus the declared catalogue revision,
+and that identity is bound into the environment plan, the licence inventory and
+the build receipt.
+
+- **Per-context verdict.** A licence decision is made in a context: the
+  *selected package* set keeps the stricter package allowance, while the
+  *closure* set admits the additional closure-wide identifiers. A closure-wide
+  admission is never a selected-package grant and never changes `deny`, `unfree`
+  or sandbox policy.
+- **Unknown and denied stay owner-governed.** Unknown, missing or contradictory
+  expressions still fail closed with `ENVIRONMENT_LICENSE_UNKNOWN`; denied
+  identifiers still fail with `ENVIRONMENT_LICENSE_DENIED`; unfree packages
+  still need the exact per-package owner override described in §7.2. A catalogue
+  entry is data, not an authorization.
+- **Transition data.** Existing recorded verdicts remain readable as transition
+  data while the context evaluator is rolled out; they are not re-interpreted as
+  new-family defaults.
+- **No default for new families.** Admitting a new licence family or a new
+  substrate requires the explicit owner matrix; the contract defines no implicit
+  default, and no personal profile is active merely because the evaluator exists.
+- **Audit surface.** The environment projection exposes the policy revision and
+  the inventory hash, so an operator can verify which catalogue produced a
+  verdict. This is audit metadata; it does not authorize execution.
+
 ## 8. Builder sandbox
 
 The generated plan/files are untrusted. Build/evaluation runs in a dedicated

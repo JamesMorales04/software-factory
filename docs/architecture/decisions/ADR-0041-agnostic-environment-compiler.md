@@ -314,6 +314,20 @@ requires a fresh Lead review. A frozen environment is never mutated in place.
 - A real multi-language campaign remains `NOT_TESTED` until an exact candidate,
   fresh authorization and independent acceptance exist.
 
+## Implementation status (2026-11-16)
+
+**This ADR remains `Proposed` and grants no acceptance.** An isolated candidate
+(`006ac67c`, not integrated) implements one part of §License Gate: a single
+closure catalogue data asset consumed by both Core and the environment builder,
+with the catalogue identity bound into the licence inventory and receipt. The
+context verdict, its transition from recorded verdicts and the audit exposure of
+policy revision and inventory hash follow `environment-plan.md` §7.3.
+
+Still **not implemented or claimed**: a personal licence profile for new
+families, a functional agnostic Nix fallback, a real multi-language campaign, and
+any acceptance of this ADR. A real Nix/devenv build and Office per-option
+browser acceptance remain required before any status change.
+
 ## Supersession
 
 None. A later ADR that changes the environment substrate, License Gate or
