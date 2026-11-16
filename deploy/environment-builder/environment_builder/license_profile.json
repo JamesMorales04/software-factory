@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "revision": "legacy-current",
+  "sha256": "c5ab4a8b4fcd881528204bd98e4a6d81556da4333f347d8bb256b32344a101e4",
+  "mode": "legacy-current",
+  "familiesConfigured": false,
+  "signedBy": "factory-default",
+  "signedAt": "2026-11-16T00:00:00Z",
+  "deniedIds": [
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
+    "BUSL-1.1",
+    "Commons-Clause",
+    "SSPL-1.0"
+  ],
+  "contexts": {
+    "selected": {
+      "allowedIds": [
+        "0BSD",
+        "Apache-2.0",
+        "BSD-2-Clause",
+        "BSD-3-Clause",
+        "BSL-1.0",
+        "CC0-1.0",
+        "ISC",
+        "LGPL-2.1-only",
+        "LGPL-2.1-or-later",
+        "LGPL-3.0-only",
+        "LGPL-3.0-or-later",
+        "MIT",
+        "MIT-0",
+        "MPL-2.0",
+        "Unlicense",
+        "Zlib"
+      ],
+      "acceptedFamilies": [],
+      "obligations": []
+    },
+    "closure": {
+      "allowedIds": [
+        "0BSD",
+        "Apache-2.0",
+        "BSD-2-Clause",
+        "BSD-3-Clause",
+        "BSD-4-Clause",
+        "BSD-4-Clause-UC",
+        "BSL-1.0",
+        "CC0-1.0",
+        "GPL-2.0-only",
+        "GPL-2.0-or-later",
+        "GPL-3.0-only",
+        "GPL-3.0-or-later",
+        "ISC",
+        "LGPL-2.0-only",
+        "LGPL-2.0-or-later",
+        "LGPL-2.1-only",
+        "LGPL-2.1-or-later",
+        "LGPL-3.0-only",
+        "LGPL-3.0-or-later",
+        "MIT",
+        "MIT-0",
+        "MPL-2.0",
+        "NCSA",
+        "OpenSSL",
+        "PostgreSQL",
+        "Public Domain",
+        "Python-2.0",
+        "Unlicense",
+        "Zlib",
+        "curl",
+        "publicDomain"
+      ],
+      "acceptedFamilies": [],
+      "obligations": []
+    },
+    "build": {
+      "inherits": "closure"
+    },
+    "devTest": {
+      "inherits": "closure"
+    },
+    "runtimeDistributed": {
+      "evaluated": false
+    }
+  }
+}
