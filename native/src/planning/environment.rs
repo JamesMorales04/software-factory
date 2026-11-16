@@ -2050,6 +2050,7 @@ impl EnvironmentPlan {
                 "license inventory content does not match its inventory hash",
             ));
         }
+        validate_current_policy_binding(&self.license_inventory)?;
         if !self.license_inventory.blockers.is_empty() {
             return Err(license_blocked(
                 self.license_inventory
@@ -2469,9 +2470,7 @@ pub struct LicenseInventory {
     pub schema_version: u32,
     #[serde(default)]
     pub policy_revision: String,
-    #[serde(default)]
     pub catalog_sha256: String,
-    #[serde(default)]
     pub profile_sha256: String,
     #[serde(default)]
     pub allow_unfree: bool,
@@ -2536,6 +2535,18 @@ impl LicenseInventory {
 // license_catalog.json + license_profile.json pair. The legacy-current profile
 // reproduces the previous selected/closure verdicts. Classification is not
 // acceptance; selected and closure remain distinct contexts.
+
+fn validate_current_policy_binding(inventory: &LicenseInventory) -> Result<(), EnvironmentError> {
+    if inventory.catalog_sha256 != default_catalog_sha256()
+        || inventory.profile_sha256 != default_profile_sha256()
+    {
+        return Err(EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentHashMismatch,
+            "the license inventory is bound to a different licence catalogue or profile",
+        ));
+    }
+    Ok(())
+}
 
 fn validate_license_expression(value: &str) -> Result<(), EnvironmentError> {
     let value = value.trim();
@@ -4255,6 +4266,7 @@ pub struct EnvironmentExecutionBinding {
 impl EnvironmentExecutionBinding {
     pub fn validate(&self) -> Result<(), EnvironmentError> {
         self.plan.validate(Utc::now())?;
+        validate_current_policy_binding(&self.plan.license_inventory)?;
         self.spec.validate()?;
         self.receipt.validate_for(&self.spec)?;
         if self.spec.plan_sha256 != self.plan.plan_sha256 {
@@ -5470,6 +5482,46 @@ mod tests {
             validate_closure_license_expression(&entry.license)
                 .unwrap_or_else(|error| panic!("{} {}: {error}", entry.name, entry.version));
         }
+    }
+
+    #[test]
+    fn plan_rejects_inventory_bound_to_another_policy_even_if_self_consistent() {
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        for field in ["catalog_sha256", "profile_sha256"] {
+            let mut plan = compile(&repository, &base, &values);
+            if field == "catalog_sha256" {
+                plan.license_inventory.catalog_sha256 = "0".repeat(64);
+            } else {
+                plan.license_inventory.profile_sha256 = "0".repeat(64);
+            }
+            plan.license_inventory.refresh_hashes(&plan.plan_id);
+            plan.license_inventory_sha256 = plan.license_inventory.inventory_sha256.clone();
+            plan.refresh_hash();
+            let error = plan.validate(now()).unwrap_err();
+            assert_eq!(
+                error.code,
+                EnvironmentBlockerCode::EnvironmentHashMismatch,
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn inventory_requires_policy_hashes_on_deserialization() {
+        let value = serde_json::json!({
+            "schemaVersion": ENVIRONMENT_SCHEMA_VERSION,
+            "policyRevision": LICENSE_POLICY_REVISION,
+            "allowUnfree": false,
+            "entries": [],
+            "overrides": [],
+            "blockers": [],
+            "inventorySha256": "0".repeat(64),
+            "sbomSha256": "0".repeat(64)
+        });
+        assert!(serde_json::from_value::<LicenseInventory>(value).is_err());
     }
 
     #[test]

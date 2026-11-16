@@ -90,10 +90,14 @@ def _catalog_sha(entries: list[dict[str, Any]]) -> str:
     return hashlib.sha256(_canonical(entries).encode("utf-8")).hexdigest()
 
 
-def _profile_sha(denied_ids: list[str], contexts: dict[str, Any]) -> str:
-    return hashlib.sha256(
-        _canonical({"deniedIds": denied_ids, "contexts": contexts}).encode("utf-8")
-    ).hexdigest()
+def _profile_sha(document: dict[str, Any]) -> str:
+    payload = {
+        "mode": document["mode"],
+        "familiesConfigured": document["familiesConfigured"],
+        "deniedIds": document["deniedIds"],
+        "contexts": document["contexts"],
+    }
+    return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
 def load_catalog(path: Path) -> LicenseCatalog:
@@ -143,20 +147,60 @@ def load_catalog(path: Path) -> LicenseCatalog:
     )
 
 
+_PROFILE_MODES = {"legacy-current", "personal"}
+_PROFILE_CONTEXTS = {"selected", "closure", "build", "devTest", "runtimeDistributed"}
+_PROFILE_FAMILIES = {item.value for item in LicenseFamily}
+
+
+def _require_profile_field(document: dict[str, Any], key: str) -> Any:
+    if key not in document:
+        raise RuntimeError(f"licence profile is missing {key}")
+    return document[key]
+
+
 def load_profile(path: Path) -> LicenseProfile:
     document = json.loads(path.read_text(encoding="utf-8"))
     if type(document.get("schema")) is not int or document.get("schema") != 1:
         raise RuntimeError("unsupported licence profile schema")
-    denied = document.get("deniedIds")
-    contexts = document.get("contexts")
-    if not isinstance(denied, list) or not isinstance(contexts, dict):
-        raise RuntimeError("licence profile is missing deniedIds/contexts")
-    if _profile_sha(denied, contexts) != document.get("sha256"):
+    mode = _require_profile_field(document, "mode")
+    families = _require_profile_field(document, "familiesConfigured")
+    denied = _require_profile_field(document, "deniedIds")
+    contexts = _require_profile_field(document, "contexts")
+    if not isinstance(mode, str) or mode not in _PROFILE_MODES:
+        raise RuntimeError("invalid licence profile mode")
+    if type(families) is not bool:
+        raise RuntimeError("licence profile familiesConfigured must be boolean")
+    if not isinstance(denied, list) or not all(
+        isinstance(item, str) and item for item in denied
+    ):
+        raise RuntimeError("invalid licence profile deniedIds")
+    if not isinstance(contexts, dict) or not contexts:
+        raise RuntimeError("licence profile contexts are missing")
+    for name, config in contexts.items():
+        if name not in _PROFILE_CONTEXTS or not isinstance(config, dict):
+            raise RuntimeError(f"invalid licence profile context {name!r}")
+        for key in ("allowedIds", "acceptedFamilies", "obligations"):
+            values = config.get(key, [])
+            if not isinstance(values, list) or not all(
+                isinstance(item, str) and item for item in values
+            ):
+                raise RuntimeError(f"invalid licence profile {name}.{key}")
+        for family in config.get("acceptedFamilies", []):
+            if family not in _PROFILE_FAMILIES:
+                raise RuntimeError(f"unknown licence family {family!r}")
+        if "inherits" in config and (
+            not isinstance(config["inherits"], str)
+            or config["inherits"] not in _PROFILE_CONTEXTS
+        ):
+            raise RuntimeError(f"invalid licence profile inheritance in {name}")
+        if "evaluated" in config and type(config["evaluated"]) is not bool:
+            raise RuntimeError(f"licence profile {name}.evaluated must be boolean")
+    if _profile_sha(document) != document.get("sha256"):
         raise RuntimeError("licence profile hash is inconsistent")
     return LicenseProfile(
         revision=str(document.get("revision", "")),
-        mode=str(document.get("mode", "")),
-        families_configured=bool(document.get("familiesConfigured", False)),
+        mode=mode,
+        families_configured=families,
         sha256=str(document["sha256"]),
         denied_ids=frozenset(denied),
         contexts=contexts,
@@ -191,7 +235,14 @@ def catalog_content_sha256(catalog: LicenseCatalog) -> str:
 
 def profile_content_sha256(profile: LicenseProfile) -> str:
     """Canonical hash of the loaded context policy content."""
-    return _profile_sha(sorted(profile.denied_ids), profile.contexts)
+    return _profile_sha(
+        {
+            "mode": profile.mode,
+            "familiesConfigured": profile.families_configured,
+            "deniedIds": sorted(profile.denied_ids),
+            "contexts": profile.contexts,
+        }
+    )
 
 
 def binding_sha256(catalog: LicenseCatalog, profile: LicenseProfile) -> str:
@@ -260,6 +311,10 @@ def evaluate(
     atoms = _atoms(value)
     if not atoms:
         return LicenseDecision.UNKNOWN
+    for atom in atoms:
+        identifier = catalog.alias_index.get(atom, atom)
+        if identifier in profile.denied_ids:
+            return LicenseDecision.DENIED
     for atom in atoms:
         if atom.startswith("LLVM-exception"):
             continue

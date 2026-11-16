@@ -1995,6 +1995,8 @@ class SbomTests(unittest.TestCase):
             {
                 "schemaVersion",
                 "policyRevision",
+                "catalogSha256",
+                "profileSha256",
                 "allowUnfree",
                 "entries",
                 "overrides",
@@ -2003,6 +2005,16 @@ class SbomTests(unittest.TestCase):
                 "sbomSha256",
             },
         )
+
+    def test_inventory_copy_preserves_the_policy_hashes(self) -> None:
+        plan = {"licenseInventory": license_inventory([])}
+        copied = license_inventory_copy(plan)
+        self.assertEqual(copied["catalogSha256"], _CATALOG_SHA)
+        self.assertEqual(copied["profileSha256"], _PROFILE_SHA)
+        broken = {"licenseInventory": dict(plan["licenseInventory"])}
+        broken["licenseInventory"].pop("profileSha256")
+        with self.assertRaises(ValueError):
+            license_inventory_copy(broken)
 
 
 class AttestationTests(unittest.TestCase):

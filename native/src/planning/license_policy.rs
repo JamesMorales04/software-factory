@@ -226,7 +226,36 @@ impl LicenseProfile {
             .get("contexts")
             .cloned()
             .ok_or_else(|| "licence profile contexts are missing".to_owned())?;
-        let payload = serde_json::json!({"deniedIds": denied, "contexts": contexts});
+        if document.mode != "legacy-current" && document.mode != "personal" {
+            return Err("invalid licence profile mode".into());
+        }
+        for (name, config) in &document.contexts {
+            if !matches!(
+                name.as_str(),
+                "selected" | "closure" | "build" | "devTest" | "runtimeDistributed"
+            ) {
+                return Err(format!("invalid licence profile context {name:?}"));
+            }
+            for family in &config.accepted_families {
+                if !is_known_family(family) {
+                    return Err(format!("unknown licence family {family:?}"));
+                }
+            }
+            if let Some(parent) = &config.inherits
+                && !matches!(
+                    parent.as_str(),
+                    "selected" | "closure" | "build" | "devTest" | "runtimeDistributed"
+                )
+            {
+                return Err(format!("invalid licence profile inheritance in {name:?}"));
+            }
+        }
+        let payload = serde_json::json!({
+            "mode": document.mode.clone(),
+            "familiesConfigured": document.families_configured,
+            "deniedIds": denied,
+            "contexts": contexts,
+        });
         if sha256_hex(canonical(&payload).as_bytes()) != document.sha256 {
             return Err("licence profile hash is inconsistent".into());
         }
@@ -350,6 +379,16 @@ pub fn evaluate(
     if atoms.is_empty() {
         return LicenseDecision::Unknown;
     }
+    for atom in &atoms {
+        let identifier = catalog
+            .alias_index
+            .get(atom)
+            .map(String::as_str)
+            .unwrap_or(atom.as_str());
+        if profile.denied_ids.contains(identifier) {
+            return LicenseDecision::Denied;
+        }
+    }
     for atom in atoms {
         if atom.starts_with("LLVM-exception") {
             continue;
@@ -443,11 +482,11 @@ mod tests {
         );
         assert_eq!(
             profile.sha256,
-            "da0449205259166f6b880fba083d70d275b0fa1862efb5c04c5a4e74f253a15f"
+            "233c0a4498f6b0b04dac494d596b160766b80f64d3ad0ff020e8e4796ac22aac"
         );
         assert_eq!(
             default_binding_sha256(),
-            "4905b68839cd0ed5420a25a0115664aba2342836420e04089ad4761a558f2b7f"
+            "a020b9b854a4bc63cabdc61c236499f1166cd3f4fc1abed9445a0c0a15c20e65"
         );
         assert_eq!(profile.mode, "legacy-current");
         assert!(!profile.b_active());
@@ -621,6 +660,118 @@ mod tests {
                     expected,
                     "{context_name}/{identifier}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn denied_atom_precedes_unknown_in_compound_expressions() {
+        let catalog = default_catalog();
+        let profile = default_profile();
+        for expression in [
+            "AGPL-3.0-only AND MIT",
+            "MIT AND AGPL-3.0-only",
+            "Unknown-Proprietary AND AGPL-3.0-only",
+            "BUSL-1.1 AND MIT",
+        ] {
+            assert_eq!(
+                evaluate(expression, LicenseContext::Selected, catalog, profile),
+                LicenseDecision::Denied,
+                "{expression}"
+            );
+            assert_eq!(
+                evaluate(expression, LicenseContext::Closure, catalog, profile),
+                LicenseDecision::Denied,
+                "{expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_oracle_4dcd_matches_current_interpreters() {
+        #[derive(Deserialize)]
+        struct Oracle {
+            selected: Vec<String>,
+            closure: Vec<String>,
+            denied: Vec<String>,
+            compounds: BTreeMap<String, serde_json::Value>,
+        }
+        let oracle: Oracle = serde_json::from_str(include_str!(
+            "../../../deploy/environment-builder/tests/fixtures/legacy-policy-oracle-4dcd.json"
+        ))
+        .unwrap();
+        let catalog = default_catalog();
+        let profile = default_profile();
+        for identifier in &oracle.selected {
+            assert_eq!(
+                evaluate(identifier, LicenseContext::Selected, catalog, profile),
+                LicenseDecision::Allowed,
+                "{identifier}"
+            );
+        }
+        for identifier in &oracle.closure {
+            assert_eq!(
+                evaluate(identifier, LicenseContext::Closure, catalog, profile),
+                LicenseDecision::Allowed,
+                "{identifier}"
+            );
+        }
+        for identifier in &oracle.denied {
+            assert_eq!(
+                evaluate(identifier, LicenseContext::Selected, catalog, profile),
+                LicenseDecision::Denied,
+                "{identifier}"
+            );
+            assert_eq!(
+                evaluate(identifier, LicenseContext::Closure, catalog, profile),
+                LicenseDecision::Denied,
+                "{identifier}"
+            );
+        }
+        for (expression, expected) in &oracle.compounds {
+            if let Some(value) = expected.get("selected").and_then(serde_json::Value::as_str) {
+                assert_eq!(
+                    evaluate(expression, LicenseContext::Selected, catalog, profile).as_str(),
+                    value,
+                    "{expression}/selected"
+                );
+                let closure = expected
+                    .get("closure")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap();
+                assert_eq!(
+                    evaluate(expression, LicenseContext::Closure, catalog, profile).as_str(),
+                    closure,
+                    "{expression}/closure"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn authorized_f5_denied_atom_matches_the_oracle() {
+        #[derive(Deserialize)]
+        struct Oracle {
+            compounds: BTreeMap<String, serde_json::Value>,
+        }
+        let oracle: Oracle = serde_json::from_str(include_str!(
+            "../../../deploy/environment-builder/tests/fixtures/legacy-policy-oracle-4dcd.json"
+        ))
+        .unwrap();
+        let catalog = default_catalog();
+        let profile = default_profile();
+        for (expression, expected) in &oracle.compounds {
+            if let Some(value) = expected
+                .get("authorizedF5")
+                .and_then(serde_json::Value::as_str)
+            {
+                for context in [LicenseContext::Selected, LicenseContext::Closure] {
+                    assert_eq!(
+                        evaluate(expression, context, catalog, profile).as_str(),
+                        value,
+                        "{expression}/{context:?}"
+                    );
+                }
             }
         }
     }

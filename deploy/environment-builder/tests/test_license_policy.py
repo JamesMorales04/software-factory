@@ -219,45 +219,131 @@ class LicensePolicyTests(unittest.TestCase):
                     f"{context}/{identifier}",
                 )
 
-    def test_legacy_profile_matches_the_current_gate_for_every_known_id(self) -> None:
-        from environment_builder import policy
-        from environment_builder.errors import BuilderError
-
-        def map_error(code: str) -> str:
-            return "denied" if code == "ENVIRONMENT_LICENSE_DENIED" else "unknown"
-
-        def selected_verdict(value: str) -> str:
-            try:
-                policy.validate_license_expression(value)
-                return "allowed"
-            except BuilderError as error:
-                return map_error(error.code)
-
-        def closure_verdict(value: str) -> str:
-            entry = {
-                "path": "/nix/store/" + "a" * 32 + "-probe",
-                "name": "probe",
-                "version": "1",
-                "license": value,
-                "unfree": False,
-            }
-            try:
-                policy.validate_closure_licenses([entry])
-                return "allowed"
-            except BuilderError as error:
-                return map_error(error.code)
-
-        for identifier in sorted(self.catalog.entries):
+    def test_legacy_oracle_4dcd_matches_current_interpreters(self) -> None:
+        oracle = json.loads(
+            (HERE / "fixtures" / "legacy-policy-oracle-4dcd.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        for identifier in oracle["selected"]:
             self.assertEqual(
-                selected_verdict(identifier),
                 self.decision(identifier, lp.LicenseContext.SELECTED),
+                "allowed",
+                identifier,
+            )
+        for identifier in oracle["closure"]:
+            self.assertEqual(
+                self.decision(identifier, lp.LicenseContext.CLOSURE),
+                "allowed",
+                identifier,
+            )
+        for identifier in oracle["denied"]:
+            self.assertEqual(
+                self.decision(identifier, lp.LicenseContext.SELECTED),
+                "denied",
                 identifier,
             )
             self.assertEqual(
-                closure_verdict(identifier),
                 self.decision(identifier, lp.LicenseContext.CLOSURE),
+                "denied",
                 identifier,
             )
+        for expression, expected in oracle["compounds"].items():
+            if "selected" not in expected:
+                continue
+            self.assertEqual(
+                self.decision(expression, lp.LicenseContext.SELECTED),
+                expected["selected"],
+                expression,
+            )
+            self.assertEqual(
+                self.decision(expression, lp.LicenseContext.CLOSURE),
+                expected["closure"],
+                expression,
+            )
+
+    def test_authorized_f5_denied_atom_precedes_unknown(self) -> None:
+        oracle = json.loads(
+            (HERE / "fixtures" / "legacy-policy-oracle-4dcd.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        for expression, expected in oracle["compounds"].items():
+            if "authorizedF5" not in expected:
+                continue
+            for context in (
+                lp.LicenseContext.SELECTED,
+                lp.LicenseContext.CLOSURE,
+            ):
+                self.assertEqual(
+                    self.decision(expression, context),
+                    expected["authorizedF5"],
+                    f"{expression}/{context.value}",
+                )
+
+    def test_profile_loader_enforces_types_presence_and_decisive_hash(self) -> None:
+        import tempfile
+
+        source = json.loads(
+            (Path(lp.__file__).with_name("license_profile.json")).read_text(
+                encoding="utf-8"
+            )
+        )
+
+        def load(document: dict) -> lp.LicenseProfile:
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "profile.json"
+                path.write_text(json.dumps(document), encoding="utf-8")
+                return lp.load_profile(path)
+
+        self.assertFalse(lp.b_active(load(source)))
+
+        personal = json.loads(json.dumps(source))
+        personal["mode"] = "personal"
+        personal["familiesConfigured"] = True
+        personal["sha256"] = lp._profile_sha(personal)
+        self.assertTrue(lp.b_active(load(personal)))
+
+        unrehashed = json.loads(json.dumps(personal))
+        unrehashed["sha256"] = source["sha256"]
+        with self.assertRaises(RuntimeError):
+            load(unrehashed)
+
+        for mutation in (
+            {"mode": "unknown"},
+            {"familiesConfigured": "false"},
+            {"familiesConfigured": 1},
+        ):
+            candidate = json.loads(json.dumps(source))
+            candidate.update(mutation)
+            candidate["sha256"] = lp._profile_sha(candidate)
+            with self.assertRaises(RuntimeError, msg=repr(mutation)):
+                load(candidate)
+
+        unknown_family = json.loads(json.dumps(source))
+        unknown_family["contexts"]["selected"]["acceptedFamilies"] = ["not-a-family"]
+        unknown_family["sha256"] = lp._profile_sha(unknown_family)
+        with self.assertRaises(RuntimeError):
+            load(unknown_family)
+
+        for missing in ("mode", "familiesConfigured", "deniedIds", "contexts"):
+            candidate = json.loads(json.dumps(source))
+            candidate.pop(missing)
+            with self.assertRaises(RuntimeError):
+                load(candidate)
+
+        personal_profile = replace(
+            self.profile, mode="personal", families_configured=True
+        )
+        self.assertNotEqual(
+            lp.profile_content_sha256(personal_profile),
+            lp.profile_content_sha256(self.profile),
+        )
+        denied_change = replace(self.profile, denied_ids=frozenset({"MIT"}))
+        self.assertNotEqual(
+            lp.profile_content_sha256(denied_change),
+            lp.profile_content_sha256(self.profile),
+        )
 
 
 if __name__ == "__main__":
