@@ -251,10 +251,28 @@ copy raw stdout, secrets, prompts or source bodies into telemetry and does not
 add a new endpoint, log artifact or durability promise. The builder's own
 bounded build/resolve log remains its diagnostic channel.
 
-A signal-terminated builder process is an operational
-`ENVIRONMENT_RESOURCE_LIMIT` with the signal name, not an unknown licence. The
-builder validates the closure licence only after it has independently observed
-each path; an unresolved path remains `ENVIRONMENT_LICENSE_UNKNOWN`.
+A signal-terminated builder process is not automatically a resource limit.
+`SIGKILL` is an `ENVIRONMENT_RESOURCE_LIMIT` only when the cgroup's `oom_kill`
+counter increments (or an explicit resource contract says so); `SIGKILL` without
+that evidence, `SIGTERM`, `SIGSEGV`, `SIGABRT` and unknown signals are
+`ENVIRONMENT_BUILD_FAILED` with the signal and never a licence conclusion. The
+persistent cache is purged only for a storage/cache over-budget or a proven
+cache/filesystem failure, not for a memory OOM, crash or cancellation. The
+builder validates the closure licence only after independently observing each
+path; an unresolved path remains `ENVIRONMENT_LICENSE_UNKNOWN`.
+
+### 3.2 Operation deadlines are not run deadlines
+
+`EnvironmentPlan.resources.timeoutSecs` (default 1800, minimum 30, maximum
+7200) is the builder's **per-operation** timeout. It is not a request or run
+total. Core's broker client and the runtime broker do not derive an aggregate
+request deadline from it: an environment resolve/build may perform many bounded
+operations over a long HTTP request. Connection and control timeouts remain
+short (the runtime broker control client keeps 60 s with a 10 s connect bound;
+dependency/check operations retain their explicit bounds). The detached
+operation task keeps the existing cleanup guard and startup epoch sweep;
+explicit check cancellation and its bounds are unchanged. This change grants no
+additional authority, credential, budget or sandbox capability.
 
 ## 4. Builder interface for WP1-B
 
@@ -377,10 +395,10 @@ before any assignment.
 - `cargo test -p factory-native --bin factory-runtime-broker` — 75 passed.
 - `cargo test -p factory-native --bin factory-supervisor` — 14 passed.
 - Builder diagnostic suite: from `deploy/environment-builder`,
-  `python3 -m unittest tests.test_builder` — 86/86 passed in the canonical
+  `python3 -m unittest tests.test_builder` — 88/88 passed in the canonical
   builder image. The full directory
   (`PYTHONPATH=deploy/environment-builder python3 -m unittest discover -s
-  deploy/environment-builder/tests` from the repository root) discovers 111
+  deploy/environment-builder/tests` from the repository root) discovers 113
   tests; six pre-existing layout-dependent tests (`test_paths`,
   `test_disk_budget`, `test_wrapper`) fail in the read-only evidence checkout
   and are identical on the parent. The older 87-test discovery line was a

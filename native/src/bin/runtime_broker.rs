@@ -3844,6 +3844,7 @@ async fn execute_environment_check(
     .await;
     if let Err(failure) = &outcome
         && failure.code == "ENVIRONMENT_RESOURCE_LIMIT"
+        && environment_failure_is_storage_bound(failure)
         && let Err(purge_error) = purge_environment_cache(&app, &cache_volume).await
     {
         return Err(EnvironmentBrokerFailure::new(
@@ -3852,6 +3853,16 @@ async fn execute_environment_check(
         ));
     }
     outcome
+}
+
+/// The persistent cache is purged only for a storage/cache overrun or an
+/// explicitly reported cache/filesystem failure. A memory OOM, SIGKILL,
+/// cancellation or generic resource failure must not destroy reusable cache.
+fn environment_failure_is_storage_bound(failure: &EnvironmentBrokerFailure) -> bool {
+    let message = failure.message.to_ascii_lowercase();
+    ["disk", "storage", "filesystem", "over-budget", "quota"]
+        .iter()
+        .any(|marker| message.contains(marker))
 }
 
 async fn execute_environment_check_inner(
@@ -3902,7 +3913,7 @@ async fn execute_environment_check_inner(
         "none",
         None,
         &input.plan,
-        deadline,
+        Some(deadline),
         &input.workspace_volume,
         cache_volume,
         "check",
@@ -4793,39 +4804,25 @@ async fn execute_environment_operation(
     validated: ValidatedEnvironmentRequest,
 ) -> Result<factory_native::runtime_broker::EnvironmentBrokerResult, EnvironmentBrokerFailure> {
     let started = Instant::now();
-    // Fetch and build are separate container phases. Each phase is bounded by
-    // the frozen plan timeout; the operation deadline admits both phases plus a
-    // short cleanup grace only when a broker fetch is actually required.
-    let phase_timeout = u64::from(input.plan.resources.timeout_secs);
-    let phases = if input.operation == EnvironmentBrokerOperation::Build
-        && input.phase != Some(factory_native::runtime_broker::EnvironmentBuildPhase::Fetch)
-        && !input.plan.network.fetch_allowlist.is_empty()
-    {
-        2
-    } else {
-        1
-    };
-    let deadline = started + Duration::from_secs(phase_timeout.saturating_mul(phases));
+    // `timeoutSecs` is the builder's per-operation timeout. It is not a run
+    // deadline: a resolve/build may perform many bounded operations, and the
+    // operation task stays detached from the HTTP request. Explicit cleanup
+    // remains in RunResources; the startup epoch sweep reconciles a broker
+    // restart. There is deliberately no aggregate deadline derived here.
     let mut resources = match input.spec.as_ref() {
         Some(spec) => EnvironmentRunResources::for_spec(Arc::clone(&app), &spec.spec_sha256),
         None => EnvironmentRunResources::new(Arc::clone(&app)),
     };
-    let result = execute_environment_inner(
-        Arc::clone(&app),
-        &input,
-        &validated,
-        &mut resources,
-        deadline,
-    )
-    .await;
-    let resource_limit = result
-        .as_ref()
-        .err()
-        .is_some_and(|failure| failure.code == "ENVIRONMENT_RESOURCE_LIMIT");
+    let result =
+        execute_environment_inner(Arc::clone(&app), &input, &validated, &mut resources, None).await;
+    let storage_limit = result.as_ref().err().is_some_and(|failure| {
+        failure.code == "ENVIRONMENT_RESOURCE_LIMIT"
+            && environment_failure_is_storage_bound(failure)
+    });
     let cache_volume = resources.cache_volume.clone();
     let cache_persistent = resources.cache_persistent;
     let cleanup_confirmed = resources.cleanup().await;
-    let purge_error = if resource_limit && cache_persistent {
+    let purge_error = if storage_limit && cache_persistent {
         purge_environment_cache(&app, &cache_volume).await.err()
     } else {
         None
@@ -4868,7 +4865,7 @@ async fn execute_environment_inner(
     input: &EnvironmentBrokerRequest,
     validated: &ValidatedEnvironmentRequest,
     resources: &mut EnvironmentRunResources,
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> Result<
     (
         factory_native::runtime_broker::EnvironmentBuildPhase,
@@ -5713,7 +5710,7 @@ async fn run_environment_container(
     network: &str,
     proxy: Option<&str>,
     plan: &factory_native::planning::environment::EnvironmentPlan,
-    deadline: Instant,
+    deadline: Option<Instant>,
     workspace_volume: &str,
     cache_volume: &str,
     phase: &str,
@@ -5721,15 +5718,24 @@ async fn run_environment_container(
     allow_failure_exit: bool,
     check_token: Option<&str>,
 ) -> Result<ChildOutput, EnvironmentBrokerFailure> {
-    let remaining = deadline
-        .checked_duration_since(Instant::now())
-        .filter(|duration| !duration.is_zero())
-        .ok_or_else(|| {
-            EnvironmentBrokerFailure::new(
-                "ENVIRONMENT_BUILD_TIMEOUT",
-                "the environment operation exceeded its wall-clock bound",
-            )
-        })?;
+    // `deadline` is used only by callers that own an explicit bounded
+    // sub-operation (for example a check or a focused test). The environment
+    // resolve/build path passes None: its builder child performs many
+    // per-operation bounded Nix calls and must not inherit an aggregate cap.
+    let remaining = match deadline {
+        Some(deadline) => Some(
+            deadline
+                .checked_duration_since(Instant::now())
+                .filter(|duration| !duration.is_zero())
+                .ok_or_else(|| {
+                    EnvironmentBrokerFailure::new(
+                        "ENVIRONMENT_BUILD_TIMEOUT",
+                        "the environment operation exceeded its wall-clock bound",
+                    )
+                })?,
+        ),
+        None => None,
+    };
     let cpus = plan.resources.cpu.to_string();
     let memory = format!("{}m", plan.resources.memory_mib);
     let pids = plan.resources.pids.to_string();
@@ -5793,6 +5799,10 @@ async fn run_environment_container(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // If the detached operation task is dropped (broker shutdown), do not
+    // leave the Podman client process alive. Container/volume reconciliation is
+    // completed by the existing cleanup guard and startup epoch sweep.
+    command.kill_on_drop(true);
     // The cancel endpoint uses the same volume lock. Hold it across the
     // tombstone check and container creation so cancellation cannot observe
     // "no container" while the check is about to spawn.
@@ -5835,7 +5845,11 @@ async fn run_environment_container(
     };
     let stdout_task = tokio::spawn(read_bounded(stdout, MAX_STREAM_BYTES));
     let stderr_task = tokio::spawn(read_bounded(stderr, MAX_STREAM_BYTES));
-    let status = match time::timeout(remaining, child.wait()).await {
+    let wait_result = match remaining {
+        Some(remaining) => time::timeout(remaining, child.wait()).await,
+        None => Ok(child.wait().await),
+    };
+    let status = match wait_result {
         Ok(Ok(status)) => status,
         Ok(Err(error)) => {
             stdout_task.abort();
@@ -8958,7 +8972,7 @@ exit 0
             "none",
             None,
             &plan,
-            Instant::now() + Duration::from_millis(100),
+            Some(Instant::now() + Duration::from_millis(100)),
             "factory-env-ws-timeout",
             "factory-env-cache-timeout",
             "build",
@@ -8976,6 +8990,53 @@ exit 0
         assert!(
             log.contains("rm --force --time=0 factory-env-timeout"),
             "{log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_container_without_aggregate_deadline_waits_for_controlled_child() {
+        let directory =
+            std::env::temp_dir().join(format!("factory-env-no-aggregate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log_path = directory.join("podman.log");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  run) sleep 2; exit 0 ;;
+  rm) exit 0 ;;
+  container) [ "$2" = "exists" ] && exit 1 ;;
+esac
+exit 0
+"#,
+            log_path.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let plan_value = environment_plan();
+        let plan: factory_native::planning::environment::EnvironmentPlan =
+            serde_json::from_value(plan_value).unwrap();
+        let started = Instant::now();
+        let result = run_environment_container(
+            &app,
+            TEST_BUILDER_IMAGE_ID,
+            "factory-env-no-aggregate",
+            "none",
+            None,
+            &plan,
+            None,
+            "factory-env-ws-no-aggregate",
+            "factory-env-cache-no-aggregate",
+            "build",
+            "request-build.json",
+            false,
+            None,
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(
+            started.elapsed() >= Duration::from_millis(1_500),
+            "the controlled child was not allowed to make progress"
         );
     }
 
@@ -9568,6 +9629,66 @@ exit 0
     }
 
     #[tokio::test]
+    async fn environment_build_memory_resource_limit_keeps_the_per_spec_cache() {
+        let (app, log, result_path, _serial) = environment_test_app().await;
+        let mut receipt = environment_receipt();
+        receipt["status"] = json!("FAILED");
+        receipt["blockers"] = json!([{
+            "code": "ENVIRONMENT_RESOURCE_LIMIT",
+            "message": "the environment build exceeded its memory bound"
+        }]);
+        std::fs::write(&result_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        let response = build_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(environment_request(EnvironmentBrokerOperation::Build)),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            environment_response_body(response).await["code"],
+            "ENVIRONMENT_RESOURCE_LIMIT"
+        );
+        let log = std::fs::read_to_string(log).unwrap();
+        assert!(
+            !log.contains("volume rm --force factory-env-cache-"),
+            "a memory resource failure must not purge reusable cache: {log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_check_memory_resource_limit_keeps_the_per_spec_cache() {
+        let result = json!({
+            "schemaVersion": 1,
+            "status": "FAILED",
+            "error": {
+                "code": "ENVIRONMENT_RESOURCE_LIMIT",
+                "message": "the environment check exceeded its memory bound"
+            },
+            "durationMs": 3,
+            "createdAt": "2026-11-11T00:00:00Z"
+        });
+        let (app, workspace, log, _serial) =
+            environment_check_test_app(ResourceOwner::Supervisor, 0, result).await;
+        let response = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(environment_check_request(&workspace)),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            environment_response_body(response).await["code"],
+            "ENVIRONMENT_RESOURCE_LIMIT"
+        );
+        let log = std::fs::read_to_string(log).unwrap();
+        assert!(
+            !log.contains("volume rm --force factory-env-cache-"),
+            "a memory resource failure must not purge reusable cache: {log}"
+        );
+    }
+
+    #[tokio::test]
     async fn failed_cache_purge_quarantines_the_cache_and_refuses_reuse() {
         let directory =
             std::env::temp_dir().join(format!("factory-env-quarantine-{}", uuid::Uuid::new_v4()));
@@ -9923,7 +10044,7 @@ exit 0
             "none",
             None,
             &plan,
-            Instant::now() + Duration::from_millis(100),
+            Some(Instant::now() + Duration::from_millis(100)),
             "factory-env-ws-timeout",
             "factory-env-cache-timeout",
             "check",

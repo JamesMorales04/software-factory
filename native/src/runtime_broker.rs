@@ -362,6 +362,10 @@ pub struct RuntimeBrokerClient {
     token: String,
     owner: ResourceOwner,
     client: reqwest::Client,
+    /// Long-running environment resolve/build calls have no aggregate HTTP
+    /// deadline. The control client above keeps its short timeout for health,
+    /// inventory, cancellation and dependency operations.
+    long_client: reqwest::Client,
 }
 
 impl std::fmt::Debug for RuntimeBrokerClient {
@@ -911,6 +915,15 @@ pub const MAX_ENVIRONMENT_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ENVIRONMENT_CHECK_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 impl RuntimeBrokerClient {
     pub fn new(base: &str, token: String, owner: ResourceOwner) -> Result<Self, BrokerError> {
+        Self::with_control_timeout(base, token, owner, Duration::from_secs(60))
+    }
+
+    fn with_control_timeout(
+        base: &str,
+        token: String,
+        owner: ResourceOwner,
+        control_timeout: Duration,
+    ) -> Result<Self, BrokerError> {
         let base = reqwest::Url::parse(base)
             .map_err(|_| BrokerError::Invalid("runtime broker URL".into()))?;
         if base.scheme() != "http"
@@ -932,7 +945,13 @@ impl RuntimeBrokerClient {
             ));
         }
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(60))
+            .timeout(control_timeout)
+            .connect_timeout(Duration::from_secs(10))
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        let long_client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
@@ -941,6 +960,7 @@ impl RuntimeBrokerClient {
             token,
             owner,
             client,
+            long_client,
         })
     }
 
@@ -1111,7 +1131,7 @@ impl RuntimeBrokerClient {
     pub async fn environment_build(
         &self,
         input: &EnvironmentBrokerRequest,
-        timeout: Duration,
+        timeout: Option<Duration>,
     ) -> Result<EnvironmentBrokerResult, BrokerError> {
         if self.owner != ResourceOwner::Environment {
             return Err(BrokerError::Invalid(
@@ -1123,14 +1143,15 @@ impl RuntimeBrokerClient {
             EnvironmentBrokerOperation::Resolve => ENVIRONMENT_RESOLVE_ROUTE,
             EnvironmentBrokerOperation::Build => ENVIRONMENT_BUILD_ROUTE,
         };
-        let response = self
-            .client
+        let mut request = self
+            .long_client
             .post(self.join(route)?)
             .bearer_auth(&self.token)
-            .json(input)
-            .timeout(timeout)
-            .send()
-            .await?;
+            .json(input);
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
+        }
+        let response = request.send().await?;
         if !response.status().is_success() {
             return Err(self.refusal(response).await);
         }
@@ -1669,5 +1690,52 @@ mod tests {
         assert!(extend_bounded(&mut bytes, b"1234", 4));
         assert!(!extend_bounded(&mut bytes, b"5", 4));
         assert_eq!(bytes, b"1234");
+    }
+
+    #[tokio::test]
+    async fn long_environment_client_outlives_the_control_timeout() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buffer = [0u8; 2_048];
+                let _ = socket.read(&mut buffer).await;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let body = "{}";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        let client = RuntimeBrokerClient::with_control_timeout(
+            &format!("http://{address}"),
+            "x".repeat(32),
+            ResourceOwner::Environment,
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        let control = client
+            .client
+            .get(format!("http://{address}/health"))
+            .send()
+            .await;
+        assert!(
+            control.is_err(),
+            "the control client must keep its short timeout"
+        );
+        let long = client
+            .long_client
+            .get(format!("http://{address}/health"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(long.status(), reqwest::StatusCode::OK);
+        server.await.unwrap();
     }
 }

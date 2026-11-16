@@ -464,6 +464,9 @@ class PolicyTests(unittest.TestCase):
                     )
             self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
             self.assertTrue(evaluate.called)
+            expressions = [call.args[0] for call in evaluate.call_args_list]
+            self.assertIn('safePackageSet "python312Packages"', expressions[0])
+            self.assertTrue(expressions[-1].endswith("in builtins.attrNames pkgs"))
         finally:
             log.close()
 
@@ -1194,10 +1197,16 @@ class NixEvaluationTests(unittest.TestCase):
         self.assertIn("error: the real cause", raised.exception.message)
         self.assertNotIn("Internet access", raised.exception.message)
 
-    def test_signal_termination_is_a_resource_failure_not_a_license(self) -> None:
-        with mock.patch(
-            "environment_builder.nix._run_bounded_capture",
-            return_value=(-9, b"", b"", False, False),
+    def test_signal_termination_is_a_resource_failure_only_with_cgroup_oom_evidence(self) -> None:
+        with (
+            mock.patch(
+                "environment_builder.nix._read_cgroup_oom_kills",
+                side_effect=[0, 1],
+            ),
+            mock.patch(
+                "environment_builder.nix._run_bounded_capture",
+                return_value=(-9, b"", b"", False, False),
+            ),
         ):
             with self.assertRaises(BuilderError) as raised:
                 nix_eval_json(
@@ -1209,12 +1218,19 @@ class NixEvaluationTests(unittest.TestCase):
                 )
         self.assertEqual(raised.exception.code, "ENVIRONMENT_RESOURCE_LIMIT")
         self.assertIn("SIGKILL", raised.exception.message)
+        self.assertIn("cgroup oom_kill", raised.exception.message)
         self.assertNotIn("unknown license", raised.exception.message)
 
     def test_signal_termination_with_partial_diagnostic_keeps_signal_primary(self) -> None:
-        with mock.patch(
-            "environment_builder.nix._run_bounded_capture",
-            return_value=(-9, b"", b"error: partial cause\n", False, False),
+        with (
+            mock.patch(
+                "environment_builder.nix._read_cgroup_oom_kills",
+                side_effect=[0, 1],
+            ),
+            mock.patch(
+                "environment_builder.nix._run_bounded_capture",
+                return_value=(-9, b"", b"error: partial cause\n", False, False),
+            ),
         ):
             with self.assertRaises(BuilderError) as raised:
                 nix_eval_json(
@@ -1227,6 +1243,62 @@ class NixEvaluationTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "ENVIRONMENT_RESOURCE_LIMIT")
         self.assertIn("SIGKILL", raised.exception.message)
         self.assertIn("partial cause", raised.exception.message)
+
+    def test_sigkill_without_cgroup_oom_is_build_failure(self) -> None:
+        with (
+            mock.patch(
+                "environment_builder.nix._read_cgroup_oom_kills",
+                side_effect=[3, 3],
+            ),
+            mock.patch(
+                "environment_builder.nix._run_bounded_capture",
+                return_value=(-9, b"", b"", False, False),
+            ),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json(
+                    "expr",
+                    env={},
+                    timeout=30,
+                    log=self.log,
+                    failure_code="ENVIRONMENT_LICENSE_UNKNOWN",
+                )
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_BUILD_FAILED")
+        self.assertIn("SIGKILL", raised.exception.message)
+        self.assertIn("without OOM evidence", raised.exception.message)
+        self.assertNotIn("RESOURCE_LIMIT", raised.exception.message)
+
+    def test_sigterm_sigsegv_sigabrt_and_unknown_signal_are_not_resource_limits(self) -> None:
+        for signal_number, signal_name in (
+            (15, "SIGTERM"),
+            (11, "SIGSEGV"),
+            (6, "SIGABRT"),
+            (44, "signal 44"),
+        ):
+            with self.subTest(signal_number=signal_number):
+                with (
+                    mock.patch(
+                        "environment_builder.nix._read_cgroup_oom_kills",
+                        side_effect=[0, 0],
+                    ),
+                    mock.patch(
+                        "environment_builder.nix._run_bounded_capture",
+                        return_value=(-signal_number, b"", b"", False, False),
+                    ),
+                ):
+                    with self.assertRaises(BuilderError) as raised:
+                        nix_eval_json(
+                            "expr",
+                            env={},
+                            timeout=30,
+                            log=self.log,
+                            failure_code="ENVIRONMENT_LICENSE_UNKNOWN",
+                        )
+                self.assertEqual(
+                    raised.exception.code, "ENVIRONMENT_BUILD_FAILED"
+                )
+                self.assertIn(signal_name, raised.exception.message)
+                self.assertNotIn("cgroup oom_kill", raised.exception.message)
 
     def test_truncated_stdout_rejects_a_valid_json_prefix(self) -> None:
         with mock.patch(

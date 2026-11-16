@@ -3940,7 +3940,7 @@ impl RuntimeBrokerEnvironmentBuilder {
     async fn call(
         &self,
         request: &crate::runtime_broker::EnvironmentBrokerRequest,
-        timeout: std::time::Duration,
+        timeout: Option<std::time::Duration>,
     ) -> Result<crate::runtime_broker::EnvironmentBrokerResult, EnvironmentError> {
         self.broker
             .environment_build(request, timeout)
@@ -3976,12 +3976,7 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
                 workspace,
             )?;
             self.set_status(EnvironmentBuilderStatus::Building);
-            let result = self
-                .call(
-                    &request,
-                    std::time::Duration::from_secs(u64::from(plan.resources.timeout_secs) + 90),
-                )
-                .await;
+            let result = self.call(&request, None).await;
             self.set_status(EnvironmentBuilderStatus::Ready);
             let result = result?;
             let resolution = result.resolution.ok_or_else(|| {
@@ -4008,7 +4003,6 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
                     "the runtime environment builder is not available",
                 ));
             }
-            let phase_timeout = u64::from(plan.resources.timeout_secs);
             let request = self.request(
                 crate::runtime_broker::EnvironmentBrokerOperation::Build,
                 Some(crate::runtime_broker::EnvironmentBuildPhase::Build),
@@ -4017,12 +4011,7 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
                 workspace,
             )?;
             self.set_status(EnvironmentBuilderStatus::Building);
-            let result = self
-                .call(
-                    &request,
-                    std::time::Duration::from_secs(phase_timeout.saturating_mul(2) + 180),
-                )
-                .await;
+            let result = self.call(&request, None).await;
             self.set_status(EnvironmentBuilderStatus::Ready);
             let result = result?;
             let receipt = result.receipt.ok_or_else(|| {

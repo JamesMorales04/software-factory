@@ -43,6 +43,23 @@ STDERR_TRUNCATION_MARKER = b"\n...[stderr truncated; head and tail retained]...\
 #: Prefixes Nix uses for non-fatal diagnostics. A warning is never the primary
 #: failure cause, even when its body contains the word ``error:``.
 DIAGNOSTIC_WARNING_PREFIXES = ("evaluation warning:", "warning:", "trace:")
+#: cgroup v2 OOM counter. A negative return code alone is not resource
+#: evidence; only an increment here supports ENVIRONMENT_RESOURCE_LIMIT.
+CGROUP_MEMORY_EVENTS = Path("/sys/fs/cgroup/memory.events")
+
+
+def _read_cgroup_oom_kills() -> int | None:
+    """Return the cgroup ``oom_kill`` counter, or ``None`` when unavailable."""
+    try:
+        with CGROUP_MEMORY_EVENTS.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                key, _, value = line.partition(" ")
+                if key == "oom_kill":
+                    return int(value.strip())
+    except (OSError, ValueError):
+        return None
+    return None
+
 NIX_VERSION = re.compile(r"nix \(Nix\) ([0-9]+\.[0-9]+\.[0-9]+)")
 DEVENV_VERSION = re.compile(r"devenv ([0-9]+\.[0-9]+\.[0-9]+)")
 OFFLINE_MARKERS = (
@@ -336,6 +353,7 @@ def nix_eval_json(
 ) -> Any:
     """Evaluate one bounded pure Nix expression and return decoded JSON."""
     argv = ["nix", "eval", "--json", "--expr", expression]
+    oom_kills_before = _read_cgroup_oom_kills()
     returncode, stdout, stderr, stdout_truncated, _stderr_truncated = _run_bounded_capture(
         argv,
         timeout=timeout,
@@ -344,6 +362,7 @@ def nix_eval_json(
         stdout_limit=MAX_CLOSURE_OUTPUT_BYTES,
         stderr_limit=MAX_TOOL_OUTPUT_BYTES,
     )
+    oom_kills_after = _read_cgroup_oom_kills()
     rendered = stdout.decode("utf-8", errors="replace")
     diagnostics = stderr.decode("utf-8", errors="replace")
     log.write(
@@ -366,10 +385,22 @@ def nix_eval_json(
             if reason == "no diagnostic was emitted"
             else f"; diagnostic: {reason}"
         )
+        oom_confirmed = (
+            signal_number == signal.SIGKILL
+            and oom_kills_before is not None
+            and oom_kills_after is not None
+            and oom_kills_after > oom_kills_before
+        )
+        if oom_confirmed:
+            fail(
+                "ENVIRONMENT_RESOURCE_LIMIT",
+                f"package metadata evaluation was terminated by {signal_name} "
+                f"(exit {returncode}) after cgroup oom_kill{detail}",
+            )
         fail(
-            "ENVIRONMENT_RESOURCE_LIMIT",
+            "ENVIRONMENT_BUILD_FAILED",
             f"package metadata evaluation was terminated by {signal_name} "
-            f"(exit {returncode}) without a license conclusion{detail}",
+            f"(exit {returncode}) without OOM evidence{detail}",
         )
     if returncode != 0:
         reason = _primary_failure_reason(diagnostics, rendered)
