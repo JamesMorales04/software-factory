@@ -96,6 +96,7 @@ CLOSURE_ALLOWED_SPDX: Final[frozenset[str]] = ALLOWED_SPDX | frozenset(
         "curl",
         "OpenSSL",
         "PostgreSQL",
+        "Python-2.0",
         "NCSA",
         "Public Domain",
         "publicDomain",

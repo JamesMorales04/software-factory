@@ -52,6 +52,19 @@ allowlist already contains `BSD-4-Clause`; adding the UC-specific identifier is
 a catalogue completion, not an unfree override. It remains subject to the exact
 package/version/source/closure evidence and does not change `allowUnfree`.
 
+### 1.4 Python-2.0 closure identifier
+
+`Python-2.0` is a known SPDX free identifier. The real 33-entry Python/FastAPI
+closure audit contains it on `python3` 3.12.12 and `typing-extensions` 4.13.2.
+Only `CLOSURE_ALLOWED_SPDX` is extended: `ALLOWED_SPDX`, `DENIED_SPDX`, the
+unfree override, `AND`/`OR` handling and the sandbox are unchanged, and
+`validate_license_expression("Python-2.0")` still rejects a selected-package
+claim. The catalogue addition is bound to the exact candidate SHA/tree, the
+policy source hash and the real inventory artifact; the
+`nix-devenv-license-v1` review label alone is not treated as an immutable
+identity for the changed catalogue. Attribution obligations from the upstream
+licence still apply.
+
 ## 2. License Gate policy
 
 The environment compiler must enforce:

@@ -796,13 +796,40 @@ class PolicyTests(unittest.TestCase):
         validated = validate_closure_licenses([entry])
         self.assertEqual(validated[0]["name"], "util-linux-minimal")
 
-    def test_all_closure_license_violations_are_retained_in_one_pass(self) -> None:
+    def test_known_python20_is_accepted_in_the_closure_catalogue(self) -> None:
         entries = [
             {
                 "path": "/nix/store/" + "a" * 32 + "-python3-3.12.12",
                 "name": "python3",
                 "version": "3.12.12",
                 "license": "Python-2.0",
+                "unfree": False,
+            },
+            {
+                "path": "/nix/store/" + "b" * 32 + "-python3.12-typing-extensions-4.13.2",
+                "name": "typing-extensions",
+                "version": "4.13.2",
+                "license": "Python-2.0",
+                "unfree": False,
+            },
+        ]
+        validated = validate_closure_licenses(entries)
+        self.assertEqual(
+            [entry["name"] for entry in validated],
+            ["python3", "typing-extensions"],
+        )
+        # Core selects packages from ALLOWED_SPDX, not the closure catalogue.
+        with self.assertRaises(BuilderError) as raised:
+            validate_license_expression("Python-2.0")
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+
+    def test_all_closure_license_violations_are_retained_in_one_pass(self) -> None:
+        entries = [
+            {
+                "path": "/nix/store/" + "a" * 32 + "-python3-3.12.12",
+                "name": "python3",
+                "version": "3.12.12",
+                "license": "LicenseRef-Not-A-Catalogue-Id",
                 "unfree": False,
             },
             {
@@ -831,7 +858,10 @@ class PolicyTests(unittest.TestCase):
                 ),
                 raised.exception.message,
             )
-            self.assertIn("licenses=LicenseRef-Demo,Python-2.0", raised.exception.message)
+            self.assertIn(
+                "licenses=LicenseRef-Demo,LicenseRef-Not-A-Catalogue-Id",
+                raised.exception.message,
+            )
             self.assertIn("expected=3 observed=3", raised.exception.message)
             self.assertIn("capture=complete", raised.exception.message)
             path = Path(directory) / "closure-license-inventory.json"
@@ -873,7 +903,7 @@ class PolicyTests(unittest.TestCase):
                 "path": "/nix/store/" + "c" * 32 + "-unknown-1.0",
                 "name": "unknown",
                 "version": "1.0",
-                "license": "Python-2.0",
+                "license": "LicenseRef-Not-A-Catalogue-Id",
                 "unfree": False,
             },
             {
@@ -891,7 +921,7 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_DENIED")
             self.assertIn("ids=denied@1.0,unfree@1.0,unknown@1.0", raised.exception.message)
             self.assertIn("AGPL-3.0-only", raised.exception.message)
-            self.assertIn("Python-2.0", raised.exception.message)
+            self.assertIn("LicenseRef-Not-A-Catalogue-Id", raised.exception.message)
             self.assertIn("MIT", raised.exception.message)
             payload = json.loads(
                 (Path(directory) / "closure-license-inventory.json").read_text()
@@ -907,7 +937,7 @@ class PolicyTests(unittest.TestCase):
                 "path": "/nix/store/" + "a" * 32 + "-python3-3.12.12",
                 "name": "python3",
                 "version": "3.12.12",
-                "license": "Python-2.0",
+                "license": "LicenseRef-Not-A-Catalogue-Id",
                 "unfree": False,
             }
         ]
