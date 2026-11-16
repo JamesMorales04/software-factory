@@ -2747,6 +2747,14 @@ mod tests {
     fn non_change_intent_cannot_carry_executable_units() {
         let mut value = assessment();
         value.intent = Intent::Audit;
+        value.effort_estimate = EffortEstimate {
+            status: EffortStatus::NotRequested,
+            unit: String::new(),
+            min_person_hours: 0,
+            max_person_hours: 0,
+            assumptions: Vec::new(),
+            unknown_reason: String::new(),
+        };
         value.proposal.as_mut().unwrap().work_units = vec![unit("api")];
         let error = value.validate(&assessment_input()).unwrap_err();
         assert_eq!(
