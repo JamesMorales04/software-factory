@@ -197,6 +197,28 @@ class LicensePolicyTests(unittest.TestCase):
         renamed = replace(self.profile, revision="renamed-label")
         self.assertEqual(base, lp.binding_sha256(self.catalog, renamed))
 
+    def test_cross_language_matrix_fixture_matches_the_shared_data(self) -> None:
+        fixture = json.loads(
+            (HERE / "fixtures" / "license-context-matrix.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            fixture["catalogSha256"], lp.catalog_content_sha256(self.catalog)
+        )
+        self.assertEqual(
+            fixture["profileSha256"], lp.profile_content_sha256(self.profile)
+        )
+        matrix = lp.verdict_matrix(self.catalog, self.profile)
+        for context, row in fixture["contexts"].items():
+            self.assertEqual(set(row), set(matrix[context]), context)
+            for identifier, expected in row.items():
+                self.assertEqual(
+                    matrix[context][identifier].value,
+                    expected,
+                    f"{context}/{identifier}",
+                )
+
     def test_legacy_profile_matches_the_current_gate_for_every_known_id(self) -> None:
         from environment_builder import policy
         from environment_builder.errors import BuilderError

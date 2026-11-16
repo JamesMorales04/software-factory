@@ -125,6 +125,17 @@ pub enum LicenseDecision {
     NotEvaluated,
 }
 
+impl LicenseDecision {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Allowed => "allowed",
+            Self::Denied => "denied",
+            Self::Unknown => "unknown",
+            Self::NotEvaluated => "notEvaluated",
+        }
+    }
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -272,10 +283,10 @@ pub fn default_binding_sha256() -> String {
     binding_sha256(default_catalog(), default_profile())
 }
 
-fn resolve_context<'a>(
-    profile: &'a LicenseProfile,
+fn resolve_context(
+    profile: &LicenseProfile,
     context: LicenseContext,
-) -> Result<&'a ContextPolicy, String> {
+) -> Result<&ContextPolicy, String> {
     let mut current = context.as_str();
     for _ in 0..8 {
         let policy = profile
@@ -577,6 +588,40 @@ mod tests {
                 "{}",
                 entry.license
             );
+        }
+    }
+
+    #[test]
+    fn cross_language_matrix_fixture_matches_the_shared_data() {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Fixture {
+            catalog_sha256: String,
+            profile_sha256: String,
+            contexts: BTreeMap<String, BTreeMap<String, String>>,
+        }
+        let fixture: Fixture = serde_json::from_str(include_str!(
+            "../../../deploy/environment-builder/tests/fixtures/license-context-matrix.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture.catalog_sha256, default_catalog().sha256);
+        assert_eq!(fixture.profile_sha256, default_profile().sha256);
+        for (context_name, row) in &fixture.contexts {
+            let context = match context_name.as_str() {
+                "selected" => LicenseContext::Selected,
+                "closure" => LicenseContext::Closure,
+                "build" => LicenseContext::Build,
+                "devTest" => LicenseContext::DevTest,
+                "runtimeDistributed" => LicenseContext::RuntimeDistributed,
+                other => panic!("unknown context {other}"),
+            };
+            for (identifier, expected) in row {
+                assert_eq!(
+                    evaluate(identifier, context, default_catalog(), default_profile()).as_str(),
+                    expected,
+                    "{context_name}/{identifier}"
+                );
+            }
         }
     }
 
