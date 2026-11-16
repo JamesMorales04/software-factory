@@ -1018,19 +1018,16 @@ def _closure_license_entries(
             for output_path in output_paths:
                 matched_paths.add(str(output_path))
 
-    deadline = time.monotonic() + max(1, timeout)
-
     def evaluate_scope(
         *, names: list[str] | None, package_sets: list[str] | None
     ) -> None:
-        remaining = max(1, int(deadline - time.monotonic()))
         try:
             observed = nix_eval_json(
                 _closure_metadata_expression(
                     pin, ordered_paths, names=names, package_sets=package_sets
                 ),
                 env=environment,
-                timeout=remaining,
+                timeout=timeout,
                 log=log,
                 failure_code="ENVIRONMENT_LICENSE_UNKNOWN",
             )
@@ -1038,7 +1035,8 @@ def _closure_license_entries(
             if "wall-clock bound" in error.message:
                 fail(
                     "ENVIRONMENT_BUILD_TIMEOUT",
-                    f"closure metadata evaluation exceeded its {timeout}s total bound",
+                    "one closure metadata evaluation exceeded the plan's "
+                    f"{timeout}s per-operation timeout",
                 )
             raise
         collect(observed)
@@ -1048,7 +1046,8 @@ def _closure_license_entries(
     # nested sets implied by the selected plan packages first; if system paths
     # remain, traverse the top-level attributes in bounded slices. Each Nix
     # process exits before the next slice, so no single evaluation holds the
-    # whole universe in memory.
+    # whole universe in memory. The frozen plan's timeout applies to each Nix
+    # operation, not to the aggregate batch loop: a run may take hours.
     selected_sets = _selected_package_set_names(plan)
     # Process the sets implied by the plan first, then the remaining known sets
     # as a correctness fallback for transitive packages from another toolchain.
@@ -1065,14 +1064,15 @@ def _closure_license_entries(
             attribute_names = _package_attribute_names(
                 pin,
                 environment=environment,
-                timeout=max(1, int(deadline - time.monotonic())),
+                timeout=timeout,
                 log=log,
             )
         except BuilderError as error:
             if "wall-clock bound" in error.message:
                 fail(
                     "ENVIRONMENT_BUILD_TIMEOUT",
-                    f"closure metadata evaluation exceeded its {timeout}s total bound",
+                    "package attribute enumeration exceeded the plan's "
+                    f"{timeout}s per-operation timeout",
                 )
             raise
         total_batches = max(
@@ -1085,12 +1085,6 @@ def _closure_license_entries(
         ):
             if wanted_paths <= matched_paths:
                 break
-            if time.monotonic() >= deadline:
-                fail(
-                    "ENVIRONMENT_BUILD_TIMEOUT",
-                    f"closure metadata evaluation exceeded its {timeout}s total bound "
-                    f"after {batch_index - 1}/{total_batches} top-level batches",
-                )
             batch = attribute_names[start : start + CLOSURE_TOP_LEVEL_BATCH]
             log.write(
                 f"[closure-metadata] top-level batch {batch_index}/{total_batches} "
