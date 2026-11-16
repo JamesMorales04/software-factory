@@ -323,8 +323,10 @@ with the catalogue identity bound into the licence inventory and receipt. The
 context verdict, its transition from recorded verdicts and the audit exposure of
 policy revision and inventory hash follow `environment-plan.md` §7.3.
 
-A later author-tested candidate (`3862fd17`, also **not integrated and not
-independently verified**) hardens the identity chain: Core compares the frozen
+A later candidate (`3862fd17`) hardens the identity chain and an **independent
+review closed F1–F5 as FIXED** at source level (ficha `04-verificacion-politica-b-fixes-3862fd17.md`,
+sha256 `ff3b0524…`). It is still **not integrated**, **no image is accepted** and
+no runtime evidence exists for it: Core compares the frozen
 inventory's catalogue and profile hashes with the policy in force, the profile
 hash covers the evaluation mode, the configured-families flag and the denied
 identifiers, evidence copies keep both hashes, and an explicit deny wins inside
