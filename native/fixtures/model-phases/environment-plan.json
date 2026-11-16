@@ -1,0 +1,7 @@
+{
+  "requestId": "request-1",
+  "actionId": "action-1",
+  "planSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "revision": 1,
+  "riskClass": "R0"
+}

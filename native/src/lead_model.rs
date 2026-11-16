@@ -257,6 +257,24 @@ pub struct EnvironmentReviewRequest<'a> {
     pub now: chrono::DateTime<chrono::Utc>,
 }
 
+fn environment_review_prompt(plan_json: &str, schema: &str) -> String {
+    format!(
+        "You are the bounded Intelligent Lead. Review exactly one frozen Candidate EnvironmentPlan \
+and return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, \
+markdown, comments or unknown fields. Approve only when the conventions evidence, pinned nixpkgs, \
+licences (allowUnfree must remain false), resources, network policy and builder identity are \
+sufficient for execution. Any unknown or denied licence, missing pin, conflicting convention, \
+unsafe sandbox/network policy or unresolved blocker requires CHANGES_REQUESTED or REJECT. You may \
+not approve an unfree package without an exact owner override and you may not waive a Core \
+validation. Echo requestId, actionId, planSha256, planRevision and riskClass exactly. Rationale \
+must be 8..4000 characters. Constraints are bounded follow-up conditions for the Planner; they do \
+not grant authority. The EnvironmentPlan JSON and JSON Schema follow.\n\nEnvironmentPlan:\n{}\
+\n\nJSON Schema:\n{}",
+        plan_json.chars().take(300_000).collect::<String>(),
+        schema
+    )
+}
+
 /// Ask the frozen Lead route to review one exact EnvironmentPlan. The model
 /// output is schema-validated and must echo the plan identity and risk; Core
 /// still validates the plan, licenses and freeze. The returned model-call
@@ -279,21 +297,7 @@ pub async fn review_environment(
     let plan_json = serde_json::to_string(request.plan).map_err(|error| {
         LeadError::Assessment(format!("cannot encode environment plan: {error}"))
     })?;
-    let prompt = format!(
-        "You are the bounded Intelligent Lead. Review exactly one frozen Candidate EnvironmentPlan \
-and return ONLY one JSON object that validates against the JSON Schema below. Do not add prose, \
-markdown, comments or unknown fields. Approve only when the conventions evidence, pinned nixpkgs, \
-licences (allowUnfree must remain false), resources, network policy and builder identity are \
-sufficient for execution. Any unknown or denied licence, missing pin, conflicting convention, \
-unsafe sandbox/network policy or unresolved blocker requires CHANGES_REQUESTED or REJECT. You may \
-not approve an unfree package without an exact owner override and you may not waive a Core \
-validation. Echo requestId, actionId, planSha256, planRevision and riskClass exactly. Rationale \
-must be 8..4000 characters. Constraints are bounded follow-up conditions for the Planner; they do \
-not grant authority. The EnvironmentPlan JSON and JSON Schema follow.\n\nEnvironmentPlan:\n{}\
-\n\nJSON Schema:\n{}",
-        plan_json.chars().take(300_000).collect::<String>(),
-        schema
-    );
+    let prompt = environment_review_prompt(&plan_json, &schema);
     let result = gateway
         .call(
             database,
@@ -499,5 +503,23 @@ mod tests {
         .expect("non-change example must pass schema and domain validation");
         crate::model_output::decode_lead_assessment(&serde_json::to_vec(&change).unwrap(), &input)
             .expect("change example must pass schema and domain validation");
+    }
+
+    #[test]
+    fn environment_review_prompt_carries_plan_identities_in_the_user_prompt() {
+        let plan = r#"{"requestId":"request-1","actionId":"action-1","planSha256":"abc","revision":2,"riskClass":"R0"}"#;
+        let prompt = environment_review_prompt(plan, "{}");
+        assert!(prompt.contains("Review exactly one frozen Candidate EnvironmentPlan"));
+        for marker in [
+            "\"requestId\":\"request-1\"",
+            "\"actionId\":\"action-1\"",
+            "\"planSha256\":\"abc\"",
+            "\"revision\":2",
+            "\"riskClass\":\"R0\"",
+        ] {
+            assert!(prompt.contains(marker), "missing {marker}");
+        }
+        assert!(prompt.contains("EnvironmentPlan:\n"));
+        assert!(prompt.contains("\n\nJSON Schema:\n"));
     }
 }

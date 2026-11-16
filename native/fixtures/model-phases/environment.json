@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "requestId": "request-1",
+  "actionId": "action-1",
+  "planSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "planRevision": 1,
+  "riskClass": "R0",
+  "decision": "APPROVE",
+  "rationale": "The deterministic fixture plan is pinned, licensed and bounded.",
+  "constraints": []
+}

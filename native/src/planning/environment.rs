@@ -5549,6 +5549,68 @@ mod tests {
     }
 
     #[test]
+    fn lead_environment_review_payload_contract_binds_exact_plan_identity() {
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        let plan = compile(&repository, &base, &values);
+        let valid = serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": plan.request_id,
+            "actionId": plan.action_id,
+            "planSha256": plan.plan_sha256,
+            "planRevision": plan.revision,
+            "riskClass": plan.risk_class,
+            "decision": "APPROVE",
+            "rationale": "The plan is pinned, licensed and bounded.",
+            "constraints": []
+        });
+        let review = crate::model_output::decode_environment_lead_review(
+            serde_json::to_vec(&valid).unwrap().as_slice(),
+        )
+        .expect("the valid Lead review payload must pass schema and decoding");
+        review
+            .validate_for(&plan, now())
+            .expect("the valid payload must bind the exact plan identity");
+
+        for (field, value) in [
+            ("requestId", serde_json::json!("other-request")),
+            ("actionId", serde_json::json!("other-action")),
+            ("planSha256", serde_json::json!("0".repeat(64))),
+            ("riskClass", serde_json::json!("R3")),
+        ] {
+            let mut wrong = valid.clone();
+            wrong[field] = value;
+            let review = crate::model_output::decode_environment_lead_review(
+                serde_json::to_vec(&wrong).unwrap().as_slice(),
+            )
+            .unwrap();
+            assert!(
+                review.validate_for(&plan, now()).is_err(),
+                "{field} must not bind a different plan"
+            );
+        }
+
+        let mut invalid_decision = valid.clone();
+        invalid_decision["decision"] = serde_json::json!("MAYBE");
+        assert!(
+            crate::model_output::decode_environment_lead_review(
+                serde_json::to_vec(&invalid_decision).unwrap().as_slice(),
+            )
+            .is_err()
+        );
+
+        let mut short_rationale = valid.clone();
+        short_rationale["rationale"] = serde_json::json!("short");
+        if let Ok(review) = crate::model_output::decode_environment_lead_review(
+            serde_json::to_vec(&short_rationale).unwrap().as_slice(),
+        ) {
+            assert!(review.validate_for(&plan, now()).is_err());
+        }
+    }
+
+    #[test]
     fn campaign_binding_does_not_change_plan_or_spec_identity() {
         let (repository, base) = repository(&[("README.md", "# Empty\n")]);
         let mut values = requirements();

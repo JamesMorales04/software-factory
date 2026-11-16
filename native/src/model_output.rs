@@ -698,4 +698,87 @@ mod tests {
             Err(ModelOutputError::UnsupportedSchema(_))
         ));
     }
+
+    #[test]
+    fn fixture_assessment_payload_passes_schema_and_domain() {
+        let raw = include_bytes!("../fixtures/model-phases/assessment.json");
+        let input = AssessmentInput {
+            project_id: "project-1".into(),
+            action_id: "action-1".into(),
+            request_id: "request-1".into(),
+            objective: "Implement the deterministic fixture".into(),
+            allowed_evidence_refs: BTreeSet::from(["repository-files".to_string()]),
+        };
+        let assessment = decode_lead_assessment(raw, &input).unwrap();
+        assert_eq!(assessment.intent, Intent::Change);
+        assert!(assessment.proposal.is_some());
+        let mut wrong: serde_json::Value = serde_json::from_slice(raw).unwrap();
+        wrong["projectId"] = serde_json::json!("other-project");
+        assert!(decode_lead_assessment(&serde_json::to_vec(&wrong).unwrap(), &input).is_err());
+    }
+
+    #[test]
+    fn fixture_stack_payload_passes_schema_and_domain() {
+        let raw = include_bytes!("../fixtures/model-phases/stack.json");
+        let model = decode_stack_selection(raw).unwrap();
+        let option = crate::planning::stack::StackSelectionOption {
+            id: "python-service".into(),
+            language: "python".into(),
+            framework: "fastapi".into(),
+            summary: "deterministic fixture".into(),
+            required_capability: Capability::GenericToolchain,
+        };
+        crate::planning::stack::resolve_model_stack_selection(
+            std::slice::from_ref(&option),
+            &model,
+            &[Capability::GenericToolchain],
+        )
+        .unwrap();
+        assert!(
+            crate::planning::stack::resolve_model_stack_selection(&[option], &model, &[]).is_err()
+        );
+    }
+
+    #[test]
+    fn fixture_planner_payload_passes_schema_and_domain() {
+        let raw = include_bytes!("../fixtures/model-phases/planner.json");
+        let model = decode_work_graph(raw).unwrap();
+        crate::agentic::validate_work_graph(&model, &["src".to_string()]).unwrap();
+        assert!(crate::agentic::validate_work_graph(&model, &["other".to_string()]).is_err());
+    }
+
+    #[test]
+    fn fixture_environment_review_payload_passes_schema() {
+        let raw = include_bytes!("../fixtures/model-phases/environment.json");
+        let review = decode_environment_lead_review(raw).unwrap();
+        assert_eq!(
+            review.decision,
+            crate::planning::environment::EnvironmentLeadReviewModelDecision::Approve
+        );
+    }
+
+    #[test]
+    fn fixture_spec_payload_passes_schema_and_domain() {
+        let raw = include_bytes!("../fixtures/model-phases/spec.json");
+        let draft = decode_spec_draft(raw).unwrap();
+        crate::agentic::compile_spec(&draft, 1).unwrap();
+        let mut wrong: serde_json::Value = serde_json::from_slice(raw).unwrap();
+        wrong["requirements"][0]["acceptance"] = serde_json::json!([]);
+        let bad = decode_spec_draft(&serde_json::to_vec(&wrong).unwrap()).unwrap();
+        assert!(crate::agentic::compile_spec(&bad, 1).is_err());
+    }
+
+    #[test]
+    fn fixture_semantic_review_payload_passes_schema_and_domain() {
+        let raw = include_bytes!("../fixtures/model-phases/semantic.json");
+        let input = SemanticReviewInput {
+            candidate_commit_sha: "d".repeat(40),
+            candidate_tree_sha: "e".repeat(40),
+            action_spec_sha256: "f".repeat(64),
+        };
+        decode_semantic_review(raw, &input).unwrap();
+        let mut wrong: serde_json::Value = serde_json::from_slice(raw).unwrap();
+        wrong["candidateCommitSha"] = serde_json::json!("0".repeat(40));
+        assert!(decode_semantic_review(&serde_json::to_vec(&wrong).unwrap(), &input).is_err());
+    }
 }

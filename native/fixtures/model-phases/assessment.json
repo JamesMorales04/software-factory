@@ -1,0 +1,90 @@
+{
+  "schemaRevision": 1,
+  "projectId": "project-1",
+  "actionId": "action-1",
+  "requestId": "request-1",
+  "evidenceRefs": [
+    "repository-files"
+  ],
+  "intent": "change",
+  "complexity": "small",
+  "effortEstimate": {
+    "status": "estimated",
+    "unit": "person-hours",
+    "minPersonHours": 1,
+    "maxPersonHours": 2,
+    "assumptions": [
+      "Single deterministic Compose unit."
+    ],
+    "unknownReason": ""
+  },
+  "knowledgeGaps": [],
+  "changeImpact": [
+    "src"
+  ],
+  "validationNeeds": [
+    "Run the frozen checks."
+  ],
+  "assumptions": [
+    "Deterministic Compose model fixture."
+  ],
+  "uncertainty": [
+    "Not live provider inference."
+  ],
+  "suggestedNextAction": "Freeze and approve the plan.",
+  "proposal": {
+    "projectId": "project-1",
+    "actionId": "action-1",
+    "baseRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "projectConfigHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "objective": "Implement the deterministic fixture",
+    "class": "feature",
+    "assumptions": [
+      "Deterministic Compose model fixture; not live inference."
+    ],
+    "risks": [
+      "Model output is test data."
+    ],
+    "acceptanceCriteria": [
+      {
+        "id": "test",
+        "kind": "test",
+        "description": "test",
+        "command": [
+          "true"
+        ],
+        "expectExit": 0,
+        "timeoutSecs": 60
+      }
+    ],
+    "negativeCases": [],
+    "qualityProfile": "generic",
+    "riskClass": "R0",
+    "budget": {
+      "timeoutSecs": 300
+    },
+    "route": {
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "mode": "build"
+    },
+    "maxParallel": 1,
+    "workUnits": [
+      {
+        "id": "unit-1",
+        "kind": "implementation",
+        "description": "Implement the deterministic fixture",
+        "dependsOn": [],
+        "allowedPaths": [
+          "src"
+        ],
+        "capabilities": [
+          "repository-edit",
+          "generic-toolchain"
+        ],
+        "acceptanceCriteria": [],
+        "negativeCases": []
+      }
+    ]
+  }
+}

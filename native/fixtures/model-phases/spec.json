@@ -1,0 +1,21 @@
+{
+  "summary": "Observable formal requirements for the deterministic fixture.",
+  "requirements": [
+    {
+      "statement": "Unit unit-1 exposes the frozen observable behavior.",
+      "workUnitId": "unit-1",
+      "acceptance": [
+        "The frozen functional check passes."
+      ],
+      "negative": [
+        "The frozen negative check fails for absent content."
+      ]
+    }
+  ],
+  "assumptions": [
+    "Deterministic Compose model fixture; not live inference."
+  ],
+  "risks": [
+    "Model output is test data."
+  ]
+}

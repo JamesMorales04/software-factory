@@ -1,0 +1,22 @@
+{
+  "units": [
+    {
+      "id": "unit-1",
+      "title": "Implement the requested deterministic change",
+      "objective": "Implement the deterministic fixture",
+      "dependsOn": [],
+      "paths": [
+        "src/provider.txt"
+      ],
+      "acceptance": [
+        "The frozen functional check passes."
+      ]
+    }
+  ],
+  "assumptions": [
+    "Deterministic Compose model fixture; not live inference."
+  ],
+  "risks": [
+    "Model output is test data."
+  ]
+}
