@@ -7,8 +7,8 @@
 //! exists to catch.
 
 use factory_native::db::{
-    apply_test_environment_binding, apply_test_environment_binding_if_enabled, test_environment_binding,
-    test_environment_binding_opt_in,
+    apply_test_environment_binding, apply_test_environment_binding_if_enabled,
+    test_environment_binding, test_environment_binding_opt_in,
 };
 
 fn set_gate(value: Option<&str>) {
@@ -22,7 +22,14 @@ fn set_gate(value: Option<&str>) {
 #[test]
 fn the_opt_in_predicate_accepts_only_an_explicit_one() {
     assert!(test_environment_binding_opt_in(Some("1")));
-    for raw in [None, Some(""), Some("0"), Some("true"), Some("yes"), Some("01")] {
+    for raw in [
+        None,
+        Some(""),
+        Some("0"),
+        Some("true"),
+        Some("yes"),
+        Some("01"),
+    ] {
         assert!(
             !test_environment_binding_opt_in(raw),
             "unexpected opt-in for {raw:?}"
@@ -54,7 +61,11 @@ fn the_seam_reads_the_real_environment_variable() {
     ] {
         set_gate(raw);
         assert_eq!(
-            test_environment_binding_opt_in(std::env::var("FACTORY_TEST_ENVIRONMENT_BINDING").ok().as_deref()),
+            test_environment_binding_opt_in(
+                std::env::var("FACTORY_TEST_ENVIRONMENT_BINDING")
+                    .ok()
+                    .as_deref()
+            ),
             expected,
             "unexpected gate decision for {raw:?}"
         );
@@ -73,5 +84,6 @@ fn explicit_opt_in_still_applies_the_fixture_binding() {
     // `apply_test_environment_binding` is the same function the seam calls; this
     // check pins that the gate changed only the automatic call site.
     let _ = apply_test_environment_binding as fn(&mut factory_native::db::ActionSpec, &str);
-    let _ = apply_test_environment_binding_if_enabled as fn(&mut factory_native::db::ActionSpec, &str);
+    let _ =
+        apply_test_environment_binding_if_enabled as fn(&mut factory_native::db::ActionSpec, &str);
 }
