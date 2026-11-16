@@ -37,6 +37,12 @@ MAX_TAIL_BYTES = 64 * 1024
 MAX_TOOL_OUTPUT_BYTES = 64 * 1024
 MAX_CLOSURE_OUTPUT_BYTES = 16 * 1024 * 1024
 STREAM_CHUNK_BYTES = 64 * 1024
+#: Marks a diagnostic stream whose retained head and tail are separated by a
+#: bounded gap. It makes the truncation visible without dumping the whole stream.
+STDERR_TRUNCATION_MARKER = b"\n...[stderr truncated; head and tail retained]...\n"
+#: Prefixes Nix uses for non-fatal diagnostics. A warning is never the primary
+#: failure cause, even when its body contains the word ``error:``.
+DIAGNOSTIC_WARNING_PREFIXES = ("evaluation warning:", "warning:", "trace:")
 NIX_VERSION = re.compile(r"nix \(Nix\) ([0-9]+\.[0-9]+\.[0-9]+)")
 DEVENV_VERSION = re.compile(r"devenv ([0-9]+\.[0-9]+\.[0-9]+)")
 OFFLINE_MARKERS = (
@@ -55,10 +61,48 @@ SANDBOX_MARKERS = (
 )
 
 
-def _read_capped(stream: Any, limit: int) -> tuple[bytes, bool]:
-    """Drain a binary stream while retaining at most ``limit`` bytes."""
-    captured = bytearray()
-    truncated = False
+def _read_capped(
+    stream: Any, limit: int, *, retain_tail: bool = False
+) -> tuple[bytes, bool]:
+    """Drain a binary stream while retaining at most ``limit`` bytes.
+
+    Data channels use the default head retention: a truncated document is
+    rejected, so its tail cannot be mistaken for a complete value. Diagnostic
+    channels (``stderr``) use ``retain_tail`` to keep a bounded head **and**
+    tail, because the primary ``error:`` line is usually emitted last after a
+    long warning stream.
+    """
+    if not retain_tail:
+        captured = bytearray()
+        truncated = False
+        while True:
+            try:
+                chunk = stream.read(STREAM_CHUNK_BYTES)
+            except (OSError, ValueError):
+                break
+            if not chunk:
+                break
+            remaining = limit - len(captured)
+            if remaining > 0:
+                take = chunk[:remaining]
+                captured.extend(take)
+                if len(chunk) > len(take):
+                    truncated = True
+            else:
+                truncated = True
+        return bytes(captured), truncated
+
+    marker = STDERR_TRUNCATION_MARKER
+    marker_length = len(marker)
+    if limit <= marker_length:
+        head_budget = max(1, limit)
+        tail_budget = 0
+    else:
+        tail_budget = (limit - marker_length) // 2
+        head_budget = limit - marker_length - tail_budget
+    head = bytearray()
+    tail = bytearray()
+    total = 0
     while True:
         try:
             chunk = stream.read(STREAM_CHUNK_BYTES)
@@ -66,15 +110,18 @@ def _read_capped(stream: Any, limit: int) -> tuple[bytes, bool]:
             break
         if not chunk:
             break
-        remaining = limit - len(captured)
-        if remaining > 0:
-            take = chunk[:remaining]
-            captured.extend(take)
-            if len(chunk) > len(take):
-                truncated = True
-        else:
-            truncated = True
-    return bytes(captured), truncated
+        total += len(chunk)
+        if len(head) < limit:
+            head.extend(chunk[: limit - len(head)])
+        if tail_budget:
+            tail.extend(chunk)
+            if len(tail) > tail_budget:
+                del tail[: len(tail) - tail_budget]
+    if total <= limit:
+        return bytes(head), False
+    if tail_budget == 0:
+        return bytes(head[:head_budget]), True
+    return bytes(head[:head_budget]) + marker + bytes(tail), True
 
 
 def _drain_to_log(stream: Any, log: "BuildLog") -> None:
@@ -148,14 +195,20 @@ def _run_bounded_capture(
     assert process.stderr is not None
     results: dict[str, tuple[bytes, bool]] = {}
 
-    def reader(name: str, stream: Any, limit: int) -> None:
-        results[name] = _read_capped(stream, limit)
+    def reader(name: str, stream: Any, limit: int, *, retain_tail: bool) -> None:
+        results[name] = _read_capped(stream, limit, retain_tail=retain_tail)
 
     stdout_thread = threading.Thread(
-        target=reader, args=("stdout", process.stdout, stdout_limit), daemon=True
+        target=reader,
+        args=("stdout", process.stdout, stdout_limit),
+        kwargs={"retain_tail": False},
+        daemon=True,
     )
     stderr_thread = threading.Thread(
-        target=reader, args=("stderr", process.stderr, stderr_limit), daemon=True
+        target=reader,
+        args=("stderr", process.stderr, stderr_limit),
+        kwargs={"retain_tail": True},
+        daemon=True,
     )
     stdout_thread.start()
     stderr_thread.start()
@@ -199,6 +252,50 @@ def _tool_version(argv: list[str], pattern: re.Pattern[str], label: str) -> str:
     return match.group(1)
 
 
+def _primary_failure_reason(diagnostics: str, rendered_stdout: str = "") -> str:
+    """Choose the most useful bounded cause from a failed command's streams.
+
+    A warning is never the primary cause, even when its body contains the text
+    ``error:``. Prefer the last ``error:`` line with a payload, then any
+    ``error:`` line, then the last non-warning line, then stdout. The result is
+    a single diagnostic line; ``BuilderError`` owns the public length bound.
+    """
+    error_lines: list[tuple[int, str]] = []
+    other_lines: list[tuple[int, str]] = []
+    for index, line in enumerate(diagnostics.splitlines()):
+        stripped = line.strip()
+        if not stripped or "stderr truncated" in stripped:
+            continue
+        lowered = stripped.lower()
+        if any(lowered.startswith(prefix) for prefix in DIAGNOSTIC_WARNING_PREFIXES):
+            continue
+        if lowered.startswith("error:"):
+            error_lines.append((index, stripped))
+        else:
+            other_lines.append((index, stripped))
+    with_payload = [
+        (index, line)
+        for index, line in error_lines
+        if line[len("error:"):].strip()
+    ]
+    if with_payload:
+        return with_payload[-1][1]
+    if error_lines:
+        last_error_index = error_lines[-1][0]
+        after_error = [
+            line for index, line in other_lines if index > last_error_index
+        ]
+        if after_error:
+            return after_error[0]
+        return error_lines[-1][1]
+    if other_lines:
+        return other_lines[-1][1]
+    stdout_line = last_nonempty_line(rendered_stdout, 2_000)
+    if stdout_line:
+        return stdout_line
+    return "no diagnostic was emitted"
+
+
 def nix_eval_json(
     expression: str,
     *,
@@ -228,28 +325,10 @@ def nix_eval_json(
     if stdout_truncated:
         fail(failure_code, "package metadata evaluation output exceeds its bound")
     if returncode != 0:
-        error_lines = [
-            line.strip()
-            for line in diagnostics.splitlines()
-            if line.strip().lower().startswith("error:")
-        ]
-        reason = (
-            error_lines[-1]
-            if error_lines
-            else last_nonempty_line(
-                "\n".join(
-                    line
-                    for line in diagnostics.splitlines()
-                    if line.strip() and not line.strip().lower().startswith("evaluation warning:")
-                ),
-                2_000,
-            )
-            or last_nonempty_line(rendered, 2_000)
-            or "no diagnostic was emitted"
-        )
+        reason = _primary_failure_reason(diagnostics, rendered)
         fail(
             failure_code,
-            f"package metadata evaluation exited {returncode}: {reason[:2_000]}",
+            f"package metadata evaluation exited {returncode}: {reason}",
         )
     try:
         return json.loads(rendered)
@@ -739,14 +818,22 @@ def run_check(
     assert process.stderr is not None
     results: dict[str, tuple[bytes, bool]] = {}
 
-    def reader(name: str, stream: Any) -> None:
-        results[name] = _read_capped(stream, MAX_CHECK_STREAM_BYTES)
+    def reader(name: str, stream: Any, *, retain_tail: bool) -> None:
+        results[name] = _read_capped(
+            stream, MAX_CHECK_STREAM_BYTES, retain_tail=retain_tail
+        )
 
     stdout_thread = threading.Thread(
-        target=reader, args=("stdout", process.stdout), daemon=True
+        target=reader,
+        args=("stdout", process.stdout),
+        kwargs={"retain_tail": False},
+        daemon=True,
     )
     stderr_thread = threading.Thread(
-        target=reader, args=("stderr", process.stderr), daemon=True
+        target=reader,
+        args=("stderr", process.stderr),
+        kwargs={"retain_tail": True},
+        daemon=True,
     )
     stdout_thread.start()
     stderr_thread.start()

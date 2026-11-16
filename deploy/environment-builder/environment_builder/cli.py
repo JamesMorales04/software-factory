@@ -621,10 +621,17 @@ def _package_metadata(
 def _closure_metadata_expression(
     nixpkgs_pin: str, closure_paths: list[str]
 ) -> str:
+    return _nixpkgs_expression_prefix(nixpkgs_pin) + _closure_metadata_body(closure_paths)
+
+
+def _closure_metadata_body(closure_paths: list[str]) -> str:
+    """Return the pure matching body bound to ``pkgs``.
+
+    Kept separate from the pinned-nixpkgs prefix so a test can evaluate the
+    real matching logic against a synthetic attrset without network or a store.
+    """
     wanted_json = json.dumps(closure_paths)
-    return (
-        _nixpkgs_expression_prefix(nixpkgs_pin)
-        + f"""  wanted = builtins.fromJSON {json.dumps(wanted_json)};
+    return f"""  wanted = builtins.fromJSON {json.dumps(wanted_json)};
   licenseOf = p:
     if (p ? meta) && (p.meta ? license) then
       (if builtins.isList p.meta.license then
@@ -636,10 +643,25 @@ def _closure_metadata_expression(
     if (p ? meta) && (p.meta ? unfree) then p.meta.unfree
     else if (p ? meta) && (p.meta ? license) then
       (if builtins.isList p.meta.license then
-        !(lib.all (l: if builtins.isAttrs l then (l.free or true) else true) p.meta.license)
+        !(builtins.all (l: if builtins.isAttrs l then (l.free or true) else true) p.meta.license)
        else if builtins.isAttrs p.meta.license then !(p.meta.license.free or true)
        else false)
     else false;
+  # Presence of an attribute set does not imply that its value is evaluable:
+  # nixpkgs keeps end-of-life aliases that throw. A throwing set must not abort
+  # metadata for every environment; the required plan packages are evaluated
+  # separately and still fail closed, and an unresolved closure path still
+  # fails closed below.
+  safePackageSet = name:
+    if pkgs ? ${{name}} then
+      let attempt = builtins.tryEval pkgs.${{name}};
+      in if attempt.success && builtins.isAttrs attempt.value then [ attempt.value ] else []
+    else [];
+  nestedPackageSets =
+    safePackageSet "python312Packages"
+    ++ safePackageSet "python311Packages"
+    ++ safePackageSet "python3Packages"
+    ++ safePackageSet "nodePackages";
   names = builtins.attrNames pkgs;
   candidates = builtins.concatMap
     (name:
@@ -653,10 +675,7 @@ def _closure_metadata_expression(
             let attempt = builtins.tryEval set.${{name}};
             in if attempt.success && builtins.isAttrs attempt.value then [ attempt.value ] else [])
           (builtins.attrNames set))
-      (lib.optionals (pkgs ? python312Packages) [ pkgs.python312Packages ]
-       ++ lib.optionals (pkgs ? python311Packages) [ pkgs.python311Packages ]
-       ++ lib.optionals (pkgs ? python3Packages) [ pkgs.python3Packages ]
-       ++ lib.optionals (pkgs ? nodePackages) [ pkgs.nodePackages ]);
+      nestedPackageSets;
   candidatesWithUnwrapped = builtins.concatMap
     (p:
       if (p ? unwrapped) && builtins.isAttrs p.unwrapped && (p.unwrapped ? outPath)
@@ -674,14 +693,13 @@ in map (p: {{
   (builtins.filter
     (p:
       let attempt = builtins.tryEval (
-        (p ? outPath) && lib.any
+        (p ? outPath) && builtins.any
           (output: builtins.elem output wanted)
           (if p ? outputs then map (name: p.${{name}}.outPath) p.outputs else [ p.outPath ])
       );
       in attempt.success && attempt.value)
     candidatesWithUnwrapped)
 """
-    )
 
 
 def _verify_command_executables(

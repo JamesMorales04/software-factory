@@ -239,6 +239,18 @@ The full contract set (conventions conflict/stale, pin missing, secret,
 sandbox, network, resource, hash mismatch, not frozen, superseded and approval
 codes) is also represented.
 
+### 3.1 Bounded diagnostics preserve the primary cause
+
+A builder command may emit a long diagnostic stream before its final `error:`
+line. `EnvironmentError` keeps its 1,000-character public bound, but a truncated
+message retains a bounded head **and** the trailing cause, separated by an
+explicit `… [truncated] …` marker, rather than dropping everything after the
+first 300 characters. The stable `EnvironmentBlockerCode` remains the primary
+identifier; the bounded message is diagnostic text, not authority. This does not
+copy raw stdout, secrets, prompts or source bodies into telemetry and does not
+add a new endpoint, log artifact or durability promise. The builder's own
+bounded build/resolve log remains its diagnostic channel.
+
 ## 4. Builder interface for WP1-B
 
 WP1-B supplies the containerized Nix/devenv builder and Node/Playwright runtime.

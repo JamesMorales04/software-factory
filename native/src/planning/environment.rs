@@ -193,7 +193,21 @@ impl std::fmt::Display for EnvironmentError {
 impl std::error::Error for EnvironmentError {}
 
 fn bounded_error_message(value: String) -> String {
-    value.chars().take(1_000).collect()
+    const MAX_CHARS: usize = 1_000;
+    const HEAD_CHARS: usize = 300;
+    const MARKER: &str = " … [truncated] … ";
+    if value.chars().count() <= MAX_CHARS {
+        return value;
+    }
+    let head: String = value.chars().take(HEAD_CHARS).collect();
+    let tail_chars = MAX_CHARS
+        .saturating_sub(head.chars().count())
+        .saturating_sub(MARKER.chars().count());
+    let value_chars: Vec<char> = value.chars().collect();
+    let tail: String = value_chars[value_chars.len().saturating_sub(tail_chars)..]
+        .iter()
+        .collect();
+    format!("{head}{MARKER}{tail}")
 }
 
 fn invalid(message: impl Into<String>) -> EnvironmentError {
@@ -6071,5 +6085,40 @@ mod tests {
         let blocker =
             check_runner_blocker(&check, Some(&plan), Some(&spec), Some(&failed)).unwrap();
         assert_eq!(blocker.code, EnvironmentBlockerCode::EnvironmentBuildFailed);
+    }
+
+    #[test]
+    fn long_diagnostics_keep_the_primary_trailing_error() {
+        let warnings =
+            "evaluation warning: a harmless rename repeated for diagnostics. ".repeat(80);
+        let value = format!("{warnings}error: the environment command failed for the real cause");
+        let error = EnvironmentError::new(EnvironmentBlockerCode::EnvironmentBuildFailed, value);
+        assert!(error.message.chars().count() <= 1_000);
+        assert!(error.message.starts_with("evaluation warning:"));
+        assert!(
+            error
+                .message
+                .contains("error: the environment command failed for the real cause"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("[truncated]"));
+    }
+
+    #[test]
+    fn short_environment_errors_are_unchanged() {
+        let error = EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentPlanInvalid,
+            "error: short cause",
+        );
+        assert_eq!(error.message, "error: short cause");
+    }
+
+    #[test]
+    fn bounded_environment_message_handles_unicode_boundaries() {
+        let value = format!("{}error: unicode cause 🚀", "ñ".repeat(1_200));
+        let error = EnvironmentError::new(EnvironmentBlockerCode::EnvironmentPlanInvalid, value);
+        assert!(error.message.chars().count() <= 1_000);
+        assert!(error.message.contains("error: unicode cause 🚀"));
     }
 }

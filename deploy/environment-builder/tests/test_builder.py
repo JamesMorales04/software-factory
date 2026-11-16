@@ -1,8 +1,10 @@
 """Deterministic unit tests for the containerized environment builder.
 
-These tests exercise policy, receipt and SBOM logic without Nix, Podman or
-network. Real container evidence is recorded separately and is not implied by
-a green unit test.
+Most tests exercise policy, receipt and SBOM logic without Nix, Podman or
+network. The closure-expression tests evaluate real Nix semantics against
+synthetic attrsets and are skipped when ``nix`` is not installed; they never
+fetch nixpkgs. Real container evidence is recorded separately and is not
+implied by a green unit test.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -48,6 +51,7 @@ from environment_builder.nix import (  # noqa: E402
     nix_eval_json,
     run_check,
 )
+import environment_builder.nix as nix_module  # noqa: E402
 from environment_builder.util import last_nonempty_line  # noqa: E402
 from environment_builder.receipt import (  # noqa: E402
     _mount_attestation,
@@ -1045,6 +1049,123 @@ class NixEvaluationTests(unittest.TestCase):
                 nix_eval_json("expr", env={}, timeout=30, log=self.log)
         self.assertIn("invalid JSON", raised.exception.message)
 
+    def test_warning_body_with_a_fake_error_does_not_replace_the_real_cause(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(
+                1,
+                b"",
+                b"evaluation warning: deprecated alias\n"
+                b"  error: FAKE-CAUSE\n"
+                b"error: REAL-CAUSE\n",
+                False,
+                False,
+            ),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertIn("REAL-CAUSE", raised.exception.message)
+        self.assertNotIn("FAKE-CAUSE", raised.exception.message)
+
+    def test_payload_less_error_uses_the_detail_line_after_it(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(1, b"", b"error:\n  real detail line\n", False, False),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertIn("real detail line", raised.exception.message)
+        self.assertTrue(raised.exception.message.endswith("real detail line"))
+
+    def test_generic_warning_prefix_is_not_the_primary_cause(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(
+                1,
+                b"",
+                b"warning: you don't have Internet access\n"
+                b"error: the real cause\n",
+                False,
+                False,
+            ),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertIn("error: the real cause", raised.exception.message)
+        self.assertNotIn("Internet access", raised.exception.message)
+
+    def test_truncated_stdout_rejects_a_valid_json_prefix(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(0, b'[{"name":"bash"}]', b"", True, False),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_PIN_MISSING")
+        self.assertIn("exceeds its bound", raised.exception.message)
+
+    def test_bounded_reader_keeps_head_only_for_data_and_flags_truncation(self) -> None:
+        returncode, stdout, stderr, stdout_truncated, stderr_truncated = (
+            nix_module._run_bounded_capture(
+                ["sh", "-c", "printf '[]'; head -c 64 /dev/zero"],
+                timeout=30,
+                env=dict(os.environ),
+                failure_code="ENVIRONMENT_BUILD_FAILED",
+                stdout_limit=2,
+                stderr_limit=64,
+            )
+        )
+        self.assertEqual(returncode, 0)
+        self.assertEqual(stdout, b"[]")
+        self.assertTrue(stdout_truncated)
+        self.assertEqual(stderr, b"")
+        self.assertFalse(stderr_truncated)
+
+    def test_bounded_reader_keeps_stderr_head_and_tail_with_a_marker(self) -> None:
+        returncode, _stdout, stderr, _stdout_truncated, stderr_truncated = (
+            nix_module._run_bounded_capture(
+                [
+                    "sh",
+                    "-c",
+                    "head -c 512 /dev/zero | tr '\\0' 'w' >&2; "
+                    "printf '\\nerror: REAL-CAUSE\\n' >&2",
+                ],
+                timeout=30,
+                env=dict(os.environ),
+                failure_code="ENVIRONMENT_BUILD_FAILED",
+                stdout_limit=16,
+                stderr_limit=256,
+            )
+        )
+        self.assertEqual(returncode, 0)
+        self.assertTrue(stderr_truncated)
+        self.assertIn(b"error: REAL-CAUSE", stderr)
+        self.assertIn(b"stderr truncated", stderr)
+
+    @unittest.skipUnless(shutil.which("nix"), "nix is not installed")
+    def test_real_noisy_stderr_keeps_the_trailing_error_in_message_and_log(self) -> None:
+        expression = """
+let
+  total = 4000;
+  warn = i:
+    builtins.warn
+      ("renamed package number " + toString i + " for the diagnostics probe")
+      i;
+in builtins.deepSeq (builtins.genList warn total) (throw "REAL-CAUSE-R1")
+"""
+        with self.assertRaises(BuilderError) as raised:
+            nix_eval_json(expression, env=dict(os.environ), timeout=120, log=self.log)
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_PIN_MISSING")
+        self.assertIn("exited 1", raised.exception.message)
+        self.assertIn("REAL-CAUSE-R1", raised.exception.message)
+        self.assertNotIn("evaluation warning", raised.exception.message)
+        self.assertLessEqual(len(raised.exception.message), 1_000)
+        self.assertIn("REAL-CAUSE-R1", self.log.diagnostic)
+        self.log.close()
+        log_text = self.log.path.read_text(encoding="utf-8")
+        self.assertIn("REAL-CAUSE-R1", log_text)
+        self.assertIn("stderr truncated", log_text)
+
     def test_closure_expression_includes_nested_python_package_sets(self) -> None:
         expression = cli._closure_metadata_expression(
             "github:NixOS/nixpkgs/" + "a" * 40,
@@ -1053,6 +1174,129 @@ class NixEvaluationTests(unittest.TestCase):
         self.assertIn("python312Packages", expression)
         self.assertIn("builtins.attrNames set", expression)
         self.assertIn("python3.12-typing-inspection-0.4.0", expression)
+
+
+@unittest.skipUnless(shutil.which("nix"), "nix is not installed")
+class ClosureExpressionNixTests(unittest.TestCase):
+    """Evaluate the real matching body against synthetic attrsets.
+
+    The synthetic set includes a throwing ``python311Packages`` value: the
+    builder must skip an unevaluable optional set instead of aborting metadata
+    for every environment. It also covers nested-only resolution, same-name
+    rejection, non-default outputs and compound licences.
+    """
+
+    def setUp(self) -> None:
+        self.home = tempfile.mkdtemp()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    @staticmethod
+    def _store_paths() -> dict[str, str]:
+        return {
+            "nested": "/nix/store/" + "a" * 32 + "-nested-only-2.0",
+            "dup_nested": "/nix/store/" + "b" * 32 + "-dup-nested-1.0",
+            "dup_top": "/nix/store/" + "c" * 32 + "-dup-top-1.0",
+            "multi_lib": "/nix/store/" + "d" * 32 + "-multi-3.0-lib",
+            "multi_out": "/nix/store/" + "e" * 32 + "-multi-3.0",
+            "top": "/nix/store/" + "f" * 32 + "-top-1.0",
+        }
+
+    @staticmethod
+    def _synthetic_pkgs(paths: dict[str, str]) -> str:
+        return f"""
+{{
+  top = {{
+    outPath = "{paths['top']}";
+    pname = "top";
+    version = "1.0";
+    meta.license = [ {{ spdxId = "MIT"; free = true; }} ];
+  }};
+  dup = {{
+    outPath = "{paths['dup_top']}";
+    pname = "dup";
+    version = "1.0";
+    meta.license = {{ spdxId = "MIT"; free = true; }};
+  }};
+  multi = {{
+    outPath = "{paths['multi_out']}";
+    pname = "multi";
+    version = "3.0";
+    outputs = [ "out" "lib" ];
+    out = {{ outPath = "{paths['multi_out']}"; }};
+    lib = {{ outPath = "{paths['multi_lib']}"; }};
+    meta.license = [
+      {{ spdxId = "MIT"; free = true; }}
+      {{ spdxId = "Apache-2.0"; free = true; }}
+    ];
+  }};
+  python312Packages = {{
+    nestedOnly = {{
+      outPath = "{paths['nested']}";
+      pname = "nested-only";
+      version = "2.0";
+      meta.license = {{ spdxId = "BSD-3-Clause"; free = true; }};
+    }};
+    dup = {{
+      outPath = "{paths['dup_nested']}";
+      pname = "dup";
+      version = "1.0";
+      meta.license = {{ spdxId = "MIT"; free = true; }};
+    }};
+  }};
+  python311Packages = throw "python311 is end of life";
+  nodePackages = {{ }};
+}}
+"""
+
+    def _evaluate(self, closure_paths: list[str]) -> list[dict[str, object]]:
+        paths = self._store_paths()
+        expression = (
+            "let\n  pkgs = "
+            + self._synthetic_pkgs(paths)
+            + ";\n"
+            + cli._closure_metadata_body(closure_paths)
+        )
+        result = subprocess.run(
+            [
+                "nix",
+                "eval",
+                "--json",
+                "--extra-experimental-features",
+                "nix-command flakes",
+                "--expr",
+                expression,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"PATH": os.environ.get("PATH", ""), "HOME": self.home},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr[-4_000:])
+        return json.loads(result.stdout)
+
+    def test_nested_only_package_resolves_and_throwing_set_is_skipped(self) -> None:
+        paths = self._store_paths()
+        entries = self._evaluate([paths["nested"]])
+        self.assertEqual([entry["path"] for entry in entries], [paths["nested"]])
+        self.assertEqual(entries[0]["name"], "nested-only")
+        self.assertEqual(entries[0]["license"], "BSD-3-Clause")
+
+    def test_same_name_top_level_attribute_does_not_alias_the_nested_path(self) -> None:
+        paths = self._store_paths()
+        entries = self._evaluate([paths["dup_nested"]])
+        self.assertEqual([entry["path"] for entry in entries], [paths["dup_nested"]])
+        self.assertNotIn(paths["dup_top"], [entry["path"] for entry in entries])
+
+    def test_non_default_output_resolves_against_the_parent_package(self) -> None:
+        paths = self._store_paths()
+        entries = self._evaluate([paths["multi_lib"]])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["path"], paths["multi_out"])
+        self.assertIn(paths["multi_lib"], entries[0]["outputPaths"])
+        self.assertEqual(entries[0]["license"], "MIT AND Apache-2.0")
+        self.assertFalse(entries[0]["unfree"])
 
 
 class ReceiptTests(unittest.TestCase):

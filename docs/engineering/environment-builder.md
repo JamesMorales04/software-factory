@@ -264,7 +264,25 @@ exact cgroup limits, fetch-policy enforcement, protected path descendants,
 rootful-Podman rejection, wrapper nonzero-exit cleanup, runtime disk-budget
 enforcement, root/system mount-source attestation, bounded noisy-output capture
 and disk-overflow artifact purging, plus exact/prefix version constraint
-matching and SBOM constraint recording (87 tests). The
+matching and SBOM constraint recording. The focused builder suite is
+`python3 -m unittest tests.test_builder` from `deploy/environment-builder`
+(77 tests, including real-Nix synthetic-attrset probes). The full directory
+discovers 102 tests. In the read-only evidence checkout the same six
+pre-existing layout-dependent tests fail on both the candidate and its parent:
+three `test_paths` errors from the `HERE.parents[3]` repository-root guess and
+three `test_disk_budget`/`test_wrapper` failures that depend on the mounted
+absolute depth. They are not caused by the diagnostic work and are not hidden
+by it. The builder suite is not yet part of
+`scripts/ci/quality-harness.sh`; adding it to an existing lane is a separate,
+concrete CI change and is not claimed here.
+
+Diagnostics keep the failure cause visible: `stderr` is retained as a bounded
+head **and** tail separated by an explicit truncation marker, and the typed
+failure names the last `error:` line with a payload (never a warning that merely
+contains the word). `stdout` remains the data channel; a truncated document is
+rejected even when its retained prefix is valid JSON. This does not copy raw
+`stdout`, secrets, prompts or source bodies into telemetry, and it adds no new
+endpoint, log artifact or durability promise. The
 final `deploy/environment-builder/Containerfile` image was built and exercised
 under the unique WP1-B evidence tag
 `localhost/software-factory-environment-builder:wp1b-340fa54-r3`
