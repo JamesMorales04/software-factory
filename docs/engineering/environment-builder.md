@@ -266,8 +266,8 @@ enforcement, root/system mount-source attestation, bounded noisy-output capture
 and disk-overflow artifact purging, plus exact/prefix version constraint
 matching and SBOM constraint recording. The focused builder suite is
 `python3 -m unittest tests.test_builder` from `deploy/environment-builder`
-(77 tests, including real-Nix synthetic-attrset probes). The full directory
-discovers 102 tests. In the read-only evidence checkout the same six
+(80 tests, including real-Nix synthetic-attrset probes). The full directory
+discovers 105 tests. In the read-only evidence checkout the same six
 pre-existing layout-dependent tests fail on both the candidate and its parent:
 three `test_paths` errors from the `HERE.parents[3]` repository-root guess and
 three `test_disk_budget`/`test_wrapper` failures that depend on the mounted

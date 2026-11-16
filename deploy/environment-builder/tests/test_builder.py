@@ -1077,6 +1077,64 @@ class NixEvaluationTests(unittest.TestCase):
         self.assertIn("real detail line", raised.exception.message)
         self.assertTrue(raised.exception.message.endswith("real detail line"))
 
+    def test_indented_error_inside_a_warning_never_becomes_the_cause(self) -> None:
+        diagnostics = (
+            b"warning: you don't have Internet access; disabling some network-dependent features\n"
+            b"evaluation warning: renamed package\n"
+            b"                      error: FAKE-WARNING-CAUSE\n"
+            b"                    rest\n"
+            b"error:\n"
+            b"       ... while calling the 'warn' builtin\n"
+            b"       ... while calling the 'throw' builtin\n"
+            b"       error:\n"
+        )
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(1, b"", diagnostics, False, False),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_PIN_MISSING")
+        self.assertNotIn("FAKE-WARNING-CAUSE", raised.exception.message)
+        self.assertIn("while calling the 'warn' builtin", raised.exception.message)
+
+    def test_real_payload_inside_the_error_block_still_wins(self) -> None:
+        diagnostics = (
+            b"evaluation warning: renamed\n"
+            b"                      error: FAKE-WARNING-CAUSE\n"
+            b"error:\n"
+            b"       context\n"
+            b"       error: REAL-INDENTED-CAUSE\n"
+        )
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(1, b"", diagnostics, False, False),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertIn("REAL-INDENTED-CAUSE", raised.exception.message)
+        self.assertNotIn("FAKE-WARNING-CAUSE", raised.exception.message)
+
+    def test_direct_block_separation_matches_the_reviewer_edge_case(self) -> None:
+        self.assertEqual(
+            nix_module._primary_failure_reason(
+                "evaluation warning: renamed\n"
+                "  error: FAKE-WARNING-CAUSE\n"
+                "rest\n"
+                "error:\n"
+            ),
+            "error:",
+        )
+        self.assertEqual(
+            nix_module._primary_failure_reason(
+                "evaluation warning: renamed\n"
+                "  error: FAKE-WARNING-CAUSE\n"
+                "rest\n"
+                "error: REAL-CAUSE\n"
+            ),
+            "error: REAL-CAUSE",
+        )
+
     def test_generic_warning_prefix_is_not_the_primary_cause(self) -> None:
         with mock.patch(
             "environment_builder.nix._run_bounded_capture",

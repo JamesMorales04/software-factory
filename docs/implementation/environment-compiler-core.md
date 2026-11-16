@@ -244,8 +244,8 @@ codes) is also represented.
 A builder command may emit a long diagnostic stream before its final `error:`
 line. `EnvironmentError` keeps its 1,000-character public bound, but a truncated
 message retains a bounded head **and** the trailing cause, separated by an
-explicit `… [truncated] …` marker, rather than dropping everything after the
-first 300 characters. The stable `EnvironmentBlockerCode` remains the primary
+explicit `… [truncated] …` marker, rather than keeping only the first 1,000
+characters. The stable `EnvironmentBlockerCode` remains the primary
 identifier; the bounded message is diagnostic text, not authority. This does not
 copy raw stdout, secrets, prompts or source bodies into telemetry and does not
 add a new endpoint, log artifact or durability promise. The builder's own
@@ -371,8 +371,15 @@ before any assignment.
 - `cargo test -p factory-native --bin factory-verifier` — 11 passed.
 - `cargo test -p factory-native --bin factory-runtime-broker` — 75 passed.
 - `cargo test -p factory-native --bin factory-supervisor` — 14 passed.
-- `python3 -W error::ResourceWarning -m unittest discover -s
-  deploy/environment-builder/tests` — 87 tests OK.
+- Builder diagnostic suite: from `deploy/environment-builder`,
+  `python3 -m unittest tests.test_builder` — 80/80 passed in the canonical
+  builder image. The full directory
+  (`PYTHONPATH=deploy/environment-builder python3 -m unittest discover -s
+  deploy/environment-builder/tests` from the repository root) discovers 105
+  tests; six pre-existing layout-dependent tests (`test_paths`,
+  `test_disk_budget`, `test_wrapper`) fail in the read-only evidence checkout
+  and are identical on the parent. The older 87-test discovery line was a
+  historical checkpoint.
 - `scripts/environment-builder-real-resolve-smoke.sh` — real Nix resolution
   against the pinned nixpkgs passed: `real-nix-resolve: PASS packages=1
   closure=24`.

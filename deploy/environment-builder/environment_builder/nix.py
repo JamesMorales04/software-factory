@@ -255,15 +255,42 @@ def _tool_version(argv: list[str], pattern: re.Pattern[str], label: str) -> str:
 def _primary_failure_reason(diagnostics: str, rendered_stdout: str = "") -> str:
     """Choose the most useful bounded cause from a failed command's streams.
 
-    A warning is never the primary cause, even when its body contains the text
-    ``error:``. Prefer the last ``error:`` line with a payload, then any
-    ``error:`` line, then the last non-warning line, then stdout. The result is
-    a single diagnostic line; ``BuilderError`` owns the public length bound.
+    Nix writes the primary ``error:`` header at column 0 and indents warning
+    bodies. An indented ``error:`` inside a warning is therefore not a cause.
+    Start at the last top-level error header and keep the indented content of
+    that block, where Nix 2.28 usually places the real cause. If no top-level
+    header survived (for example because a retained tail starts mid-block), use
+    the whole stream but discard warning bodies. The result is a single
+    diagnostic line; ``BuilderError`` owns the public length bound.
     """
+    lines = diagnostics.splitlines()
+    block_start: int | None = None
+    for index, raw in enumerate(lines):
+        if raw.startswith("error:"):
+            block_start = index
+    if block_start is not None:
+        scoped = list(enumerate(lines))[block_start:]
+    else:
+        scoped = []
+        in_warning = False
+        for index, raw in enumerate(lines):
+            stripped = raw.strip()
+            if not stripped or "stderr truncated" in stripped:
+                continue
+            indented = raw[:1].isspace()
+            lowered = stripped.lower()
+            if any(lowered.startswith(prefix) for prefix in DIAGNOSTIC_WARNING_PREFIXES):
+                in_warning = True
+                continue
+            if in_warning and indented:
+                continue
+            in_warning = False
+            scoped.append((index, raw))
+
     error_lines: list[tuple[int, str]] = []
     other_lines: list[tuple[int, str]] = []
-    for index, line in enumerate(diagnostics.splitlines()):
-        stripped = line.strip()
+    for index, raw in scoped:
+        stripped = raw.strip()
         if not stripped or "stderr truncated" in stripped:
             continue
         lowered = stripped.lower()
@@ -281,9 +308,12 @@ def _primary_failure_reason(diagnostics: str, rendered_stdout: str = "") -> str:
     if with_payload:
         return with_payload[-1][1]
     if error_lines:
-        last_error_index = error_lines[-1][0]
+        # A payload-less top-level ``error:`` (for example ``throw ""``) is
+        # still the real block. Report its following detail line, not an
+        # earlier warning that merely contained the word ``error:``.
+        first_error_index = error_lines[0][0]
         after_error = [
-            line for index, line in other_lines if index > last_error_index
+            line for index, line in other_lines if index > first_error_index
         ]
         if after_error:
             return after_error[0]
