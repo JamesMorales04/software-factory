@@ -5618,6 +5618,55 @@ mod tests {
     }
 
     #[test]
+    fn execution_binding_rejects_stale_policy_inventory() {
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        let mut plan = compile(&repository, &base, &values);
+        let content = "{\"nodes\":{}}".to_string();
+        plan.resolution = Some(EnvironmentResolution {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            plan_sha256: plan.plan_sha256.clone(),
+            files: vec![EnvironmentFile {
+                path: "flake.lock".into(),
+                sha256: sha256_hex(content.as_bytes()),
+                origin: EnvironmentFileOrigin::Generated,
+                content: Some(content),
+            }],
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            packages: Vec::new(),
+            closure_licenses: vec![closure_license()],
+        });
+        plan.files.push(EnvironmentFile {
+            path: "flake.lock".into(),
+            sha256: sha256_hex("{\"nodes\":{}}".as_bytes()),
+            origin: EnvironmentFileOrigin::Generated,
+            content: Some("{\"nodes\":{}}".into()),
+        });
+        plan.refresh_hash();
+        plan.resolution.as_mut().expect("resolution").plan_sha256 = plan.plan_sha256.clone();
+        let review = approve(&mut plan);
+        let spec = freeze(&mut plan, &review);
+        let receipt = receipt(&spec);
+
+        let mut stale = plan;
+        stale.license_inventory.profile_sha256 = "0".repeat(64);
+        stale.license_inventory.refresh_hashes(&stale.plan_id);
+        stale.license_inventory_sha256 = stale.license_inventory.inventory_sha256.clone();
+        stale.refresh_hash();
+        stale.resolution.as_mut().expect("resolution").plan_sha256 = stale.plan_sha256.clone();
+        let binding = EnvironmentExecutionBinding {
+            plan: stale,
+            spec,
+            receipt,
+        };
+        let error = binding.validate().unwrap_err();
+        assert_eq!(error.code, EnvironmentBlockerCode::EnvironmentHashMismatch);
+    }
+
+    #[test]
     fn campaign_binding_does_not_change_plan_or_spec_identity() {
         let (repository, base) = repository(&[("README.md", "# Empty\n")]);
         let mut values = requirements();
