@@ -323,9 +323,16 @@ with the catalogue identity bound into the licence inventory and receipt. The
 context verdict, its transition from recorded verdicts and the audit exposure of
 policy revision and inventory hash follow `environment-plan.md` §7.3.
 
+A later author-tested candidate (`3862fd17`, also **not integrated and not
+independently verified**) hardens the identity chain: Core compares the frozen
+inventory's catalogue and profile hashes with the policy in force, the profile
+hash covers the evaluation mode, the configured-families flag and the denied
+identifiers, evidence copies keep both hashes, and an explicit deny wins inside
+compound expressions (`environment-plan.md` §7.4).
+
 Still **not implemented or claimed**: a personal licence profile for new
-families, a functional agnostic Nix fallback, a real multi-language campaign, and
-any acceptance of this ADR. A real Nix/devenv build and Office per-option
+families, a functional agnostic Nix fallback, an evaluated distributed runtime
+context, a real multi-language campaign, and any acceptance of this ADR. A real Nix/devenv build and Office per-option
 browser acceptance remain required before any status change.
 
 ## Supersession

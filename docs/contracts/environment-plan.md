@@ -347,6 +347,26 @@ the build receipt.
   the inventory hash, so an operator can verify which catalogue produced a
   verdict. This is audit metadata; it does not authorize execution.
 
+### 7.4 Profile identity and replay refusal
+
+The licence profile is data with its own identity. The profile hash covers at
+least the evaluation `mode`, the `familiesConfigured` flag, the denied
+identifiers and the per-context allowances, so a profile that changes behaviour
+cannot keep the same identity.
+
+- **Current-policy comparison.** A frozen inventory records the catalogue hash
+  and the profile hash it was produced with. Core compares both against the
+  policy currently in force; an inventory bound to a different catalogue or
+  profile is refused instead of being replayed as if it were current.
+- **Deny precedence.** A denied identifier denies the whole expression even when
+  it appears inside a compound expression; evaluating atoms must not weaken an
+  explicit deny.
+- **Evidence copies.** Any copied or projected inventory keeps the catalogue and
+  profile hashes; a copy that drops them is not evidence of the same policy.
+- **Contexts not evaluated.** A context that is not evaluated (for example a
+  distributed runtime context) is reported as not evaluated. It does not imply a
+  default allowance and does not authorize a new family.
+
 ## 8. Builder sandbox
 
 The generated plan/files are untrusted. Build/evaluation runs in a dedicated
