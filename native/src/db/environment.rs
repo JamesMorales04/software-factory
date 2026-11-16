@@ -1352,6 +1352,41 @@ pub fn apply_test_environment_binding(spec: &mut crate::db::ActionSpec, action_i
     }
 }
 
+/// Whether the automatic test-support environment placeholder is installed when
+/// a frozen Lead plan persists its ActionSpec.
+///
+/// The Compose E2E image is built with `test-support`, but the autonomous
+/// journey binds a real `EnvironmentPlan`/`EnvironmentSpec`. An unconditional
+/// placeholder would collide with that real binding under the CAS, so only an
+/// explicit opt-in installs it: fixture-only journeys set
+/// `FACTORY_TEST_ENVIRONMENT_BINDING=1`, and product-shaped journeys never
+/// inherit scaffolding. Unit tests keep the historical behaviour because they
+/// build a draft ActionSpec that never receives a real environment.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn test_environment_binding_opt_in(raw: Option<&str>) -> bool {
+    raw == Some("1")
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn apply_test_environment_binding_if_enabled(
+    spec: &mut crate::db::ActionSpec,
+    action_id: &str,
+) {
+    #[cfg(test)]
+    {
+        apply_test_environment_binding(spec, action_id);
+    }
+    #[cfg(all(not(test), feature = "test-support"))]
+    {
+        let raw = std::env::var("FACTORY_TEST_ENVIRONMENT_BINDING").ok();
+        if test_environment_binding_opt_in(raw.as_deref()) {
+            apply_test_environment_binding(spec, action_id);
+        }
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn test_environment_binding(action_id: &str) -> TestEnvironmentBinding {
@@ -1437,5 +1472,27 @@ impl Database {
         .await?;
         transaction.commit().await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test_environment_binding_opt_in_tests {
+    use super::test_environment_binding_opt_in;
+
+    #[test]
+    fn only_an_explicit_one_enables_the_placeholder() {
+        assert!(test_environment_binding_opt_in(Some("1")));
+        assert!(!test_environment_binding_opt_in(None));
+        assert!(!test_environment_binding_opt_in(Some("0")));
+        assert!(!test_environment_binding_opt_in(Some("true")));
+        assert!(!test_environment_binding_opt_in(Some("")));
+    }
+
+    #[test]
+    fn a_product_shaped_compase_journey_has_no_opt_in() {
+        // The Compose E2E container exports no opt-in variable, so the gate is
+        // closed and a real environment binding remains the first binding the
+        // CAS sees.
+        assert!(!test_environment_binding_opt_in(None));
     }
 }

@@ -352,7 +352,7 @@ impl Database {
             environment_spec_id: None,
         };
         #[cfg(any(test, feature = "test-support"))]
-        crate::db::apply_test_environment_binding(&mut spec, &action_id);
+        crate::db::apply_test_environment_binding_if_enabled(&mut spec, &action_id);
         let spec_json = serde_json::to_string(&spec).expect("ActionSpec serializes");
         let spec_sha256 = sha256_hex(spec_json.as_bytes());
         let action = Action {

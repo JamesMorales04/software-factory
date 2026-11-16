@@ -12,6 +12,10 @@ services:
       FACTORY_ALLOW_TEST_UPSTREAM: "1"
       FACTORY_TEST_UPSTREAM_HOSTS: "model-fixture"
       FACTORY_PROVIDER_KIND: fixture
+      # Opt-in for the test-support ActionSpec environment placeholder. The
+      # autonomous journey leaves it unset so the real EnvironmentPlan is the
+      # first binding the CAS sees; fixture-only journeys set it to "1".
+      FACTORY_TEST_ENVIRONMENT_BINDING: "${FACTORY_TEST_ENVIRONMENT_BINDING:-}"
   git-fixture:
     image: docker.io/library/python:3.12-alpine
     command: ["python3", "-m", "http.server", "8080", "--directory", "/srv"]

@@ -1209,7 +1209,9 @@ mod environment;
 pub use environment::{CampaignEnvironmentBinding, StoredEnvironmentPlan, StoredEnvironmentSpec};
 #[cfg(any(test, feature = "test-support"))]
 pub use environment::{
-    TestEnvironmentBinding, apply_test_environment_binding, test_environment_binding,
+    TestEnvironmentBinding, apply_test_environment_binding,
+    apply_test_environment_binding_if_enabled, test_environment_binding,
+    test_environment_binding_opt_in,
 };
 mod provider_sessions;
 mod provider_settings;
