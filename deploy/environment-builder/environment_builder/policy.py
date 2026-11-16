@@ -91,7 +91,7 @@ DENIED_SPDX: Final[frozenset[str]] = frozenset(
 def _load_closure_catalog() -> frozenset[str]:
     path = Path(__file__).with_name("closure_allowed_spdx.json")
     document = json.loads(path.read_text(encoding="utf-8"))
-    if document.get("schema") != 1:
+    if type(document.get("schema")) is not int or document.get("schema") != 1:
         raise RuntimeError("unsupported closure licence catalogue schema")
     ids = document.get("ids")
     if not isinstance(ids, list) or not all(

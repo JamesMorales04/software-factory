@@ -830,6 +830,7 @@ class PolicyTests(unittest.TestCase):
         path = Path(policy.__file__).with_name("closure_allowed_spdx.json")
         document = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(document["schema"], 1)
+        self.assertIs(type(document["schema"]), int)
         self.assertEqual(document["revision"], "nix-devenv-closure-catalog-v1")
         ids = document["ids"]
         self.assertEqual(len(ids), len(set(ids)))
@@ -844,6 +845,25 @@ class PolicyTests(unittest.TestCase):
         for identifier in ("BSD-4-Clause-UC", "Python-2.0"):
             self.assertIn(identifier, policy.CLOSURE_ALLOWED_SPDX)
             self.assertNotIn(identifier, policy.ALLOWED_SPDX)
+
+    def test_closure_catalog_schema_strict_matches_rust_as_u64(self) -> None:
+        """Python must reject every non-integer/other-than-one schema, matching
+        Rust's ``document["schema"].as_u64() == Some(1)``."""
+        import environment_builder.policy as policy
+
+        path = Path(policy.__file__).with_name("closure_allowed_spdx.json")
+        document = json.loads(path.read_text(encoding="utf-8"))
+        for malformed in (True, False, 1.0, "1", None, -1, 0):
+            candidate = {**document, "schema": malformed}
+            with mock.patch.object(
+                Path, "read_text", return_value=json.dumps(candidate)
+            ):
+                with self.assertRaises(RuntimeError, msg=repr(malformed)):
+                    policy._load_closure_catalog()
+        with mock.patch.object(Path, "read_text", return_value=json.dumps(document)):
+            self.assertEqual(
+                policy._load_closure_catalog(), frozenset(document["ids"])
+            )
 
     def test_real_33_entry_inventory_is_accepted_by_the_shared_closure_catalog(
         self,
