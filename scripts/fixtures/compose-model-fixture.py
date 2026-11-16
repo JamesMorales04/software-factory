@@ -85,6 +85,23 @@ def diagnostics():
         return {"counters": dict(COUNTERS), "errors": dict(ERRORS)}
 
 
+def looks_like_environment_review(user):
+    """Whether a user prompt is the bounded environment-review phase.
+
+    Core sends the environment-review instruction in the *user* prompt and keeps
+    a generic system prompt ("Return strict JSON only..."), so the phase must be
+    recognised from the payload it actually carries. The markers below are the
+    phase contract, not assessment identities: an environment review legitimately
+    has no Project/Action/Request/Objective block.
+    """
+
+    return (
+        "Review exactly one frozen Candidate EnvironmentPlan" in user
+        and "EnvironmentPlan:\n" in user
+        and "\n\nJSON Schema:" in user
+    )
+
+
 def classify_prompt(system, user=""):
     # Greenfield stack selection is its own bounded Lead phase; it must be
     # matched before the generic assessment fallback, because its user prompt is
@@ -96,6 +113,8 @@ def classify_prompt(system, user=""):
     if "bounded Software Factory Spec Manager" in system:
         return "spec"
     if "Review exactly one frozen Candidate EnvironmentPlan" in system:
+        return "environment"
+    if looks_like_environment_review(user):
         return "environment"
     if "independent semantic code reviewer" in system:
         return "semantic_review"

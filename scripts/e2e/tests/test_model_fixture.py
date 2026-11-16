@@ -710,3 +710,143 @@ class CounterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProductPhaseContractTests(unittest.TestCase):
+    """Routing must follow the message shape the product actually sends.
+
+    Core keeps a generic system prompt for several phases and carries the phase
+    instruction in the user prompt. The environment review is the case that a
+    run lost: it was classified as an assessment and failed on identities it
+    never has. These tests pin one case per reachable phase.
+    """
+
+    GENERIC_SYSTEM = (
+        "Return strict JSON only. A Lead review is a recorded planning decision, "
+        "not execution authority."
+    )
+
+    def plan(self) -> dict:
+        return {
+            "schemaVersion": 1,
+            "planId": "plan-1",
+            "projectId": "project-1",
+            "requestId": "request-1",
+            "actionId": "action-1",
+            "planSha256": "a" * 64,
+            "revision": 1,
+            "riskClass": "R0",
+            "status": "CORE_VALIDATED",
+            "nix": {"allowUnfree": False, "inputs": [], "nixpkgs": "github:NixOS/nixpkgs/x"},
+        }
+
+    def environment_user_prompt(self) -> str:
+        return (
+            "You are the bounded Intelligent Lead. Review exactly one frozen Candidate "
+            "EnvironmentPlan and return ONLY one JSON object that validates against the JSON "
+            "Schema below. Do not add prose, markdown, comments or unknown fields.\n\n"
+            "EnvironmentPlan:\n"
+            + json.dumps(self.plan())
+            + "\n\nJSON Schema:\n{}"
+        )
+
+    def test_environment_review_is_routed_from_the_product_user_prompt(self) -> None:
+        fixture = load_fixture()
+        self.assertEqual(
+            fixture.classify_prompt(self.GENERIC_SYSTEM, self.environment_user_prompt()),
+            "environment",
+        )
+        response = fixture.environment_review(self.environment_user_prompt())
+        payload = content(response)
+        self.assertEqual(payload["decision"], "APPROVE")
+        self.assertEqual(payload["requestId"], "request-1")
+        self.assertEqual(payload["planSha256"], "a" * 64)
+        self.assertEqual(payload["planRevision"], 1)
+
+    def test_environment_markers_are_required_on_both_sides(self) -> None:
+        fixture = load_fixture()
+        phrase_only = "Review exactly one frozen Candidate EnvironmentPlan"
+        self.assertEqual(fixture.classify_prompt(self.GENERIC_SYSTEM, phrase_only), "other")
+        no_schema = phrase_only + "\n\nEnvironmentPlan:\n{}"
+        self.assertEqual(fixture.classify_prompt(self.GENERIC_SYSTEM, no_schema), "other")
+
+    def test_every_reachable_phase_routes_from_the_product_shape(self) -> None:
+        fixture = load_fixture()
+        cases = [
+            (
+                "planner",
+                "You are the bounded Software Factory Planner.",
+                json.dumps({"objective": "x", "projectConfig": {"allowedPaths": ["src"]}}),
+            ),
+            (
+                "lead_stack_selection",
+                "You are the bounded Software Factory Stack Selector.",
+                json.dumps({"options": [{"id": "option-1", "language": "python"}]}),
+            ),
+            ("spec", "You are the bounded Software Factory Spec Manager.", "{}"),
+            ("environment", self.GENERIC_SYSTEM, self.environment_user_prompt()),
+            (
+                "semantic_review",
+                "You are an independent semantic code reviewer.",
+                "candidateCommitSha: " + "d" * 40,
+            ),
+            (
+                "assessment",
+                "bounded Software Factory Semantic Assessor",
+                "Objective: add x. Project: p-1. Action: a-1. Request: r-1.",
+            ),
+        ]
+        for phase, system, user in cases:
+            with self.subTest(phase=phase):
+                self.assertEqual(fixture.classify_prompt(system, user), phase)
+
+    def test_http_round_trip_exercises_the_real_handler(self) -> None:
+        """One in-process HTTP call per phase: routing without Podman or a build."""
+
+        import threading
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+
+        fixture = load_fixture()
+        fixture.COUNTERS.update({phase: 0 for phase in fixture.PHASES})
+        fixture.ERRORS.clear()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), fixture.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            cases = [
+                ("environment", self.GENERIC_SYSTEM, self.environment_user_prompt()),
+                (
+                    "semantic_review",
+                    "independent semantic code reviewer",
+                    "candidateCommitSha: " + "d" * 40
+                    + " candidateTreeSha: " + "e" * 40
+                    + " actionSpecSha256: " + "f" * 64,
+                ),
+            ]
+            for phase, system, user in cases:
+                body = json.dumps(
+                    {
+                        "model": "fixture",
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user},
+                        ],
+                    }
+                ).encode("utf-8")
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/chat/completions",
+                    data=body,
+                    headers={"content-type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.headers["x-factory-fixture-phase"], phase)
+                    json.loads(response.read().decode("utf-8"))
+            self.assertEqual(fixture.counters()["environment"], 1)
+            self.assertEqual(fixture.ERRORS, {})
+        finally:
+            server.shutdown()
+            server.server_close()
