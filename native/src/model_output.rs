@@ -340,7 +340,9 @@ fn visit_schema(schema: &Value, allowed: &[&str]) -> Result<(), ModelOutputError
 mod tests {
     use super::*;
     use crate::lead::{
-        AssessmentInput, Complexity, EffortEstimate, EffortStatus, Intent, LeadAssessment,
+        AssessmentInput, Capability, Complexity, EffortEstimate, EffortStatus, Intent,
+        LeadAssessment, LeadPlanProposal, LeadWorkUnit, ObjectiveClass, ProviderRoute,
+        QualityProfile, RiskClass, SpecBudget, WorkUnitKind,
     };
     use std::collections::BTreeSet;
 
@@ -400,6 +402,89 @@ mod tests {
         );
         validate_provider_schema(&schema).unwrap();
         assert_eq!(lead_assessment_schema_sha256().len(), 64);
+    }
+
+    fn proposal_with_one_unit() -> LeadPlanProposal {
+        LeadPlanProposal {
+            project_id: "project".into(),
+            action_id: "action".into(),
+            base_revision: "b".repeat(40),
+            project_config_hash: "a".repeat(64),
+            objective: "audit the change".into(),
+            class: ObjectiveClass::Maintenance,
+            assumptions: Vec::new(),
+            risks: Vec::new(),
+            acceptance_criteria: Vec::new(),
+            negative_cases: Vec::new(),
+            quality_profile: QualityProfile::Generic,
+            risk_class: RiskClass::R0,
+            budget: SpecBudget {
+                max_attempts: 1,
+                timeout_secs: 60,
+            },
+            route: ProviderRoute {
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                mode: "build".into(),
+            },
+            max_repair_cycles: 0,
+            max_wall_clock_secs: 0,
+            max_parallel: 1,
+            max_sessions: 0,
+            work_units: vec![LeadWorkUnit {
+                id: "unit-1".into(),
+                kind: WorkUnitKind::Implementation,
+                description: "Audit the change.".into(),
+                depends_on: Vec::new(),
+                allowed_paths: vec!["src".into()],
+                capabilities: vec![Capability::RepositoryEdit],
+                acceptance_criteria: Vec::new(),
+                negative_cases: Vec::new(),
+            }],
+            environment_proposal: None,
+        }
+    }
+
+    #[test]
+    fn schema_does_not_require_proposal() {
+        let schema = lead_assessment_schema();
+        let required = schema["required"].as_array().unwrap();
+        assert!(!required.iter().any(|value| value == "proposal"));
+        assert!(schema["properties"]["proposal"].is_object());
+    }
+
+    #[test]
+    fn informational_without_proposal_is_schema_valid_and_planless() {
+        let mut value = serde_json::to_value(assessment()).unwrap();
+        value["intent"] = serde_json::json!("informational");
+        assert!(value.get("proposal").is_none());
+        let decoded =
+            decode_lead_assessment(&serde_json::to_vec(&value).unwrap(), &input()).unwrap();
+        assert_eq!(decoded.intent, Intent::Informational);
+        assert!(decoded.proposal.is_none());
+    }
+
+    /// Regression for the real smoke failure
+    /// (`a non-change intent cannot include executable WorkUnits`): the JSON
+    /// Schema accepts the shape, and the deterministic domain validator rejects
+    /// it fail-closed. The invariant stays; the prompt must stop producing it.
+    #[test]
+    fn informational_with_work_units_is_rejected_by_domain() {
+        let mut value = assessment();
+        value.intent = Intent::Informational;
+        value.proposal = Some(proposal_with_one_unit());
+        let raw = serde_json::to_vec(&value).unwrap();
+        let error = decode_lead_assessment(&raw, &input()).unwrap_err();
+        assert!(
+            matches!(error, ModelOutputError::Domain(_)),
+            "expected a domain rejection, got {error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("a non-change intent cannot include executable WorkUnits"),
+            "{error}"
+        );
     }
 
     #[test]

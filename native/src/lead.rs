@@ -2748,7 +2748,19 @@ mod tests {
         let mut value = assessment();
         value.intent = Intent::Audit;
         value.proposal.as_mut().unwrap().work_units = vec![unit("api")];
-        assert!(value.validate(&assessment_input()).is_err());
+        let error = value.validate(&assessment_input()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "invalid assessment: a non-change intent cannot include executable WorkUnits"
+        );
+    }
+
+    #[test]
+    fn change_intent_with_work_units_is_accepted() {
+        let mut value = assessment();
+        value.intent = Intent::Change;
+        value.proposal.as_mut().unwrap().work_units = vec![unit("api")];
+        value.validate(&assessment_input()).unwrap();
     }
 
     #[test]

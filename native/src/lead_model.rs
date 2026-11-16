@@ -97,6 +97,29 @@ fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadErro
             "workUnits": [unit]
         }
     });
+    let non_change_example = serde_json::json!({
+        "schemaRevision": 1,
+        "projectId": request.project.project_id,
+        "actionId": request.action.id,
+        "requestId": request.request_id,
+        "evidenceRefs": ["repository-files"],
+        "intent": "informational",
+        "complexity": "small",
+        "effortEstimate": {
+            "status": "not_requested",
+            "unit": "",
+            "minPersonHours": 0,
+            "maxPersonHours": 0,
+            "assumptions": [],
+            "unknownReason": ""
+        },
+        "knowledgeGaps": [],
+        "changeImpact": [],
+        "validationNeeds": [],
+        "assumptions": [],
+        "uncertainty": [],
+        "suggestedNextAction": crate::lead::SUGGESTED_NEXT_ACTION_NO_ACTION
+    });
     let required_kinds = request
         .project
         .quality_profile
@@ -120,10 +143,14 @@ fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadErro
     Ok(format!(
         "You are the bounded Intelligent Lead. Return ONLY one JSON object that validates against the \
 JSON Schema below. Do not add prose, markdown, comments or unknown fields. \
-The example below is a valid shape for this request; copy its identities, route, qualityProfile, \
-paths and capabilities exactly, and use your own judgment for intent, complexity, risks, \
-assumptions, uncertainty and the effort estimate. Classify a question or a read-only assessment as \
-informational or audit; never propose executable WorkUnits for those intents. For informational or \
+The example below is a valid CHANGE-intent shape for this request; copy the top-level identities, \
+route, qualityProfile, paths and capabilities exactly, and use your own judgment for intent, \
+complexity, risks, assumptions, uncertainty and the effort estimate. The example's `proposal` and \
+`workUnits` apply ONLY to a change intent; if you classify the intent as informational or audit, \
+use the second example shape instead: omit the `proposal` field entirely and never copy the \
+change example's proposal or WorkUnits. Classify a \
+question or a read-only assessment as informational or audit; never propose executable WorkUnits for \
+those intents. For informational or \
 audit without an explicit estimate request, effortEstimate.status must be not_requested with empty \
 unit, bounds, assumptions and unknownReason. Every intent must include a non-empty \
 suggestedNextAction of at most {note_chars} characters: for a change intent, state a concrete bounded \
@@ -142,9 +169,10 @@ must be one of {classes:?}; proposal.qualityProfile must be {quality:?}; riskCla
 global language image. Do not assume cargo, rustc, python3, node, npm or any other executable exists \
 unless the environment proposal or committed conventions provide it. \
 budget.timeoutSecs={timeout_secs}; route must be {route:?}; maxParallel=1; \
-workUnits must contain exactly one implementation unit with id \"unit-1\"; its allowedPaths and \
-capabilities must be subsets of the outer lists shown and should reflect the plan reasoning; check ids \
-must be unique.\n\nJSON Schema:\n{schema}\n\nValid example shape:\n{example}",
+for a change intent, `proposal` is required and workUnits must contain exactly one implementation \
+unit with id \"unit-1\"; its allowedPaths and capabilities must be subsets of the outer lists shown \
+and should reflect the plan reasoning; check ids must be unique. For informational or audit, omit \
+`proposal` entirely.\n\nJSON Schema:\n{schema}\n\nValid CHANGE-intent example shape (with proposal):\n{example}\n\nValid non-change (informational or audit) example shape WITHOUT proposal:\n{non_change_example}",
         checks_instruction = checks_instruction,
         environment_instruction = environment_instruction,
         objective = request.objective,
@@ -160,6 +188,7 @@ must be unique.\n\nJSON Schema:\n{schema}\n\nValid example shape:\n{example}",
         timeout_secs = timeout_secs,
         schema = schema,
         example = example,
+        non_change_example = non_change_example,
         note_chars = crate::lead::MAX_NOTE_CHARS,
         no_action = crate::lead::SUGGESTED_NEXT_ACTION_NO_ACTION,
     ))
@@ -299,4 +328,176 @@ not grant authority. The EnvironmentPlan JSON and JSON Schema follow.\n\nEnviron
         .validate_for(request.plan, request.now)
         .map_err(|error| LeadError::Assessment(error.message))?;
     Ok((review, result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::ActionSpec;
+    use crate::execution_policy::{OperationLimits, ProgressPolicy};
+    use crate::lead::{
+        ActionBinding, ActionStatus, AssessmentInput, Capability, CheckKind, ObjectiveClass,
+        ProjectConfig, ProviderRoute, QualityProfile, RiskClass, SpecCheck, StandingDelegationV2,
+    };
+
+    fn request_stub() -> (
+        ProjectConfig,
+        ActionBinding,
+        ActionSpec,
+        StandingDelegationV2,
+    ) {
+        let project = ProjectConfig {
+            project_id: "project-1".into(),
+            revision: 1,
+            config_hash: "a".repeat(64),
+            repository: "/repo".into(),
+            base_commit: "b".repeat(40),
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
+            quality_profile: QualityProfile::Generic,
+            active: true,
+            updated_at: "2026-11-16T00:00:00Z".into(),
+        };
+        let action = ActionBinding {
+            id: "action-1".into(),
+            project_id: "project-1".into(),
+            status: ActionStatus::Pending,
+        };
+        let spec = ActionSpec {
+            schema_version: 1,
+            project_id: "project-1".into(),
+            repository: "/repo".into(),
+            base_commit: project.base_commit.clone(),
+            objective: "Review the repository without changing it.".into(),
+            objective_sha256: "c".repeat(64),
+            provider: "opencode-go".into(),
+            model: "deepseek-v4.1-flash".into(),
+            allowed_paths: vec!["src".into()],
+            checks: vec![SpecCheck {
+                id: "format".into(),
+                kind: CheckKind::Format,
+                description: "format".into(),
+                command: vec!["cargo".into(), "fmt".into(), "--check".into()],
+                expect_exit: 0,
+                timeout_secs: 60,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
+            }],
+            dependency_plan: None,
+            dependencies_required: false,
+            environment_plan_id: None,
+            environment_plan_sha256: None,
+            environment_spec_id: None,
+            environment_spec_sha256: None,
+            environment_builder_image: None,
+            environment_builder_image_digest: None,
+            environment_required: false,
+        };
+        let grant = StandingDelegationV2 {
+            id: "grant-1".into(),
+            principal_id: "owner-1".into(),
+            audit_id: "audit-1".into(),
+            project_id: "project-1".into(),
+            revision: 1,
+            content_hash: "d".repeat(64),
+            objective_classes: vec![ObjectiveClass::Feature, ObjectiveClass::Maintenance],
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
+            risk_classes: vec![RiskClass::R0],
+            autonomous_start: false,
+            autonomous_risk_classes: Vec::new(),
+            route: ProviderRoute {
+                provider: "opencode-go".into(),
+                model: "deepseek-v4.1-flash".into(),
+                mode: "build".into(),
+            },
+            max_timeout_secs: 300,
+            max_parallel: 1,
+            operations: OperationLimits {
+                model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+                tool_call_timeout_secs: std::num::NonZeroU32::new(600).unwrap(),
+                max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+                max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+                max_generation_tokens: std::num::NonZeroU32::new(8_192).unwrap(),
+                max_in_flight_operations: std::num::NonZeroU32::new(4).unwrap(),
+            },
+            progress: ProgressPolicy {
+                diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+                escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
+                observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+                autonomy: Default::default(),
+            },
+            expires_at: chrono::Utc::now() + chrono::Duration::days(1),
+            revoked_at: None,
+        };
+        (project, action, spec, grant)
+    }
+
+    fn assessment_prompt_for_test() -> String {
+        let (project, action, spec, grant) = request_stub();
+        let request = AssessmentRequest {
+            request_id: "request-1",
+            project: &project,
+            action: &action,
+            action_spec: &spec,
+            objective: "Review the repository without changing it.",
+            grant: &grant,
+            now: chrono::Utc::now(),
+            greenfield: false,
+        };
+        assessment_prompt(&request).unwrap()
+    }
+
+    #[test]
+    fn prompt_does_not_require_unit_one_for_a_non_change_intent() {
+        let prompt = assessment_prompt_for_test();
+        assert!(
+            !prompt.contains("maxParallel=1; workUnits must contain exactly one"),
+            "the unconditional WorkUnit rule is still present"
+        );
+        assert!(
+            prompt.contains("for a change intent, `proposal` is required"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("For informational or audit, omit `proposal` entirely."));
+        assert!(
+            prompt.contains(
+                "Valid non-change (informational or audit) example shape WITHOUT proposal"
+            )
+        );
+    }
+
+    #[test]
+    fn prompt_examples_parse_through_the_real_decoder() {
+        let prompt = assessment_prompt_for_test();
+        let change = prompt
+            .split("Valid CHANGE-intent example shape (with proposal):\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n\nValid non-change").next())
+            .expect("change example");
+        let non_change = prompt
+            .split("Valid non-change (informational or audit) example shape WITHOUT proposal:\n")
+            .nth(1)
+            .expect("non-change example");
+        let change: serde_json::Value = serde_json::from_str(change).unwrap();
+        let non_change: serde_json::Value = serde_json::from_str(non_change).unwrap();
+        assert!(change.get("proposal").is_some());
+        assert!(non_change.get("proposal").is_none());
+        let input = AssessmentInput {
+            project_id: "project-1".into(),
+            action_id: "action-1".into(),
+            request_id: "request-1".into(),
+            objective: "Review the repository without changing it.".into(),
+            allowed_evidence_refs: std::collections::BTreeSet::from([
+                "repository-files".to_string()
+            ]),
+        };
+        crate::model_output::decode_lead_assessment(
+            &serde_json::to_vec(&non_change).unwrap(),
+            &input,
+        )
+        .expect("non-change example must pass schema and domain validation");
+        crate::model_output::decode_lead_assessment(&serde_json::to_vec(&change).unwrap(), &input)
+            .expect("change example must pass schema and domain validation");
+    }
 }
