@@ -26,6 +26,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::lead::SpecCheck;
+use crate::planning::license_policy::{
+    LicenseContext, LicenseDecision, default_catalog, default_catalog_sha256, default_profile,
+    default_profile_sha256, evaluate,
+};
 use crate::project_import::{git_blob, git_tree, is_commit_id};
 
 pub const ENVIRONMENT_SCHEMA_VERSION: u32 = 1;
@@ -2466,6 +2470,10 @@ pub struct LicenseInventory {
     #[serde(default)]
     pub policy_revision: String,
     #[serde(default)]
+    pub catalog_sha256: String,
+    #[serde(default)]
+    pub profile_sha256: String,
+    #[serde(default)]
     pub allow_unfree: bool,
     #[serde(default)]
     pub entries: Vec<LicenseEntry>,
@@ -2484,6 +2492,8 @@ impl Default for LicenseInventory {
         Self {
             schema_version: ENVIRONMENT_SCHEMA_VERSION,
             policy_revision: LICENSE_POLICY_REVISION.into(),
+            catalog_sha256: default_catalog_sha256().to_owned(),
+            profile_sha256: default_profile_sha256().to_owned(),
             allow_unfree: false,
             entries: Vec::new(),
             overrides: Vec::new(),
@@ -2503,6 +2513,8 @@ impl LicenseInventory {
         canonical_hash(&(
             ENVIRONMENT_SCHEMA_VERSION,
             LICENSE_POLICY_REVISION,
+            &self.catalog_sha256,
+            &self.profile_sha256,
             plan_id,
             false,
             &self.entries,
@@ -2520,80 +2532,10 @@ impl LicenseInventory {
     }
 }
 
-const ALLOWED_SPDX: &[&str] = &[
-    "0BSD",
-    "Apache-2.0",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "BSL-1.0",
-    "CC0-1.0",
-    "ISC",
-    "LGPL-2.1-only",
-    "LGPL-2.1-or-later",
-    "LGPL-3.0-only",
-    "LGPL-3.0-or-later",
-    "MIT",
-    "MIT-0",
-    "MPL-2.0",
-    "Unlicense",
-    "Zlib",
-];
-
-const DENIED_SPDX: &[&str] = &[
-    "AGPL-3.0-only",
-    "AGPL-3.0-or-later",
-    "BUSL-1.1",
-    "Commons-Clause",
-    "SSPL-1.0",
-];
-
-/// Closure-wide policy accepts common copyleft licences that are not denied,
-/// while still rejecting every unfree/denied/unknown transitive package. The
-/// closure-only additions live in one shared, versioned catalogue also read by
-/// the builder's Python validator, so the two enforcement points cannot drift.
-/// Selected-package `ALLOWED_SPDX` and `DENIED_SPDX` stay separate on purpose:
-/// a closure-wide allowance is not a selected-package grant.
-const CLOSURE_CATALOG: &str = include_str!(
-    "../../../deploy/environment-builder/environment_builder/closure_allowed_spdx.json"
-);
-
-fn closure_allowed_spdx() -> &'static BTreeSet<String> {
-    static SET: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
-    SET.get_or_init(|| {
-        let document: serde_json::Value = serde_json::from_str(CLOSURE_CATALOG)
-            .expect("the shared closure licence catalogue is valid JSON");
-        assert_eq!(
-            document["schema"].as_u64(),
-            Some(1),
-            "unsupported closure licence catalogue schema"
-        );
-        let ids = document["ids"]
-            .as_array()
-            .expect("closure catalogue ids must be an array");
-        let mut additions = BTreeSet::new();
-        for id in ids {
-            let id = id.as_str().expect("closure catalogue ids must be strings");
-            assert!(
-                additions.insert(id.to_owned()),
-                "the closure catalogue must not contain duplicate ids"
-            );
-        }
-        let canonical = format!(
-            "{}\n",
-            additions.iter().cloned().collect::<Vec<_>>().join("\n")
-        );
-        assert_eq!(
-            document["sha256"].as_str(),
-            Some(sha256_hex(canonical.as_bytes()).as_str()),
-            "the shared closure catalogue hash is inconsistent"
-        );
-        ALLOWED_SPDX
-            .iter()
-            .map(|id| (*id).to_owned())
-            .chain(additions)
-            .collect()
-    })
-}
+// Licence classification and context verdicts are the shared, versioned
+// license_catalog.json + license_profile.json pair. The legacy-current profile
+// reproduces the previous selected/closure verdicts. Classification is not
+// acceptance; selected and closure remain distinct contexts.
 
 fn validate_license_expression(value: &str) -> Result<(), EnvironmentError> {
     let value = value.trim();
@@ -2607,31 +2549,20 @@ fn validate_license_expression(value: &str) -> Result<(), EnvironmentError> {
             "the license expression {value} is unknown and blocks the plan"
         )));
     }
-    if DENIED_SPDX.contains(&value) {
-        return Err(license_blocked(format!(
+    match evaluate(
+        value,
+        LicenseContext::Selected,
+        default_catalog(),
+        default_profile(),
+    ) {
+        LicenseDecision::Allowed => Ok(()),
+        LicenseDecision::Denied => Err(license_blocked(format!(
             "the license expression {value} is denied by the frozen policy"
-        )));
+        ))),
+        LicenseDecision::Unknown | LicenseDecision::NotEvaluated => Err(license_blocked(format!(
+            "the license expression {value} is unknown and blocks the plan"
+        ))),
     }
-    if ALLOWED_SPDX.contains(&value) {
-        return Ok(());
-    }
-    // Permit simple SPDX AND/OR expressions where every atom is known.
-    let normalized = value
-        .replace(['(', ')'], " ")
-        .replace(" AND ", " ")
-        .replace(" OR ", " ")
-        .replace(" WITH ", " ");
-    let atoms = normalized.split_whitespace().collect::<Vec<_>>();
-    if !atoms.is_empty()
-        && atoms
-            .iter()
-            .all(|atom| ALLOWED_SPDX.contains(atom) || atom.starts_with("LLVM-exception"))
-    {
-        return Ok(());
-    }
-    Err(license_blocked(format!(
-        "the license expression {value} is unknown and blocks the plan"
-    )))
 }
 
 fn validate_closure_license_expression(value: &str) -> Result<(), EnvironmentError> {
@@ -2642,32 +2573,22 @@ fn validate_closure_license_expression(value: &str) -> Result<(), EnvironmentErr
             format!("the closure license expression {value:?} is unknown"),
         ));
     }
-    if DENIED_SPDX.contains(&value) {
-        return Err(EnvironmentError::new(
+    match evaluate(
+        value,
+        LicenseContext::Closure,
+        default_catalog(),
+        default_profile(),
+    ) {
+        LicenseDecision::Allowed => Ok(()),
+        LicenseDecision::Denied => Err(EnvironmentError::new(
             EnvironmentBlockerCode::EnvironmentLicenseDenied,
             format!("the closure license expression {value} is denied by policy"),
-        ));
+        )),
+        LicenseDecision::Unknown | LicenseDecision::NotEvaluated => Err(EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+            format!("the closure license expression {value} is unknown"),
+        )),
     }
-    if closure_allowed_spdx().contains(value) {
-        return Ok(());
-    }
-    let normalized = value
-        .replace(['(', ')'], " ")
-        .replace(" AND ", " ")
-        .replace(" OR ", " ")
-        .replace(" WITH ", " ");
-    let atoms = normalized.split_whitespace().collect::<Vec<_>>();
-    if !atoms.is_empty()
-        && atoms.iter().all(|atom| {
-            closure_allowed_spdx().contains(*atom) || atom.starts_with("LLVM-exception")
-        })
-    {
-        return Ok(());
-    }
-    Err(EnvironmentError::new(
-        EnvironmentBlockerCode::EnvironmentLicenseUnknown,
-        format!("the closure license expression {value} is unknown"),
-    ))
 }
 
 fn substrate_license_entries() -> Vec<LicenseEntry> {
@@ -2713,6 +2634,8 @@ fn build_license_inventory(
     let mut inventory = LicenseInventory {
         schema_version: ENVIRONMENT_SCHEMA_VERSION,
         policy_revision: LICENSE_POLICY_REVISION.into(),
+        catalog_sha256: default_catalog_sha256().into(),
+        profile_sha256: default_profile_sha256().into(),
         allow_unfree: false,
         entries: substrate_license_entries(),
         overrides: overrides.to_vec(),
@@ -5508,25 +5431,26 @@ mod tests {
     }
 
     #[test]
-    fn closure_catalog_is_shared_and_complete() {
-        let document: serde_json::Value = serde_json::from_str(CLOSURE_CATALOG).unwrap();
-        assert_eq!(document["schema"], 1);
-        let ids: BTreeSet<String> = document["ids"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|id| id.as_str().unwrap().to_owned())
-            .collect();
-        let expected: BTreeSet<String> = ALLOWED_SPDX
-            .iter()
-            .map(|id| (*id).to_owned())
-            .chain(ids.iter().cloned())
-            .collect();
-        assert_eq!(closure_allowed_spdx(), &expected);
+    fn license_catalog_and_profile_are_shared_and_legacy() {
+        let catalog = crate::planning::license_policy::default_catalog();
+        let profile = crate::planning::license_policy::default_profile();
+        assert_eq!(catalog.entries.len(), 35);
+        assert_eq!(
+            catalog.alias_index.get("Public Domain"),
+            Some(&"publicDomain".to_owned())
+        );
+        assert_eq!(profile.mode, "legacy-current");
+        assert!(!profile.b_active());
+        let selected = &profile.contexts["selected"].allowed_ids;
+        let closure = &profile.contexts["closure"].allowed_ids;
+        assert_eq!(selected.len(), 16);
+        assert_eq!(closure.len(), 30);
         for identifier in ["BSD-4-Clause-UC", "Python-2.0"] {
-            assert!(closure_allowed_spdx().contains(identifier));
-            assert!(!ALLOWED_SPDX.contains(&identifier));
+            assert!(closure.iter().any(|id| id.as_str() == identifier));
+            assert!(!selected.iter().any(|id| id.as_str() == identifier));
         }
+        assert!(closure.iter().any(|id| id.as_str() == "publicDomain"));
+        assert!(!closure.iter().any(|id| id.as_str() == "Public Domain"));
     }
 
     #[test]

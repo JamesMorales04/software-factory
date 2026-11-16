@@ -27,6 +27,10 @@ sys.path.insert(0, str(HERE.parent))
 
 from environment_builder import BUILDER_POLICY_REVISION, LICENSE_POLICY_REVISION  # noqa: E402
 import environment_builder.cli as cli  # noqa: E402
+import environment_builder.license_policy as license_policy_data  # noqa: E402
+_LICENSE_CATALOG, _LICENSE_PROFILE = license_policy_data.load_default()
+_CATALOG_SHA = license_policy_data.catalog_content_sha256(_LICENSE_CATALOG)
+_PROFILE_SHA = license_policy_data.profile_content_sha256(_LICENSE_PROFILE)
 from environment_builder.cli import _resolution_file  # noqa: E402
 from environment_builder.errors import BuilderError  # noqa: E402
 from environment_builder.policy import (  # noqa: E402
@@ -148,6 +152,8 @@ def license_inventory(packages: list[dict], overrides: list[dict] | None = None)
         "schemaVersion": 1,
         "policyRevision": LICENSE_POLICY_REVISION,
         "allowUnfree": False,
+        "catalogSha256": _CATALOG_SHA,
+        "profileSha256": _PROFILE_SHA,
         "entries": entries,
         "overrides": overrides or [],
         "blockers": [],
@@ -819,7 +825,7 @@ class PolicyTests(unittest.TestCase):
             [entry["name"] for entry in validated],
             ["python3", "typing-extensions"],
         )
-        # Core selects packages from ALLOWED_SPDX, not the closure catalogue.
+        # Core selects packages from the selected context, not the closure profile.
         with self.assertRaises(BuilderError) as raised:
             validate_license_expression("Python-2.0")
         self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")

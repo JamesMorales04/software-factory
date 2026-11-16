@@ -1096,6 +1096,12 @@ def validate_license_inventory(
         fail("ENVIRONMENT_LICENSE_DENIED", "the license inventory must keep allowUnfree=false")
     if inventory.get("policyRevision") != LICENSE_POLICY_REVISION:
         fail("ENVIRONMENT_LICENSE_UNKNOWN", "the license inventory uses an unknown policy revision")
+    catalog_sha = _license_policy.catalog_content_sha256(_LICENSE_CATALOG)
+    profile_sha = _license_policy.profile_content_sha256(_LICENSE_PROFILE)
+    if inventory.get("catalogSha256") != catalog_sha:
+        fail("ENVIRONMENT_HASH_MISMATCH", "the license inventory catalogue hash is inconsistent")
+    if inventory.get("profileSha256") != profile_sha:
+        fail("ENVIRONMENT_HASH_MISMATCH", "the license inventory profile hash is inconsistent")
     blockers = _require_list(inventory.get("blockers", []), "plan.licenseInventory.blockers")
     if blockers:
         first = blockers[0] if isinstance(blockers[0], dict) else {}
