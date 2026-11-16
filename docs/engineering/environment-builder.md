@@ -266,8 +266,8 @@ enforcement, root/system mount-source attestation, bounded noisy-output capture
 and disk-overflow artifact purging, plus exact/prefix version constraint
 matching and SBOM constraint recording. The focused builder suite is
 `python3 -m unittest tests.test_builder` from `deploy/environment-builder`
-(80 tests, including real-Nix synthetic-attrset probes). The full directory
-discovers 105 tests. In the read-only evidence checkout the same six
+(86 tests, including real-Nix synthetic-attrset probes). The full directory
+discovers 111 tests. In the read-only evidence checkout the same six
 pre-existing layout-dependent tests fail on both the candidate and its parent:
 three `test_paths` errors from the `HERE.parents[3]` repository-root guess and
 three `test_disk_budget`/`test_wrapper` failures that depend on the mounted
@@ -282,7 +282,16 @@ failure names the last `error:` line with a payload (never a warning that merely
 contains the word). `stdout` remains the data channel; a truncated document is
 rejected even when its retained prefix is valid JSON. This does not copy raw
 `stdout`, secrets, prompts or source bodies into telemetry, and it adds no new
-endpoint, log artifact or durability promise. The
+endpoint, log artifact or durability promise.
+
+The closure licence audit does not evaluate the whole nixpkgs attribute set in
+one Nix process. It evaluates the nested sets implied by the selected plan
+packages first, then traverses top-level attributes in bounded 1,000-name
+batches. The measured full traversal exhausted 4 GiB and even 8 GiB and was
+OOM-killed; the batched path resolved a real `util-linux-minimal` closure under
+the 4 GiB budget with `oom_kill=0`. A child terminated by a signal is reported
+as `ENVIRONMENT_RESOURCE_LIMIT` (for example `SIGKILL`), never as an unknown
+licence; an unresolved path remains a fail-closed licence blocker. The
 final `deploy/environment-builder/Containerfile` image was built and exercised
 under the unique WP1-B evidence tag
 `localhost/software-factory-environment-builder:wp1b-340fa54-r3`

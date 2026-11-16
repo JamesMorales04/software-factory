@@ -463,7 +463,7 @@ class PolicyTests(unittest.TestCase):
                         log,
                     )
             self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
-            evaluate.assert_called_once()
+            self.assertTrue(evaluate.called)
         finally:
             log.close()
 
@@ -547,8 +547,14 @@ class PolicyTests(unittest.TestCase):
 
             # An arbitrary unknown package output is not silently excluded.
             manifest.append({"path": unknown, "deriver": "/nix/store/mystery.drv"})
+
+            def evaluate(expression, *_args, **_kwargs):
+                if expression.endswith("in builtins.attrNames pkgs"):
+                    return ["bash"]
+                return [observed]
+
             with mock.patch(
-                "environment_builder.cli.nix_eval_json", return_value=[observed]
+                "environment_builder.cli.nix_eval_json", side_effect=evaluate
             ):
                 with self.assertRaises(BuilderError) as raised:
                     cli._closure_license_entries(
@@ -796,6 +802,27 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(BuilderError) as raised:
             validate_license_expression("AGPL-3.0-only")
         self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_DENIED")
+
+    def test_selected_nested_sets_follow_plan_packages_and_toolchains(self) -> None:
+        self.assertEqual(
+            cli._selected_package_set_names(
+                {"packages": [{"attr": "python312Packages.fastapi"}]}
+            ),
+            ["python312Packages"],
+        )
+        self.assertEqual(
+            cli._selected_package_set_names(
+                {"toolchains": [{"id": "python3", "version": "3.11.9"}]}
+            ),
+            ["python311Packages"],
+        )
+        self.assertEqual(
+            cli._selected_package_set_names(
+                {"toolchains": [{"id": "node", "version": "22.14.0"}]}
+            ),
+            ["nodePackages"],
+        )
+        self.assertEqual(cli._selected_package_set_names({}), [])
 
     def test_unfree_without_override_is_rejected(self) -> None:
         package = {
@@ -1167,6 +1194,40 @@ class NixEvaluationTests(unittest.TestCase):
         self.assertIn("error: the real cause", raised.exception.message)
         self.assertNotIn("Internet access", raised.exception.message)
 
+    def test_signal_termination_is_a_resource_failure_not_a_license(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(-9, b"", b"", False, False),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json(
+                    "expr",
+                    env={},
+                    timeout=30,
+                    log=self.log,
+                    failure_code="ENVIRONMENT_LICENSE_UNKNOWN",
+                )
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_RESOURCE_LIMIT")
+        self.assertIn("SIGKILL", raised.exception.message)
+        self.assertNotIn("unknown license", raised.exception.message)
+
+    def test_signal_termination_with_partial_diagnostic_keeps_signal_primary(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(-9, b"", b"error: partial cause\n", False, False),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json(
+                    "expr",
+                    env={},
+                    timeout=30,
+                    log=self.log,
+                    failure_code="ENVIRONMENT_LICENSE_UNKNOWN",
+                )
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_RESOURCE_LIMIT")
+        self.assertIn("SIGKILL", raised.exception.message)
+        self.assertIn("partial cause", raised.exception.message)
+
     def test_truncated_stdout_rejects_a_valid_json_prefix(self) -> None:
         with mock.patch(
             "environment_builder.nix._run_bounded_capture",
@@ -1323,13 +1384,21 @@ class ClosureExpressionNixTests(unittest.TestCase):
 }}
 """
 
-    def _evaluate(self, closure_paths: list[str]) -> list[dict[str, object]]:
+    def _evaluate(
+        self,
+        closure_paths: list[str],
+        *,
+        names: list[str] | None = None,
+        package_sets: list[str] | None = None,
+    ) -> list[dict[str, object]]:
         paths = self._store_paths()
         expression = (
             "let\n  pkgs = "
             + self._synthetic_pkgs(paths)
             + ";\n"
-            + cli._closure_metadata_body(closure_paths)
+            + cli._closure_metadata_body(
+                closure_paths, names=names, package_sets=package_sets
+            )
         )
         result = subprocess.run(
             [
@@ -1370,6 +1439,20 @@ class ClosureExpressionNixTests(unittest.TestCase):
         self.assertIn(paths["multi_lib"], entries[0]["outputPaths"])
         self.assertEqual(entries[0]["license"], "MIT AND Apache-2.0")
         self.assertFalse(entries[0]["unfree"])
+
+    def test_scoped_top_level_batch_resolves_only_that_batch(self) -> None:
+        paths = self._store_paths()
+        entries = self._evaluate(
+            [paths["top"], paths["nested"]], names=["top"], package_sets=[]
+        )
+        self.assertEqual([entry["path"] for entry in entries], [paths["top"]])
+
+    def test_scoped_package_set_resolves_the_nested_path(self) -> None:
+        paths = self._store_paths()
+        entries = self._evaluate(
+            [paths["nested"]], names=[], package_sets=["python312Packages"]
+        )
+        self.assertEqual([entry["path"] for entry in entries], [paths["nested"]])
 
 
 class ReceiptTests(unittest.TestCase):

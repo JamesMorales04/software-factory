@@ -618,19 +618,93 @@ def _package_metadata(
     return result
 
 
+NESTED_PACKAGE_SET_NAMES: tuple[str, ...] = (
+    "python312Packages",
+    "python311Packages",
+    "python3Packages",
+    "nodePackages",
+)
+#: Evaluate a bounded slice of top-level nixpkgs attributes per Nix process.
+#: A 1,000-attribute slice stayed below the 4 GiB builder budget in the measured
+#: repro; the full 24,882-attribute set exceeded even 8 GiB.
+CLOSURE_TOP_LEVEL_BATCH = 1_000
+
+
+def _selected_package_set_names(plan: dict[str, Any]) -> list[str]:
+    """Return the nested nixpkgs sets implied by the selected plan packages.
+
+    The attribute path is evidence from the plan, not a licence lookup by
+    package name: a selected ``python312Packages.fastapi`` explicitly says that
+    the Python 3.12 package set is in scope. Toolchains are a secondary hint.
+    """
+    selected: list[str] = []
+    packages = plan.get("packages", [])
+    if isinstance(packages, list):
+        for package in packages:
+            if not isinstance(package, dict):
+                continue
+            attr = str(package.get("attr", "")).strip()
+            prefix, _, remainder = attr.partition(".")
+            if remainder and prefix in NESTED_PACKAGE_SET_NAMES:
+                selected.append(prefix)
+    toolchains = plan.get("toolchains", [])
+    if isinstance(toolchains, list):
+        for toolchain in toolchains:
+            if not isinstance(toolchain, dict):
+                continue
+            identifier = str(toolchain.get("id", "")).strip().lower()
+            version = str(toolchain.get("version", "")).strip()
+            if "python" in identifier:
+                if version.startswith("3.12"):
+                    selected.append("python312Packages")
+                elif version.startswith("3.11"):
+                    selected.append("python311Packages")
+                elif version.startswith("3."):
+                    selected.append("python3Packages")
+            if identifier in ("node", "nodejs") or "node" in identifier:
+                selected.append("nodePackages")
+    return sorted(set(selected))
+
+
 def _closure_metadata_expression(
-    nixpkgs_pin: str, closure_paths: list[str]
+    nixpkgs_pin: str,
+    closure_paths: list[str],
+    *,
+    names: list[str] | None = None,
+    package_sets: list[str] | None = None,
 ) -> str:
-    return _nixpkgs_expression_prefix(nixpkgs_pin) + _closure_metadata_body(closure_paths)
+    return _nixpkgs_expression_prefix(nixpkgs_pin) + _closure_metadata_body(
+        closure_paths, names=names, package_sets=package_sets
+    )
 
 
-def _closure_metadata_body(closure_paths: list[str]) -> str:
+def _closure_metadata_body(
+    closure_paths: list[str],
+    *,
+    names: list[str] | None = None,
+    package_sets: list[str] | None = None,
+) -> str:
     """Return the pure matching body bound to ``pkgs``.
 
     Kept separate from the pinned-nixpkgs prefix so a test can evaluate the
     real matching logic against a synthetic attrset without network or a store.
+    ``names`` and ``package_sets`` scope one invocation to a bounded slice; the
+    default preserves the full traversal for callers that need it.
     """
     wanted_json = json.dumps(closure_paths)
+    names_expression = (
+        "builtins.attrNames pkgs"
+        if names is None
+        else "builtins.fromJSON " + json.dumps(json.dumps(names))
+    )
+    if package_sets is None:
+        package_sets = list(NESTED_PACKAGE_SET_NAMES)
+    if package_sets:
+        nested_expression = "safePackageSet " + "\n    ++ safePackageSet ".join(
+            json.dumps(name) for name in package_sets
+        )
+    else:
+        nested_expression = "[ ]"
     return f"""  wanted = builtins.fromJSON {json.dumps(wanted_json)};
   licenseOf = p:
     if (p ? meta) && (p.meta ? license) then
@@ -658,11 +732,8 @@ def _closure_metadata_body(closure_paths: list[str]) -> str:
       in if attempt.success && builtins.isAttrs attempt.value then [ attempt.value ] else []
     else [];
   nestedPackageSets =
-    safePackageSet "python312Packages"
-    ++ safePackageSet "python311Packages"
-    ++ safePackageSet "python3Packages"
-    ++ safePackageSet "nodePackages";
-  names = builtins.attrNames pkgs;
+    {nested_expression};
+  names = {names_expression};
   candidates = builtins.concatMap
     (name:
       let attempt = builtins.tryEval pkgs.${{name}};
@@ -700,6 +771,32 @@ in map (p: {{
       in attempt.success && attempt.value)
     candidatesWithUnwrapped)
 """
+
+
+def _package_attribute_names(
+    nixpkgs_pin: str,
+    *,
+    environment: dict[str, str],
+    timeout: int,
+    log: BuildLog,
+) -> list[str]:
+    """Return the top-level nixpkgs attribute names without forcing packages."""
+    expression = _nixpkgs_expression_prefix(nixpkgs_pin) + "in builtins.attrNames pkgs"
+    observed = nix_eval_json(
+        expression,
+        env=environment,
+        timeout=timeout,
+        log=log,
+        failure_code="ENVIRONMENT_BUILD_FAILED",
+    )
+    if not isinstance(observed, list) or not all(
+        isinstance(name, str) for name in observed
+    ):
+        fail(
+            "ENVIRONMENT_BUILD_FAILED",
+            "the package attribute enumeration returned an invalid list",
+        )
+    return observed
 
 
 def _verify_command_executables(
@@ -896,16 +993,110 @@ def _closure_license_entries(
     ordered_paths = sorted(paths)
     if not ordered_paths:
         return validate_closure_licenses(substrate_entries)
-    observed = nix_eval_json(
-        _closure_metadata_expression(pin, ordered_paths),
-        env=environment,
-        timeout=timeout,
-        log=log,
-        failure_code="ENVIRONMENT_LICENSE_UNKNOWN",
-    )
-    if not isinstance(observed, list):
-        fail("ENVIRONMENT_LICENSE_UNKNOWN", "closure metadata evaluation did not return a list")
-    observed_entries = [entry for entry in observed if isinstance(entry, dict)]
+    wanted_paths = set(ordered_paths)
+    observed_entries: list[dict[str, Any]] = []
+    seen_entries: set[str] = set()
+    matched_paths: set[str] = set()
+
+    def collect(observed: Any) -> None:
+        if not isinstance(observed, list):
+            fail(
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                "closure metadata evaluation did not return a list",
+            )
+        for entry in observed:
+            if not isinstance(entry, dict):
+                continue
+            dedupe_key = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+            if dedupe_key in seen_entries:
+                continue
+            seen_entries.add(dedupe_key)
+            observed_entries.append(entry)
+            output_paths = entry.get("outputPaths")
+            if not isinstance(output_paths, list):
+                output_paths = [entry.get("path", "")]
+            for output_path in output_paths:
+                matched_paths.add(str(output_path))
+
+    deadline = time.monotonic() + max(1, timeout)
+
+    def evaluate_scope(
+        *, names: list[str] | None, package_sets: list[str] | None
+    ) -> None:
+        remaining = max(1, int(deadline - time.monotonic()))
+        try:
+            observed = nix_eval_json(
+                _closure_metadata_expression(
+                    pin, ordered_paths, names=names, package_sets=package_sets
+                ),
+                env=environment,
+                timeout=remaining,
+                log=log,
+                failure_code="ENVIRONMENT_LICENSE_UNKNOWN",
+            )
+        except BuilderError as error:
+            if "wall-clock bound" in error.message:
+                fail(
+                    "ENVIRONMENT_BUILD_TIMEOUT",
+                    f"closure metadata evaluation exceeded its {timeout}s total bound",
+                )
+            raise
+        collect(observed)
+
+    # The full nixpkgs universe exceeds the builder's 4 GiB budget (the measured
+    # real traversal was killed at both 4 GiB and 8 GiB). Evaluate only the
+    # nested sets implied by the selected plan packages first; if system paths
+    # remain, traverse the top-level attributes in bounded slices. Each Nix
+    # process exits before the next slice, so no single evaluation holds the
+    # whole universe in memory.
+    selected_sets = _selected_package_set_names(plan)
+    # Process the sets implied by the plan first, then the remaining known sets
+    # as a correctness fallback for transitive packages from another toolchain.
+    package_sets = selected_sets + [
+        name for name in NESTED_PACKAGE_SET_NAMES if name not in selected_sets
+    ]
+    for package_set in package_sets:
+        if wanted_paths <= matched_paths:
+            break
+        log.write(f"[closure-metadata] package set {package_set}\n")
+        evaluate_scope(names=[], package_sets=[package_set])
+    if not wanted_paths <= matched_paths:
+        try:
+            attribute_names = _package_attribute_names(
+                pin,
+                environment=environment,
+                timeout=max(1, int(deadline - time.monotonic())),
+                log=log,
+            )
+        except BuilderError as error:
+            if "wall-clock bound" in error.message:
+                fail(
+                    "ENVIRONMENT_BUILD_TIMEOUT",
+                    f"closure metadata evaluation exceeded its {timeout}s total bound",
+                )
+            raise
+        total_batches = max(
+            1,
+            (len(attribute_names) + CLOSURE_TOP_LEVEL_BATCH - 1)
+            // CLOSURE_TOP_LEVEL_BATCH,
+        )
+        for batch_index, start in enumerate(
+            range(0, len(attribute_names), CLOSURE_TOP_LEVEL_BATCH), start=1
+        ):
+            if wanted_paths <= matched_paths:
+                break
+            if time.monotonic() >= deadline:
+                fail(
+                    "ENVIRONMENT_BUILD_TIMEOUT",
+                    f"closure metadata evaluation exceeded its {timeout}s total bound "
+                    f"after {batch_index - 1}/{total_batches} top-level batches",
+                )
+            batch = attribute_names[start : start + CLOSURE_TOP_LEVEL_BATCH]
+            log.write(
+                f"[closure-metadata] top-level batch {batch_index}/{total_batches} "
+                f"names={len(batch)} matched={len(matched_paths)}/{len(wanted_paths)}\n"
+            )
+            evaluate_scope(names=batch, package_sets=[])
     by_path: dict[str, dict[str, Any]] = {}
     for entry in observed_entries:
         output_paths = entry.get("outputPaths")

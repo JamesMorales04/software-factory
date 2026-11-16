@@ -354,6 +354,23 @@ def nix_eval_json(
     # warning channel is not a data failure by itself.
     if stdout_truncated:
         fail(failure_code, "package metadata evaluation output exceeds its bound")
+    if returncode < 0:
+        signal_number = -returncode
+        try:
+            signal_name = signal.Signals(signal_number).name
+        except ValueError:
+            signal_name = f"signal {signal_number}"
+        reason = _primary_failure_reason(diagnostics, rendered)
+        detail = (
+            ""
+            if reason == "no diagnostic was emitted"
+            else f"; diagnostic: {reason}"
+        )
+        fail(
+            "ENVIRONMENT_RESOURCE_LIMIT",
+            f"package metadata evaluation was terminated by {signal_name} "
+            f"(exit {returncode}) without a license conclusion{detail}",
+        )
     if returncode != 0:
         reason = _primary_failure_reason(diagnostics, rendered)
         fail(

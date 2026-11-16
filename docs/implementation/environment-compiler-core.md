@@ -251,6 +251,11 @@ copy raw stdout, secrets, prompts or source bodies into telemetry and does not
 add a new endpoint, log artifact or durability promise. The builder's own
 bounded build/resolve log remains its diagnostic channel.
 
+A signal-terminated builder process is an operational
+`ENVIRONMENT_RESOURCE_LIMIT` with the signal name, not an unknown licence. The
+builder validates the closure licence only after it has independently observed
+each path; an unresolved path remains `ENVIRONMENT_LICENSE_UNKNOWN`.
+
 ## 4. Builder interface for WP1-B
 
 WP1-B supplies the containerized Nix/devenv builder and Node/Playwright runtime.
@@ -372,10 +377,10 @@ before any assignment.
 - `cargo test -p factory-native --bin factory-runtime-broker` — 75 passed.
 - `cargo test -p factory-native --bin factory-supervisor` — 14 passed.
 - Builder diagnostic suite: from `deploy/environment-builder`,
-  `python3 -m unittest tests.test_builder` — 80/80 passed in the canonical
+  `python3 -m unittest tests.test_builder` — 86/86 passed in the canonical
   builder image. The full directory
   (`PYTHONPATH=deploy/environment-builder python3 -m unittest discover -s
-  deploy/environment-builder/tests` from the repository root) discovers 105
+  deploy/environment-builder/tests` from the repository root) discovers 111
   tests; six pre-existing layout-dependent tests (`test_paths`,
   `test_disk_budget`, `test_wrapper`) fail in the read-only evidence checkout
   and are identical on the parent. The older 87-test discovery line was a
