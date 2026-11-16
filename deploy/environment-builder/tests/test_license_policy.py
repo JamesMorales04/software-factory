@@ -41,7 +41,6 @@ CLOSURE_ONLY_IDS = {
     "NCSA",
     "OpenSSL",
     "PostgreSQL",
-    "Public Domain",
     "Python-2.0",
     "curl",
     "publicDomain",
@@ -70,7 +69,7 @@ class LicensePolicyTests(unittest.TestCase):
     def test_catalog_is_versioned_hashed_and_unique(self) -> None:
         self.assertEqual(self.catalog.revision, "spdx-catalog-2026-11-16")
         self.assertTrue(self.catalog.spdx_license_list_version)
-        self.assertEqual(len(self.catalog.entries), 36)
+        self.assertEqual(len(self.catalog.entries), 35)
         self.assertEqual(
             set(self.catalog.entries),
             ALLOWED_IDS | CLOSURE_ONLY_IDS | DENIED_IDS,
@@ -79,6 +78,35 @@ class LicensePolicyTests(unittest.TestCase):
             len(self.catalog.sha256),
             64,
         )
+
+    def test_public_domain_is_a_documented_alias_not_a_new_id(self) -> None:
+        self.assertNotIn("Public Domain", self.catalog.entries)
+        self.assertEqual(self.catalog.alias_index["Public Domain"], "publicDomain")
+        self.assertEqual(
+            self.decision("Public Domain", lp.LicenseContext.CLOSURE), "allowed"
+        )
+        self.assertEqual(
+            self.decision("Public Domain", lp.LicenseContext.SELECTED), "unknown"
+        )
+
+    def test_catalog_schema_requires_a_strict_integer_one(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            document = {
+                "schema": 1,
+                "revision": "probe",
+                "spdxLicenseListVersion": "probe",
+                "sha256": "0" * 64,
+                "entries": [],
+            }
+            for malformed in (True, False, 1.0, "1", None, -1, 0):
+                document["schema"] = malformed
+                path.write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaises(RuntimeError, msg=repr(malformed)):
+                    lp.load_catalog(path)
 
     def test_legacy_profile_is_inactive_until_families_are_declared(self) -> None:
         self.assertEqual(self.profile.mode, "legacy-current")

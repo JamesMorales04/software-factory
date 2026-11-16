@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "revision": "legacy-current",
-  "sha256": "c5ab4a8b4fcd881528204bd98e4a6d81556da4333f347d8bb256b32344a101e4",
+  "sha256": "da0449205259166f6b880fba083d70d275b0fa1862efb5c04c5a4e74f253a15f",
   "mode": "legacy-current",
   "familiesConfigured": false,
   "signedBy": "factory-default",
@@ -63,7 +63,6 @@
         "NCSA",
         "OpenSSL",
         "PostgreSQL",
-        "Public Domain",
         "Python-2.0",
         "Unlicense",
         "Zlib",

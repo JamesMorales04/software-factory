@@ -60,6 +60,7 @@ class CatalogEntry:
     obligations: tuple[str, ...]
     provenance: tuple[str, ...]
     source_url: str
+    aliases: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,7 @@ class LicenseCatalog:
     spdx_license_list_version: str
     sha256: str
     entries: dict[str, CatalogEntry]
+    alias_index: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -96,7 +98,7 @@ def _profile_sha(denied_ids: list[str], contexts: dict[str, Any]) -> str:
 
 def load_catalog(path: Path) -> LicenseCatalog:
     document = json.loads(path.read_text(encoding="utf-8"))
-    if document.get("schema") != 1:
+    if type(document.get("schema")) is not int or document.get("schema") != 1:
         raise RuntimeError("unsupported licence catalog schema")
     raw_entries = document.get("entries")
     if not isinstance(raw_entries, list) or not raw_entries:
@@ -111,6 +113,11 @@ def load_catalog(path: Path) -> LicenseCatalog:
         family = raw.get("family")
         if family not in {item.value for item in LicenseFamily}:
             raise RuntimeError(f"licence catalog family is invalid for {identifier}")
+        raw_aliases = raw.get("aliases", [])
+        if not isinstance(raw_aliases, list) or not all(
+            isinstance(alias, str) and alias for alias in raw_aliases
+        ):
+            raise RuntimeError(f"licence catalog aliases are invalid for {identifier}")
         entries[identifier] = CatalogEntry(
             id=identifier,
             family=family,
@@ -119,18 +126,26 @@ def load_catalog(path: Path) -> LicenseCatalog:
             obligations=tuple(raw.get("obligations", [])),
             provenance=tuple(raw.get("provenance", [])),
             source_url=str(raw.get("sourceUrl", "")),
+            aliases=tuple(raw_aliases),
         )
+    alias_index: dict[str, str] = {}
+    for identifier, entry in entries.items():
+        for name in (identifier, *entry.aliases):
+            if name in alias_index:
+                raise RuntimeError(f"licence catalog alias {name!r} is duplicated")
+            alias_index[name] = identifier
     return LicenseCatalog(
         revision=str(document.get("revision", "")),
         spdx_license_list_version=str(document.get("spdxLicenseListVersion", "")),
         sha256=str(document["sha256"]),
         entries=entries,
+        alias_index=alias_index,
     )
 
 
 def load_profile(path: Path) -> LicenseProfile:
     document = json.loads(path.read_text(encoding="utf-8"))
-    if document.get("schema") != 1:
+    if type(document.get("schema")) is not int or document.get("schema") != 1:
         raise RuntimeError("unsupported licence profile schema")
     denied = document.get("deniedIds")
     contexts = document.get("contexts")
@@ -167,6 +182,7 @@ def catalog_content_sha256(catalog: LicenseCatalog) -> str:
             "obligations": list(entry.obligations),
             "provenance": list(entry.provenance),
             "sourceUrl": entry.source_url,
+            "aliases": list(entry.aliases),
         }
         for entry in sorted(catalog.entries.values(), key=lambda item: item.id)
     ]
@@ -236,7 +252,10 @@ def evaluate(
         return LicenseDecision.DENIED
     allowed_ids = set(config.get("allowedIds", []))
     accepted_families = set(config.get("acceptedFamilies", []))
-    if value in allowed_ids:
+    canonical_value = catalog.alias_index.get(value, value)
+    if canonical_value in profile.denied_ids:
+        return LicenseDecision.DENIED
+    if canonical_value in allowed_ids:
         return LicenseDecision.ALLOWED
     atoms = _atoms(value)
     if not atoms:
@@ -244,9 +263,10 @@ def evaluate(
     for atom in atoms:
         if atom.startswith("LLVM-exception"):
             continue
-        if atom in allowed_ids:
+        identifier = catalog.alias_index.get(atom, atom)
+        if identifier in allowed_ids:
             continue
-        entry = catalog.entries.get(atom)
+        entry = catalog.entries.get(identifier)
         if entry is None or entry.state != "active":
             return LicenseDecision.UNKNOWN
         if accepted_families and entry.family in accepted_families:

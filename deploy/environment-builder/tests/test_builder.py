@@ -824,26 +824,24 @@ class PolicyTests(unittest.TestCase):
             validate_license_expression("Python-2.0")
         self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
 
-    def test_closure_catalog_is_shared_and_complete(self) -> None:
-        import environment_builder.policy as policy
+    def test_license_catalog_and_profile_are_shared_and_legacy(self) -> None:
+        import environment_builder.license_policy as policy_data
 
-        path = Path(policy.__file__).with_name("closure_allowed_spdx.json")
-        document = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(document["schema"], 1)
-        self.assertEqual(document["revision"], "nix-devenv-closure-catalog-v1")
-        ids = document["ids"]
-        self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(
-            hashlib.sha256(("\n".join(sorted(ids)) + "\n").encode("utf-8")).hexdigest(),
-            document["sha256"],
-        )
-        self.assertEqual(
-            set(policy.CLOSURE_ALLOWED_SPDX),
-            set(policy.ALLOWED_SPDX) | set(ids),
-        )
+        catalog, profile = policy_data.load_default()
+        self.assertEqual(catalog.revision, "spdx-catalog-2026-11-16")
+        self.assertEqual(len(catalog.entries), 35)
+        self.assertEqual(profile.mode, "legacy-current")
+        self.assertFalse(policy_data.b_active(profile))
+        selected = set(profile.contexts["selected"]["allowedIds"])
+        closure = set(profile.contexts["closure"]["allowedIds"])
+        self.assertEqual(len(selected), 16)
+        self.assertEqual(len(closure), 30)
         for identifier in ("BSD-4-Clause-UC", "Python-2.0"):
-            self.assertIn(identifier, policy.CLOSURE_ALLOWED_SPDX)
-            self.assertNotIn(identifier, policy.ALLOWED_SPDX)
+            self.assertIn(identifier, closure)
+            self.assertNotIn(identifier, selected)
+        self.assertIn("publicDomain", closure)
+        self.assertNotIn("Public Domain", closure)
+        self.assertEqual(catalog.alias_index["Public Domain"], "publicDomain")
 
     def test_real_33_entry_inventory_is_accepted_by_the_shared_closure_catalog(
         self,

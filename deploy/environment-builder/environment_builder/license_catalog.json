@@ -3,7 +3,7 @@
   "revision": "spdx-catalog-2026-11-16",
   "spdxLicenseListVersion": "3.27",
   "sourceUrl": "https://spdx.org/licenses/",
-  "sha256": "6b3149d0f4b7b9a743e437e841173187814e4f8d3825b44ff34a058b9310c4b4",
+  "sha256": "725ba589f774e2f1415534e2ee37157ae9fa1ecacfc956a462529d167297cd36",
   "entries": [
     {
       "id": "0BSD",
@@ -14,7 +14,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/0BSD.html"
+      "sourceUrl": "https://spdx.org/licenses/0BSD.html",
+      "aliases": []
     },
     {
       "id": "AGPL-3.0-only",
@@ -29,7 +30,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/AGPL-3.0-only.html"
+      "sourceUrl": "https://spdx.org/licenses/AGPL-3.0-only.html",
+      "aliases": []
     },
     {
       "id": "AGPL-3.0-or-later",
@@ -44,7 +46,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/AGPL-3.0-or-later.html"
+      "sourceUrl": "https://spdx.org/licenses/AGPL-3.0-or-later.html",
+      "aliases": []
     },
     {
       "id": "Apache-2.0",
@@ -58,7 +61,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/Apache-2.0.html"
+      "sourceUrl": "https://spdx.org/licenses/Apache-2.0.html",
+      "aliases": []
     },
     {
       "id": "BSD-2-Clause",
@@ -71,7 +75,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/BSD-2-Clause.html"
+      "sourceUrl": "https://spdx.org/licenses/BSD-2-Clause.html",
+      "aliases": []
     },
     {
       "id": "BSD-3-Clause",
@@ -84,7 +89,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/BSD-3-Clause.html"
+      "sourceUrl": "https://spdx.org/licenses/BSD-3-Clause.html",
+      "aliases": []
     },
     {
       "id": "BSD-4-Clause",
@@ -99,7 +105,8 @@
         "SPDX License List",
         "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
       ],
-      "sourceUrl": "https://spdx.org/licenses/BSD-4-Clause.html"
+      "sourceUrl": "https://spdx.org/licenses/BSD-4-Clause.html",
+      "aliases": []
     },
     {
       "id": "BSD-4-Clause-UC",
@@ -114,7 +121,8 @@
         "SPDX License List",
         "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
       ],
-      "sourceUrl": "https://spdx.org/licenses/BSD-4-Clause-UC.html"
+      "sourceUrl": "https://spdx.org/licenses/BSD-4-Clause-UC.html",
+      "aliases": []
     },
     {
       "id": "BSL-1.0",
@@ -127,7 +135,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/BSL-1.0.html"
+      "sourceUrl": "https://spdx.org/licenses/BSL-1.0.html",
+      "aliases": []
     },
     {
       "id": "BUSL-1.1",
@@ -141,7 +150,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/BUSL-1.1.html"
+      "sourceUrl": "https://spdx.org/licenses/BUSL-1.1.html",
+      "aliases": []
     },
     {
       "id": "CC0-1.0",
@@ -152,7 +162,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/CC0-1.0.html"
+      "sourceUrl": "https://spdx.org/licenses/CC0-1.0.html",
+      "aliases": []
     },
     {
       "id": "Commons-Clause",
@@ -166,7 +177,8 @@
       "provenance": [
         "Commons Clause"
       ],
-      "sourceUrl": "https://commonsclause.com/"
+      "sourceUrl": "https://commonsclause.com/",
+      "aliases": []
     },
     {
       "id": "GPL-2.0-only",
@@ -181,7 +193,8 @@
         "SPDX License List",
         "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
       ],
-      "sourceUrl": "https://spdx.org/licenses/GPL-2.0-only.html"
+      "sourceUrl": "https://spdx.org/licenses/GPL-2.0-only.html",
+      "aliases": []
     },
     {
       "id": "GPL-2.0-or-later",
@@ -196,7 +209,8 @@
         "SPDX License List",
         "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
       ],
-      "sourceUrl": "https://spdx.org/licenses/GPL-2.0-or-later.html"
+      "sourceUrl": "https://spdx.org/licenses/GPL-2.0-or-later.html",
+      "aliases": []
     },
     {
       "id": "GPL-3.0-only",
@@ -211,7 +225,8 @@
         "SPDX License List",
         "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
       ],
-      "sourceUrl": "https://spdx.org/licenses/GPL-3.0-only.html"
+      "sourceUrl": "https://spdx.org/licenses/GPL-3.0-only.html",
+      "aliases": []
     },
     {
       "id": "GPL-3.0-or-later",
@@ -226,7 +241,8 @@
         "SPDX License List",
         "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
       ],
-      "sourceUrl": "https://spdx.org/licenses/GPL-3.0-or-later.html"
+      "sourceUrl": "https://spdx.org/licenses/GPL-3.0-or-later.html",
+      "aliases": []
     },
     {
       "id": "ISC",
@@ -239,7 +255,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/ISC.html"
+      "sourceUrl": "https://spdx.org/licenses/ISC.html",
+      "aliases": []
     },
     {
       "id": "LGPL-2.0-only",
@@ -255,7 +272,8 @@
         "SPDX License List",
         "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
       ],
-      "sourceUrl": "https://spdx.org/licenses/LGPL-2.0-only.html"
+      "sourceUrl": "https://spdx.org/licenses/LGPL-2.0-only.html",
+      "aliases": []
     },
     {
       "id": "LGPL-2.0-or-later",
@@ -271,7 +289,8 @@
         "SPDX License List",
         "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
       ],
-      "sourceUrl": "https://spdx.org/licenses/LGPL-2.0-or-later.html"
+      "sourceUrl": "https://spdx.org/licenses/LGPL-2.0-or-later.html",
+      "aliases": []
     },
     {
       "id": "LGPL-2.1-only",
@@ -286,7 +305,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/LGPL-2.1-only.html"
+      "sourceUrl": "https://spdx.org/licenses/LGPL-2.1-only.html",
+      "aliases": []
     },
     {
       "id": "LGPL-2.1-or-later",
@@ -301,7 +321,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/LGPL-2.1-or-later.html"
+      "sourceUrl": "https://spdx.org/licenses/LGPL-2.1-or-later.html",
+      "aliases": []
     },
     {
       "id": "LGPL-3.0-only",
@@ -316,7 +337,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/LGPL-3.0-only.html"
+      "sourceUrl": "https://spdx.org/licenses/LGPL-3.0-only.html",
+      "aliases": []
     },
     {
       "id": "LGPL-3.0-or-later",
@@ -331,7 +353,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/LGPL-3.0-or-later.html"
+      "sourceUrl": "https://spdx.org/licenses/LGPL-3.0-or-later.html",
+      "aliases": []
     },
     {
       "id": "MIT",
@@ -344,7 +367,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/MIT.html"
+      "sourceUrl": "https://spdx.org/licenses/MIT.html",
+      "aliases": []
     },
     {
       "id": "MIT-0",
@@ -355,7 +379,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/MIT-0.html"
+      "sourceUrl": "https://spdx.org/licenses/MIT-0.html",
+      "aliases": []
     },
     {
       "id": "MPL-2.0",
@@ -369,7 +394,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/MPL-2.0.html"
+      "sourceUrl": "https://spdx.org/licenses/MPL-2.0.html",
+      "aliases": []
     },
     {
       "id": "NCSA",
@@ -383,7 +409,8 @@
         "SPDX License List",
         "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
       ],
-      "sourceUrl": "https://spdx.org/licenses/NCSA.html"
+      "sourceUrl": "https://spdx.org/licenses/NCSA.html",
+      "aliases": []
     },
     {
       "id": "OpenSSL",
@@ -398,7 +425,8 @@
         "SPDX License List",
         "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
       ],
-      "sourceUrl": "https://spdx.org/licenses/OpenSSL.html"
+      "sourceUrl": "https://spdx.org/licenses/OpenSSL.html",
+      "aliases": []
     },
     {
       "id": "PostgreSQL",
@@ -412,18 +440,8 @@
         "SPDX License List",
         "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
       ],
-      "sourceUrl": "https://spdx.org/licenses/PostgreSQL.html"
-    },
-    {
-      "id": "Public Domain",
-      "family": "public-domain",
-      "state": "active",
-      "spdx": false,
-      "obligations": [],
-      "provenance": [
-        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
-      ],
-      "sourceUrl": "https://github.com/NixOS/nixpkgs"
+      "sourceUrl": "https://spdx.org/licenses/PostgreSQL.html",
+      "aliases": []
     },
     {
       "id": "Python-2.0",
@@ -437,7 +455,8 @@
         "SPDX License List",
         "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
       ],
-      "sourceUrl": "https://spdx.org/licenses/Python-2.0.html"
+      "sourceUrl": "https://spdx.org/licenses/Python-2.0.html",
+      "aliases": []
     },
     {
       "id": "SSPL-1.0",
@@ -452,7 +471,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/SSPL-1.0.html"
+      "sourceUrl": "https://spdx.org/licenses/SSPL-1.0.html",
+      "aliases": []
     },
     {
       "id": "Unlicense",
@@ -463,7 +483,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/Unlicense.html"
+      "sourceUrl": "https://spdx.org/licenses/Unlicense.html",
+      "aliases": []
     },
     {
       "id": "Zlib",
@@ -476,7 +497,8 @@
       "provenance": [
         "SPDX License List"
       ],
-      "sourceUrl": "https://spdx.org/licenses/Zlib.html"
+      "sourceUrl": "https://spdx.org/licenses/Zlib.html",
+      "aliases": []
     },
     {
       "id": "curl",
@@ -490,7 +512,8 @@
         "SPDX License List",
         "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
       ],
-      "sourceUrl": "https://spdx.org/licenses/curl.html"
+      "sourceUrl": "https://spdx.org/licenses/curl.html",
+      "aliases": []
     },
     {
       "id": "publicDomain",
@@ -501,7 +524,10 @@
       "provenance": [
         "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
       ],
-      "sourceUrl": "https://github.com/NixOS/nixpkgs"
+      "sourceUrl": "https://github.com/NixOS/nixpkgs",
+      "aliases": [
+        "Public Domain"
+      ]
     }
   ]
 }
