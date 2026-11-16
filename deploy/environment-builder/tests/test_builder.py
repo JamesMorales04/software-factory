@@ -45,6 +45,7 @@ from environment_builder.nix import (  # noqa: E402
     BuildLog,
     child_environment,
     closure_manifest_sha256,
+    nix_eval_json,
     run_check,
 )
 from environment_builder.util import last_nonempty_line  # noqa: E402
@@ -972,6 +973,86 @@ class PolicyTests(unittest.TestCase):
                 plan,
                 "check",
             )
+
+
+class NixEvaluationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        self.log = BuildLog(self.root / "resolve.log")
+
+    def tearDown(self) -> None:
+        self.log.close()
+
+    def test_successful_evaluation_with_warnings_and_truncated_stderr_is_data(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(
+                0,
+                b'[{"name":"bash"}]',
+                b"evaluation warning: renamed package\n",
+                False,
+                True,
+            ),
+        ):
+            self.assertEqual(
+                nix_eval_json("expr", env={}, timeout=30, log=self.log),
+                [{"name": "bash"}],
+            )
+
+    def test_failed_evaluation_reports_exit_and_error_not_the_warnings(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(
+                1,
+                b"",
+                b"evaluation warning: androidndk renamed\n"
+                b"evaluation warning: CUDA is old\n"
+                b"error: infinite recursion encountered\n",
+                False,
+                False,
+            ),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_PIN_MISSING")
+        self.assertIn("exited 1", raised.exception.message)
+        self.assertIn("error: infinite recursion encountered", raised.exception.message)
+        self.assertNotIn("androidndk", raised.exception.message)
+
+    def test_failed_evaluation_without_an_error_line_does_not_blame_warnings(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(
+                1,
+                b"",
+                b"evaluation warning: only a warning\n",
+                False,
+                False,
+            ),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertIn("exited 1", raised.exception.message)
+        self.assertIn("no diagnostic", raised.exception.message)
+        self.assertNotIn("only a warning", raised.exception.message)
+
+    def test_invalid_json_is_still_rejected_after_warnings(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(0, b"not json", b"evaluation warning: renamed\n", False, False),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertIn("invalid JSON", raised.exception.message)
+
+    def test_closure_expression_includes_nested_python_package_sets(self) -> None:
+        expression = cli._closure_metadata_expression(
+            "github:NixOS/nixpkgs/" + "a" * 40,
+            ["/nix/store/" + "b" * 32 + "-python3.12-typing-inspection-0.4.0"],
+        )
+        self.assertIn("python312Packages", expression)
+        self.assertIn("builtins.attrNames set", expression)
+        self.assertIn("python3.12-typing-inspection-0.4.0", expression)
 
 
 class ReceiptTests(unittest.TestCase):

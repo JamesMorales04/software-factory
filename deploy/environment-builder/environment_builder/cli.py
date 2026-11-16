@@ -645,7 +645,18 @@ def _closure_metadata_expression(
     (name:
       let attempt = builtins.tryEval pkgs.${{name}};
       in if attempt.success && builtins.isAttrs attempt.value then [ attempt.value ] else [])
-    names;
+    names
+    ++ builtins.concatMap
+      (set:
+        builtins.concatMap
+          (name:
+            let attempt = builtins.tryEval set.${{name}};
+            in if attempt.success && builtins.isAttrs attempt.value then [ attempt.value ] else [])
+          (builtins.attrNames set))
+      (lib.optionals (pkgs ? python312Packages) [ pkgs.python312Packages ]
+       ++ lib.optionals (pkgs ? python311Packages) [ pkgs.python311Packages ]
+       ++ lib.optionals (pkgs ? python3Packages) [ pkgs.python3Packages ]
+       ++ lib.optionals (pkgs ? nodePackages) [ pkgs.nodePackages ]);
   candidatesWithUnwrapped = builtins.concatMap
     (p:
       if (p ? unwrapped) && builtins.isAttrs p.unwrapped && (p.unwrapped ? outPath)

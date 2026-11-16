@@ -25,6 +25,7 @@ from .policy import EnvironmentFile, environment_without_secrets
 from .util import (
     canonical_json,
     last_lines,
+    last_nonempty_line,
     redact,
     sha256_bytes,
     sha256_text,
@@ -208,7 +209,7 @@ def nix_eval_json(
 ) -> Any:
     """Evaluate one bounded pure Nix expression and return decoded JSON."""
     argv = ["nix", "eval", "--json", "--expr", expression]
-    returncode, stdout, stderr, stdout_truncated, stderr_truncated = _run_bounded_capture(
+    returncode, stdout, stderr, stdout_truncated, _stderr_truncated = _run_bounded_capture(
         argv,
         timeout=timeout,
         env=env,
@@ -218,13 +219,37 @@ def nix_eval_json(
     )
     rendered = stdout.decode("utf-8", errors="replace")
     diagnostics = stderr.decode("utf-8", errors="replace")
-    log.write(f"$ nix eval --json --expr <package metadata>\n{rendered}{diagnostics}")
-    if stdout_truncated or stderr_truncated:
+    log.write(
+        f"$ nix eval --json --expr <package metadata>\n[stdout]\n{rendered}\n[stderr]\n{diagnostics}"
+    )
+    # stdout is the data channel and must be bounded. stderr is diagnostic:
+    # Nix emits evaluation warnings there on successful calls, so a noisy
+    # warning channel is not a data failure by itself.
+    if stdout_truncated:
         fail(failure_code, "package metadata evaluation output exceeds its bound")
     if returncode != 0:
+        error_lines = [
+            line.strip()
+            for line in diagnostics.splitlines()
+            if line.strip().lower().startswith("error:")
+        ]
+        reason = (
+            error_lines[-1]
+            if error_lines
+            else last_nonempty_line(
+                "\n".join(
+                    line
+                    for line in diagnostics.splitlines()
+                    if line.strip() and not line.strip().lower().startswith("evaluation warning:")
+                ),
+                2_000,
+            )
+            or last_nonempty_line(rendered, 2_000)
+            or "no diagnostic was emitted"
+        )
         fail(
             failure_code,
-            f"package metadata evaluation failed: {tail(diagnostics) or tail(rendered)}",
+            f"package metadata evaluation exited {returncode}: {reason[:2_000]}",
         )
     try:
         return json.loads(rendered)
