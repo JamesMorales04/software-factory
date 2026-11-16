@@ -5932,6 +5932,40 @@ async fn run_environment_container(
                 }
             }
         }
+        // Capture the structured closure inventory through the existing
+        // pre-cleanup cache-volume channel. The runtime log retains the full
+        // bounded JSON for durable e2e diagnostics; the typed blocker retains
+        // its header/IDs. The cache volume itself is disposable.
+        match read_environment_output(
+            app,
+            image_id,
+            cache_volume,
+            "closure-license-inventory.json",
+            64 * 1024,
+        )
+        .await
+        {
+            Ok(inventory) => {
+                let inventory = String::from_utf8_lossy(&inventory);
+                if !inventory.trim().is_empty() {
+                    tracing::warn!(
+                        phase = %phase,
+                        code = %code,
+                        closure_license_inventory = %inventory,
+                        "closure licence inventory captured before environment cleanup"
+                    );
+                    message.push_str("\nclosure-license-inventory: ");
+                    message.push_str(inventory.trim());
+                }
+            }
+            Err(_) => {
+                tracing::warn!(
+                    phase = %phase,
+                    code = %code,
+                    "closure licence inventory is unavailable before environment cleanup"
+                );
+            }
+        }
         let message: String = message.chars().take(8_000).collect();
         return Err(EnvironmentBrokerFailure::new(&code, message));
     }
@@ -9037,6 +9071,77 @@ exit 0
         assert!(
             started.elapsed() >= Duration::from_millis(1_500),
             "the controlled child was not allowed to make progress"
+        );
+    }
+
+    #[tokio::test]
+    async fn closure_license_inventory_is_captured_before_cleanup_on_failure() {
+        let directory = std::env::temp_dir().join(format!(
+            "factory-env-inventory-capture-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log_path = directory.join("podman.log");
+        let inventory = r#"{"expected":1,"observed":1,"violationCount":1,"ids":["python3@3.12.12"],"captureComplete":true}"#;
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case " $* " in
+  *"/cache/closure-license-inventory.json"*) printf '%s' '{}'; exit 0 ;;
+  *"/cache/resolve.log"*) printf '%s\n' 'resolve diagnostic log'; exit 0 ;;
+  *"/cache/build.log"*) printf '%s\n' 'build diagnostic log'; exit 0 ;;
+  *"/cache/check.log"*) printf '%s\n' 'check diagnostic log'; exit 0 ;;
+esac
+case "$1" in
+  run)
+    printf '%s\n' '{{"status":"FAILED","blocker":{{"code":"ENVIRONMENT_LICENSE_UNKNOWN","message":"Python-2.0"}}}}'
+    exit 2
+    ;;
+  rm) exit 0 ;;
+  container) [ "$2" = "exists" ] && exit 1 ;;
+esac
+exit 0
+"#,
+            log_path.display(),
+            inventory
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let plan_value = environment_plan();
+        let plan: factory_native::planning::environment::EnvironmentPlan =
+            serde_json::from_value(plan_value).unwrap();
+        let result = run_environment_container(
+            &app,
+            TEST_BUILDER_IMAGE_ID,
+            "factory-env-inventory-capture",
+            "none",
+            None,
+            &plan,
+            None,
+            "factory-env-ws-inventory-capture",
+            "factory-env-cache-inventory-capture",
+            "resolve",
+            "request-resolve.json",
+            false,
+            None,
+        )
+        .await;
+        let error = result.expect_err("the fixture failure must be returned");
+        assert_eq!(error.code, "ENVIRONMENT_LICENSE_UNKNOWN");
+        assert!(
+            error.message.contains("closure-license-inventory"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("python3@3.12.12"),
+            "{}",
+            error.message
+        );
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert!(
+            log.contains("/cache/closure-license-inventory.json"),
+            "{log}"
         );
     }
 

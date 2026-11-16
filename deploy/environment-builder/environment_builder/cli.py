@@ -67,6 +67,7 @@ from .util import (
     last_nonempty_line,
     now_rfc3339,
     read_json,
+    redact,
     sha256_text,
     tail,
     write_json,
@@ -955,6 +956,188 @@ def _reviewed_substrate_identity(
     return {"path": path, **identity, "unfree": False}
 
 
+CLOSURE_LICENSE_INVENTORY_FILE = "closure-license-inventory.json"
+#: The broker reads at most 64 KiB from the cache volume before cleanup. Reserve
+#: room for the header; a larger inventory is still written to the file/log but
+#: is explicitly marked as a partial capture, never silently complete.
+CLOSURE_LICENSE_CAPTURE_BYTES = 60 * 1024
+
+
+def _closure_license_value(value: Any) -> Any:
+    return redact(value) if isinstance(value, str) else value
+
+
+def _closure_license_id(violation: dict[str, Any]) -> str:
+    name = str(violation.get("name") or "").strip()
+    version = str(violation.get("version") or "").strip()
+    if name or version:
+        return f"{name}@{version}"
+    return f"index:{violation.get('index')}"
+
+
+def _closure_license_violation(
+    entry: Any, index: int
+) -> dict[str, Any] | None:
+    """Return one typed violation for any closure entry, if it has one."""
+    try:
+        validate_closure_licenses([entry])
+    except BuilderError as error:
+        violation: dict[str, Any] = {
+            "index": index,
+            "code": error.code,
+            "message": redact(error.message),
+        }
+        if isinstance(entry, dict):
+            violation.update(
+                {
+                    "path": _closure_license_value(entry.get("path")),
+                    "name": _closure_license_value(entry.get("name")),
+                    "version": _closure_license_value(entry.get("version")),
+                    "license": _closure_license_value(entry.get("license")),
+                    "unfree": entry.get("unfree"),
+                }
+            )
+        else:
+            violation["entryType"] = "non-object"
+        return violation
+    return None
+
+
+def _closure_license_inventory_entry(entry: Any, index: int) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        return {"index": index, "entryType": "non-object"}
+    return {
+        "index": index,
+        "path": _closure_license_value(entry.get("path")),
+        "name": _closure_license_value(entry.get("name")),
+        "version": _closure_license_value(entry.get("version")),
+        "license": _closure_license_value(entry.get("license")),
+        "unfree": entry.get("unfree"),
+    }
+
+
+def _validate_closure_licenses_reporting_all(
+    entries: list[dict[str, Any]], log: BuildLog
+) -> list[dict[str, Any]]:
+    """Validate fail-closed and retain every entry and every offender.
+
+    The real validator runs first and its original typed code is re-raised, so
+    the gate result and precedence (unfree/denied/unknown) do not change. The
+    complete inventory is written to the existing builder log directory and to
+    ``resolve.log`` before raising; the broker reads the file/log before
+    cleanup. If the 64 KiB broker capture cannot contain the full list, the
+    blocker says so with the expected/observed counts instead of claiming
+    completeness.
+    """
+    try:
+        return validate_closure_licenses(entries)
+    except BuilderError as error:
+        inventory = [
+            _closure_license_inventory_entry(entry, index)
+            for index, entry in enumerate(entries)
+        ]
+        violations = [
+            violation
+            for index, entry in enumerate(entries)
+            if (violation := _closure_license_violation(entry, index)) is not None
+        ]
+        expected = len(entries)
+        observed = len(inventory)
+        ids = sorted({_closure_license_id(violation) for violation in violations})
+        licenses = sorted(
+            {
+                str(violation["license"])
+                for violation in violations
+                if violation.get("license") is not None
+            }
+        )
+        payload: dict[str, Any] = {
+            "schemaVersion": 1,
+            "source": "builder-closure-metadata",
+            "expected": expected,
+            "observed": observed,
+            "complete": observed == expected,
+            "violationCount": len(violations),
+            "ids": ids,
+            "licenses": licenses,
+            "entries": inventory,
+            "violations": violations,
+            "errorCode": error.code,
+            "errorMessage": redact(error.message),
+        }
+        # The broker reads the pretty JSON file from the cache volume before
+        # cleanup. Reserve the 64 KiB read bound; compact log text is separate.
+        payload_without_capture = json.dumps(payload, indent=2, sort_keys=True)
+        capture_complete = (
+            len(payload_without_capture.encode("utf-8")) <= CLOSURE_LICENSE_CAPTURE_BYTES
+        )
+        payload["captureComplete"] = capture_complete
+        payload["captureReason"] = (
+            ""
+            if capture_complete
+            else "inventory exceeds the 60 KiB broker capture bound; header and unique IDs retained"
+        )
+        path = log.path.parent / CLOSURE_LICENSE_INVENTORY_FILE
+        write_json(path, payload)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        compact = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        header = {
+            "schemaVersion": 1,
+            "expected": expected,
+            "observed": observed,
+            "complete": observed == expected,
+            "violationCount": len(violations),
+            "ids": ids,
+            "licenses": licenses,
+            "errorCode": error.code,
+            "file": path.name,
+            "captureComplete": capture_complete,
+        }
+        log.write(
+            "closure-license-inventory: "
+            + json.dumps(header, sort_keys=True)
+            + "\n"
+        )
+        log.write("closure-license-inventory-entries: " + compact + "\n")
+        try:
+            log.path.chmod(0o600)
+        except OSError:
+            pass
+
+        ids_text = ",".join(ids)
+        ids_truncated = len(ids_text) > 400
+        if ids_truncated:
+            ids_text = ids_text[:400] + ",..."
+        licenses_text = ",".join(licenses)
+        licenses_truncated = len(licenses_text) > 200
+        if licenses_truncated:
+            licenses_text = licenses_text[:200] + ",..."
+        prefix = (
+            f"{len(violations)} closure license violations"
+            if violations
+            else "closure inventory check failed"
+        )
+        summary = (
+            f"{prefix}; ids={ids_text or 'none'}; "
+            f"licenses={licenses_text or 'none'}; expected={expected} "
+            f"observed={observed}; inventory={path.name}; "
+            f"capture={'complete' if capture_complete else 'partial'}"
+        )
+        if ids_truncated:
+            summary += "; idsTruncated=true"
+        if licenses_truncated:
+            summary += "; licensesTruncated=true"
+        if not capture_complete:
+            summary += "; " + payload["captureReason"]
+        raise BuilderError(
+            error.code,
+            f"{summary}; first: {error.message}",
+        ) from error
+
+
 def _closure_license_entries(
     plan: dict[str, Any],
     manifest: list[dict[str, Any]],
@@ -1142,7 +1325,7 @@ def _closure_license_entries(
                 "unfree": observed_entry.get("unfree"),
             }
         )
-    return validate_closure_licenses(substrate_entries + resolved)
+    return _validate_closure_licenses_reporting_all(substrate_entries + resolved, log)
 
 
 def resolve(args: argparse.Namespace) -> int:

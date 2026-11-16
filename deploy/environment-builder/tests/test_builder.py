@@ -796,6 +796,210 @@ class PolicyTests(unittest.TestCase):
         validated = validate_closure_licenses([entry])
         self.assertEqual(validated[0]["name"], "util-linux-minimal")
 
+    def test_all_closure_license_violations_are_retained_in_one_pass(self) -> None:
+        entries = [
+            {
+                "path": "/nix/store/" + "a" * 32 + "-python3-3.12.12",
+                "name": "python3",
+                "version": "3.12.12",
+                "license": "Python-2.0",
+                "unfree": False,
+            },
+            {
+                "path": "/nix/store/" + "b" * 32 + "-demo-1.0",
+                "name": "demo",
+                "version": "1.0",
+                "license": "LicenseRef-Demo",
+                "unfree": False,
+            },
+            {
+                "path": "/nix/store/" + "c" * 32 + "-bash-5.2",
+                "name": "bash",
+                "version": "5.2",
+                "license": "GPL-3.0-or-later",
+                "unfree": False,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with BuildLog(Path(directory) / "resolve.log") as log:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._validate_closure_licenses_reporting_all(entries, log)
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+            self.assertTrue(
+                raised.exception.message.startswith(
+                    "2 closure license violations; ids=demo@1.0,python3@3.12.12"
+                ),
+                raised.exception.message,
+            )
+            self.assertIn("licenses=LicenseRef-Demo,Python-2.0", raised.exception.message)
+            self.assertIn("expected=3 observed=3", raised.exception.message)
+            self.assertIn("capture=complete", raised.exception.message)
+            path = Path(directory) / "closure-license-inventory.json"
+            payload = json.loads(path.read_text())
+            self.assertEqual(payload["expected"], 3)
+            self.assertEqual(payload["observed"], 3)
+            self.assertEqual(payload["violationCount"], 2)
+            self.assertEqual(
+                [entry["name"] for entry in payload["entries"]],
+                ["python3", "demo", "bash"],
+            )
+            self.assertEqual(
+                [item["name"] for item in payload["violations"]], ["python3", "demo"]
+            )
+            self.assertTrue(payload["captureComplete"])
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            log_text = (Path(directory) / "resolve.log").read_text()
+            self.assertIn("closure-license-inventory:", log_text)
+            self.assertIn("closure-license-inventory-entries:", log_text)
+            self.assertIn("python3", log_text)
+
+    def test_denied_unknown_and_unfree_are_all_reported_without_hiding_denied(self) -> None:
+        entries = [
+            {
+                "path": "/nix/store/" + "a" * 32 + "-bash-5.2",
+                "name": "bash",
+                "version": "5.2",
+                "license": "GPL-3.0-or-later",
+                "unfree": False,
+            },
+            {
+                "path": "/nix/store/" + "b" * 32 + "-denied-1.0",
+                "name": "denied",
+                "version": "1.0",
+                "license": "AGPL-3.0-only",
+                "unfree": False,
+            },
+            {
+                "path": "/nix/store/" + "c" * 32 + "-unknown-1.0",
+                "name": "unknown",
+                "version": "1.0",
+                "license": "Python-2.0",
+                "unfree": False,
+            },
+            {
+                "path": "/nix/store/" + "d" * 32 + "-unfree-1.0",
+                "name": "unfree",
+                "version": "1.0",
+                "license": "MIT",
+                "unfree": True,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with BuildLog(Path(directory) / "resolve.log") as log:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._validate_closure_licenses_reporting_all(entries, log)
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_DENIED")
+            self.assertIn("ids=denied@1.0,unfree@1.0,unknown@1.0", raised.exception.message)
+            self.assertIn("AGPL-3.0-only", raised.exception.message)
+            self.assertIn("Python-2.0", raised.exception.message)
+            self.assertIn("MIT", raised.exception.message)
+            payload = json.loads(
+                (Path(directory) / "closure-license-inventory.json").read_text()
+            )
+            self.assertEqual(payload["expected"], 4)
+            self.assertEqual(payload["observed"], 4)
+            self.assertEqual(payload["violationCount"], 3)
+            self.assertEqual(payload["errorCode"], "ENVIRONMENT_LICENSE_DENIED")
+
+    def test_single_closure_violation_still_writes_the_inventory(self) -> None:
+        entries = [
+            {
+                "path": "/nix/store/" + "a" * 32 + "-python3-3.12.12",
+                "name": "python3",
+                "version": "3.12.12",
+                "license": "Python-2.0",
+                "unfree": False,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with BuildLog(Path(directory) / "resolve.log") as log:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._validate_closure_licenses_reporting_all(entries, log)
+            self.assertTrue(
+                raised.exception.message.startswith(
+                    "1 closure license violations; ids=python3@3.12.12"
+                ),
+                raised.exception.message,
+            )
+            payload = json.loads(
+                (Path(directory) / "closure-license-inventory.json").read_text()
+            )
+            self.assertEqual(payload["violationCount"], 1)
+            self.assertEqual(payload["expected"], 1)
+
+    def test_non_object_closure_entry_is_inventoried_as_partial_structure(self) -> None:
+        entries = [
+            {
+                "path": "/nix/store/" + "a" * 32 + "-bash-5.2",
+                "name": "bash",
+                "version": "5.2",
+                "license": "GPL-3.0-or-later",
+                "unfree": False,
+            },
+            "not-an-object",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with BuildLog(Path(directory) / "resolve.log") as log:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._validate_closure_licenses_reporting_all(entries, log)
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_SPEC_INVALID")
+            payload = json.loads(
+                (Path(directory) / "closure-license-inventory.json").read_text()
+            )
+            self.assertEqual(payload["expected"], 2)
+            self.assertEqual(payload["observed"], 2)
+            self.assertEqual(payload["violationCount"], 1)
+            self.assertEqual(payload["violations"][0]["entryType"], "non-object")
+            self.assertIn("ids=index:1", raised.exception.message)
+
+    def test_inventory_redacts_secret_shaped_values_and_is_private(self) -> None:
+        entries = [
+            {
+                "path": "/nix/store/" + "a" * 32 + "-secret-1.0",
+                "name": "token=abcdefghijklmnop",
+                "version": "1.0",
+                "license": "LicenseRef-Secret",
+                "unfree": False,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with BuildLog(Path(directory) / "resolve.log") as log:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._validate_closure_licenses_reporting_all(entries, log)
+            path = Path(directory) / "closure-license-inventory.json"
+            log_text = (Path(directory) / "resolve.log").read_text()
+            self.assertNotIn("abcdefghijklmnop", raised.exception.message)
+            self.assertNotIn("abcdefghijklmnop", path.read_text())
+            self.assertNotIn("abcdefghijklmnop", log_text)
+            self.assertIn("[REDACTED]", path.read_text())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_large_inventory_is_marked_as_a_partial_broker_capture(self) -> None:
+        entries = [
+            {
+                "path": "/nix/store/" + f"{index:032x}" + f"-package-{index}-1.0",
+                "name": f"package-{index}",
+                "version": "1.0",
+                "license": f"LicenseRef-Many-{index}",
+                "unfree": False,
+            }
+            for index in range(1_000)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with BuildLog(Path(directory) / "resolve.log") as log:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._validate_closure_licenses_reporting_all(entries, log)
+            payload = json.loads(
+                (Path(directory) / "closure-license-inventory.json").read_text()
+            )
+            self.assertEqual(payload["expected"], 1_000)
+            self.assertEqual(payload["observed"], 1_000)
+            self.assertEqual(payload["violationCount"], 1_000)
+            self.assertFalse(payload["captureComplete"])
+            self.assertIn("expected=1000 observed=1000", raised.exception.message)
+            self.assertIn("capture=partial", raised.exception.message)
+            self.assertIn("idsTruncated=true", raised.exception.message)
+
     def test_unknown_license_is_rejected(self) -> None:
         with self.assertRaises(BuilderError) as raised:
             validate_license_expression("NOASSERTION")
