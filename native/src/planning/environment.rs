@@ -4524,6 +4524,99 @@ pub fn check_runner_blocker(
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Test-support only: build a valid plan from a throw-away repository so the
+/// compiled policy probe can exercise `EnvironmentPlan::validate` with a real
+/// inventory and stale/forged policy hashes. Not compiled into production.
+#[cfg(feature = "test-support")]
+pub fn policy_probe_plan() -> Result<EnvironmentPlan, EnvironmentError> {
+    use std::process::Command;
+
+    fn git(root: &Path, arguments: &[&str]) -> Result<String, EnvironmentError> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(arguments)
+            .output()
+            .map_err(|error| {
+                EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentPlanInvalid,
+                    format!("policy probe git failed: {error}"),
+                )
+            })?;
+        if !output.status.success() {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentPlanInvalid,
+                format!("policy probe git {arguments:?} failed"),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let root = std::env::temp_dir().join(format!(
+        "factory-policy-probe-{}-{stamp}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).map_err(|error| {
+        EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentPlanInvalid,
+            format!("policy probe repository: {error}"),
+        )
+    })?;
+    std::fs::write(root.join("README.md"), "# Policy probe\n").map_err(|error| {
+        EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentPlanInvalid,
+            format!("policy probe README: {error}"),
+        )
+    })?;
+    let result = (|| -> Result<EnvironmentPlan, EnvironmentError> {
+        git(&root, &["init", "-q", "-b", "main"])?;
+        git(&root, &["config", "user.name", "Policy Probe"])?;
+        git(&root, &["config", "user.email", "probe@example.invalid"])?;
+        git(&root, &["add", "--all"])?;
+        git(&root, &["commit", "-qm", "base"])?;
+        let base = git(&root, &["rev-parse", "HEAD"])?;
+        let conventions = discover_project_conventions("project-1", &root, &base, Utc::now())?;
+        let mut requirements = EnvironmentRequirements {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            explicit_constraints: ExplicitEnvironmentConstraints::default(),
+            proposal: None,
+            allow_unfree: false,
+            owner_overrides: Vec::new(),
+            resource_limits: ResourceLimits::default(),
+            network: NetworkPolicy::default(),
+        };
+        requirements.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        compile_environment_plan(CompileEnvironmentInput {
+            plan_id: "policy-probe-plan".into(),
+            project_id: "project-1",
+            request_id: "policy-probe-request",
+            action_id: "policy-probe-action",
+            campaign_id: None,
+            revision: 1,
+            risk_class: "R0",
+            conventions: &conventions,
+            requirements: &requirements,
+            builder: EnvironmentBuilderDescriptor {
+                image: "factory/environment-builder".into(),
+                digest: format!("sha256:{}", "a".repeat(64)),
+                platform: DEFAULT_PLATFORM.into(),
+                policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                default_nixpkgs: "github:NixOS/nixpkgs/2222222222222222222222222222222222222222"
+                    .into(),
+                status: EnvironmentBuilderStatus::Ready,
+            },
+            now: Utc::now(),
+        })
+    })();
+    let _ = std::fs::remove_dir_all(&root);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
