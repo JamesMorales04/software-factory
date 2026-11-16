@@ -29,8 +29,10 @@ from common import (
     Config,
     ScenarioError,
     State,
+    capture_final_evidence,
     cleanup,
     collect_diagnostics,
+    finalize_with_capture,
     doctor,
     ensure_dir,
     ensure_run_identity,
@@ -539,7 +541,14 @@ def main(argv: list[str]) -> int:
                 except Exception as diagnostic_error:  # noqa: BLE001
                     log(f"diagnostics collection failed: {diagnostic_error}")
                 status = "FAIL"
-                cleanup_result = cleanup(config, compose)
+                _, cleanup_result, capture_error = finalize_with_capture(
+                    lambda: capture_final_evidence(
+                        config, compose, state, api, reason=f"failure:{name}"
+                    ),
+                    lambda: cleanup(config, compose),
+                )
+                if capture_error is not None:
+                    log(f"final capture error (original failure preserved): {capture_error}")
                 manifest = write_manifest(
                     config,
                     state,
@@ -595,7 +604,14 @@ def main(argv: list[str]) -> int:
         elif final_dirty and not dirty:
             status = "FAIL"
             snapshot_error = "worktree became dirty during the run"
-        cleanup_result = cleanup(config, compose)
+        _, cleanup_result, capture_error = finalize_with_capture(
+            lambda: capture_final_evidence(
+                config, compose, state, api, reason="completed"
+            ),
+            lambda: cleanup(config, compose),
+        )
+        if capture_error is not None:
+            log(f"final capture error (run result preserved): {capture_error}")
         if cleanup_result.get("status") == "FAIL":
             status = "FAIL"
             snapshot_error = snapshot_error or "Compose cleanup failed"
@@ -618,6 +634,19 @@ def main(argv: list[str]) -> int:
         return 2
     except KeyboardInterrupt:
         log("interrupted")
+        try:
+            if "config" in locals() and "compose" in locals() and "state" in locals():
+                api_object = locals().get("api")
+                _, _, capture_error = finalize_with_capture(
+                    lambda: capture_final_evidence(
+                        config, compose, state, api_object, reason="cancelled"
+                    ),
+                    lambda: cleanup(config, compose),
+                )
+                if capture_error is not None:
+                    log(f"final capture error after cancellation: {capture_error}")
+        finally:
+            log("interrupted: cleanup path finished")
         return 130
 
 

@@ -1496,6 +1496,183 @@ def _git_output(root: Path, arguments: list[str]) -> str:
     return result.stdout.strip() if result.returncode == 0 else "unknown"
 
 
+
+
+_SECRET_PATTERN = re.compile(
+    r"(?i)(authorization|cookie|password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+"
+)
+
+
+def redact_text(value: str) -> str:
+    return _SECRET_PATTERN.sub(r"\1=[REDACTED]", value)
+
+
+def finalize_with_capture(capture, cleanup):
+    """Run capture first, then cleanup; never let capture hide the run error.
+
+    ``capture`` and ``cleanup`` are callables supplied by the caller (the real
+    Podman capture or a fake adapter in tests). A capture failure is reported
+    and the cleanup still runs. The original failure/cancellation is not
+    replaced by a capture error.
+    """
+
+    capture_result = None
+    capture_error = None
+    try:
+        capture_result = capture()
+    except BaseException as error:  # noqa: BLE001 - preserve the run outcome
+        capture_error = error
+        log(f"final evidence capture failed: {error}")
+    cleanup_result = cleanup()
+    return capture_result, cleanup_result, capture_error
+
+
+def capture_final_evidence(
+    config: Config,
+    compose: Compose,
+    state: State,
+    api: Api | None,
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    """Capture durable pre-cleanup evidence without blocking cleanup.
+
+    Every artifact is bounded and best effort. Missing permissions, an absent
+    cgroup or an unavailable endpoint are recorded as NOT_CAPTURED with the
+    reason. No prompts, cookies or credentials are written; free text is
+    redacted. This is observability, not product telemetry.
+    """
+
+    directory = ensure_dir(config.artifacts_dir / "final-capture")
+    summary: dict[str, Any] = {"reason": reason, "at": now_utc(), "artifacts": {}}
+
+    def record(name: str, status: str, detail: str = "", body: str = "") -> None:
+        summary["artifacts"][name] = {"status": status, "detail": detail}
+        if body:
+            path = directory / name
+            path.write_text(redact_text(body), encoding="utf-8")
+            os.chmod(path, 0o600)
+
+    def podman(arguments: list[str], timeout: int = 30):
+        return _bounded_run(
+            ["podman", *arguments],
+            cwd=config.root,
+            env=config.environment(),
+            timeout=timeout,
+        )
+
+    containers: list[str] = []
+    try:
+        listed = podman(
+            ["ps", "-a", "--filter", f"label=com.docker.compose.project={config.project}",
+             "--format", "{{.Names}}"]
+        )
+        containers = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+        record("containers.txt", "CAPTURED", body="\n".join(containers) + "\n")
+    except Exception as error:  # noqa: BLE001
+        record("containers.txt", "NOT_CAPTURED", f"podman ps failed: {error}")
+
+    for name in containers:
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+        try:
+            logs = podman(["logs", "--tail", "400", name])
+            record(f"{safe}.log", "CAPTURED", body=f"{logs.stdout}\n{logs.stderr}")
+        except Exception as error:  # noqa: BLE001
+            record(f"{safe}.log", "NOT_CAPTURED", f"logs failed: {error}")
+        try:
+            inspected = podman(
+                ["inspect", name, "--format",
+                 "{{.State.Status}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|"
+                 "{{.HostConfig.Memory}}|{{.HostConfig.PidsLimit}}|{{.State.CgroupPath}}"]
+            )
+            record(f"{safe}.inspect", "CAPTURED", body=inspected.stdout + "\n")
+        except Exception as error:  # noqa: BLE001
+            record(f"{safe}.inspect", "NOT_CAPTURED", f"inspect failed: {error}")
+        try:
+            stats = podman(["stats", "--no-stream", "--format",
+                            "{{.MemUsage}}|{{.MemPerc}}|{{.CPUPerc}}", name])
+            record(f"{safe}.stats", "CAPTURED", body=stats.stdout + "\n")
+        except Exception as error:  # noqa: BLE001
+            record(f"{safe}.stats", "NOT_CAPTURED", f"stats failed: {error}")
+        # cgroup memory evidence, best effort. The path comes from inspect.
+        try:
+            cgroup = podman(
+                ["inspect", name, "--format", "{{.State.CgroupPath}}"]
+            ).stdout.strip()
+            if not cgroup:
+                record(f"{safe}.memory", "NOT_CAPTURED", "cgroup path is empty")
+            else:
+                body = []
+                for leaf in ("memory.events", "memory.peak", "memory.max", "memory.current"):
+                    path = Path("/sys/fs/cgroup") / cgroup.lstrip("/") / leaf
+                    if path.is_file():
+                        body.append(f"{leaf}: {path.read_text(encoding='utf-8').strip()}")
+                    else:
+                        body.append(f"{leaf}: NOT_CAPTURED")
+                record(f"{safe}.memory", "CAPTURED", body="\n".join(body) + "\n")
+        except Exception as error:  # noqa: BLE001
+            record(f"{safe}.memory", "NOT_CAPTURED", f"cgroup read failed: {error}")
+
+    core = compose.service_container("core")
+    if core:
+        try:
+            health = podman(
+                ["exec", core, "curl", "-fsS", "--max-time", "5",
+                 "http://127.0.0.1:8765/health"], timeout=20
+            )
+            record("health.txt", "CAPTURED", body=health.stdout + "\n")
+        except Exception as error:  # noqa: BLE001
+            record("health.txt", "NOT_CAPTURED", f"health failed: {error}")
+    else:
+        record("health.txt", "NOT_CAPTURED", "core container absent")
+
+    if api is not None:
+        try:
+            calls = api.get("/model/calls")
+            rows = calls if isinstance(calls, list) else (
+                calls.get("calls") or calls.get("items") or []
+            )
+            body = "\n".join(
+                f"{row.get('purpose')}|{row.get('state') or row.get('status')}|{row.get('createdAt') or row.get('created_at')}"
+                for row in rows
+            )
+            record("model-calls.txt", "CAPTURED", body=body + "\n")
+        except Exception as error:  # noqa: BLE001
+            record("model-calls.txt", "NOT_CAPTURED", f"api failed: {error}")
+        intake_id = state.get("intake_id")
+        if intake_id:
+            try:
+                projection = api.get(f"/intake/requests/{intake_id}")
+                record("projection.json", "CAPTURED",
+                       body=json.dumps(projection, indent=2, sort_keys=True))
+            except Exception as error:  # noqa: BLE001
+                record("projection.json", "NOT_CAPTURED", f"projection failed: {error}")
+        else:
+            record("projection.json", "NOT_CAPTURED", "no intake id in state")
+
+    fixture = compose.service_container("model-fixture")
+    if fixture:
+        script = (
+            "import urllib.request;"
+            "print(urllib.request.urlopen('http://127.0.0.1:8080/counters', timeout=5)"
+            ".read().decode())"
+        )
+        try:
+            result = podman(["exec", fixture, "python3", "-c", script], timeout=20)
+            record("fixture-counters.json", "CAPTURED", body=result.stdout + "\n")
+        except Exception as error:  # noqa: BLE001
+            record("fixture-counters.json", "NOT_CAPTURED", f"counters failed: {error}")
+    else:
+        record("fixture-counters.json", "NOT_CAPTURED", "model fixture absent")
+
+    directory.joinpath("capture.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    os.chmod(directory / "capture.json", 0o600)
+    log(f"final evidence captured: {directory}")
+    return summary
+
+
 def cleanup(config: Config, compose: Compose) -> dict[str, Any]:
     if config.keep:
         log(f"keeping run directory and stack: {config.run_dir}")
