@@ -621,8 +621,16 @@ class Handler(BaseHTTPRequestHandler):
                     response = spec_draft(user)
                 elif phase == "semantic_review":
                     response = semantic_review(user)
-                else:
+                elif phase == "assessment":
                     response = assessment(user)
+                else:
+                    # An unknown prompt must never be answered as an assessment:
+                    # that is what turned a routing mismatch into a confusing
+                    # identity error on the environment-review phase.
+                    raise ValueError(
+                        "unrecognized model prompt phase; the fixture answers only the "
+                        "persisted phase contracts"
+                    )
                 clear_error(phase, identity)
             self.send_json(200, response, phase=phase)
         except Exception as error:  # noqa: BLE001 - fixture must fail closed

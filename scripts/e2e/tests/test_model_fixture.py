@@ -850,3 +850,119 @@ class ProductPhaseContractTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+class UnknownPhaseFailsClosedTests(unittest.TestCase):
+    """An unknown prompt must fail clearly instead of being assessed."""
+
+    GENERIC_SYSTEM = (
+        "Return strict JSON only. A Lead review is a recorded planning decision, "
+        "not execution authority."
+    )
+
+    def test_unknown_prompt_is_an_explicit_error(self) -> None:
+        fixture = load_fixture()
+        self.assertEqual(fixture.classify_prompt(self.GENERIC_SYSTEM, "hello"), "other")
+
+    def test_http_unknown_phase_is_rejected_with_a_clear_message(self) -> None:
+        import threading
+        import urllib.error
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+
+        fixture = load_fixture()
+        fixture.ERRORS.clear()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), fixture.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            body = json.dumps(
+                {
+                    "model": "fixture",
+                    "messages": [
+                        {"role": "system", "content": self.GENERIC_SYSTEM},
+                        {"role": "user", "content": "objective without a known phase"},
+                    ],
+                }
+            ).encode("utf-8")
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions",
+                data=body,
+                headers={"content-type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=10)
+            self.assertEqual(caught.exception.code, 400)
+            payload = json.loads(caught.exception.read().decode("utf-8"))
+            caught.exception.close()
+            self.assertIn("unrecognized model prompt phase", payload["error"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            fixture.ERRORS.clear()
+
+    def test_http_assessment_with_generic_system_and_real_user_block(self) -> None:
+        import tempfile
+        import threading
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+
+        fixture = load_fixture()
+        objective = "Add the deterministic Compose fixture candidate"
+        ctx = {
+            "projectId": "project-1",
+            "actionId": "action-1",
+            "requestId": "request-1",
+            "objective": objective,
+            "baseRevision": "base-1",
+            "projectConfigHash": "b" * 64,
+            "qualityProfile": "generic",
+            "provider": "fixture",
+            "model": "fixture-model",
+            "allowedPaths": ["src"],
+            "capabilities": ["repository-edit", "generic-toolchain"],
+            "checks": [
+                {
+                    "kind": "functional",
+                    "description": "candidate content present",
+                    "command": ["grep", "-q", "x", "src/provider.txt"],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            context_path = Path(directory) / "context.json"
+            context_path.write_text(json.dumps(ctx), encoding="utf-8")
+            original_context, original_dir = fixture.CONTEXT_PATH, fixture.CONTEXTS_DIR
+            fixture.CONTEXT_PATH = context_path
+            fixture.CONTEXTS_DIR = Path(directory) / "contexts"
+            server = ThreadingHTTPServer(("127.0.0.1", 0), fixture.Handler)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                user = (
+                    f"Objective: {objective}. Project: project-1. "
+                    "Action: action-1. Request: request-1."
+                )
+                body = json.dumps(
+                    {
+                        "model": "fixture",
+                        "messages": [
+                            {"role": "system", "content": self.GENERIC_SYSTEM},
+                            {"role": "user", "content": user},
+                        ],
+                    }
+                ).encode("utf-8")
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions",
+                    data=body,
+                    headers={"content-type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(
+                        response.headers["x-factory-fixture-phase"], "assessment"
+                    )
+            finally:
+                server.shutdown()
+                server.server_close()
+                fixture.CONTEXT_PATH, fixture.CONTEXTS_DIR = original_context, original_dir
