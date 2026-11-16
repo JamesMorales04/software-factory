@@ -695,6 +695,10 @@ function coreEnvironment() {
     FACTORY_VERIFIER_PRINCIPAL: verifierPrincipal,
     FACTORY_REVIEWER_IDENTITIES_FILE: reviewerIdentitiesFile,
     FACTORY_ENVIRONMENT_TEST_BUILDER: "1",
+    // Fixture-only browser lane: it explicitly opts into the test-support
+    // ActionSpec environment placeholder and removes it before the real
+    // environment plan/spec binds, so the lane never inherits a host value.
+    FACTORY_TEST_ENVIRONMENT_BINDING: "1",
     FACTORY_MASTER_KEY_FILE: masterKeyFile,
     // Managed project registration is permitted only inside the operator
     // approved root. The fixture repository lives under this temp root.
@@ -981,9 +985,14 @@ try {
   // test-support installs a placeholder ActionSpec environment at Action
   // creation. Remove it before the real environment plan/spec binds the exact
   // Action; the route does not exist in production builds.
-  await coreApi(
+  const cleared = await coreApi(
     `/test-support/intake/${encodeURIComponent(requestId)}/clear-fixture-environment`,
     { method: "POST" },
+  );
+  assert.equal(
+    cleared?.cleared,
+    true,
+    "the fixture lane must clear its own opt-in placeholder before the real bind",
   );
   const planned = await coreApi(
     `/agentic/requests/${encodeURIComponent(requestId)}/plan`,

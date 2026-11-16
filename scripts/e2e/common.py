@@ -265,10 +265,12 @@ class Config:
             }
         )
         # The autonomous journey binds a real EnvironmentPlan/Spec, so the
-        # test-support placeholder must stay off there; the other journeys rely
-        # on it explicitly and keep their fixture contract.
-        if self.scenario != "autonomous-intake":
-            environment["FACTORY_TEST_ENVIRONMENT_BINDING"] = "1"
+        # test-support placeholder is assigned "0" there; the fixture-only
+        # journeys assign "1". The value is always written explicitly so a host
+        # variable can never leak into the stack.
+        environment["FACTORY_TEST_ENVIRONMENT_BINDING"] = (
+            "0" if self.scenario == "autonomous-intake" else "1"
+        )
         ensure_dir(Path(environment["TMPDIR"]))
         return environment
 

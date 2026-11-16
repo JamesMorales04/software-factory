@@ -267,6 +267,81 @@ async fn insert_review(path: &std::path::Path, plan: &EnvironmentPlan) {
     connection.close().await.expect("review connection closes");
 }
 
+/// A frozen resume reads the stored plan/spec and must not delete, rebind or
+/// call a model. This is the resume path a restarted Core takes; a replay of the
+/// database alone does not prove it.
+#[tokio::test]
+async fn the_frozen_resume_is_read_only() {
+    unsafe { std::env::remove_var("FACTORY_TEST_ENVIRONMENT_BINDING") };
+    let (db, path) = database("resume").await;
+    let repository =
+        std::env::temp_dir().join(format!("factory-cr15-resume-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&repository).expect("repository dir");
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&repository)
+            .args(args)
+            .output()
+            .expect("git command");
+    };
+    git(&["init"]);
+    std::fs::write(repository.join("README.md"), "cr15 resume\n").expect("fixture file");
+    git(&["add", "-A"]);
+    git(&[
+        "-c",
+        "user.email=cr15@example.invalid",
+        "-c",
+        "user.name=CR15 Fixture",
+        "commit",
+        "-m",
+        "fixture",
+    ]);
+    let project = db
+        .register_project(&repository, "cr15-resume-project")
+        .await
+        .expect("project registers");
+    let action = db
+        .create_action(
+            &project.id,
+            "cr15 resume objective",
+            "opencode-go",
+            "deepseek-v4.1-flash",
+            "cr15-resume-action",
+        )
+        .await
+        .expect("action created");
+    let (plan, spec) = frozen_pair(&action.id, &project.id, &action.spec.base_commit, "plan-r");
+    db.save_environment_plan(&plan).await.expect("plan saves");
+    insert_review(&path, &plan).await;
+    db.save_environment_spec(&spec).await.expect("spec saves");
+    db.set_action_environment_binding(&action.id, &plan, &spec)
+        .await
+        .expect("first bind");
+
+    // Resume: read the frozen plan/spec and the stored binding only.
+    let stored_spec = db
+        .environment_spec_for_action(&action.id)
+        .await
+        .expect("spec readable");
+    assert_eq!(stored_spec.spec.spec_sha256, spec.spec_sha256);
+    assert_eq!(stored_spec.spec.plan_sha256, plan.plan_sha256);
+    let bound = db.action(&action.id).await.expect("action readable").spec;
+    assert_eq!(
+        bound.environment_plan_id.as_deref(),
+        Some(plan.plan_id.as_str())
+    );
+    assert_eq!(
+        bound.environment_spec_sha256.as_deref(),
+        Some(spec.spec_sha256.as_str())
+    );
+
+    db.close().await;
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
+    let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+    let _ = std::fs::remove_dir_all(&repository);
+}
+
 #[test]
 fn the_placeholder_identity_is_never_a_real_plan() {
     let (plan, spec) = frozen_pair("action-1", "project-1", "b".repeat(40).as_str(), "plan-1");
