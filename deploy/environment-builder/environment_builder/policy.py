@@ -92,6 +92,7 @@ CLOSURE_ALLOWED_SPDX: Final[frozenset[str]] = ALLOWED_SPDX | frozenset(
         "LGPL-2.0-only",
         "LGPL-2.0-or-later",
         "BSD-4-Clause",
+        "BSD-4-Clause-UC",
         "curl",
         "OpenSSL",
         "PostgreSQL",

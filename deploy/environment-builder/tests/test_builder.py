@@ -772,6 +772,21 @@ class PolicyTests(unittest.TestCase):
             ]
         )
 
+    def test_known_bsd4uc_is_accepted_with_other_known_closure_licenses(self) -> None:
+        entry = {
+            "path": "/nix/store/" + "a" * 32 + "-util-linux-minimal-2.41.1-lib",
+            "name": "util-linux-minimal",
+            "version": "2.41.1",
+            "license": (
+                "GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later "
+                "AND LGPL-2.1-or-later AND BSD-3-Clause "
+                "AND BSD-4-Clause-UC AND publicDomain"
+            ),
+            "unfree": False,
+        }
+        validated = validate_closure_licenses([entry])
+        self.assertEqual(validated[0]["name"], "util-linux-minimal")
+
     def test_unknown_license_is_rejected(self) -> None:
         with self.assertRaises(BuilderError) as raised:
             validate_license_expression("NOASSERTION")

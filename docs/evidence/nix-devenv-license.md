@@ -44,6 +44,14 @@ Factory's own source. The License Gate must still record the Nix version, source
 URL, hash and whether Factory distributes it or expects it as a runtime
 prerequisite.
 
+### 1.3 Known free closure identifiers
+
+`BSD-4-Clause-UC` is a known SPDX identifier (University of California-specific
+BSD 4-clause licence) and nixpkgs marks it free/redistributable. The closure
+allowlist already contains `BSD-4-Clause`; adding the UC-specific identifier is
+a catalogue completion, not an unfree override. It remains subject to the exact
+package/version/source/closure evidence and does not change `allowUnfree`.
+
 ## 2. License Gate policy
 
 The environment compiler must enforce:
