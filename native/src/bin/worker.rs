@@ -22,6 +22,57 @@ use factory_native::execution_policy::{
     ProgressEvidence, ProgressKind,
 };
 use factory_native::progress::ProgressCheckpointRequest;
+const ALLOCATION_CONFLICT_PREFIX: &str = "workspace allocation conflict: ";
+const ALLOCATION_CONFLICT_REASONS: [&str; 6] = [
+    "repository_or_base_mismatch",
+    "generation_not_newer",
+    "completed_workspace",
+    "active_execution",
+    "active_environment_check",
+    "stale_container_reference",
+];
+
+/// Read at most `limit` bytes from a response so a hostile/large error body is
+/// never materialized in full. Only a bounded prefix is parsed as JSON.
+async fn bounded_response_body(mut response: reqwest::Response, limit: usize) -> String {
+    let mut bytes = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        let remaining = limit.saturating_sub(bytes.len());
+        if remaining == 0 {
+            break;
+        }
+        if chunk.len() > remaining {
+            bytes.extend_from_slice(&chunk[..remaining]);
+            break;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Translate a failed workspace allocation without copying an arbitrary body.
+/// Only a 409 with the exact typed prefix and one of the six known reasons is
+/// surfaced; everything else is reduced to the status code.
+async fn supervisor_allocation_error(
+    response: reqwest::Response,
+    label: &str,
+    attempt_id: &str,
+) -> String {
+    let status = response.status();
+    if status == reqwest::StatusCode::CONFLICT {
+        let body = bounded_response_body(response, 4096).await;
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body)
+            && let Some(error) = value.get("error").and_then(serde_json::Value::as_str)
+            && let Some(reason) = error.strip_prefix(ALLOCATION_CONFLICT_PREFIX)
+            && ALLOCATION_CONFLICT_REASONS.contains(&reason)
+        {
+            return format!("Supervisor refused {label}: 409 {error} attempt={attempt_id}");
+        }
+        return format!("Supervisor refused {label}: 409 attempt={attempt_id}");
+    }
+    format!("Supervisor refused {label}: {status} attempt={attempt_id}")
+}
+
 use factory_native::protocol::{
     DynamicToolCallParams, DynamicToolCallResult, DynamicToolContentItem, DynamicToolSpec, JsonRpc,
     RpcEvent, ThreadStartParams, ThreadTokenUsageUpdatedParams, TurnSandboxPolicy, TurnStartParams,
@@ -2479,12 +2530,13 @@ async fn run_provider_tool_loop(
         .send()
         .await?;
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        let body = body.chars().take(512).collect::<String>();
-        return Err(
-            format!("Supervisor refused provider workspace allocation: {status} {body}").into(),
-        );
+        return Err(supervisor_allocation_error(
+            response,
+            "provider workspace allocation",
+            &context.assignment.lease.attempt_id,
+        )
+        .await
+        .into());
     }
     let handle: WorkspaceHandle = response.json().await?;
 
@@ -3656,12 +3708,13 @@ async fn run_codex_tool_loop(
         .send()
         .await?;
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        let body = body.chars().take(512).collect::<String>();
-        return Err(
-            format!("Supervisor refused provider workspace allocation: {status} {body}").into(),
-        );
+        return Err(supervisor_allocation_error(
+            response,
+            "provider workspace allocation",
+            &context.assignment.lease.attempt_id,
+        )
+        .await
+        .into());
     }
     let handle: WorkspaceHandle = response.json().await?;
     let prompt_text = match codex_prompt(context) {
@@ -5529,11 +5582,12 @@ async fn run_provider_patch(
         .send()
         .await?;
     if !response.status().is_success() {
-        return Err(format!(
-            "Supervisor refused provider workspace allocation: {} {}",
-            response.status(),
-            response.text().await.unwrap_or_default()
+        return Err(supervisor_allocation_error(
+            response,
+            "provider workspace allocation",
+            &context.assignment.lease.attempt_id,
         )
+        .await
         .into());
     }
     let handle: WorkspaceHandle = response.json().await?;
@@ -5770,11 +5824,12 @@ async fn execute_assignment(
         .send()
         .await?;
     if !response.status().is_success() {
-        return Err(format!(
-            "Supervisor refused workspace allocation: {} {}",
-            response.status(),
-            response.text().await.unwrap_or_default()
+        return Err(supervisor_allocation_error(
+            response,
+            "workspace allocation",
+            &assignment.lease.attempt_id,
         )
+        .await
         .into());
     }
     let handle: WorkspaceHandle = response.json().await?;
@@ -5935,6 +5990,106 @@ fn validated_loopback_url(
 #[cfg(test)]
 mod tests {
     use super::opencode_sandbox_config;
+
+    #[derive(Clone)]
+    struct AllocationErrorResponse(axum::http::StatusCode, &'static str);
+
+    async fn allocation_error_handler(
+        axum::extract::State(AllocationErrorResponse(status, body)): axum::extract::State<
+            AllocationErrorResponse,
+        >,
+    ) -> axum::response::Response {
+        (status, body).into_response()
+    }
+
+    async fn allocation_error_from_http(
+        status: axum::http::StatusCode,
+        body: &'static str,
+    ) -> String {
+        let router = axum::Router::new()
+            .route("/error", axum::routing::get(allocation_error_handler))
+            .with_state(AllocationErrorResponse(status, body));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}/error"))
+            .send()
+            .await
+            .unwrap();
+        let error = super::supervisor_allocation_error(
+            response,
+            "provider workspace allocation",
+            "attempt-1",
+        )
+        .await;
+        server.abort();
+        error
+    }
+
+    #[tokio::test]
+    async fn worker_allocation_error_surfaces_only_allowlisted_409_reason() {
+        let reason = allocation_error_from_http(
+            axum::http::StatusCode::CONFLICT,
+            r#"{"error":"workspace allocation conflict: active_environment_check"}"#,
+        )
+        .await;
+        assert_eq!(
+            reason,
+            "Supervisor refused provider workspace allocation: 409 workspace allocation conflict: active_environment_check attempt=attempt-1"
+        );
+
+        let unknown = allocation_error_from_http(
+            axum::http::StatusCode::CONFLICT,
+            r#"{"error":"workspace allocation conflict: /state/workspace-canary"}"#,
+        )
+        .await;
+        assert_eq!(
+            unknown,
+            "Supervisor refused provider workspace allocation: 409 attempt=attempt-1"
+        );
+        assert!(!unknown.contains("canary"));
+        assert!(!unknown.contains("/state"));
+
+        let malformed = allocation_error_from_http(
+            axum::http::StatusCode::CONFLICT,
+            r#"{"error":"workspace allocation conflict: stale_container_reference"#,
+        )
+        .await;
+        assert_eq!(
+            malformed,
+            "Supervisor refused provider workspace allocation: 409 attempt=attempt-1"
+        );
+
+        let server_error = allocation_error_from_http(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"error":"/state/workspace-123 canary"}"#,
+        )
+        .await;
+        assert_eq!(
+            server_error,
+            "Supervisor refused provider workspace allocation: 500 Internal Server Error attempt=attempt-1"
+        );
+        assert!(!server_error.contains("canary"));
+        assert!(!server_error.contains("/state"));
+
+        // The bounded reader stops before the reason when it is beyond 4096 B.
+        let padding = format!(
+            r#"{{"padding":"{}", "error":"workspace allocation conflict: active_execution"}}"#,
+            "x".repeat(5000)
+        );
+        let oversized_reason = allocation_error_from_http(
+            axum::http::StatusCode::CONFLICT,
+            Box::leak(padding.into_boxed_str()),
+        )
+        .await;
+        assert_eq!(
+            oversized_reason,
+            "Supervisor refused provider workspace allocation: 409 attempt=attempt-1"
+        );
+    }
     use axum::response::IntoResponse;
     use factory_native::provider_patch::ProviderUsage;
     use serde_json::json;

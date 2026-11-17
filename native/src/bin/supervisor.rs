@@ -2124,6 +2124,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn allocation_http_conflict_carries_typed_reason() {
+        let fixture = fixture();
+        let router = build_router(fixture.app.clone());
+        let attempt = "attempt-http-conflict";
+        let first = body_json(
+            router
+                .clone()
+                .oneshot(json_request(
+                    "/v1/workspaces",
+                    Some(TEST_TOKEN),
+                    &allocation_body_for_generation(attempt, &fixture.repository, 1),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = first["workspaceId"].as_str().unwrap();
+        let volume = fixture.app.manager.workspace_volume(workspace_id).unwrap();
+        fixture
+            .app
+            .manager
+            .begin_environment_check(workspace_id, 1, &volume, "check-token-123456")
+            .await
+            .unwrap();
+        let response = router
+            .oneshot(json_request(
+                "/v1/workspaces",
+                Some(TEST_TOKEN),
+                &allocation_body_for_generation(attempt, &fixture.repository, 2),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body_json(response).await;
+        assert_eq!(
+            body["error"],
+            "workspace allocation conflict: active_environment_check"
+        );
+        let rendered = body.to_string();
+        assert!(!rendered.contains("/state"));
+        assert!(!rendered.contains("canary"));
+    }
+
+    #[tokio::test]
     async fn allocation_conflict_reasons_return_409_without_secrets() {
         let response = execution_error(ExecutionError::ConflictReason("active_environment_check"));
         assert_eq!(response.status(), StatusCode::CONFLICT);
