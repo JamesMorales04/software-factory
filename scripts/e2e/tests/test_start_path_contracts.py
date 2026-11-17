@@ -279,5 +279,61 @@ class ExactProjectionContractTests(unittest.TestCase):
         self.assertFalse(ok, problem)
 
 
+class WorkerAssignmentTests(unittest.TestCase):
+    """Real assignment needs a provider session bound to the attempt and Worker."""
+
+    def session(self, **overrides):
+        record = {
+            "session_record_id": "s1",
+            "attempt_id": "a1",
+            "worker_id": "compose-worker",
+            "generation": 1,
+            "provider": "fixture",
+            "model": "fixture-model",
+            "state": "ACTIVE",
+        }
+        record.update(overrides)
+        return record
+
+    def test_a_bound_session_proves_the_assignment(self) -> None:
+        worker, generation, problem = compose_intake.worker_assignment_from_sessions(
+            [self.session()], "a1", {"compose-worker"}
+        )
+        self.assertEqual((worker, generation, problem), ("compose-worker", 1, ""))
+
+    def test_no_session_is_a_clear_failure(self) -> None:
+        worker, generation, problem = compose_intake.worker_assignment_from_sessions(
+            [], "a1", {"compose-worker"}
+        )
+        self.assertEqual(worker, "")
+        self.assertIn("no provider session", problem)
+
+    def test_attempt_mismatch_is_refused(self) -> None:
+        worker, _, _ = compose_intake.worker_assignment_from_sessions(
+            [self.session(attempt_id="other")], "a1", {"compose-worker"}
+        )
+        self.assertEqual(worker, "")
+
+    def test_zero_or_missing_generation_is_refused(self) -> None:
+        for generation in (0, -1, None):
+            worker, _, _ = compose_intake.worker_assignment_from_sessions(
+                [self.session(generation=generation)], "a1", {"compose-worker"}
+            )
+            self.assertEqual(worker, "", f"generation {generation!r} must be refused")
+
+    def test_unknown_worker_is_refused(self) -> None:
+        worker, _, problem = compose_intake.worker_assignment_from_sessions(
+            [self.session(worker_id="stranger")], "a1", {"compose-worker"}
+        )
+        self.assertEqual(worker, "")
+        self.assertIn("no provider session", problem)
+
+    def test_registered_worker_alone_is_not_enough(self) -> None:
+        worker, _, _ = compose_intake.worker_assignment_from_sessions(
+            [], "a1", {"compose-worker"}
+        )
+        self.assertEqual(worker, "")
+
+
 if __name__ == "__main__":
     unittest.main()

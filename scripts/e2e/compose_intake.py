@@ -1072,6 +1072,37 @@ def projected_graph_provenance(projection: dict) -> tuple[str, str, str]:
     return digest, provider, model
 
 
+def worker_assignment_from_sessions(
+    sessions: list, attempt_id: str, known_workers: set[str]
+) -> tuple[str, int, str]:
+    """A real assignment is a provider session bound to the attempt and a Worker.
+
+    `GET /provider/sessions` returns ProviderSessionRecord entries with
+    `attempt_id`, `worker_id` and `generation` (snake_case). A session whose
+    attempt matches, whose Worker is registered and whose generation is positive is
+    assignment evidence. A registered Worker alone, or an attempt status alone, is
+    not.
+    """
+
+    if not attempt_id:
+        return "", 0, "no attempt_id to correlate"
+    if not known_workers:
+        return "", 0, "no registered Worker is projected"
+    for session in sessions or []:
+        if str(session.get("attempt_id") or "") != attempt_id:
+            continue
+        worker_id = str(session.get("worker_id") or "")
+        generation = session.get("generation")
+        if not worker_id:
+            continue
+        if not isinstance(generation, int) or generation <= 0:
+            continue
+        if worker_id not in known_workers:
+            continue
+        return worker_id, generation, ""
+    return "", 0, "no provider session proves a Worker assignment for this attempt"
+
+
 def receipt_binds_frozen_spec(environment: dict) -> tuple[bool, str]:
     """The projected builder receipt must bind the frozen spec and have succeeded."""
 
@@ -1227,9 +1258,34 @@ def autonomous_campaign(context: Context) -> None:
     campaign_projection = context.api.get(f"/campaigns/{campaign_id}")
     chain_ok, chain_problem = attempt_chain_is_observable(campaign_projection, campaign_id)
     require(chain_ok, chain_problem)
-    context.state.set("acceptance_scope", "CAMPAIGN_START_WITH_RECEIPT")
+    attempt_id = str(
+        ((campaign_projection.get("tasks") or [{}])[0].get("attempt_id")) or ""
+    )
+    workers = {str(item.get("worker_id") or "") for item in context.api.get("/workers")}
+    # The assignment is asynchronous: poll the existing surface instead of
+    # failing on the first read after the Campaign starts.
+    assignment: dict[str, str | int] = {}
+
+    def assigned() -> bool:
+        worker_id, generation, _ = worker_assignment_from_sessions(
+            context.api.get("/provider/sessions") or [], attempt_id, workers
+        )
+        if not worker_id:
+            return False
+        assignment["worker_id"] = worker_id
+        assignment["generation"] = generation
+        return True
+
+    wait_until(assigned, config.readiness_timeout, "the Worker provider session")
+    worker_id, generation, problem = worker_assignment_from_sessions(
+        context.api.get("/provider/sessions") or [], attempt_id, workers
+    )
+    require(bool(worker_id), problem)
+    context.state.set("acceptance_scope", "CAMPAIGN_START_WITH_RECEIPT_AND_WORKER_ASSIGNMENT")
     context.state.set("receipt_surface", "environment.builder.receipt")
-    context.state.set("worker_assignment", "NOT_OBSERVABLE")
+    context.state.set("worker_assignment", "PROVEN")
+    context.state.set("worker_id", worker_id)
+    context.state.set("worker_generation", generation)
     plan_hash = projected_plan_hash(projection)
     require(bool(plan_hash), "autopilot produced no plan hash")
     assert_equal(plan_hash, context.state.get("plan_hash") and context.state.get("plan_hash") or plan_hash, "plan hash stability")
@@ -1418,6 +1474,7 @@ def autonomous_summary(context: Context) -> None:
         "acceptance_scope": context.state.get("acceptance_scope", "CAMPAIGN_START_WITH_RECEIPT"),
         "receipt_surface": context.state.get("receipt_surface", "environment.builder.receipt"),
         "worker_assignment": context.state.get("worker_assignment", "NOT_OBSERVABLE"),
+        "worker_generation": context.state.get("worker_generation"),
         "status": "PASS" if passed else "PARTIAL",
         "diagnosticOnly": not clean,
         "mode": "AUTONOMOUS",
