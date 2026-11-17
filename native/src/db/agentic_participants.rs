@@ -109,6 +109,25 @@ impl Database {
         self.agentic_participant_plan(request_id).await
     }
 
+    /// Test-support only: point a persisted participant plan at a different
+    /// graph digest to prove the projection rejects stale plan/graph binding.
+    #[cfg(feature = "test-support")]
+    pub async fn set_participant_plan_graph_sha_for_test(
+        &self,
+        request_id: &str,
+        graph_sha256: &str,
+    ) -> Result<(), Error> {
+        let _write = self.write_lock.lock().await;
+        sqlx::query::query(
+            "UPDATE agentic_participant_plans SET graph_sha256=?1 WHERE request_id=?2",
+        )
+        .bind(graph_sha256)
+        .bind(request_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn agentic_participant_plan(
         &self,
         request_id: &str,

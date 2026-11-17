@@ -11569,23 +11569,48 @@ async fn agentic_projection_for_request(
     // the projection is consistently PLANNED_PENDING; the causal compilation
     // failure is preserved when one is observable.
     let participant_record = app.db.agentic_participant_plan(&record.id).await.ok();
-    let participants = participant_record.as_ref().and_then(|record| {
+    let graph_sha = graph.as_ref().map(|graph| graph.graph_sha256.clone());
+    let plan_graph_sha = participant_record
+        .as_ref()
+        .and_then(|record| record.graph_sha256.clone());
+    let plan_matches_graph = graph_sha.is_some() && plan_graph_sha == graph_sha;
+    let decoded_plan = participant_record.as_ref().and_then(|record| {
         serde_json::from_str::<factory_native::agentic::ParticipantPlan>(&record.plan_json).ok()
     });
-    let participant_problem = if participants.is_none() {
-        match graph.as_ref() {
-            Some(graph) => match deterministic_participant_plan(app, record, &context, graph).await
-            {
-                Err(failure) => Some(failure),
-                Ok(_) => Some(ParticipantPlanFailure {
-                    code: "PARTICIPANT_PLAN_NOT_RECORDED",
-                    message: "the participant plan is not recorded".into(),
-                }),
-            },
-            None => None,
-        }
+    let participants = if plan_matches_graph {
+        decoded_plan
     } else {
         None
+    };
+    let participant_problem = if participants.is_some() {
+        None
+    } else {
+        match graph.as_ref() {
+            None => None,
+            Some(graph) => {
+                if participant_record.is_some()
+                    && plan_graph_sha.as_deref() != Some(&graph.graph_sha256)
+                {
+                    Some(ParticipantPlanFailure {
+                        code: "PARTICIPANT_PLAN_STALE",
+                        message: "the participant plan does not match the current WorkGraph".into(),
+                    })
+                } else if plan_matches_graph {
+                    Some(ParticipantPlanFailure {
+                        code: "PARTICIPANT_PLAN_UNREADABLE",
+                        message: "the stored participant plan is not decodable".into(),
+                    })
+                } else {
+                    match deterministic_participant_plan(app, record, &context, graph).await {
+                        Err(failure) => Some(failure),
+                        Ok(_) => Some(ParticipantPlanFailure {
+                            code: "PARTICIPANT_PLAN_NOT_RECORDED",
+                            message: "the participant plan is not recorded".into(),
+                        }),
+                    }
+                }
+            }
+        }
     };
     let plan = app.db.frozen_lead_plan(&record.lead_request_id).await.ok();
     let prerequisites = lead_planning_prerequisites(app, record).await?;
@@ -15111,6 +15136,16 @@ fn assess_participant_plan(
     };
     if !required {
         readiness.ready = true;
+        return readiness;
+    }
+    if work_graph_sha256.is_none() {
+        readiness.work_graph_state = "WORK_GRAPH_NOT_PLANNED";
+        readiness.missing_roles = required_roles.clone();
+        readiness.missing_assignments = required_roles.clone();
+        readiness_problem(
+            &mut readiness.problems,
+            "WORK_GRAPH_NOT_PLANNED: the request has no validated Planner WorkGraph",
+        );
         return readiness;
     }
     if let Err(error) = reviewer_plan.validate() {
@@ -18717,53 +18752,48 @@ async fn p1a_seed(
         Ok(lead) => lead,
         Err(error) => return api_error(error),
     };
-    if app.db.lead_proposal(&lead.id).await.is_ok() {
-        return Json(json!({
-            "requestId": record.id,
-            "proposal": "existing",
-            "authority": "test-support fixture; no paid inference and no model authority",
-        }))
-        .into_response();
-    }
-    // No synthetic authorization: the seeded request must already have a
-    // current V2 delegation, project config and frozen ActionSpec. The legacy
-    // wave12 fixture is intentionally rejected rather than bypassed.
-    let grant = match app.db.standing_delegation_v2(&lead.delegation_id).await {
-        Ok(grant) => grant,
-        Err(error) => return api_error(error),
-    };
-    let config = match app.db.project_config(&record.project_id).await {
-        Ok(config) => config,
-        Err(error) => return api_error(error),
-    };
-    let action_spec = match app.db.action(&record.action_id).await {
-        Ok(action) => action.spec,
-        Err(error) => return api_error(error),
-    };
-    let binding = factory_native::lead::ActionBinding {
-        id: record.action_id.clone(),
-        project_id: record.project_id.clone(),
-        status: factory_native::lead::ActionStatus::Pending,
-    };
-    let (assessment, mut proposal) = match factory_native::lead::fixture_lead_assessment(
-        &lead.id,
-        &config,
-        &binding,
-        &action_spec,
-        &record.objective,
-        &grant,
-        chrono::Utc::now(),
-    ) {
-        Ok(value) => value,
-        Err(error) => return api_error(error.into()),
-    };
-    proposal.work_units.clear();
-    if let Err(error) = app
-        .db
-        .seed_lead_assessment_and_proposal(&lead.id, &assessment, &proposal)
-        .await
-    {
-        return api_error(error);
+    let proposal_exists = app.db.lead_proposal(&lead.id).await.is_ok();
+    if !proposal_exists {
+        // No synthetic authorization: the seeded request must already have a
+        // current V2 delegation, project config and frozen ActionSpec. The
+        // legacy wave12 fixture is intentionally rejected rather than bypassed.
+        let grant = match app.db.standing_delegation_v2(&lead.delegation_id).await {
+            Ok(grant) => grant,
+            Err(error) => return api_error(error),
+        };
+        let config = match app.db.project_config(&record.project_id).await {
+            Ok(config) => config,
+            Err(error) => return api_error(error),
+        };
+        let action_spec = match app.db.action(&record.action_id).await {
+            Ok(action) => action.spec,
+            Err(error) => return api_error(error),
+        };
+        let binding = factory_native::lead::ActionBinding {
+            id: record.action_id.clone(),
+            project_id: record.project_id.clone(),
+            status: factory_native::lead::ActionStatus::Pending,
+        };
+        let (assessment, mut proposal) = match factory_native::lead::fixture_lead_assessment(
+            &lead.id,
+            &config,
+            &binding,
+            &action_spec,
+            &record.objective,
+            &grant,
+            chrono::Utc::now(),
+        ) {
+            Ok(value) => value,
+            Err(error) => return api_error(error.into()),
+        };
+        proposal.work_units.clear();
+        if let Err(error) = app
+            .db
+            .seed_lead_assessment_and_proposal(&lead.id, &assessment, &proposal)
+            .await
+        {
+            return api_error(error);
+        }
     }
     if input.drop_graph
         && let Err(error) = app.db.delete_seeded_work_graph(&record.id).await
@@ -18804,7 +18834,7 @@ async fn p1a_seed(
     }
     Json(json!({
         "requestId": record.id,
-        "proposal": "empty-work-units",
+        "proposal": if proposal_exists { "existing" } else { "empty-work-units" },
         "dropGraph": input.drop_graph,
         "participant": participant,
         "authority": "test-support fixture; no paid inference and no model authority",
@@ -18877,21 +18907,42 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
         // The portfolio reports persisted, validated units; an unplanned
         // request stays at zero instead of a synthesized unit.
         let participant_record = app.db.agentic_participant_plan(&record.id).await.ok();
-        let work_units = participant_record
-            .as_ref()
-            .map(|record| usize::try_from(record.work_units).unwrap_or(usize::MAX))
-            .unwrap_or(0);
-        let participant_count = participant_record
-            .as_ref()
-            .and_then(|record| {
-                serde_json::from_str::<factory_native::agentic::ParticipantPlan>(&record.plan_json)
+        let graph_sha = app
+            .db
+            .agentic_work_graph(&record.id)
+            .await
+            .ok()
+            .map(|graph| graph.graph_sha256);
+        let plan_matches_graph = graph_sha.as_ref().is_some_and(|graph_sha| {
+            participant_record
+                .as_ref()
+                .and_then(|record| record.graph_sha256.as_ref())
+                == Some(graph_sha)
+        });
+        let work_units = if plan_matches_graph {
+            participant_record
+                .as_ref()
+                .map(|record| usize::try_from(record.work_units).unwrap_or(usize::MAX))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let participant_count = if plan_matches_graph {
+            participant_record
+                .as_ref()
+                .and_then(|record| {
+                    serde_json::from_str::<factory_native::agentic::ParticipantPlan>(
+                        &record.plan_json,
+                    )
                     .ok()
-            })
-            .map(|plan| plan.assignments.iter().map(|a| a.count).sum())
-            .unwrap_or(0);
-        let graph_exists = app.db.agentic_work_graph(&record.id).await.is_ok();
+                })
+                .map(|plan| plan.assignments.iter().map(|a| a.count).sum())
+                .unwrap_or(0)
+        } else {
+            0
+        };
         let participant_state =
-            participant_projection_state(participant_record.is_some(), graph_exists, triage.route);
+            participant_projection_state(plan_matches_graph, graph_sha.is_some(), triage.route);
         let state = app
             .db
             .lead_request_projection(&record.lead_request_id)
@@ -37530,6 +37581,7 @@ mod tests {
             )
         }
 
+        let mut seed_responses = std::collections::BTreeMap::new();
         for (request_id, body) in [
             (
                 "44444444-4444-4444-8444-444444444444",
@@ -37547,7 +37599,12 @@ mod tests {
             let (status, response) =
                 call(router.clone(), "POST", "/test-support/p1a/seed", Some(body)).await;
             assert_eq!(status, StatusCode::OK, "{request_id}: {response}");
+            seed_responses.insert(request_id, response);
         }
+        assert_eq!(
+            seed_responses["11111111-1111-4111-8111-111111111111"]["participant"]["persisted"],
+            true
+        );
 
         let (status, proposal) = call(
             router.clone(),
@@ -37571,10 +37628,26 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(pending["participantState"], "PLANNED_PENDING");
+        assert_eq!(
+            pending["participantProblem"]["code"],
+            "PARTICIPANT_PLAN_NOT_RECORDED"
+        );
         assert!(
             pending["specifications"]
                 .as_array()
                 .is_some_and(|units| !units.is_empty())
+        );
+        let (status, pending_intake) = call(
+            router.clone(),
+            "GET",
+            "/intake/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            pending_intake["planning"]["participantPlan"]["workGraphState"],
+            "PLANNED_PENDING"
         );
 
         let (status, missing) = call(
@@ -37596,11 +37669,97 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_ne!(planned["participantState"], "WORK_GRAPH_NOT_PLANNED");
+        assert_eq!(planned["participantState"], "PLANNED");
         assert!(
             planned["specifications"]
                 .as_array()
                 .is_some_and(|units| !units.is_empty())
+        );
+        let (status, planned_intake) = call(
+            router.clone(),
+            "GET",
+            "/intake/requests/11111111-1111-4111-8111-111111111111",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            planned_intake["planning"]["participantPlan"]["workGraphState"],
+            "PLANNED"
+        );
+
+        // Persisted plan followed by graph removal must not remain PLANNED.
+        let (status, response) = call(
+            router.clone(),
+            "POST",
+            "/test-support/p1a/seed",
+            Some(r#"{"requestId":"11111111-1111-4111-8111-111111111111","dropGraph":true}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{response}");
+        let (status, dropped) = call(
+            router.clone(),
+            "GET",
+            "/agentic/requests/11111111-1111-4111-8111-111111111111",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(dropped["participantState"], "WORK_GRAPH_NOT_PLANNED");
+        let (status, dropped_intake) = call(
+            router.clone(),
+            "GET",
+            "/intake/requests/11111111-1111-4111-8111-111111111111",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            dropped_intake["planning"]["participantPlan"]["workGraphState"],
+            "WORK_GRAPH_NOT_PLANNED"
+        );
+        let (status, portfolio) = call(router.clone(), "GET", "/agentic/portfolio", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let entry = portfolio
+            .as_array()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry["id"] == "11111111-1111-4111-8111-111111111111")
+            })
+            .expect("portfolio entry");
+        assert_eq!(entry["participantState"], "WORK_GRAPH_NOT_PLANNED");
+
+        // Stale participant plan: graph exists but the stored digest differs.
+        let (status, _) = call(
+            router.clone(),
+            "POST",
+            "/test-support/p1a/seed",
+            Some(
+                r#"{"requestId":"44444444-4444-4444-8444-444444444444","persistParticipant":true}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        app.db
+            .set_participant_plan_graph_sha_for_test(
+                "44444444-4444-4444-8444-444444444444",
+                &"0".repeat(64),
+            )
+            .await
+            .unwrap();
+        let (status, stale) = call(
+            router.clone(),
+            "GET",
+            "/agentic/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(stale["participantState"], "PLANNED_PENDING");
+        assert_eq!(
+            stale["participantProblem"]["code"],
+            "PARTICIPANT_PLAN_STALE"
         );
 
         // Absent request: the test-only route fails closed and writes nothing.
