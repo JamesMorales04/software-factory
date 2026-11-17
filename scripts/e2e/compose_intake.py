@@ -1251,10 +1251,24 @@ def review_status_accepted(planning: dict) -> bool:
 
 
 def projected_plan_hash(projection: dict) -> str:
-    """The plan hash comes from the projected plan, never from a stray local."""
+    """The plan hash comes from the projected plan, never from a stray local.
+
+    The intake detail renders `FrozenLeadPlanRecord`, whose field is snake_case
+    (`plan_hash`); `/agentic/requests/{id}` renders the same record camelCase.
+    Both are accepted, and the caller must still require a 64-hex digest: an
+    empty value on both sides of a comparison is not persistence evidence.
+    """
 
     plan = projection.get("plan") or {}
     return plan.get("planHash") or plan.get("plan_hash") or ""
+
+
+def is_sha256_digest(value: object) -> bool:
+    """A frozen identity digest is exactly 64 lowercase hex characters."""
+
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    return all(character in "0123456789abcdef" for character in value)
 
 
 @stage(
@@ -1360,8 +1374,9 @@ def autonomous_campaign(context: Context) -> None:
     context.state.set("worker_id", worker_id)
     context.state.set("worker_generation", generation)
     plan_hash = projected_plan_hash(projection)
-    require(bool(plan_hash), "autopilot produced no plan hash")
-    assert_equal(plan_hash, context.state.get("plan_hash") and context.state.get("plan_hash") or plan_hash, "plan hash stability")
+    require(is_sha256_digest(plan_hash), "autopilot produced no 64-hex plan hash")
+    if context.state.get("plan_hash"):
+        assert_equal(plan_hash, context.state.get("plan_hash"), "plan hash stability")
 
     graph = context.api.get(f"/agentic/requests/{intake_id}/plan")
     units = projected_graph_units(graph)
@@ -1371,12 +1386,24 @@ def autonomous_campaign(context: Context) -> None:
     assert_equal(planner_model, "deepseek-v4.1-flash", "WorkGraph model provenance")
 
     participants = context.api.get(f"/agentic/requests/{intake_id}/participants")
-    compiled = participants.get("compiled") or participants
-    assert_equal(compiled.get("ready"), True, "participant plan compiled readiness")
+    # The real surface projects the durable record under "plan"
+    # (AgenticParticipantPlanRecord, camelCase): requestId, graphSha256, route,
+    # assurance, workUnits, reviewerCount, planJson, planSha256, createdAt,
+    # updatedAt. There is no "compiled" object and no "ready" flag, so binding
+    # the graph digest and requiring real work units is the observable contract.
+    participant_plan = participants.get("plan") or {}
     assert_equal(
-        compiled.get("graphSha256"),
+        participant_plan.get("graphSha256"),
         graph_sha,
         "participant plan graph binding",
+    )
+    require(
+        int(participant_plan.get("workUnits") or 0) > 0,
+        "participant plan has no work units",
+    )
+    require(
+        is_sha256_digest(participant_plan.get("planSha256")),
+        "participant plan has no 64-hex plan digest",
     )
 
     campaign = context.api.get(f"/campaigns/{campaign_id}")
@@ -1497,9 +1524,18 @@ def autonomous_restart(context: Context) -> None:
 
     wait_until(worker_ready, config.readiness_timeout, "the Compose Worker re-registration")
     after = context.api.get(f"/intake/requests/{context.state.get('intake_id')}")
-    before_plan = (before.get("plan") or {}).get("planHash")
-    after_plan = (after.get("plan") or {}).get("planHash")
+    before_plan = projected_plan_hash(before)
+    after_plan = projected_plan_hash(after)
+    # An empty digest on both sides proves nothing: require the real 64-hex
+    # value before and after, then compare it with the frozen context baseline.
+    require(is_sha256_digest(before_plan), "the pre-restart plan hash is not observable")
+    require(is_sha256_digest(after_plan), "the post-restart plan hash is not observable")
     assert_equal(after_plan, before_plan, "plan hash persistence")
+    assert_equal(
+        after_plan,
+        context.state.get("plan_hash"),
+        "plan hash matches the frozen context",
+    )
     assert_equal(after.get("campaignId"), context.state.get("campaign_id"), "Campaign persistence")
     after_environment = after.get("environment") or {}
     assert_equal(

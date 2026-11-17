@@ -480,7 +480,7 @@ class AutonomousCampaignStageTests(unittest.TestCase):
                 "required": True,
                 "builder": {"receipt": {"specSha256": "spec1", "status": "SUCCEEDED"}},
             },
-            "plan": {"planHash": "ph1"},
+            "plan": {"planHash": "193abcbf2764082a91a127fa8ba1aef35e65b2d91a777dedf3ed1a22350b56ae"},
         }
         campaign = {
             "campaign": {"status": "AUTHORIZED", "effective_status": "AUTHORIZED"},
@@ -494,6 +494,13 @@ class AutonomousCampaignStageTests(unittest.TestCase):
                 "graphSha256": "sha1",
                 "plannerProvider": "opencode-go",
                 "plannerModel": "deepseek-v4.1-flash",
+            }
+        }
+        participants = {
+            "plan": {
+                "graphSha256": "sha1",
+                "workUnits": 1,
+                "planSha256": "ef" * 32,
             }
         }
 
@@ -517,7 +524,7 @@ class AutonomousCampaignStageTests(unittest.TestCase):
                 if path.endswith("/plan"):
                     return graph
                 if path.endswith("/participants"):
-                    return {"compiled": {"ready": True, "graphSha256": "sha1"}}
+                    return participants
                 raise AssertionError(f"unexpected path {path}")
 
         config = mock.Mock()
