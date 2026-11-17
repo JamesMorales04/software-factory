@@ -375,25 +375,51 @@ class AsyncConsumerTests(unittest.TestCase):
 
 
 class AsyncTerminalFailureTests(unittest.TestCase):
-    """A terminal Campaign cancels the wait with a cause, never loops forever."""
+    """Terminal states use the real nested Campaign projection and abort at once.
 
-    def test_chain_wait_cancels_on_a_terminal_campaign(self) -> None:
+    `/campaigns/{id}` nests the Campaign under `campaign` with `status` and
+    `effective_status`; the wait must abort on either, including
+    BLOCKED_AUTHORIZATION, even with no timeout at all.
+    """
+
+    def api(self, campaign_fields):
         class Api:
+            def __init__(self):
+                self.calls = 0
+
             def get(self, path):
-                return {"state": "BLOCKED", "stateDetail": "environment blocked"}
+                self.calls += 1
+                return {"campaign": campaign_fields}
 
-        with self.assertRaises(ScenarioError) as caught:
-            compose_intake.await_attempt_chain(Api(), "c1", 5)
-        self.assertIn("BLOCKED", str(caught.exception))
+        return Api()
 
-    def test_assignment_wait_cancels_on_a_terminal_campaign(self) -> None:
-        class Api:
-            def get(self, path):
-                return {"state": "CANCELLED", "stateDetail": "owner cancelled"}
+    def test_chain_aborts_immediately_on_nested_terminal_states(self) -> None:
+        for fields in (
+            {"status": "BLOCKED", "effective_status": "BLOCKED"},
+            {"status": "AUTHORIZED", "effective_status": "BLOCKED_AUTHORIZATION"},
+            {"status": "CANCELLED", "effective_status": "CANCELLED"},
+        ):
+            api = self.api(fields)
+            with self.subTest(fields=fields), self.assertRaises(
+                common.TerminalScenarioError
+            ) as caught:
+                compose_intake.await_attempt_chain(api, "c1", None)
+            self.assertIn("Campaign reached", str(caught.exception))
+            self.assertEqual(api.calls, 1)
 
-        with self.assertRaises(ScenarioError) as caught:
-            compose_intake.await_worker_assignment(Api(), "c1", "a1", 5)
-        self.assertIn("CANCELLED", str(caught.exception))
+    def test_assignment_aborts_immediately_on_a_nested_terminal_state(self) -> None:
+        api = self.api({"status": "AUTHORIZED", "effective_status": "BLOCKED_AUTHORIZATION"})
+        with self.assertRaises(common.TerminalScenarioError):
+            compose_intake.await_worker_assignment(api, "c1", "a1", None)
+        self.assertEqual(api.calls, 1)
+
+    def test_a_non_terminal_campaign_is_not_treated_as_terminal(self) -> None:
+        self.assertEqual(
+            compose_intake.campaign_terminal_failure(
+                {"campaign": {"status": "EXECUTING", "effective_status": "EXECUTING"}}
+            ),
+            "",
+        )
 
 
 if __name__ == "__main__":

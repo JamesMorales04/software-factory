@@ -39,6 +39,13 @@ RUN_SENTINEL = "run.json"
 
 
 class ScenarioError(RuntimeError):
+    """A scenario step failed with a diagnosis."""
+
+
+class TerminalScenarioError(ScenarioError):
+    """A wait must abort immediately: the observed state cannot progress."""
+
+
     """A bounded scenario failure with an operator-readable message."""
 
 
@@ -1152,6 +1159,9 @@ def wait_until(predicate, timeout: int | None, description: str, *, interval: fl
             value = predicate()
             if value:
                 return value
+        except TerminalScenarioError:
+            # A terminal state is not a transient polling error: abort now.
+            raise
         except Exception as error:  # noqa: BLE001 - the caller needs the last diagnostic
             last_error = error
         now = time.monotonic()

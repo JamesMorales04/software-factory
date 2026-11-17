@@ -25,6 +25,7 @@ from common import (
     Compose,
     Config,
     ScenarioError,
+    TerminalScenarioError,
     State,
     assert_equal,
     assert_in,
@@ -1072,16 +1073,34 @@ def projected_graph_provenance(projection: dict) -> tuple[str, str, str]:
     return digest, provider, model
 
 
-TERMINAL_CAMPAIGN_STATES = {"BLOCKED", "FAILED", "REJECTED", "CANCELLED"}
+TERMINAL_CAMPAIGN_STATES = {
+    "BLOCKED",
+    "BLOCKED_AUTHORIZATION",
+    "FAILED",
+    "REJECTED",
+    "CANCELLED",
+}
 
 
 def campaign_terminal_failure(projection: dict) -> str:
-    """Return the terminal state when the Campaign cannot progress any further."""
+    """Return the terminal state from the real nested Campaign projection.
 
-    state = str(projection.get("state") or "").upper()
-    if state in TERMINAL_CAMPAIGN_STATES:
-        detail = str(projection.get("stateDetail") or "")
-        return f"Campaign reached {state}: {detail}" if detail else f"Campaign reached {state}"
+    `/campaigns/{id}` (and the intake projection) nest the Campaign under
+    `campaign` with `status` and `effective_status`; there is no top-level
+    `state`. Both fields are checked because the effective status can be terminal
+    while the stored status is not.
+    """
+
+    campaign = projection.get("campaign")
+    if not isinstance(campaign, dict):
+        campaign = {}
+    for field in ("effective_status", "status"):
+        value = str(campaign.get(field) or "").upper()
+        if value in TERMINAL_CAMPAIGN_STATES:
+            detail = str(projection.get("stateDetail") or campaign.get("blockers") or "")
+            return (
+                f"Campaign reached {value}: {detail}" if detail else f"Campaign reached {value}"
+            )
     return ""
 
 
@@ -1098,7 +1117,7 @@ def await_attempt_chain(api, campaign_id: str, timeout: int | None) -> dict:
         projection = api.get(f"/campaigns/{campaign_id}")
         terminal = campaign_terminal_failure(projection)
         if terminal:
-            raise ScenarioError(terminal)
+            raise TerminalScenarioError(terminal)
         ok, problem = attempt_chain_is_observable(projection, campaign_id)
         state["problem"] = problem
         return ok
@@ -1157,7 +1176,7 @@ def await_worker_assignment(
         projection = api.get(f"/campaigns/{campaign_id}")
         terminal = campaign_terminal_failure(projection)
         if terminal:
-            raise ScenarioError(terminal)
+            raise TerminalScenarioError(terminal)
         workers = {str(item.get("worker_id") or "") for item in api.get("/workers")}
         worker_id, generation, _ = worker_assignment_from_sessions(
             api.get("/provider/sessions") or [], attempt_id, workers
