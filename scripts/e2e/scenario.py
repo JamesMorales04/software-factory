@@ -536,6 +536,9 @@ def main(argv: list[str]) -> int:
             except Exception as error:  # noqa: BLE001 - one bounded failure surface
                 message = str(error)
                 _record_stage(state, name, started, "FAIL", message)
+                # Persist the primary error before any best-effort diagnostics or
+                # finalization, so an interruption cannot hide why the stage failed.
+                log(f"stage failed: {name}: {message}")
                 try:
                     collect_diagnostics(config, compose, state, api)
                 except Exception as diagnostic_error:  # noqa: BLE001

@@ -556,5 +556,70 @@ class AutonomousCampaignStageTests(unittest.TestCase):
             compose_intake.autonomous_campaign(context)
 
 
+class DiagnosticsSafetyTests(unittest.TestCase):
+    """Diagnostics must stay best effort and keep the primary error intact."""
+
+    def setUp(self) -> None:
+        self.temporary = __import__("tempfile").TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.artifacts = Path(self.temporary.name)
+
+    def config(self):
+        return mock.Mock(
+            artifacts_dir=self.artifacts,
+            project="p1",
+            root=self.artifacts,
+            environment=lambda: {},
+        )
+
+    def compose(self):
+        compose = mock.Mock()
+        compose.service_container.return_value = None
+        return compose
+
+    def test_endpoint_templates_never_become_a_path(self) -> None:
+        class Api:
+            def get(self, path):
+                raise ScenarioError("HTTP 500 from the endpoint")
+
+        from common import State
+
+        state = State(self.artifacts / "state.json")
+        state.set("intake_id", "i1")
+        with mock.patch.object(common, "_bounded_run", side_effect=ScenarioError("no podman")):
+            common.collect_diagnostics(self.config(), self.compose(), state, Api())
+        directory = self.artifacts / "diagnostics"
+        names = sorted(item.name for item in directory.iterdir())
+        self.assertTrue(any(name.startswith("intake_id-intake-requests-id") for name in names), names)
+        for name in names:
+            self.assertNotIn("/", name)
+            self.assertNotIn("{", name)
+            self.assertNotIn("}", name)
+
+    def test_missing_identity_writes_no_endpoint_file(self) -> None:
+        from common import State
+
+        class Api:
+            def get(self, path):
+                raise AssertionError("no endpoint read without an identity")
+
+        with mock.patch.object(common, "_bounded_run", side_effect=ScenarioError("no podman")):
+            common.collect_diagnostics(
+                self.config(), self.compose(), State(self.artifacts / "state.json"), Api()
+            )
+        self.assertEqual(list((self.artifacts / "diagnostics").glob("*intake*")), [])
+
+    def test_finalize_preserves_the_original_error_when_capture_fails(self) -> None:
+        def capture():
+            raise RuntimeError("capture exploded")
+
+        result, cleanup_result, capture_error = common.finalize_with_capture(
+            capture, lambda: "cleanup-ran"
+        )
+        self.assertIsNone(result)
+        self.assertEqual(cleanup_result, "cleanup-ran")
+        self.assertIsInstance(capture_error, RuntimeError)
+
+
 if __name__ == "__main__":
     unittest.main()

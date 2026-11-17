@@ -1425,6 +1425,32 @@ def restore_volumes(config: Config, compose: Compose) -> dict[str, Any]:
     return index
 
 
+def _write_diagnostic(directory: Path, name: str, body: str) -> None:
+    """Write one diagnostic artifact without ever raising.
+
+    A diagnostic writer must not replace the primary failure, so a missing
+    directory, a permission error or an odd name is swallowed here.
+    """
+
+    try:
+        directory.joinpath(name).write_text(body, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _diagnostic_file_name(key: str, endpoint: str) -> str:
+    """Flatten an endpoint template into one safe file name.
+
+    Endpoint templates contain slashes and braces; using them verbatim created a
+    path like ``intake_id-/intake/requests/{id}.error.txt`` whose parent
+    directory does not exist, so the error handler raised and masked the primary
+    failure.
+    """
+
+    safe = endpoint.strip("/").replace("/", "-").replace("{", "").replace("}", "")
+    return f"{key}-{safe}.error.txt".replace("/", "-")
+
+
 def collect_diagnostics(
     config: Config,
     compose: Compose,
@@ -1447,7 +1473,7 @@ def collect_diagnostics(
             body = f"$ {' '.join(command)}\n\n{result.stdout}\n\nSTDERR\n{result.stderr}\n"
         except ScenarioError as error:
             body = f"$ {' '.join(command)}\ndiagnostic failed: {error}\n"
-        directory.joinpath(name).write_text(body, encoding="utf-8")
+        _write_diagnostic(directory, name, body)
     for service in ("core", "supervisor", "worker", "runtime", "model-fixture", "git-fixture"):
         name = compose.service_container(service)
         if not name:
@@ -1462,7 +1488,7 @@ def collect_diagnostics(
             body = f"container={name}\n\n{result.stdout}\n\nSTDERR\n{result.stderr}\n"
         except ScenarioError as error:
             body = f"container={name}\ndiagnostic failed: {error}\n"
-        directory.joinpath(f"logs-{service}.txt").write_text(body, encoding="utf-8")
+        _write_diagnostic(directory, f"logs-{service}.txt", body)
     if api is not None:
         endpoints = {
             "workers.json": "/workers",
@@ -1476,7 +1502,7 @@ def collect_diagnostics(
                     encoding="utf-8",
                 )
             except Exception as error:  # noqa: BLE001 - diagnostics must never mask the primary failure
-                directory.joinpath(f"{name}.error.txt").write_text(str(error), encoding="utf-8")
+                _write_diagnostic(directory, f"{name}.error.txt", str(error))
         for key, endpoint in (
             ("intake_id", "/intake/requests/{id}"),
             ("campaign_id", "/campaigns/{id}"),
@@ -1494,8 +1520,8 @@ def collect_diagnostics(
                     encoding="utf-8",
                 )
             except Exception as error:  # noqa: BLE001
-                directory.joinpath(f"{key}-{endpoint}.error.txt").write_text(
-                    str(error), encoding="utf-8"
+                _write_diagnostic(
+                    directory, _diagnostic_file_name(key, endpoint), str(error)
                 )
 
 
