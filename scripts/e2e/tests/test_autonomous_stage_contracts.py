@@ -36,6 +36,7 @@ for entry in (str(ROOT), str(E2E)):
 
 import common  # noqa: E402
 import compose_intake  # noqa: E402
+import scenario  # noqa: E402
 from common import ScenarioError  # noqa: E402
 
 PLAN_HASH = "193abcbf2764082a91a127fa8ba1aef35e65b2d91a777dedf3ed1a22350b56ae"
@@ -60,6 +61,9 @@ class State:
 
     def set(self, key, value):
         self.values[key] = value
+
+    def save(self):
+        return None
 
 
 class Api:
@@ -297,6 +301,21 @@ class AutonomousStageSequenceTests(unittest.TestCase):
         self.api.participants["plan"]["planJson"] = ""
         with self.assertRaises(ScenarioError):
             self.run_campaign()
+
+    def test_dispatcher_loop_keeps_persistence_and_summary_passes(self) -> None:
+        for name in ("autonomous_campaign", "autonomous_negative", "autonomous_restart", "autonomous_summary"):
+            scenario.dispatch_stage(self.context, name)
+        summary = json.loads((self.artifacts_dir / "summary.json").read_text(encoding="utf-8"))
+        self.assertTrue(self.context.state.get("restart_persistence"))
+        self.assertEqual(summary["status"], "PASS")
+        self.assertTrue(summary["restart_persistence"])
+
+    def test_dispatcher_loop_reports_partial_when_restart_never_ran(self) -> None:
+        for name in ("autonomous_campaign", "autonomous_negative", "autonomous_summary"):
+            scenario.dispatch_stage(self.context, name)
+        summary = json.loads((self.artifacts_dir / "summary.json").read_text(encoding="utf-8"))
+        self.assertFalse(self.context.state.get("restart_persistence"))
+        self.assertEqual(summary["status"], "PARTIAL")
 
     def test_summary_is_partial_without_restart_persistence(self) -> None:
         self.run_campaign()

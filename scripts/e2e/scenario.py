@@ -404,6 +404,32 @@ def _record_stage(state: State, name: str, started: float, status: str, error: s
     state.save()
 
 
+def reset_stage_state(state: State, name: str) -> None:
+    """Invalidate dependent evidence when a stage (re)enters the loop.
+
+    The decision is derived from the stage name suffix, not from a fixed list:
+    the autonomous scenario uses `autonomous_summary` and `autonomous_restart`,
+    and the original `name != "summary"` / `name != "restart"` checks reset the
+    persistence flag right after a passing autonomous restart, turning a real
+    PASS into PARTIAL.
+    """
+
+    is_summary = name.endswith("summary")
+    is_restart = name.endswith("restart")
+    if not is_summary:
+        state.set("summary", None)
+        if not is_restart:
+            state.set("restart_persistence", False)
+        state.save()
+
+
+def dispatch_stage(context: Context, name: str) -> None:
+    """The dispatcher the real loop uses: reset then execute the stage."""
+
+    reset_stage_state(context.state, name)
+    stage_function(name)(context)
+
+
 def main(argv: list[str]) -> int:
     try:
         args = _parse_args(argv)
@@ -525,14 +551,8 @@ def main(argv: list[str]) -> int:
         for name in selected:
             started = time.monotonic()
             log(f"== {name}: {stage_description(name)}")
-            if name != "summary":
-                # Rerunning an upstream stage invalidates dependent evidence.
-                state.set("summary", None)
-                if name != "restart":
-                    state.set("restart_persistence", False)
-                state.save()
             try:
-                stage_function(name)(context)
+                dispatch_stage(context, name)
             except Exception as error:  # noqa: BLE001 - one bounded failure surface
                 message = str(error)
                 _record_stage(state, name, started, "FAIL", message)
