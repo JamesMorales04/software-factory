@@ -109,6 +109,35 @@ impl Database {
         self.agentic_participant_plan(request_id).await
     }
 
+    /// Test-support only: rewrite the stored plan route/count to prove the
+    /// projections reject a decodable but inconsistent plan.
+    #[cfg(feature = "test-support")]
+    pub async fn mutate_participant_plan_for_test(
+        &self,
+        request_id: &str,
+        route: &str,
+    ) -> Result<(), Error> {
+        let (plan_json,): (String,) = sqlx::query_as::query_as(
+            "SELECT plan_json FROM agentic_participant_plans WHERE request_id=?1",
+        )
+        .bind(request_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(Error::NotFound)?;
+        let mut plan: serde_json::Value = serde_json::from_str(&plan_json)
+            .map_err(|_| Error::Invalid("participant plan JSON"))?;
+        plan["route"] = serde_json::Value::String(route.into());
+        let mutated = serde_json::to_string(&plan)
+            .map_err(|_| Error::Invalid("participant plan encoding"))?;
+        let _write = self.write_lock.lock().await;
+        sqlx::query::query("UPDATE agentic_participant_plans SET plan_json=?1 WHERE request_id=?2")
+            .bind(mutated)
+            .bind(request_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Test-support only: make the stored participant plan undecodable so the
     /// intake and agentic projections prove they stay PLANNED_PENDING.
     #[cfg(feature = "test-support")]

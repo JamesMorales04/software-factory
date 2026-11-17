@@ -11486,6 +11486,7 @@ async fn agentic_triage_context(
 
 /// Truthful participant compilation state. A validated graph with a failed
 /// participant plan is `PLANNED_PENDING`, never `WORK_GRAPH_NOT_PLANNED`.
+#[cfg(test)]
 fn participant_projection_state(
     plan_present: bool,
     graph_present: bool,
@@ -11569,48 +11570,36 @@ async fn agentic_projection_for_request(
     // the projection is consistently PLANNED_PENDING; the causal compilation
     // failure is preserved when one is observable.
     let participant_record = app.db.agentic_participant_plan(&record.id).await.ok();
-    let graph_sha = graph.as_ref().map(|graph| graph.graph_sha256.clone());
-    let plan_graph_sha = participant_record
+    let reviewer_plan = factory_native::planning::route::required_reviewers(
+        context.planning_lane,
+        context.assurance(),
+    );
+    let participant_source = participant_record
         .as_ref()
-        .and_then(|record| record.graph_sha256.clone());
-    let plan_matches_graph = graph_sha.is_some() && plan_graph_sha == graph_sha;
-    let decoded_plan = participant_record.as_ref().and_then(|record| {
-        serde_json::from_str::<factory_native::agentic::ParticipantPlan>(&record.plan_json).ok()
-    });
-    let participants = if plan_matches_graph {
-        decoded_plan
+        .map(|record| ParticipantPlanSource {
+            reviewer_count: record.reviewer_count,
+            graph_sha256: record.graph_sha256.as_deref(),
+            plan_json: &record.plan_json,
+        });
+    let graph_sha = graph.as_ref().map(|graph| graph.graph_sha256.as_str());
+    let readiness = assess_participant_plan(
+        context.triage.route,
+        context.assurance(),
+        &reviewer_plan,
+        participant_source,
+        graph_sha,
+    );
+    let participants = if readiness.ready {
+        participant_record.as_ref().and_then(|record| {
+            serde_json::from_str::<factory_native::agentic::ParticipantPlan>(&record.plan_json).ok()
+        })
     } else {
         None
     };
-    let participant_problem = if participants.is_some() {
+    let participant_problem = if graph_sha.is_none() || readiness.work_graph_state == "PLANNED" {
         None
     } else {
-        match graph.as_ref() {
-            None => None,
-            Some(graph) => {
-                if participant_record.is_some()
-                    && plan_graph_sha.as_deref() != Some(&graph.graph_sha256)
-                {
-                    Some(ParticipantPlanFailure {
-                        code: "PARTICIPANT_PLAN_STALE",
-                        message: "the participant plan does not match the current WorkGraph".into(),
-                    })
-                } else if plan_matches_graph {
-                    Some(ParticipantPlanFailure {
-                        code: "PARTICIPANT_PLAN_UNREADABLE",
-                        message: "the stored participant plan is not decodable".into(),
-                    })
-                } else {
-                    match deterministic_participant_plan(app, record, &context, graph).await {
-                        Err(failure) => Some(failure),
-                        Ok(_) => Some(ParticipantPlanFailure {
-                            code: "PARTICIPANT_PLAN_NOT_RECORDED",
-                            message: "the participant plan is not recorded".into(),
-                        }),
-                    }
-                }
-            }
-        }
+        participant_problem_from_readiness(&readiness)
     };
     let plan = app.db.frozen_lead_plan(&record.lead_request_id).await.ok();
     let prerequisites = lead_planning_prerequisites(app, record).await?;
@@ -11625,8 +11614,7 @@ async fn agentic_projection_for_request(
     // No validated WorkGraph means no executable decomposition. A graph with a
     // failed participant compilation is PLANNED_PENDING with its causal
     // problem preserved, never a false WORK_GRAPH_NOT_PLANNED.
-    let participant_state =
-        participant_projection_state(participants.is_some(), graph.is_some(), triage.route);
+    let participant_state = readiness.work_graph_state;
     let (required_reviewer_count, participant_roles, participant_assignments) = participants
         .as_ref()
         .map(|plan| {
@@ -15104,6 +15092,32 @@ fn readiness_problem(problems: &mut Vec<String>, message: impl Into<String>) {
 /// lane and assurance require. A missing assignment, a stale WorkGraph binding
 /// or any extra role fails closed: the Gate must never infer reviewer authority
 /// from an incomplete plan.
+fn participant_problem_from_readiness(
+    readiness: &ParticipantPlanReadiness,
+) -> Option<ParticipantPlanFailure> {
+    let code = if readiness.graph_stale {
+        "PARTICIPANT_PLAN_STALE"
+    } else if readiness
+        .problems
+        .iter()
+        .any(|problem| problem.contains("not recorded"))
+    {
+        "PARTICIPANT_PLAN_NOT_RECORDED"
+    } else if readiness
+        .problems
+        .iter()
+        .any(|problem| problem.contains("not decodable"))
+    {
+        "PARTICIPANT_PLAN_UNREADABLE"
+    } else {
+        "PARTICIPANT_PLAN_INVALID"
+    };
+    Some(ParticipantPlanFailure {
+        code,
+        message: readiness.problems.join("; "),
+    })
+}
+
 fn assess_participant_plan(
     route: factory_native::agentic::ChangeRoute,
     assurance: factory_native::agentic::Assurance,
@@ -18919,13 +18933,26 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             .await
             .ok()
             .map(|graph| graph.graph_sha256);
-        let plan_matches_graph = graph_sha.as_ref().is_some_and(|graph_sha| {
-            participant_record
-                .as_ref()
-                .and_then(|record| record.graph_sha256.as_ref())
-                == Some(graph_sha)
-        });
-        let work_units = if plan_matches_graph {
+        let assurance = triage.assurance.max(assurance_for_risk(risk));
+        let lane = factory_native::agentic::lane_for_route(triage.route)
+            .unwrap_or(factory_native::planning::PlanningLane::Direct);
+        let reviewer_plan = factory_native::planning::route::required_reviewers(lane, assurance);
+        let participant_source = participant_record
+            .as_ref()
+            .map(|record| ParticipantPlanSource {
+                reviewer_count: record.reviewer_count,
+                graph_sha256: record.graph_sha256.as_deref(),
+                plan_json: &record.plan_json,
+            });
+        let readiness = assess_participant_plan(
+            triage.route,
+            assurance,
+            &reviewer_plan,
+            participant_source,
+            graph_sha.as_deref(),
+        );
+        let participant_state = readiness.work_graph_state;
+        let work_units = if readiness.ready {
             participant_record
                 .as_ref()
                 .map(|record| usize::try_from(record.work_units).unwrap_or(usize::MAX))
@@ -18933,7 +18960,7 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
         } else {
             0
         };
-        let participant_count = if plan_matches_graph {
+        let participant_count = if readiness.ready {
             participant_record
                 .as_ref()
                 .and_then(|record| {
@@ -18947,8 +18974,6 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
         } else {
             0
         };
-        let participant_state =
-            participant_projection_state(plan_matches_graph, graph_sha.is_some(), triage.route);
         let state = app
             .db
             .lead_request_projection(&record.lead_request_id)
@@ -18964,7 +18989,7 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             mode: format!("{:?}", record.mode),
             state,
             route: triage.route,
-            assurance: triage.assurance.max(assurance_for_risk(risk)),
+            assurance,
             request_kind: triage.request_kind,
             work_units,
             participant_count,
@@ -37747,6 +37772,31 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+        app.db
+            .mutate_participant_plan_for_test("44444444-4444-4444-8444-444444444444", "NO_AGENT")
+            .await
+            .unwrap();
+        let (status, mismatched) = call(
+            router.clone(),
+            "GET",
+            "/agentic/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(mismatched["participantState"], "PLANNED_PENDING");
+        let (status, mismatched_intake) = call(
+            router.clone(),
+            "GET",
+            "/intake/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            mismatched_intake["planning"]["participantPlan"]["workGraphState"],
+            "PLANNED_PENDING"
+        );
         app.db
             .set_participant_plan_graph_sha_for_test(
                 "44444444-4444-4444-8444-444444444444",
