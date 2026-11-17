@@ -1272,6 +1272,23 @@ def is_sha256_digest(value: object) -> bool:
     return all(character in "0123456789abcdef" for character in value)
 
 
+COUNTER_ACTIVITY_KEYS = ("assessment", "lead_stack_selection", "planner", "environment", "spec")
+
+
+def counters_have_activity(counters: object) -> bool:
+    """A counters dict is only usable if it recorded at least one real call."""
+
+    if not isinstance(counters, dict):
+        return False
+    for key in COUNTER_ACTIVITY_KEYS:
+        try:
+            if int(counters.get(key) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
 def participant_plan_digest_matches(participant_plan: dict) -> tuple[bool, str]:
     """The claimed digest must equal SHA-256 of the exact planJson bytes.
 
@@ -1447,6 +1464,16 @@ def autonomous_campaign(context: Context) -> None:
     context.state.set("campaign_id", campaign_id)
     context.state.set("attempt_id", attempt_id)
     context.state.set("autonomous_counters", counters)
+    context.state.set(
+        "autonomous_counters_snapshot",
+        {
+            "counters": counters,
+            "candidate_sha": context.state.get("candidate_sha"),
+            "run_id": context.state.get("run_id"),
+            "stage": "autonomous_campaign",
+            "captured_at": now_utc(),
+        },
+    )
     context.state.set("autonomous_state", state_name)
     context.state.set("autonomous_projection", {
         "planning": planning,
@@ -1594,10 +1621,32 @@ def autonomous_summary(context: Context) -> None:
         "environment_spec_sha256",
     )
     clean = context.state.get("dirty") is not True
-    counters = _fixture_counters(context) or context.state.get("autonomous_counters") or {}
+    snapshot = context.state.get("autonomous_counters_snapshot") or {}
+    stored = snapshot.get("counters") or context.state.get("autonomous_counters") or {}
+    live = _fixture_counters(context)
+    binding_ok = True
+    for key in ("candidate_sha", "run_id"):
+        recorded = snapshot.get(key)
+        current = context.state.get(key)
+        if recorded and current and recorded != current:
+            binding_ok = False
+    restart_ran = any(
+        str(item.get("name") or "").endswith("restart")
+        for item in (context.state.get("stage_results") or [])
+    )
+    # The campaign-phase activity uses that phase's own snapshot. A live fixture
+    # reset after the restart shows all zeros and must not eclipse the pre-restart
+    # evidence; there is no silent OR, no max and no fabricated counters.
+    if binding_ok and counters_have_activity(stored):
+        counters, counters_source = stored, "pre_restart"
+    elif not restart_ran and counters_have_activity(live):
+        counters, counters_source = live, "live"
+    else:
+        counters, counters_source = {}, "missing"
     passed = (
         clean
         and context.state.get("restart_persistence") is True
+        and counters_source != "missing"
         and counters.get("planner", 0) >= 1
         and context.state.get("manual_planning_calls", 0) == 0
     )
@@ -1617,6 +1666,8 @@ def autonomous_summary(context: Context) -> None:
         "environment_spec_sha256": context.state.get("environment_spec_sha256"),
         "manual_planning_calls": context.state.get("manual_planning_calls", 0),
         "fixture_counters": counters,
+        "counters_source": counters_source,
+        "counters_by_phase": {"pre_restart": stored or None, "post_restart_live": live or None},
         "model_evidence": "SIMULATED",
         "provider_provenance": "opencode-go/deepseek-v4.1-flash (fixture route)",
         "paid_inference": False,

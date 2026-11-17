@@ -173,18 +173,16 @@ class Compose:
     def __init__(self, api: Api):
         self.api = api
         self.calls = []
+        self.counters = {
+            "assessment": 1,
+            "lead_stack_selection": 1,
+            "planner": 1,
+            "environment": 1,
+            "spec": 1,
+        }
 
     def run(self, arguments, check=False):
-        payload = {
-            "counters": {
-                "assessment": 1,
-                "lead_stack_selection": 1,
-                "planner": 1,
-                "environment": 1,
-                "spec": 1,
-            },
-            "errors": {},
-        }
+        payload = {"counters": dict(self.counters), "errors": {}}
         return subprocess.CompletedProcess(
             args=list(arguments), returncode=0, stdout=json.dumps(payload) + "\n", stderr=""
         )
@@ -195,6 +193,8 @@ class Compose:
     def up(self, build=False):
         self.calls.append(("up", build))
         self.api.restarted = True
+        # The fixture process restarts with the stack: its counters reset to zero.
+        self.counters = {key: 0 for key in self.counters}
 
 
 def context_factory(api: Api, artifacts_dir: Path):
@@ -213,6 +213,8 @@ def context_factory(api: Api, artifacts_dir: Path):
                 "intake_id": "i1",
                 "intake_action_id": "act1",
                 "intake_lead_request_id": "lead1",
+                "run_id": "run-1",
+                "candidate_sha": "candidate-1",
             }
         ),
     )
@@ -309,6 +311,38 @@ class AutonomousStageSequenceTests(unittest.TestCase):
         self.assertTrue(self.context.state.get("restart_persistence"))
         self.assertEqual(summary["status"], "PASS")
         self.assertTrue(summary["restart_persistence"])
+
+    def test_dispatcher_loop_keeps_pre_restart_counters_when_live_resets(self) -> None:
+        for name in ("autonomous_campaign", "autonomous_negative", "autonomous_restart", "autonomous_summary"):
+            scenario.dispatch_stage(self.context, name)
+        summary = json.loads((self.artifacts_dir / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["status"], "PASS")
+        self.assertEqual(summary["counters_source"], "pre_restart")
+        self.assertEqual(summary["counters_by_phase"]["post_restart_live"]["planner"], 0)
+        self.assertEqual(summary["fixture_counters"]["planner"], 1)
+
+    def test_summary_is_partial_when_the_stored_snapshot_is_missing(self) -> None:
+        self.run_campaign()
+        state = self.context.state
+        for key in ("autonomous_counters_snapshot", "autonomous_counters"):
+            state.values.pop(key, None)
+        self.context.compose.counters = {key: 0 for key in self.context.compose.counters}
+        compose_intake.autonomous_negative(self.context)
+        compose_intake.autonomous_restart(self.context)
+        compose_intake.autonomous_summary(self.context)
+        summary = json.loads((self.artifacts_dir / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["status"], "PARTIAL")
+        self.assertEqual(summary["counters_source"], "missing")
+
+    def test_summary_rejects_a_snapshot_with_a_mismatched_run(self) -> None:
+        self.run_campaign()
+        self.context.state.values["autonomous_counters_snapshot"]["run_id"] = "another-run"
+        compose_intake.autonomous_negative(self.context)
+        compose_intake.autonomous_restart(self.context)
+        compose_intake.autonomous_summary(self.context)
+        summary = json.loads((self.artifacts_dir / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["status"], "PARTIAL")
+        self.assertEqual(summary["counters_source"], "missing")
 
     def test_dispatcher_loop_reports_partial_when_restart_never_ran(self) -> None:
         for name in ("autonomous_campaign", "autonomous_negative", "autonomous_summary"):
