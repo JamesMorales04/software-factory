@@ -3736,6 +3736,10 @@ impl EnvironmentBuilder for TestEnvironmentBuilder {
     }
 }
 
+/// A readiness probe must fit inside the Compose Core health-check timeout
+/// (3s) even when the broker accepts the connection but does not answer.
+const READINESS_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 fn broker_reports_ready(health: &serde_json::Value, image: &str, digest: &str) -> bool {
     let projection = health.get("environmentBuilder");
     projection
@@ -3760,6 +3764,9 @@ pub struct RuntimeBrokerEnvironmentBuilder {
     broker: crate::runtime_broker::RuntimeBrokerClient,
     descriptor: EnvironmentBuilderDescriptor,
     status: std::sync::RwLock<EnvironmentBuilderStatus>,
+    /// Monotonic token for readiness probes. A probe that finishes after a
+    /// newer probe has started must not overwrite the newer result.
+    refresh_generation: std::sync::atomic::AtomicU64,
 }
 
 impl std::fmt::Debug for RuntimeBrokerEnvironmentBuilder {
@@ -3857,6 +3864,7 @@ impl RuntimeBrokerEnvironmentBuilder {
             broker,
             descriptor,
             status: std::sync::RwLock::new(status),
+            refresh_generation: std::sync::atomic::AtomicU64::new(0),
         })))
     }
 
@@ -3864,7 +3872,15 @@ impl RuntimeBrokerEnvironmentBuilder {
     /// non-ready projection, a mismatched image/digest or an unreachable broker
     /// all remain UNAVAILABLE; a later successful probe can recover.
     async fn refresh_status(&self) -> EnvironmentBuilderStatus {
-        let status = match self.broker.health().await {
+        let generation = self
+            .refresh_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .wrapping_add(1);
+        let status = match self
+            .broker
+            .health_with_timeout(READINESS_PROBE_TIMEOUT)
+            .await
+        {
             Ok(health)
                 if broker_reports_ready(
                     &health,
@@ -3876,7 +3892,15 @@ impl RuntimeBrokerEnvironmentBuilder {
             }
             _ => EnvironmentBuilderStatus::Unavailable,
         };
-        self.set_status(status);
+        // A probe that finishes after a newer probe started must not overwrite
+        // the newer result. The newest probe is the only writer.
+        if self
+            .refresh_generation
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == generation
+        {
+            self.set_status(status);
+        }
         status
     }
 
@@ -6487,6 +6511,7 @@ mod tests {
                 status: EnvironmentBuilderStatus::Unavailable,
             },
             status: std::sync::RwLock::new(EnvironmentBuilderStatus::Unavailable),
+            refresh_generation: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -6596,6 +6621,135 @@ mod tests {
             requests.load(Ordering::SeqCst),
             2,
             "only a new explicit operation may send another request"
+        );
+        server.abort();
+    }
+
+    #[derive(Clone)]
+    struct SerialHealthState {
+        calls: Arc<AtomicUsize>,
+        release_first: Arc<tokio::sync::Notify>,
+        image: String,
+        digest: String,
+    }
+
+    async fn serial_health(
+        axum::extract::State(state): axum::extract::State<SerialHealthState>,
+    ) -> axum::response::Response {
+        let call = state.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            state.release_first.notified().await;
+            axum::response::IntoResponse::into_response(axum::Json(serde_json::json!({
+                "environmentBuilder": {
+                    "status": "UNAVAILABLE",
+                    "image": "",
+                    "digest": "",
+                },
+            })))
+        } else {
+            axum::response::IntoResponse::into_response(axum::Json(serde_json::json!({
+                "environmentBuilder": {
+                    "status": "READY",
+                    "image": state.image,
+                    "digest": state.digest,
+                },
+            })))
+        }
+    }
+
+    async fn hanging_health() -> axum::response::Response {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        axum::response::IntoResponse::into_response(axum::Json(serde_json::json!({
+            "environmentBuilder": {"status": "UNAVAILABLE", "image": "", "digest": ""},
+        })))
+    }
+
+    async fn bind_test_listener(port: u16) -> tokio::net::TcpListener {
+        let mut attempts = 0;
+        loop {
+            match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+                Ok(listener) => return listener,
+                Err(error) if attempts < 200 => {
+                    attempts += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    let _ = error;
+                }
+                Err(error) => panic!("fake broker could not bind 127.0.0.1:{port}: {error}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_readiness_refreshes_keep_the_newest_result() {
+        let image = "localhost/software-factory-environment-builder:dev";
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let port = free_port();
+        let state = SerialHealthState {
+            calls: Arc::new(AtomicUsize::new(0)),
+            release_first: Arc::new(tokio::sync::Notify::new()),
+            image: image.to_owned(),
+            digest: digest.clone(),
+        };
+        let router = axum::Router::new()
+            .route("/health", axum::routing::get(serial_health))
+            .with_state(state.clone());
+        let listener = bind_test_listener(port).await;
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let builder = Arc::new(runtime_broker_builder(
+            &format!("http://127.0.0.1:{port}"),
+            image,
+            &digest,
+        ));
+
+        let older = tokio::spawn({
+            let builder = Arc::clone(&builder);
+            async move { builder.refresh_status().await }
+        });
+        while state.calls.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        let newer = tokio::spawn({
+            let builder = Arc::clone(&builder);
+            async move { builder.refresh_status().await }
+        });
+        while state.calls.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        assert_eq!(newer.await.unwrap(), EnvironmentBuilderStatus::Ready);
+        assert_eq!(builder.descriptor().status, EnvironmentBuilderStatus::Ready);
+
+        state.release_first.notify_one();
+        assert_eq!(older.await.unwrap(), EnvironmentBuilderStatus::Unavailable);
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Ready,
+            "an older probe must not overwrite the newer result"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn readiness_probe_is_bounded_below_the_compose_health_timeout() {
+        let image = "localhost/software-factory-environment-builder:dev";
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let port = free_port();
+        let router = axum::Router::new().route("/health", axum::routing::get(hanging_health));
+        let listener = bind_test_listener(port).await;
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let builder = runtime_broker_builder(&format!("http://127.0.0.1:{port}"), image, &digest);
+
+        let started = std::time::Instant::now();
+        assert_eq!(
+            builder.refresh_status().await,
+            EnvironmentBuilderStatus::Unavailable
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "a readiness probe must finish inside the Compose 3s health timeout"
         );
         server.abort();
     }

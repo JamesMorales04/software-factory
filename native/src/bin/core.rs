@@ -12669,6 +12669,10 @@ async fn build_environment_before_freeze(
 ) -> Result<Option<factory_native::planning::environment::EnvironmentBuildReceipt>, Response> {
     use factory_native::planning::environment::EnvironmentBuilderStatus;
     let builder = app.environment_builder();
+    // A cached UNAVAILABLE may predate a recovered broker. Refresh before
+    // deciding to skip the receipt, otherwise a ready builder silently yields no
+    // pre-freeze build evidence.
+    builder.refresh().await;
     let descriptor = builder.descriptor();
     if !descriptor.is_available() || descriptor.status == EnvironmentBuilderStatus::Unavailable {
         return Ok(None);
@@ -36658,6 +36662,22 @@ mod tests {
                 .expect("the fake builder must produce a receipt");
             assert_eq!(receipt.spec_sha256, spec.spec_sha256);
             receipt.validate_for(&spec).unwrap();
+            // A builder cached as UNAVAILABLE whose broker has recovered must
+            // still produce the pre-freeze receipt instead of silently skipping.
+            let broker_ready = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let stale: factory_native::planning::environment::SharedEnvironmentBuilder =
+                Arc::new(ReadinessProbeEnvironmentBuilder {
+                    inner: Arc::new(FakeEnvironmentBuilder),
+                    broker_ready: Arc::clone(&broker_ready),
+                    status: std::sync::atomic::AtomicBool::new(false),
+                });
+            fixture.app.set_environment_builder(stale);
+            let refreshed_receipt =
+                build_environment_before_freeze(&fixture.app, &resolved, &spec, None)
+                    .await
+                    .unwrap()
+                    .expect("a refreshed builder must not be skipped");
+            assert_eq!(refreshed_receipt.spec_sha256, spec.spec_sha256);
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);
