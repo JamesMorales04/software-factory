@@ -153,30 +153,42 @@ class OneshotPrerequisiteTests(unittest.TestCase):
 
 
 class ProjectionShapeTests(unittest.TestCase):
-    """CR-23/CR-24: strict-JSON captures and nested graph units."""
+    """CR-24: the documented nested graph contract, with hard failures."""
 
-    def test_graph_units_are_read_from_the_nested_json(self) -> None:
+    def test_units_are_read_from_the_nested_json(self) -> None:
         nested = json.dumps({"units": [{"id": "u1"}], "graphSha256": "x" * 64})
         projection = {"graph": {"graphJson": nested, "plannerProvider": "fixture"}}
         self.assertEqual(len(compose_intake.projected_graph_units(projection)), 1)
 
-    def test_flat_units_still_work(self) -> None:
-        self.assertEqual(
-            compose_intake.projected_graph_units({"units": [{"id": "a"}]}), [{"id": "a"}]
-        )
+    def test_a_missing_graph_fails_clearly(self) -> None:
+        with self.assertRaises(ScenarioError):
+            compose_intake.projected_graph_units({})
 
-    def test_missing_or_broken_graph_returns_no_units(self) -> None:
-        self.assertEqual(compose_intake.projected_graph_units({}), [])
-        self.assertEqual(
-            compose_intake.projected_graph_units({"graph": {"graphJson": "not json"}}), []
-        )
+    def test_a_missing_graph_json_fails_clearly(self) -> None:
+        with self.assertRaises(ScenarioError):
+            compose_intake.projected_graph_units({"graph": {"plannerProvider": "fixture"}})
 
-    def test_capture_strips_raw_control_characters(self) -> None:
-        dirty = {"detail": "bad\x01value\nok", "nested": ["a\x02b"]}
-        cleaned = common._strip_control_characters(dirty)
-        self.assertEqual(cleaned["detail"], "badvalue\nok")
-        self.assertEqual(cleaned["nested"], ["ab"])
-        json.dumps(cleaned)  # strict JSON on the cleaned value
+    def test_malformed_graph_json_fails_clearly(self) -> None:
+        with self.assertRaises(ScenarioError):
+            compose_intake.projected_graph_units({"graph": {"graphJson": "not json"}})
+
+    def test_empty_units_fail_clearly(self) -> None:
+        with self.assertRaises(ScenarioError):
+            compose_intake.projected_graph_units(
+                {"graph": {"graphJson": json.dumps({"units": []})}}
+            )
+
+
+class CaptureWriterTests(unittest.TestCase):
+    """CR-23: redaction happens before encoding; the file is strict JSON."""
+
+    def test_redaction_never_breaks_a_json_string(self) -> None:
+        secret = "token=" + "a" * 40 + "\nnext_line"
+        value = {"detail": secret, "nested": [secret]}
+        redacted = common.redact_value(value)
+        payload = json.dumps(redacted)
+        json.loads(payload)
+        self.assertNotIn("a" * 40, payload)
 
 
 if __name__ == "__main__":

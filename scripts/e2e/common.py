@@ -1614,6 +1614,18 @@ _SECRET_PATTERN = re.compile(
 )
 
 
+def redact_value(value):
+    """Redact secret-shaped strings inside a parsed structure before encoding."""
+
+    if isinstance(value, str):
+        return redact_text(value)
+    if isinstance(value, list):
+        return [redact_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_value(item) for key, item in value.items()}
+    return value
+
+
 def redact_text(value: str) -> str:
     return _SECRET_PATTERN.sub(r"\1=[REDACTED]", value)
 
@@ -1663,6 +1675,25 @@ def capture_final_evidence(
             path = directory / name
             path.write_text(redact_text(body), encoding="utf-8")
             os.chmod(path, 0o600)
+
+    def record_json(name: str, status: str, value) -> None:
+        """Write a structured capture as strict JSON, redacting before encoding.
+
+        Redaction happens on the parsed values, never on serialized text: a regex
+        over JSON text injected a raw newline inside a string and produced a file
+        that was not strict JSON. The write is atomic and strictly re-parsed
+        before it replaces the target.
+        """
+
+        payload = json.dumps(redact_value(value), indent=2, sort_keys=True)
+        json.loads(payload)  # fail closed if the encoder ever emits invalid JSON
+        path = directory / name
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(payload, encoding="utf-8")
+        json.loads(temporary.read_text(encoding="utf-8"))
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        summary["artifacts"][name] = {"status": status, "detail": ""}
 
     def podman(arguments: list[str], timeout: int = 30):
         return _bounded_run(
@@ -1754,10 +1785,7 @@ def capture_final_evidence(
         if intake_id:
             try:
                 projection = api.get(f"/intake/requests/{intake_id}")
-                record("projection.json", "CAPTURED",
-                       body=json.dumps(
-                           _strip_control_characters(projection), indent=2, sort_keys=True
-                       ))
+                record_json("projection.json", "CAPTURED", projection)
             except Exception as error:  # noqa: BLE001
                 record("projection.json", "NOT_CAPTURED", f"projection failed: {error}")
         else:

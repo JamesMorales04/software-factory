@@ -1024,26 +1024,28 @@ def autonomous_request(context: Context) -> None:
 
 
 def projected_graph_units(projection: dict) -> list:
-    """Work units live either at the top level or inside the nested graph JSON.
+    """Work units from the documented projection contract.
 
-    Core projects `/agentic/requests/{id}/plan` as `{"graph": {..., "graphJson":
-    "<string>"}}`; the string carries the units, so a top-level read finds none.
+    Core projects `/agentic/requests/{id}/plan` as
+    `{"graph": {..., "graphJson": "<string>"}}`; the nested string is the
+    contract. A malformed string, a missing graph or an empty unit list is a hard
+    failure: returning an empty list would silently accept a broken projection.
     """
 
-    for candidate in (projection, projection.get("graph") or {}):
-        units = candidate.get("units")
-        if units:
-            return units
-        raw = candidate.get("graphJson")
-        if isinstance(raw, str):
-            try:
-                nested = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            units = nested.get("units")
-            if units:
-                return units
-    return []
+    graph = projection.get("graph")
+    if not isinstance(graph, dict):
+        raise ScenarioError("plan projection has no graph object")
+    raw = graph.get("graphJson")
+    if not isinstance(raw, str) or not raw.strip():
+        raise ScenarioError("plan projection graph has no graphJson string")
+    try:
+        nested = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ScenarioError(f"plan projection graphJson is not valid JSON: {error}") from error
+    units = nested.get("units")
+    if not isinstance(units, list) or not units:
+        raise ScenarioError("plan projection graphJson has no work units")
+    return units
 
 
 def review_status_accepted(planning: dict) -> bool:
