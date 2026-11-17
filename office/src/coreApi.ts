@@ -1869,6 +1869,11 @@ export interface ParticipantPlanReadinessView {
   required: boolean;
   present: boolean;
   ready: boolean;
+  workGraphState:
+    | "PLANNED"
+    | "PLANNED_PENDING"
+    | "WORK_GRAPH_NOT_PLANNED"
+    | "NOT_REQUIRED";
   reviewerCount: number;
   requiredReviewerCount: number;
   reviewerRoles: AgenticReviewerRole[];
@@ -2205,6 +2210,8 @@ export interface IntakeRequestProjection extends IntakeRequestSummary {
   proposal: LeadPlanProposalView | null;
   plan: FrozenLeadPlanRecord | null;
   planning?: PlanningReadinessView;
+  participantPlan?: ParticipantPlanReadinessView;
+  specifications: AgenticSpecification[];
   environment?: EnvironmentStateView | null;
   campaign: CampaignDetail | null;
   messages: IntakeMessage[];
@@ -2809,7 +2816,8 @@ export interface AgenticRequestDetail {
   environment?: EnvironmentStateView | null;
   findings: FindingDispositionRecord[];
   stack: AgenticStackProfile;
-  participants: AgenticParticipantPlan;
+  participants: AgenticParticipantPlan | null;
+  participantState?: "PLANNED" | "NOT_REQUIRED" | "WORK_GRAPH_NOT_PLANNED";
   reviewerEvidence: AgenticReviewerEvidence;
   specifications: AgenticSpecification[];
   plan: null | {

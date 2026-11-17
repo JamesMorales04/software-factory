@@ -722,6 +722,12 @@ export const es: Catalog = {
   "request.plan.checksValue":
     "{acceptance} de aceptación · {negative} negativas",
   "request.plan.noWorkUnits": "No hay unidades de trabajo registradas.",
+  "request.plan.workGraphUnits": "Unidades del WorkGraph",
+  "request.plan.unitStatus": "Estado",
+  "request.plan.workGraphNotPlanned": "WORK_GRAPH_NOT_PLANNED",
+  "request.plan.plannerPendingTitle": "Planner pendiente.",
+  "request.plan.plannerPendingDescription":
+    "El Lead coordina y ya no redacta unidades ejecutables. Core espera un WorkGraph validado del Planner, así que todavía no existe unidad, Campaign ni start.",
 
   "request.trace.title": "Traza del flujo de trabajo",
   "request.trace.description":
@@ -4173,6 +4179,9 @@ export const es: Catalog = {
   "director.participants.reviewers": "Revisores independientes",
   "director.participants.independentReceiptsLabel": "Recibos independientes",
   "director.participants.requiredRoles": "Roles de revisión requeridos",
+  "director.participants.workGraphNotPlannedTitle": "Planner pendiente.",
+  "director.participants.workGraphNotPlanned":
+    "No hay un WorkGraph validado del Planner, así que participantes, unidades y start de Campaign quedan bloqueados hasta que Core lo planifique y valide.",
   "director.participants.unassigned": "Sin asignar",
   "director.participants.noRoles":
     "No hay roles de revisión registrados para esta ruta.",

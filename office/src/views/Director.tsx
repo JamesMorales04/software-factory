@@ -19,6 +19,7 @@ import {
 } from "../components/ui/Surface";
 import {
   type AgenticAssurance,
+  type AgenticParticipantPlan,
   type AgenticPlanningProjection,
   type AgenticPortfolioEntry,
   type AgenticRequestDetail,
@@ -40,6 +41,39 @@ import "./specs.css";
 
 function errorText(cause: unknown, fallback: string): string {
   return cause instanceof CoreApiError ? cause.message : fallback;
+}
+
+/// Core reports an absent validated WorkGraph as a typed state, not as a
+/// fabricated one-unit plan. The UI keeps an empty, clearly non-executable
+/// participant shape so existing layout code stays total, while every pending
+/// surface is driven by `participantState`/`workGraphState`.
+const EMPTY_PARTICIPANT_PLAN: AgenticParticipantPlan = {
+  route: "NO_AGENT",
+  assurance: "NONE",
+  assignments: [],
+  contextPolicy: {
+    compactAtPercent: 70,
+    maxConsecutiveCompactions: 2,
+    handoffAtStableMilestone: true,
+    requireProbeAfterHandoff: true,
+  },
+  reasons: [],
+  unitAssignments: [],
+  reviewerCount: 0,
+  reviewerRoles: [],
+  reviewerAssignments: [],
+};
+
+export type NormalizedRequestDetail = AgenticRequestDetail & {
+  participants: AgenticParticipantPlan;
+};
+
+export function withParticipantFallback(
+  detail: AgenticRequestDetail,
+): NormalizedRequestDetail {
+  return detail.participants
+    ? (detail as NormalizedRequestDetail)
+    : { ...detail, participants: EMPTY_PARTICIPANT_PLAN };
 }
 
 function routeTone(route: AgenticRoute) {
@@ -90,8 +124,8 @@ type PreparationPhase =
 export function reviewerAssignmentsMatch(
   detail: AgenticRequestDetail,
 ): boolean {
-  const roles = detail.participants.reviewerRoles ?? [];
-  const assignments = detail.participants.reviewerAssignments ?? [];
+  const roles = detail.participants?.reviewerRoles ?? [];
+  const assignments = detail.participants?.reviewerAssignments ?? [];
   if (roles.length === 0) return assignments.length === 0;
   return (
     assignments.length === roles.length &&
@@ -107,7 +141,7 @@ export function Director() {
     null,
   );
   const [portfolioError, setPortfolioError] = useState<string | null>(null);
-  const [detail, setDetail] = useState<AgenticRequestDetail | null>(null);
+  const [detail, setDetail] = useState<NormalizedRequestDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [refreshBusy, setRefreshBusy] = useState(false);
@@ -381,7 +415,7 @@ export function Director() {
         setPreparationStalled(false);
       }
       if (detailResult.status === "fulfilled") {
-        setDetail(detailResult.value);
+        setDetail(withParticipantFallback(detailResult.value));
         setDetailError(null);
         setLastLoadedAt(new Date().toISOString());
         if (detailResult.value.operation) {
@@ -1119,6 +1153,19 @@ export function Director() {
                       </Badge>
                     )}
                   </div>
+                  {detail.participantState === "WORK_GRAPH_NOT_PLANNED" && (
+                    <div className="ui-callout ui-callout--attention" role="status">
+                      <p>
+                        <strong>
+                          {t("director.participants.workGraphNotPlannedTitle")}
+                        </strong>{" "}
+                        {t("director.participants.workGraphNotPlanned")}
+                      </p>
+                      <p className="muted">
+                        <code>WORK_GRAPH_NOT_PLANNED</code>
+                      </p>
+                    </div>
+                  )}
                   {planError && (
                     <p className="ui-callout ui-callout--danger" role="alert">
                       {planError}

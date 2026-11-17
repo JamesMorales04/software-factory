@@ -144,6 +144,7 @@ const readyParticipantPlan: ParticipantPlanReadinessView = {
   required: true,
   present: true,
   ready: true,
+  workGraphState: "PLANNED",
   reviewerCount: 5,
   requiredReviewerCount: 5,
   reviewerRoles: [
@@ -221,6 +222,8 @@ function makeProjection(
     proposal,
     plan,
     planning: readyPlanning,
+    participantPlan: readyParticipantPlan,
+    specifications: [],
     campaign: null,
     messages: [
       {

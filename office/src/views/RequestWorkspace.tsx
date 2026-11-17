@@ -1011,7 +1011,14 @@ export function RequestWorkspace() {
           )}
 
           <RequestAssessment assessment={data.assessment} />
-          <RequestPlan proposal={data.proposal} plan={data.plan} />
+          <RequestPlan
+            proposal={data.proposal}
+            plan={data.plan}
+            specifications={data.specifications}
+            participantState={
+              data.planning?.participantPlan.workGraphState
+            }
+          />
           <EnvironmentPanel
             environment={data.environment ?? null}
             requestId={data.id}

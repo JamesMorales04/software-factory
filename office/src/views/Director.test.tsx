@@ -8,7 +8,11 @@ import {
   CoreApiError,
 } from "../coreApi";
 import { I18nProvider } from "../i18n";
-import { Director } from "./Director";
+import {
+  Director,
+  reviewerAssignmentsMatch,
+  withParticipantFallback,
+} from "./Director";
 
 const mocks = vi.hoisted(() => ({
   listAgenticPortfolio: vi.fn(),
@@ -1965,5 +1969,35 @@ describe("Director", () => {
         name: "Add an ICS export endpoint",
       }),
     ).toBeNull();
+  });
+});
+
+describe("participant work-graph state", () => {
+  it("normalizes a missing plan without inventing units", () => {
+    const missing = {
+      ...detail,
+      participants: null,
+      participantState: "WORK_GRAPH_NOT_PLANNED" as const,
+    };
+    const normalized = withParticipantFallback(missing);
+    expect(normalized.participants?.assignments).toEqual([]);
+    expect(normalized.participants?.unitAssignments).toEqual([]);
+    expect(normalized.participants?.reviewerCount).toBe(0);
+    expect(normalized.participantState).toBe("WORK_GRAPH_NOT_PLANNED");
+    expect(reviewerAssignmentsMatch(missing)).toBe(true);
+  });
+
+  it("shows the typed Planner-pending callout when no validated WorkGraph exists", async () => {
+    mocks.getAgenticRequest.mockResolvedValue({
+      ...detail,
+      participants: null,
+      participantState: "WORK_GRAPH_NOT_PLANNED",
+    });
+    renderDirector();
+    await screen.findByRole("heading", { name: "Add an ICS export endpoint" });
+    expect(await screen.findByText("Planner pending.")).toBeDefined();
+    expect(
+      screen.getAllByText("WORK_GRAPH_NOT_PLANNED").length,
+    ).toBeGreaterThan(0);
   });
 });

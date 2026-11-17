@@ -3094,7 +3094,8 @@ mod tests {
             "opencode",
             "deepseek-v4.1-flash",
             "build",
-        );
+        )
+        .expect("validated work graph units");
         let plan_record = db
             .save_agentic_participant_plan(&request.id, Some(&graph.graph_sha256), &plan)
             .await

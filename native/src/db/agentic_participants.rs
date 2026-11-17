@@ -23,6 +23,27 @@ pub struct AgenticParticipantPlanRecord {
     pub updated_at: String,
 }
 
+/// The persisted `work_units` column is `CHECK (work_units >= 1)`. A plan
+/// without validated Implementer units is never persisted, and a zero count is
+/// a typed error instead of `unwrap_or(1)`.
+fn participant_work_units(plan: &crate::agentic::ParticipantPlan) -> Result<u32, Error> {
+    let work_units = plan
+        .assignments
+        .iter()
+        .filter(|assignment| assignment.role == "Implementer")
+        .map(|assignment| assignment.count)
+        .max()
+        .ok_or(Error::Invalid(
+            "participant plan requires validated work units",
+        ))?;
+    if work_units == 0 {
+        return Err(Error::Invalid(
+            "participant plan requires validated work units",
+        ));
+    }
+    Ok(work_units)
+}
+
 fn from_row(row: &sqlx_sqlite::SqliteRow) -> Result<AgenticParticipantPlanRecord, Error> {
     Ok(AgenticParticipantPlanRecord {
         request_id: row.try_get("request_id")?,
@@ -50,13 +71,7 @@ impl Database {
         let plan_json =
             serde_json::to_string(plan).map_err(|_| Error::Invalid("participant plan encoding"))?;
         let plan_sha256 = sha256_hex(plan_json.as_bytes());
-        let work_units = plan
-            .assignments
-            .iter()
-            .filter(|assignment| assignment.role == "Implementer")
-            .map(|assignment| assignment.count)
-            .max()
-            .unwrap_or(1);
+        let work_units = participant_work_units(plan)?;
         if let Some(graph_sha256) = graph_sha256
             && (graph_sha256.len() != 64
                 || !graph_sha256.bytes().all(|byte| byte.is_ascii_hexdigit()))
@@ -108,5 +123,37 @@ impl Database {
         .await?
         .ok_or(Error::NotFound)?;
         from_row(&row)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agentic::{Assurance, ChangeRoute, StackProfile, participant_plan};
+
+    #[test]
+    fn a_plan_without_validated_units_is_rejected_and_never_persisted_as_zero() {
+        let plan = participant_plan(
+            ChangeRoute::NoAgent,
+            Assurance::None,
+            0,
+            &StackProfile::default(),
+        )
+        .expect("non-change plan");
+        let error = participant_work_units(&plan).unwrap_err();
+        assert!(matches!(error, Error::Invalid(_)));
+        assert!(error.to_string().contains("validated work units"));
+    }
+
+    #[test]
+    fn validated_units_are_recorded_without_a_fallback() {
+        let plan = participant_plan(
+            ChangeRoute::Delegated,
+            Assurance::None,
+            3,
+            &StackProfile::default(),
+        )
+        .expect("validated units");
+        assert_eq!(participant_work_units(&plan).unwrap(), 3);
     }
 }

@@ -1,6 +1,7 @@
 import { Badge } from "../components/ui/Badge";
 import { EmptyState, Panel } from "../components/ui/Surface";
 import type {
+  AgenticSpecification,
   FrozenLeadPlanRecord,
   LeadPlanProposalView,
   LeadWorkUnitView,
@@ -11,9 +12,13 @@ import { useI18n } from "../i18n";
 export function RequestPlan({
   proposal,
   plan,
+  specifications,
+  participantState,
 }: {
   proposal: LeadPlanProposalView | null;
   plan: FrozenLeadPlanRecord | null;
+  specifications: AgenticSpecification[];
+  participantState?: string;
 }) {
   const { t, formatDate } = useI18n();
 
@@ -29,6 +34,14 @@ export function RequestPlan({
       negative: unit.negativeCases.length,
     });
   }
+
+  const leadUnits = proposal?.workUnits ?? [];
+  const hasLeadUnits = leadUnits.length > 0;
+  const unitCount = hasLeadUnits ? leadUnits.length : specifications.length;
+  const plannerPending =
+    proposal !== null &&
+    unitCount === 0 &&
+    participantState !== "NOT_REQUIRED";
 
   return (
     <Panel className="request-panel" as="section">
@@ -104,12 +117,14 @@ export function RequestPlan({
                 : t("request.plan.proposedPlan")}
             </h3>
             <span className="muted">
-              {t(
-                proposal.workUnits.length === 1
-                  ? "request.plan.workUnitOne"
-                  : "request.plan.workUnitOther",
-                { count: proposal.workUnits.length },
-              )}
+              {unitCount > 0
+                ? t(
+                    unitCount === 1
+                      ? "request.plan.workUnitOne"
+                      : "request.plan.workUnitOther",
+                    { count: unitCount },
+                  )
+                : t("request.plan.workGraphNotPlanned")}
             </span>
           </div>
           <dl className="request-facts">
@@ -158,13 +173,25 @@ export function RequestPlan({
           </dl>
 
           <h4 className="request-workunits-heading">
-            {t("request.plan.workUnits")}
+            {hasLeadUnits
+              ? t("request.plan.workUnits")
+              : t("request.plan.workGraphUnits")}
           </h4>
-          {proposal.workUnits.length === 0 ? (
-            <p className="muted">{t("request.plan.noWorkUnits")}</p>
-          ) : (
+          {plannerPending ? (
+            <div className="ui-callout ui-callout--attention" role="status">
+              <p>
+                <strong>{t("request.plan.plannerPendingTitle")}</strong>{" "}
+                {t("request.plan.plannerPendingDescription")}
+              </p>
+              <p className="muted">
+                <code>
+                  {participantState || t("request.plan.workGraphNotPlanned")}
+                </code>
+              </p>
+            </div>
+          ) : hasLeadUnits ? (
             <ol className="request-workunits">
-              {proposal.workUnits.map((unit) => (
+              {leadUnits.map((unit) => (
                 <li key={unit.id}>
                   <div className="request-workunit-head">
                     <code>{unit.id}</code>
@@ -192,6 +219,40 @@ export function RequestPlan({
                 </li>
               ))}
             </ol>
+          ) : specifications.length > 0 ? (
+            <ol className="request-workunits">
+              {specifications.map((unit) => (
+                <li key={unit.id}>
+                  <div className="request-workunit-head">
+                    <code>{unit.id}</code>
+                    <span className="muted">{unit.kind}</span>
+                  </div>
+                  <p>{unit.description}</p>
+                  <dl className="request-workunit-facts">
+                    <div>
+                      <dt>{t("request.plan.dependsOn")}</dt>
+                      <dd>{valuesText(unit.dependsOn)}</dd>
+                    </div>
+                    <div>
+                      <dt>{t("request.plan.allowedPaths")}</dt>
+                      <dd>{valuesText(unit.allowedPaths)}</dd>
+                    </div>
+                    <div>
+                      <dt>{t("request.plan.capabilities")}</dt>
+                      <dd>{valuesText(unit.capabilities)}</dd>
+                    </div>
+                    <div>
+                      <dt>{t("request.plan.unitStatus")}</dt>
+                      <dd>
+                        <code>{unit.status}</code>
+                      </dd>
+                    </div>
+                  </dl>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="muted">{t("request.plan.noWorkUnits")}</p>
           )}
         </div>
       )}

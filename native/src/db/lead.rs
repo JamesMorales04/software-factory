@@ -1957,7 +1957,10 @@ async fn start_lead_campaign_in_tx(
         ));
     }
     if proposal.work_units.is_empty() {
-        return Err(Error::Forbidden("WorkGraph is empty".into()));
+        return Err(Error::IntakeConflict {
+            code: "WORK_GRAPH_NOT_PLANNED",
+            message: "explicit start requires a validated Planner WorkGraph; the Lead no longer authors executable units".into(),
+        });
     }
     if proposal.risk_class != crate::lead::RiskClass::R0 {
         return Err(Error::Forbidden(

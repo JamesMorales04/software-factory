@@ -10888,6 +10888,8 @@ async fn intake_request_value(
             "ready": readiness.ready(),
         });
         value["environment"] = environment_projection_for_request(app, record).await?;
+        value["participantPlan"] = json!(readiness.participant_plan);
+        value["specifications"] = json!(work_graph_specifications(app, record).await?);
         value["startReady"] = json!(
             readiness.ready()
                 && record.campaign_id.is_none()
@@ -11227,6 +11229,7 @@ struct AgenticPortfolioEntry {
     request_kind: factory_native::agentic::RequestKind,
     work_units: usize,
     participant_count: u32,
+    participant_state: &'static str,
     stack_languages: Vec<String>,
     director_id: String,
     operation_manager_id: String,
@@ -11317,10 +11320,6 @@ async fn agentic_triage_context(
             serde_json::from_str::<factory_native::lead::LeadPlanProposal>(&record.proposal_json)
                 .ok()
         });
-    let work_units = proposal
-        .as_ref()
-        .map(|proposal| proposal.work_units.len())
-        .unwrap_or(0);
     let risk = proposal
         .as_ref()
         .map(|proposal| proposal.risk_class)
@@ -11333,6 +11332,7 @@ async fn agentic_triage_context(
         .unwrap_or_default();
     let paths: Vec<String> = proposal
         .as_ref()
+        .filter(|proposal| !proposal.work_units.is_empty())
         .map(|proposal| {
             proposal
                 .work_units
@@ -11371,6 +11371,16 @@ async fn agentic_triage_context(
         || semantic
             .as_ref()
             .is_some_and(|(_, model)| model.request_kind == agentic::RequestKind::Audit);
+    // The Lead no longer authors executable units: sizing comes from the
+    // semantic assessment and Core's deterministic signals, never from the
+    // Lead's WorkUnit count.
+    let expected_work_units = semantic
+        .as_ref()
+        .and_then(|(_, model)| model.expected_work_units);
+    let cross_module = semantic
+        .as_ref()
+        .is_some_and(|(_, model)| model.cross_module);
+    let changed_files = u32::try_from(paths.len()).unwrap_or(u32::MAX);
     let deterministic_signals = agentic::TriageSignals {
         objective: record.objective.clone(),
         files: paths,
@@ -11381,14 +11391,10 @@ async fn agentic_triage_context(
             _ => "high",
         }
         .into(),
-        expected_work_units: if work_units > 0 {
-            Some(u32::try_from(work_units).unwrap_or(u32::MAX))
-        } else {
-            None
-        },
+        expected_work_units,
         ambiguous: proposal.is_none() && !explicit_informational && !explicit_audit,
         architecture_uncertainty: proposal.is_none() && !explicit_informational && !explicit_audit,
-        cross_module: work_units > 1,
+        cross_module,
         public_contract: false,
         data_or_schema: false,
         security_boundary: false,
@@ -11404,16 +11410,19 @@ async fn agentic_triage_context(
     let planning_signals = factory_native::planning::PlanningSignals {
         objective: record.objective.clone(),
         greenfield: deterministic_stack.languages.is_empty(),
-        large: work_units > 1 || record.objective.chars().count() > 500,
+        // Deterministic only: scope paths are not changed files, so the
+        // explicit threshold is the bounded objective length. Multi-unit work
+        // still floors the lane through expected_units/cross_module.
+        large: record.objective.chars().count() > 500,
         missing_docs,
         missing_stack: deterministic_stack.languages.is_empty(),
         architecture_uncertainty: deterministic_signals.architecture_uncertainty,
         public_contract: false,
         data_or_schema: false,
         security_boundary: false,
-        cross_module: work_units > 1,
-        changed_files: u32::try_from(deterministic_signals.files.len()).unwrap_or(u32::MAX),
-        expected_units: u32::try_from(work_units).unwrap_or(u32::MAX),
+        cross_module,
+        changed_files,
+        expected_units: expected_work_units.unwrap_or(0),
         explicit_repair: false,
     };
     let planning_lane = factory_native::planning::route::route_for(
@@ -11466,6 +11475,55 @@ async fn agentic_triage_context(
     })
 }
 
+/// Executable specifications come from the validated Planner WorkGraph, never
+/// from the Lead proposal. A request without a graph has no executable units.
+fn work_graph_specification_values(
+    graph: &factory_native::agentic::ValidatedWorkGraph,
+    tasks: &[factory_native::db::LeadTaskRecord],
+) -> Vec<serde_json::Value> {
+    graph
+        .units
+        .iter()
+        .map(|unit| {
+            let status = tasks
+                .iter()
+                .find(|task| task.unit_id == unit.id)
+                .map(|task| task.status.clone())
+                .unwrap_or_else(|| "PLANNED".into());
+            serde_json::json!({
+                "id": unit.id,
+                "description": unit.objective,
+                "kind": "implementation",
+                "allowedPaths": unit.paths,
+                "capabilities": [],
+                "dependsOn": unit.depends_on,
+                "status": status,
+            })
+        })
+        .collect()
+}
+
+async fn work_graph_specifications(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<Vec<serde_json::Value>, Error> {
+    let graph = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph_record) => serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
+            &graph_record.graph_json,
+        )
+        .ok(),
+        Err(_) => None,
+    };
+    let Some(graph) = graph else {
+        return Ok(Vec::new());
+    };
+    let tasks = match record.campaign_id.as_deref() {
+        Some(campaign_id) => app.db.campaign_tasks(campaign_id).await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    Ok(work_graph_specification_values(&graph, &tasks))
+}
+
 async fn agentic_projection_for_request(
     app: &App,
     record: &factory_native::db::IntakeRequestRecord,
@@ -11473,23 +11531,19 @@ async fn agentic_projection_for_request(
     use factory_native::agentic;
     let lead = app.db.lead_request(&record.lead_request_id).await?;
     let context = agentic_triage_context(app, record).await?;
-    let participant_from_graph = match app.db.agentic_work_graph(&record.id).await {
-        Ok(graph_record) => {
-            match serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
-                &graph_record.graph_json,
-            ) {
-                Ok(graph) => deterministic_participant_plan(app, record, &context, &graph)
-                    .await
-                    .ok(),
-                Err(_) => None,
-            }
-        }
+    let graph = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph_record) => serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
+            &graph_record.graph_json,
+        )
+        .ok(),
         Err(_) => None,
     };
-    let proposal = context.proposal.as_ref();
-    let work_units = proposal
-        .map(|proposal| proposal.work_units.len())
-        .unwrap_or(0);
+    let participant_from_graph = match &graph {
+        Some(graph) => deterministic_participant_plan(app, record, &context, graph)
+            .await
+            .ok(),
+        None => None,
+    };
     let plan = app.db.frozen_lead_plan(&record.lead_request_id).await.ok();
     let prerequisites = lead_planning_prerequisites(app, record).await?;
     let tasks = if let Some(campaign_id) = &record.campaign_id {
@@ -11497,18 +11551,29 @@ async fn agentic_projection_for_request(
     } else {
         Vec::new()
     };
-    let assurance = context.assurance();
     let stack = context.stack.clone();
     let triage = context.triage;
     let semantic = context.semantic;
-    let participants = participant_from_graph.unwrap_or_else(|| {
-        agentic::participant_plan(
-            triage.route,
-            assurance,
-            u32::try_from(work_units.max(1)).unwrap_or(u32::MAX),
-            &stack,
-        )
-    });
+    // No validated WorkGraph means no executable decomposition. The projection
+    // reports the typed state instead of fabricating a one-unit plan.
+    let participants = participant_from_graph;
+    let participant_state = if participants.is_some() {
+        "PLANNED"
+    } else if triage.route == agentic::ChangeRoute::NoAgent {
+        "NOT_REQUIRED"
+    } else {
+        "WORK_GRAPH_NOT_PLANNED"
+    };
+    let (required_reviewer_count, participant_roles, participant_assignments) = participants
+        .as_ref()
+        .map(|plan| {
+            (
+                plan.reviewer_count,
+                plan.reviewer_roles.clone(),
+                plan.reviewer_assignments.clone(),
+            )
+        })
+        .unwrap_or_else(|| (0, Vec::new(), Vec::new()));
     let reviewer_receipts = match record.campaign_id.as_deref() {
         Some(campaign_id) => match app.db.latest_candidate_for_campaign(campaign_id).await {
             Ok(candidate) => app
@@ -11549,29 +11614,10 @@ async fn agentic_projection_for_request(
     };
     let workflow = app.db.workflow_run_for_request(&record.id).await?;
     let findings = app.db.finding_dispositions(&record.id).await?;
-    let specifications = proposal
-        .map(|proposal| {
-            proposal
-                .work_units
-                .iter()
-                .map(|unit| {
-                    let status = tasks
-                        .iter()
-                        .find(|task| task.unit_id == unit.id)
-                        .map(|task| task.status.clone())
-                        .unwrap_or_else(|| "PLANNED".into());
-                    serde_json::json!({
-                        "id": unit.id,
-                        "description": unit.description,
-                        "kind": format!("{:?}", unit.kind),
-                        "allowedPaths": unit.allowed_paths,
-                        "capabilities": unit.capabilities,
-                        "dependsOn": unit.depends_on,
-                        "status": status,
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
+    // Executable specifications come from the validated Planner WorkGraph.
+    let specifications = graph
+        .as_ref()
+        .map(|graph| work_graph_specification_values(graph, &tasks))
         .unwrap_or_default();
     Ok(serde_json::json!({
         "request": {
@@ -11607,10 +11653,11 @@ async fn agentic_projection_for_request(
         "findings": findings,
         "stack": stack,
         "participants": participants,
+        "participantState": participant_state,
         "reviewerEvidence": {
-            "requiredReviewerCount": participants.reviewer_count,
-            "requiredRoles": participants.reviewer_roles,
-            "assignedPrincipals": participants.reviewer_assignments,
+            "requiredReviewerCount": required_reviewer_count,
+            "requiredRoles": participant_roles,
+            "assignedPrincipals": participant_assignments,
             "independentReviewerCount": independent_reviewer_count,
             "receipts": reviewer_receipt_view,
         },
@@ -14479,13 +14526,6 @@ JSON Schema:
         "existingProposal": context.proposal.as_ref().map(|proposal| serde_json::json!({
             "class": proposal.class,
             "riskClass": proposal.risk_class,
-            "workUnits": proposal.work_units.iter().map(|unit| serde_json::json!({
-                "id": unit.id,
-                "description": unit.description,
-                "dependsOn": unit.depends_on,
-                "allowedPaths": unit.allowed_paths,
-                "capabilities": unit.capabilities,
-            })).collect::<Vec<_>>(),
             "acceptanceCriteria": proposal.acceptance_criteria,
             "negativeCases": proposal.negative_cases,
             "assumptions": proposal.assumptions,
@@ -14915,6 +14955,9 @@ struct ParticipantPlanReadiness {
     unexpected_roles: Vec<factory_native::planning::ReviewerRole>,
     missing_assignments: Vec<factory_native::planning::ReviewerRole>,
     graph_stale: bool,
+    /// Truthful decomposition state: `PLANNED`, `PLANNED_PENDING`,
+    /// `WORK_GRAPH_NOT_PLANNED` or `NOT_REQUIRED`.
+    work_graph_state: &'static str,
     problems: Vec<String>,
 }
 
@@ -15017,6 +15060,11 @@ fn assess_participant_plan(
         unexpected_roles: Vec::new(),
         missing_assignments: Vec::new(),
         graph_stale: false,
+        work_graph_state: if required {
+            "WORK_GRAPH_NOT_PLANNED"
+        } else {
+            "NOT_REQUIRED"
+        },
         problems: Vec::new(),
     };
     if !required {
@@ -15035,15 +15083,25 @@ fn assess_participant_plan(
         .copied()
         .collect::<BTreeSet<ReviewerRole>>();
     let Some(source) = source else {
+        readiness.work_graph_state = if work_graph_sha256.is_some() {
+            "PLANNED_PENDING"
+        } else {
+            "WORK_GRAPH_NOT_PLANNED"
+        };
         readiness.missing_roles = required_roles.clone();
         readiness.missing_assignments = required_roles.clone();
         readiness_problem(
             &mut readiness.problems,
-            "the participant plan is not recorded",
+            if work_graph_sha256.is_some() {
+                "the participant plan is not recorded"
+            } else {
+                "WORK_GRAPH_NOT_PLANNED: the request has no validated Planner WorkGraph"
+            },
         );
         return readiness;
     };
     readiness.present = true;
+    readiness.work_graph_state = "PLANNED";
     let plan =
         match serde_json::from_str::<factory_native::agentic::ParticipantPlan>(source.plan_json) {
             Ok(plan) => plan,
@@ -16706,7 +16764,11 @@ async fn deterministic_participant_plan(
         &content.roles.implementer.provider,
         &content.roles.implementer.model,
         "",
-    );
+    )
+    .map_err(|_| ParticipantPlanFailure {
+        code: "WORK_GRAPH_NOT_PLANNED",
+        message: "a validated Planner WorkGraph is required before participant compilation".into(),
+    })?;
     plan.reviewer_count = u32::try_from(reviewer_assignments.len()).unwrap_or(u32::MAX);
     plan.reviewer_roles = reviewer_plan.required.clone();
     plan.reviewer_assignments = reviewer_assignments;
@@ -18464,12 +18526,6 @@ async fn assess_agentic_request(
         "existingProposal": proposal.as_ref().map(|proposal| serde_json::json!({
             "class": format!("{:?}", proposal.class),
             "riskClass": proposal.risk_class,
-            "workUnits": proposal.work_units.iter().map(|unit| serde_json::json!({
-                "id": unit.id,
-                "description": unit.description,
-                "allowedPaths": unit.allowed_paths,
-                "capabilities": unit.capabilities,
-            })).collect::<Vec<_>>(),
             "assumptions": proposal.assumptions,
             "risks": proposal.risks,
         })),
@@ -18613,25 +18669,35 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
                 )
                 .ok()
             });
-        let work_units = proposal.as_ref().map(|p| p.work_units.len()).unwrap_or(0);
         let risk = proposal
             .as_ref()
             .map(|p| p.risk_class)
             .unwrap_or(factory_native::lead::RiskClass::R0);
+        let semantic = app
+            .db
+            .agentic_assessment(&record.id)
+            .await
+            .ok()
+            .and_then(|record| {
+                serde_json::from_str::<factory_native::agentic::AgenticTriageModel>(
+                    &record.response_json,
+                )
+                .ok()
+            });
+        let expected_work_units = semantic
+            .as_ref()
+            .and_then(|model| model.expected_work_units);
+        let cross_module = semantic.as_ref().is_some_and(|model| model.cross_module);
         let stack = agentic_stack_for_project(&app, &record.project_id).await;
         let signals = factory_native::agentic::TriageSignals {
             objective: record.objective.clone(),
             files: Vec::new(),
             domains: Vec::new(),
             risk: "low".into(),
-            expected_work_units: if work_units > 0 {
-                Some(u32::try_from(work_units).unwrap_or(u32::MAX))
-            } else {
-                None
-            },
-            ambiguous: proposal.is_none(),
+            expected_work_units,
+            ambiguous: semantic.is_none(),
             architecture_uncertainty: false,
-            cross_module: work_units > 1,
+            cross_module,
             public_contract: false,
             data_or_schema: false,
             security_boundary: false,
@@ -18640,12 +18706,28 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             explicit_repair: false,
         };
         let triage = factory_native::agentic::triage(&signals);
-        let participants = factory_native::agentic::participant_plan(
-            triage.route,
-            triage.assurance.max(assurance_for_risk(risk)),
-            u32::try_from(work_units.max(1)).unwrap_or(u32::MAX),
-            &stack,
-        );
+        // The portfolio reports persisted, validated units; an unplanned
+        // request stays at zero instead of a synthesized unit.
+        let participant_record = app.db.agentic_participant_plan(&record.id).await.ok();
+        let work_units = participant_record
+            .as_ref()
+            .map(|record| usize::try_from(record.work_units).unwrap_or(usize::MAX))
+            .unwrap_or(0);
+        let participant_count = participant_record
+            .as_ref()
+            .and_then(|record| {
+                serde_json::from_str::<factory_native::agentic::ParticipantPlan>(&record.plan_json)
+                    .ok()
+            })
+            .map(|plan| plan.assignments.iter().map(|a| a.count).sum())
+            .unwrap_or(0);
+        let participant_state = if participant_record.is_some() {
+            "PLANNED"
+        } else if triage.route == factory_native::agentic::ChangeRoute::NoAgent {
+            "NOT_REQUIRED"
+        } else {
+            "WORK_GRAPH_NOT_PLANNED"
+        };
         let state = app
             .db
             .lead_request_projection(&record.lead_request_id)
@@ -18664,7 +18746,8 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             assurance: triage.assurance.max(assurance_for_risk(risk)),
             request_kind: triage.request_kind,
             work_units,
-            participant_count: participants.assignments.iter().map(|a| a.count).sum(),
+            participant_count,
+            participant_state,
             stack_languages: stack.languages,
             director_id: operation
                 .as_ref()
@@ -21749,7 +21832,8 @@ mod tests {
             Assurance::Elevated,
             1,
             &StackProfile::default(),
-        );
+        )
+        .expect("validated unit");
         plan.reviewer_count = 6;
         plan.reviewer_roles = reviewer_plan.required.clone();
         plan.reviewer_assignments = assignments.clone();
@@ -21799,6 +21883,54 @@ mod tests {
                 .missing_assignments
                 .contains(&ReviewerRole::Operability)
         );
+        assert_eq!(readiness.work_graph_state, "PLANNED");
+    }
+
+    #[test]
+    fn participant_readiness_reports_the_typed_work_graph_state() {
+        let reviewer_plan = factory_native::planning::route::required_reviewers(
+            factory_native::planning::PlanningLane::FormalSpec,
+            factory_native::agentic::Assurance::Elevated,
+        );
+        let missing = assess_participant_plan(
+            factory_native::agentic::ChangeRoute::FormalSpec,
+            factory_native::agentic::Assurance::Elevated,
+            &reviewer_plan,
+            None,
+            None,
+        );
+        assert_eq!(missing.work_graph_state, "WORK_GRAPH_NOT_PLANNED");
+        assert!(!missing.ready);
+        assert!(
+            missing
+                .problems
+                .iter()
+                .any(|problem| { problem.contains("WORK_GRAPH_NOT_PLANNED") })
+        );
+
+        let pending = assess_participant_plan(
+            factory_native::agentic::ChangeRoute::FormalSpec,
+            factory_native::agentic::Assurance::Elevated,
+            &reviewer_plan,
+            None,
+            Some("graph-sha"),
+        );
+        assert_eq!(pending.work_graph_state, "PLANNED_PENDING");
+        assert!(!pending.ready);
+
+        let direct_plan = factory_native::planning::route::required_reviewers(
+            factory_native::planning::PlanningLane::Direct,
+            factory_native::agentic::Assurance::None,
+        );
+        let non_change = assess_participant_plan(
+            factory_native::agentic::ChangeRoute::NoAgent,
+            factory_native::agentic::Assurance::None,
+            &direct_plan,
+            None,
+            None,
+        );
+        assert_eq!(non_change.work_graph_state, "NOT_REQUIRED");
+        assert!(non_change.ready);
     }
 
     #[test]
@@ -27649,7 +27781,8 @@ mod tests {
                     &content.roles.implementer.provider,
                     &content.roles.implementer.model,
                     "",
-                );
+                )
+                .expect("validated work graph units");
                 participant_plan.reviewer_count =
                     u32::try_from(assignments.len()).unwrap_or(u32::MAX);
                 participant_plan.reviewer_roles = seeded_reviewers.required.clone();
