@@ -109,6 +109,23 @@ impl Database {
         self.agentic_participant_plan(request_id).await
     }
 
+    /// Test-support only: make the stored participant plan undecodable so the
+    /// intake and agentic projections prove they stay PLANNED_PENDING.
+    #[cfg(feature = "test-support")]
+    pub async fn corrupt_participant_plan_json_for_test(
+        &self,
+        request_id: &str,
+    ) -> Result<(), Error> {
+        let _write = self.write_lock.lock().await;
+        sqlx::query::query(
+            "UPDATE agentic_participant_plans SET plan_json='not-json' WHERE request_id=?1",
+        )
+        .bind(request_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Test-support only: point a persisted participant plan at a different
     /// graph digest to prove the projection rejects stale plan/graph binding.
     #[cfg(feature = "test-support")]

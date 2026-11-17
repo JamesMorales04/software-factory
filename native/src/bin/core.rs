@@ -15178,11 +15178,11 @@ fn assess_participant_plan(
         return readiness;
     };
     readiness.present = true;
-    readiness.work_graph_state = "PLANNED";
     let plan =
         match serde_json::from_str::<factory_native::agentic::ParticipantPlan>(source.plan_json) {
             Ok(plan) => plan,
             Err(_) => {
+                readiness.work_graph_state = "PLANNED_PENDING";
                 readiness_problem(
                     &mut readiness.problems,
                     "the stored participant plan is not decodable",
@@ -15325,6 +15325,12 @@ fn assess_participant_plan(
         && readiness.missing_roles.is_empty()
         && readiness.unexpected_roles.is_empty()
         && readiness.missing_assignments.is_empty();
+    // A decodable record that is stale or inconsistent is not a complete plan.
+    readiness.work_graph_state = if readiness.ready {
+        "PLANNED"
+    } else {
+        "PLANNED_PENDING"
+    };
     readiness
 }
 
@@ -37760,6 +37766,45 @@ mod tests {
         assert_eq!(
             stale["participantProblem"]["code"],
             "PARTICIPANT_PLAN_STALE"
+        );
+        let (status, stale_intake) = call(
+            router.clone(),
+            "GET",
+            "/intake/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            stale_intake["planning"]["participantPlan"]["workGraphState"],
+            "PLANNED_PENDING"
+        );
+
+        // Undecodable stored plan: still pending, never PLANNED.
+        app.db
+            .corrupt_participant_plan_json_for_test("44444444-4444-4444-8444-444444444444")
+            .await
+            .unwrap();
+        let (status, unreadable) = call(
+            router.clone(),
+            "GET",
+            "/agentic/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(unreadable["participantState"], "PLANNED_PENDING");
+        let (status, unreadable_intake) = call(
+            router.clone(),
+            "GET",
+            "/intake/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            unreadable_intake["planning"]["participantPlan"]["workGraphState"],
+            "PLANNED_PENDING"
         );
 
         // Absent request: the test-only route fails closed and writes nothing.
