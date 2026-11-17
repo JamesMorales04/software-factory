@@ -342,10 +342,51 @@ async fn the_frozen_resume_is_read_only() {
     let _ = std::fs::remove_dir_all(&repository);
 }
 
+/// The ON case: with the variable set to "1" the seam applies the fixture
+/// binding to a real ActionSpec. Without this case a suite could pass while the
+/// gate never opens.
+#[test]
+fn the_seam_applies_the_placeholder_on_explicit_opt_in() {
+    let mut spec = crate::action_spec_for_opt_in_test();
+    unsafe { std::env::set_var("FACTORY_TEST_ENVIRONMENT_BINDING", "1") };
+    factory_native::db::apply_test_environment_binding_if_enabled(&mut spec, "action-on");
+    unsafe { std::env::remove_var("FACTORY_TEST_ENVIRONMENT_BINDING") };
+    assert_eq!(
+        spec.environment_plan_id.as_deref(),
+        Some("test-plan-action-on")
+    );
+    assert_eq!(
+        spec.environment_spec_id.as_deref(),
+        Some("test-spec-action-on")
+    );
+    assert!(spec.environment_required);
+    assert_eq!(
+        spec.environment_builder_image.as_deref(),
+        Some("fixture/environment-builder")
+    );
+}
+
 #[test]
 fn the_placeholder_identity_is_never_a_real_plan() {
     let (plan, spec) = frozen_pair("action-1", "project-1", "b".repeat(40).as_str(), "plan-1");
     assert_ne!(plan.plan_id, "test-plan-action-1");
     assert_ne!(spec.spec_id, "test-spec-action-1");
     assert_eq!(sha256_hex(plan.plan_id.as_bytes()).len(), 64);
+}
+
+/// A real `ActionSpec` with every field the seam touches left empty.
+pub(crate) fn action_spec_for_opt_in_test() -> factory_native::db::ActionSpec {
+    serde_json::from_value(serde_json::json!({
+        "schema_version": 1,
+        "project_id": "project-on",
+        "repository": "/tmp/repository",
+        "base_commit": "a".repeat(40),
+        "objective": "opt-in",
+        "objective_sha256": "b".repeat(64),
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "allowed_paths": ["src"],
+        "checks": []
+    }))
+    .expect("ActionSpec deserializes")
 }
