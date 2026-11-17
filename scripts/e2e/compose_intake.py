@@ -1255,9 +1255,23 @@ def autonomous_campaign(context: Context) -> None:
     require(environment.get("required") is True, "environment is not marked required")
     receipt_ok, receipt_problem = receipt_binds_frozen_spec(environment)
     require(receipt_ok, receipt_problem)
+    # The Worker lease is asynchronous: poll the existing wait for the chain
+    # instead of reading once and aborting while the claim is still in flight.
+    chain_problem = {"value": ""}
+
+    def chain_ready() -> bool:
+        ok, problem = attempt_chain_is_observable(
+            context.api.get(f"/campaigns/{campaign_id}"), campaign_id
+        )
+        chain_problem["value"] = problem
+        return ok
+
+    wait_until(chain_ready, config.readiness_timeout, "the Worker attempt lease")
     campaign_projection = context.api.get(f"/campaigns/{campaign_id}")
-    chain_ok, chain_problem = attempt_chain_is_observable(campaign_projection, campaign_id)
-    require(chain_ok, chain_problem)
+    chain_ok, chain_problem_text = attempt_chain_is_observable(
+        campaign_projection, campaign_id
+    )
+    require(chain_ok, chain_problem_text or chain_problem["value"])
     attempt_id = str(
         ((campaign_projection.get("tasks") or [{}])[0].get("attempt_id")) or ""
     )
