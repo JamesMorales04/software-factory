@@ -247,3 +247,21 @@ class PerRequestContextTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_review_status_accepts_only_the_closed_approval_set() -> None:
+    """The plan review status is a closed set, never a substring check.
+
+    A tuple passed to the substring helper raised a TypeError and aborted the
+    whole autonomous preparation; the guard keeps the set membership explicit.
+    """
+
+    from scripts.e2e.common import ScenarioError
+    import inspect
+
+    source = inspect.getsource(__import__("scripts.e2e.compose_intake", fromlist=["x"]))
+    assert '("AUTO_APPROVED", "OWNER_APPROVED")' not in source, (
+        "the review-status check must not pass a tuple to the substring helper"
+    )
+    assert "AUTO_APPROVED" in source and "OWNER_APPROVED" in source
+    assert issubclass(ScenarioError, Exception)

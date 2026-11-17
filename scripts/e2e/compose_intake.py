@@ -1056,9 +1056,11 @@ def autonomous_campaign(context: Context) -> None:
     assert_equal(planning.get("missingArtifacts"), [], "planning missing artifacts")
     participant_plan = planning.get("participantPlan") or {}
     assert_equal(participant_plan.get("ready"), True, "participant plan readiness")
-    assert_in(
-        str(planning.get("reviewStatus")),
-        ("AUTO_APPROVED", "OWNER_APPROVED"),
+    # Membership over a closed set, not a substring check: `assert_in` takes a
+    # single expected string, so a tuple here raised a TypeError and lost the
+    # whole preparation window.
+    require(
+        str(planning.get("reviewStatus")) in {"AUTO_APPROVED", "OWNER_APPROVED"},
         "plan review status",
     )
     assert_equal(planning.get("reviewApproved"), True, "plan review approval")
