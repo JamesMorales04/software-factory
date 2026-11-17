@@ -609,6 +609,67 @@ class DiagnosticsSafetyTests(unittest.TestCase):
             )
         self.assertEqual(list((self.artifacts / "diagnostics").glob("*intake*")), [])
 
+    def test_service_lookup_failure_still_captures_workers(self) -> None:
+        from common import Compose, State
+
+        class Api:
+            def get(self, path):
+                if path == "/workers":
+                    return [{"worker_id": "compose-worker"}]
+                return {}
+
+        compose = Compose(self.config())
+        with mock.patch.object(
+            compose, "service_container", side_effect=RuntimeError("podman ps failed")
+        ), mock.patch.object(
+            common,
+            "_bounded_run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            ),
+        ):
+            common.collect_diagnostics(
+                self.config(), compose, State(self.artifacts / "state.json"), Api()
+            )
+        directory = self.artifacts / "diagnostics"
+        self.assertTrue((directory / "workers.json").exists())
+        self.assertTrue((directory / "logs-core.error.txt").exists())
+
+    def test_missing_podman_command_still_captures_workers(self) -> None:
+        from common import Compose, State
+
+        class Api:
+            def get(self, path):
+                if path == "/workers":
+                    return [{"worker_id": "compose-worker"}]
+                return {}
+
+        compose = Compose(self.config())
+        with mock.patch.object(common, "_bounded_run", side_effect=FileNotFoundError("podman")):
+            common.collect_diagnostics(
+                self.config(), compose, State(self.artifacts / "state.json"), Api()
+            )
+        self.assertTrue((self.artifacts / "diagnostics" / "workers.json").exists())
+
+    def test_stage_failure_with_podman_failure_preserves_primary_and_cleanup(self) -> None:
+        from common import State
+        from scenario import _record_stage
+
+        state = State(self.artifacts / "state.json")
+        _record_stage(state, "autonomous_campaign", __import__("time").monotonic(), "FAIL", "campaign boom")
+        with mock.patch.object(common, "_bounded_run", side_effect=FileNotFoundError("podman")):
+            common.collect_diagnostics(
+                self.config(), self.compose(), state, None
+            )
+        cleanup = mock.Mock(return_value="cleanup-ran")
+        capture = mock.Mock(side_effect=RuntimeError("capture exploded"))
+        _, cleanup_result, capture_error = common.finalize_with_capture(capture, cleanup)
+
+        stages = state.get("stage_results") or []
+        self.assertTrue(any(item.get("error") == "campaign boom" for item in stages))
+        self.assertEqual(cleanup_result, "cleanup-ran")
+        self.assertIsInstance(capture_error, RuntimeError)
+
     def test_finalize_preserves_the_original_error_when_capture_fails(self) -> None:
         def capture():
             raise RuntimeError("capture exploded")

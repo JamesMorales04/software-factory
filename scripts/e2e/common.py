@@ -1451,13 +1451,23 @@ def _diagnostic_file_name(key: str, endpoint: str) -> str:
     return f"{key}-{safe}.error.txt".replace("/", "-")
 
 
+def _diagnostic_error_text(error: BaseException) -> str:
+    """One bounded, redaction-safe line for a failed diagnostic artifact."""
+
+    message = str(error).replace("\n", " ")[:500]
+    return f"{type(error).__name__}: {message}\n"
+
+
 def collect_diagnostics(
     config: Config,
     compose: Compose,
     state: State,
     api: Api | None,
 ) -> None:
-    directory = ensure_dir(config.artifacts_dir / "diagnostics")
+    try:
+        directory = ensure_dir(config.artifacts_dir / "diagnostics")
+    except Exception:  # noqa: BLE001 - diagnostics are best effort
+        return
     commands = [
         (["podman", "ps", "-a", "--filter", f"label=com.docker.compose.project={config.project}"], "podman-ps.txt"),
         (["podman", "volume", "ls", "--filter", f"label=com.docker.compose.project={config.project}"], "podman-volumes.txt"),
@@ -1471,11 +1481,17 @@ def collect_diagnostics(
                 timeout=30,
             )
             body = f"$ {' '.join(command)}\n\n{result.stdout}\n\nSTDERR\n{result.stderr}\n"
-        except ScenarioError as error:
-            body = f"$ {' '.join(command)}\ndiagnostic failed: {error}\n"
+        except Exception as error:  # noqa: BLE001 - one artifact boundary
+            body = f"$ {' '.join(command)}\ndiagnostic failed: {_diagnostic_error_text(error)}"
         _write_diagnostic(directory, name, body)
     for service in ("core", "supervisor", "worker", "runtime", "model-fixture", "git-fixture"):
-        name = compose.service_container(service)
+        try:
+            name = compose.service_container(service)
+        except Exception as error:  # noqa: BLE001 - lookup is one artifact boundary
+            _write_diagnostic(
+                directory, f"logs-{service}.error.txt", _diagnostic_error_text(error)
+            )
+            continue
         if not name:
             continue
         try:
@@ -1486,8 +1502,8 @@ def collect_diagnostics(
                 timeout=30,
             )
             body = f"container={name}\n\n{result.stdout}\n\nSTDERR\n{result.stderr}\n"
-        except ScenarioError as error:
-            body = f"container={name}\ndiagnostic failed: {error}\n"
+        except Exception as error:  # noqa: BLE001 - one artifact boundary
+            body = f"container={name}\ndiagnostic failed: {_diagnostic_error_text(error)}"
         _write_diagnostic(directory, f"logs-{service}.txt", body)
     if api is not None:
         endpoints = {
