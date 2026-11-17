@@ -82,6 +82,29 @@ describe("RequestPlan", () => {
     expect(screen.queryByText("No work units recorded.")).toBeNull();
   });
 
+  it("prefers the validated WorkGraph when both sources are present", () => {
+    renderPlan(
+      [
+        {
+          id: "unit-1",
+          kind: "implementation",
+          description: "Legacy Lead unit",
+          dependsOn: [],
+          allowedPaths: ["src"],
+          capabilities: ["repository-edit"],
+          acceptanceCriteria: [check],
+          negativeCases: [],
+        },
+      ],
+      [workGraphUnit],
+      "PLANNED",
+    );
+
+    expect(screen.getByText("graph-unit")).toBeDefined();
+    expect(screen.queryByText("unit-1")).toBeNull();
+    expect(screen.queryByText("Legacy Lead unit")).toBeNull();
+  });
+
   it("renders validated WorkGraph units when the Lead authors none", () => {
     renderPlan([], [workGraphUnit], "PLANNED");
 

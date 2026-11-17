@@ -1956,12 +1956,11 @@ async fn start_lead_campaign_in_tx(
             "project configuration or base changed after the Lead request".into(),
         ));
     }
-    if proposal.work_units.is_empty() {
-        return Err(Error::IntakeConflict {
-            code: "WORK_GRAPH_NOT_PLANNED",
-            message: "explicit start requires a validated Planner WorkGraph; the Lead no longer authors executable units".into(),
-        });
-    }
+    // The validated Planner WorkGraph owns executable decomposition. A Lead
+    // proposal with an empty WorkUnits array starts only from that graph; the
+    // Lead units remain readable solely for legacy frozen plans without one.
+    let graph = load_start_work_graph(connection, &request.id).await?;
+    let units = start_work_units(proposal, graph.as_ref())?;
     if proposal.risk_class != crate::lead::RiskClass::R0 {
         return Err(Error::Forbidden(
             "explicit start is limited to a deterministically eligible R0 plan".into(),
@@ -2066,7 +2065,7 @@ async fn start_lead_campaign_in_tx(
             "frozen plan does not match the ActionSpec checks".into(),
         ));
     }
-    for unit in &proposal.work_units {
+    for unit in &units {
         if unit
             .allowed_paths
             .iter()
@@ -2077,8 +2076,8 @@ async fn start_lead_campaign_in_tx(
             ));
         }
     }
-    let mut specs = Vec::with_capacity(proposal.work_units.len());
-    for unit in &proposal.work_units {
+    let mut specs = Vec::with_capacity(units.len());
+    for unit in &units {
         specs.push(unit_action_spec(
             proposal,
             &config,
@@ -2329,7 +2328,7 @@ async fn start_lead_campaign_in_tx(
     }
     let mut first_run = None;
     let mut first_attempt = None;
-    for (index, (unit, spec)) in proposal.work_units.iter().zip(specs.iter()).enumerate() {
+    for (index, (unit, spec)) in units.iter().zip(specs.iter()).enumerate() {
         let spec_json =
             serde_json::to_string(spec).map_err(|_| Error::Invalid("unit ActionSpec encoding"))?;
         let spec_sha256 = sha256_hex(spec_json.as_bytes());
@@ -3341,6 +3340,56 @@ pub(super) async fn load_frozen_plan_by_id(
         delegation_hash: row.try_get("delegation_hash")?,
         created_at: row.try_get("created_at")?,
     })
+}
+
+/// Core-normalized executable units for an explicit start.
+///
+/// A validated Planner WorkGraph wins whenever it exists; otherwise a legacy
+/// frozen proposal may still supply its own units. An empty proposal without a
+/// graph is the typed `WORK_GRAPH_NOT_PLANNED` state, never a synthetic unit.
+fn start_work_units(
+    proposal: &LeadPlanProposal,
+    graph: Option<&crate::agentic::ValidatedWorkGraph>,
+) -> Result<Vec<crate::lead::LeadWorkUnit>, Error> {
+    if let Some(graph) = graph.filter(|graph| !graph.units.is_empty()) {
+        return Ok(graph
+            .units
+            .iter()
+            .map(|unit| crate::lead::LeadWorkUnit {
+                id: unit.id.clone(),
+                kind: crate::lead::WorkUnitKind::Implementation,
+                description: unit.objective.clone(),
+                depends_on: unit.depends_on.clone(),
+                allowed_paths: unit.paths.clone(),
+                capabilities: Vec::new(),
+                acceptance_criteria: Vec::new(),
+                negative_cases: Vec::new(),
+            })
+            .collect());
+    }
+    if proposal.work_units.is_empty() {
+        return Err(Error::IntakeConflict {
+            code: "WORK_GRAPH_NOT_PLANNED",
+            message:
+                "explicit start requires a validated Planner WorkGraph; the Lead no longer authors executable units"
+                    .into(),
+        });
+    }
+    Ok(proposal.work_units.clone())
+}
+
+async fn load_start_work_graph(
+    connection: &mut SqliteConnection,
+    request_id: &str,
+) -> Result<Option<crate::agentic::ValidatedWorkGraph>, Error> {
+    let row: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT graph_json FROM agentic_work_graphs WHERE request_id=?1")
+            .bind(request_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    Ok(row.and_then(|(graph_json,)| {
+        serde_json::from_str::<crate::agentic::ValidatedWorkGraph>(&graph_json).ok()
+    }))
 }
 
 fn unit_action_spec(
@@ -9966,5 +10015,45 @@ mod tests {
         }
         db.close().await;
         let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn start_units_are_resolved_from_the_validated_work_graph() {
+        let mut proposal = assessment().proposal.expect("proposal");
+        proposal.work_units.clear();
+        let graph = crate::agentic::ValidatedWorkGraph {
+            units: vec![crate::agentic::PlannedWorkUnit {
+                id: "graph-unit".into(),
+                title: "Graph unit".into(),
+                objective: "Do the bounded work.".into(),
+                depends_on: Vec::new(),
+                paths: vec!["src".into()],
+                acceptance: vec!["observable".into()],
+            }],
+            assumptions: Vec::new(),
+            risks: Vec::new(),
+            topological_order: vec!["graph-unit".into()],
+            graph_sha256: "a".repeat(64),
+        };
+
+        let units = start_work_units(&proposal, Some(&graph)).expect("graph units");
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].id, "graph-unit");
+        assert_eq!(units[0].allowed_paths, vec!["src".to_string()]);
+        assert!(units[0].acceptance_criteria.is_empty());
+
+        let error = start_work_units(&proposal, None).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::IntakeConflict {
+                code: "WORK_GRAPH_NOT_PLANNED",
+                ..
+            }
+        ));
+
+        // A validated graph wins over legacy Lead units.
+        let mut legacy = proposal.clone();
+        legacy.work_units = assessment().proposal.expect("proposal").work_units;
+        let resolved = start_work_units(&legacy, Some(&graph)).expect("graph units");
+        assert_eq!(resolved[0].id, "graph-unit");
     }
 }

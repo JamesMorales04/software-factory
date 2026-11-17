@@ -11324,25 +11324,28 @@ async fn agentic_triage_context(
         .as_ref()
         .map(|proposal| proposal.risk_class)
         .unwrap_or(factory_native::lead::RiskClass::R0);
-    let fallback_paths = app
-        .db
-        .project_config(&record.project_id)
-        .await
-        .map(|config| config.allowed_paths)
-        .unwrap_or_default();
-    let paths: Vec<String> = proposal
+    // File scope for planning comes from the validated Planner WorkGraph.
+    // `ProjectConfig.allowed_paths` is an authorization scope, never a
+    // changed-file signal, so it must not leak into planning size.
+    let graph = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph_record) => serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
+            &graph_record.graph_json,
+        )
+        .ok(),
+        Err(_) => None,
+    };
+    let paths: Vec<String> = graph
         .as_ref()
-        .filter(|proposal| !proposal.work_units.is_empty())
-        .map(|proposal| {
-            proposal
-                .work_units
+        .map(|graph| {
+            graph
+                .units
                 .iter()
-                .flat_map(|unit| unit.allowed_paths.iter().cloned())
+                .flat_map(|unit| unit.paths.iter().cloned())
                 .collect::<std::collections::BTreeSet<_>>()
                 .into_iter()
                 .collect()
         })
-        .unwrap_or(fallback_paths);
+        .unwrap_or_default();
     let semantic = app
         .db
         .agentic_assessment(&record.id)
@@ -11413,7 +11416,7 @@ async fn agentic_triage_context(
         // Deterministic only: scope paths are not changed files, so the
         // explicit threshold is the bounded objective length. Multi-unit work
         // still floors the lane through expected_units/cross_module.
-        large: record.objective.chars().count() > 500,
+        large: factory_native::planning::objective_is_large(&record.objective),
         missing_docs,
         missing_stack: deterministic_stack.languages.is_empty(),
         architecture_uncertainty: deterministic_signals.architecture_uncertainty,
@@ -11475,6 +11478,24 @@ async fn agentic_triage_context(
     })
 }
 
+/// Truthful participant compilation state. A validated graph with a failed
+/// participant plan is `PLANNED_PENDING`, never `WORK_GRAPH_NOT_PLANNED`.
+fn participant_projection_state(
+    plan_present: bool,
+    graph_present: bool,
+    route: factory_native::agentic::ChangeRoute,
+) -> &'static str {
+    if plan_present {
+        "PLANNED"
+    } else if graph_present {
+        "PLANNED_PENDING"
+    } else if route == factory_native::agentic::ChangeRoute::NoAgent {
+        "NOT_REQUIRED"
+    } else {
+        "WORK_GRAPH_NOT_PLANNED"
+    }
+}
+
 /// Executable specifications come from the validated Planner WorkGraph, never
 /// from the Lead proposal. A request without a graph has no executable units.
 fn work_graph_specification_values(
@@ -11528,7 +11549,6 @@ async fn agentic_projection_for_request(
     app: &App,
     record: &factory_native::db::IntakeRequestRecord,
 ) -> Result<serde_json::Value, Error> {
-    use factory_native::agentic;
     let lead = app.db.lead_request(&record.lead_request_id).await?;
     let context = agentic_triage_context(app, record).await?;
     let graph = match app.db.agentic_work_graph(&record.id).await {
@@ -11538,11 +11558,14 @@ async fn agentic_projection_for_request(
         .ok(),
         Err(_) => None,
     };
-    let participant_from_graph = match &graph {
-        Some(graph) => deterministic_participant_plan(app, record, &context, graph)
-            .await
-            .ok(),
+    let participant_attempt = match &graph {
+        Some(graph) => Some(deterministic_participant_plan(app, record, &context, graph).await),
         None => None,
+    };
+    let (participants, participant_problem) = match participant_attempt {
+        Some(Ok(plan)) => (Some(plan), None),
+        Some(Err(failure)) => (None, Some(failure)),
+        None => (None, None),
     };
     let plan = app.db.frozen_lead_plan(&record.lead_request_id).await.ok();
     let prerequisites = lead_planning_prerequisites(app, record).await?;
@@ -11554,16 +11577,11 @@ async fn agentic_projection_for_request(
     let stack = context.stack.clone();
     let triage = context.triage;
     let semantic = context.semantic;
-    // No validated WorkGraph means no executable decomposition. The projection
-    // reports the typed state instead of fabricating a one-unit plan.
-    let participants = participant_from_graph;
-    let participant_state = if participants.is_some() {
-        "PLANNED"
-    } else if triage.route == agentic::ChangeRoute::NoAgent {
-        "NOT_REQUIRED"
-    } else {
-        "WORK_GRAPH_NOT_PLANNED"
-    };
+    // No validated WorkGraph means no executable decomposition. A graph with a
+    // failed participant compilation is PLANNED_PENDING with its causal
+    // problem preserved, never a false WORK_GRAPH_NOT_PLANNED.
+    let participant_state =
+        participant_projection_state(participants.is_some(), graph.is_some(), triage.route);
     let (required_reviewer_count, participant_roles, participant_assignments) = participants
         .as_ref()
         .map(|plan| {
@@ -11654,6 +11672,10 @@ async fn agentic_projection_for_request(
         "stack": stack,
         "participants": participants,
         "participantState": participant_state,
+        "participantProblem": participant_problem.as_ref().map(|failure| json!({
+            "code": failure.code,
+            "message": failure.message,
+        })),
         "reviewerEvidence": {
             "requiredReviewerCount": required_reviewer_count,
             "requiredRoles": participant_roles,
@@ -18721,13 +18743,9 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             })
             .map(|plan| plan.assignments.iter().map(|a| a.count).sum())
             .unwrap_or(0);
-        let participant_state = if participant_record.is_some() {
-            "PLANNED"
-        } else if triage.route == factory_native::agentic::ChangeRoute::NoAgent {
-            "NOT_REQUIRED"
-        } else {
-            "WORK_GRAPH_NOT_PLANNED"
-        };
+        let graph_exists = app.db.agentic_work_graph(&record.id).await.is_ok();
+        let participant_state =
+            participant_projection_state(participant_record.is_some(), graph_exists, triage.route);
         let state = app
             .db
             .lead_request_projection(&record.lead_request_id)
@@ -21931,6 +21949,27 @@ mod tests {
         );
         assert_eq!(non_change.work_graph_state, "NOT_REQUIRED");
         assert!(non_change.ready);
+    }
+
+    #[test]
+    fn participant_state_distinguishes_pending_from_a_missing_graph() {
+        use factory_native::agentic::ChangeRoute;
+        assert_eq!(
+            participant_projection_state(true, true, ChangeRoute::FormalSpec),
+            "PLANNED"
+        );
+        assert_eq!(
+            participant_projection_state(false, true, ChangeRoute::FormalSpec),
+            "PLANNED_PENDING"
+        );
+        assert_eq!(
+            participant_projection_state(false, false, ChangeRoute::FormalSpec),
+            "WORK_GRAPH_NOT_PLANNED"
+        );
+        assert_eq!(
+            participant_projection_state(false, false, ChangeRoute::NoAgent),
+            "NOT_REQUIRED"
+        );
     }
 
     #[test]

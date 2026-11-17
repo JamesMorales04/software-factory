@@ -1166,6 +1166,22 @@ export function Director() {
                       </p>
                     </div>
                   )}
+                  {detail.participantState === "PLANNED_PENDING" && (
+                    <div className="ui-callout ui-callout--attention" role="status">
+                      <p>
+                        <strong>
+                          {t("director.participants.plannerPendingTitle")}
+                        </strong>{" "}
+                        {t("director.participants.plannerPending")}
+                      </p>
+                      {detail.participantProblem && (
+                        <p className="muted">
+                          <code>{detail.participantProblem.code}</code>{" "}
+                          {detail.participantProblem.message}
+                        </p>
+                      )}
+                    </div>
+                  )}
                   {planError && (
                     <p className="ui-callout ui-callout--danger" role="alert">
                       {planError}

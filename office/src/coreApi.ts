@@ -2474,6 +2474,11 @@ export interface AgenticPortfolioEntry {
   requestKind: AgenticRequestKind;
   workUnits: number;
   participantCount: number;
+  participantState?:
+    | "PLANNED"
+    | "PLANNED_PENDING"
+    | "NOT_REQUIRED"
+    | "WORK_GRAPH_NOT_PLANNED";
   stackLanguages: string[];
   directorId: string;
   operationManagerId: string;
@@ -2817,7 +2822,12 @@ export interface AgenticRequestDetail {
   findings: FindingDispositionRecord[];
   stack: AgenticStackProfile;
   participants: AgenticParticipantPlan | null;
-  participantState?: "PLANNED" | "NOT_REQUIRED" | "WORK_GRAPH_NOT_PLANNED";
+  participantState?:
+    | "PLANNED"
+    | "PLANNED_PENDING"
+    | "NOT_REQUIRED"
+    | "WORK_GRAPH_NOT_PLANNED";
+  participantProblem?: { code: string; message: string } | null;
   reviewerEvidence: AgenticReviewerEvidence;
   specifications: AgenticSpecification[];
   plan: null | {

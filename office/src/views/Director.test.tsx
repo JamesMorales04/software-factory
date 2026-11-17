@@ -1987,6 +1987,25 @@ describe("participant work-graph state", () => {
     expect(reviewerAssignmentsMatch(missing)).toBe(true);
   });
 
+  it("shows the causal problem when a validated WorkGraph has no participant plan yet", async () => {
+    mocks.getAgenticRequest.mockResolvedValue({
+      ...detail,
+      participants: null,
+      participantState: "PLANNED_PENDING",
+      participantProblem: {
+        code: "PROFILE_NOT_EXECUTABLE",
+        message: "the frozen execution profile is not executable",
+      },
+    });
+    renderDirector();
+    await screen.findByRole("heading", { name: "Add an ICS export endpoint" });
+    expect(await screen.findByText("Planner plan pending.")).toBeDefined();
+    expect(screen.getByText("PROFILE_NOT_EXECUTABLE")).toBeDefined();
+    expect(
+      screen.getByText(/the frozen execution profile is not executable/),
+    ).toBeDefined();
+  });
+
   it("shows the typed Planner-pending callout when no validated WorkGraph exists", async () => {
     mocks.getAgenticRequest.mockResolvedValue({
       ...detail,

@@ -143,7 +143,7 @@ fn lane_rank(lane: PlanningLane) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::planning::ReviewerRole;
+    use crate::planning::{ReviewerRole, objective_is_large};
 
     fn signals() -> PlanningSignals {
         PlanningSignals {
@@ -197,6 +197,72 @@ mod tests {
         signals.large = true;
         assert_eq!(
             route_for(&input(signals)).unwrap(),
+            PlanningLane::FormalSpec
+        );
+    }
+
+    #[test]
+    fn the_objective_length_threshold_is_explicit_and_bounded() {
+        assert!(!objective_is_large(&"x".repeat(500)));
+        assert!(objective_is_large(&"x".repeat(501)));
+        // Unicode scalar values, not bytes.
+        assert!(!objective_is_large(&"é".repeat(500)));
+        assert!(objective_is_large(&"é".repeat(501)));
+    }
+
+    #[test]
+    fn a_wide_authorization_scope_is_not_a_planning_signal() {
+        // `ProjectConfig.allowed_paths` is authority scope, not a changed-file
+        // count. Before a validated WorkGraph there are zero observed files, so
+        // a project allowing more than five paths must not floor FORMAL_SPEC.
+        let mut signals = signals();
+        signals.objective = "bounded change".into();
+        signals.changed_files = 0;
+        signals.expected_units = 0;
+        signals.cross_module = false;
+        signals.large = objective_is_large(&signals.objective);
+        signals.missing_docs = false;
+        signals.missing_stack = false;
+        signals.greenfield = false;
+        assert_eq!(route_for(&input(signals)).unwrap(), PlanningLane::Direct);
+    }
+
+    #[test]
+    fn the_objective_threshold_changes_the_routing_lane_without_claiming_equivalence() {
+        // One concrete scope path and no model sizing stays Direct at the
+        // threshold; a longer objective alone floors FORMAL_SPEC. This proves
+        // the routing impact of the chosen rule; it does not claim the old
+        // Lead-unit rule was equivalent.
+        let mut at_threshold = signals();
+        at_threshold.objective = "x".repeat(500);
+        at_threshold.large = objective_is_large(&at_threshold.objective);
+        at_threshold.changed_files = 1;
+        at_threshold.expected_units = 0;
+        at_threshold.cross_module = false;
+        assert_eq!(
+            route_for(&input(at_threshold)).unwrap(),
+            PlanningLane::Direct
+        );
+
+        let mut over_threshold = signals();
+        over_threshold.objective = "x".repeat(501);
+        over_threshold.large = objective_is_large(&over_threshold.objective);
+        over_threshold.changed_files = 1;
+        over_threshold.expected_units = 0;
+        over_threshold.cross_module = false;
+        assert_eq!(
+            route_for(&input(over_threshold)).unwrap(),
+            PlanningLane::FormalSpec
+        );
+
+        // Multi-unit work still floors the lane through the model signal even
+        // when the objective is short.
+        let mut multi_unit = signals();
+        multi_unit.objective = "bounded change".into();
+        multi_unit.large = objective_is_large(&multi_unit.objective);
+        multi_unit.expected_units = 2;
+        assert_eq!(
+            route_for(&input(multi_unit)).unwrap(),
             PlanningLane::FormalSpec
         );
     }

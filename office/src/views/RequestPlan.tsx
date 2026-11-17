@@ -36,8 +36,11 @@ export function RequestPlan({
   }
 
   const leadUnits = proposal?.workUnits ?? [];
-  const hasLeadUnits = leadUnits.length > 0;
-  const unitCount = hasLeadUnits ? leadUnits.length : specifications.length;
+  // The validated WorkGraph is authoritative on the current path; Lead units
+  // are only a display fallback for legacy frozen proposals.
+  const hasGraphUnits = specifications.length > 0;
+  const hasLeadUnits = !hasGraphUnits && leadUnits.length > 0;
+  const unitCount = hasGraphUnits ? specifications.length : leadUnits.length;
   const plannerPending =
     proposal !== null &&
     unitCount === 0 &&
@@ -173,9 +176,9 @@ export function RequestPlan({
           </dl>
 
           <h4 className="request-workunits-heading">
-            {hasLeadUnits
-              ? t("request.plan.workUnits")
-              : t("request.plan.workGraphUnits")}
+            {hasGraphUnits
+              ? t("request.plan.workGraphUnits")
+              : t("request.plan.workUnits")}
           </h4>
           {plannerPending ? (
             <div className="ui-callout ui-callout--attention" role="status">
@@ -189,37 +192,7 @@ export function RequestPlan({
                 </code>
               </p>
             </div>
-          ) : hasLeadUnits ? (
-            <ol className="request-workunits">
-              {leadUnits.map((unit) => (
-                <li key={unit.id}>
-                  <div className="request-workunit-head">
-                    <code>{unit.id}</code>
-                    <span className="muted">{unit.kind}</span>
-                  </div>
-                  <p>{unit.description}</p>
-                  <dl className="request-workunit-facts">
-                    <div>
-                      <dt>{t("request.plan.dependsOn")}</dt>
-                      <dd>{valuesText(unit.dependsOn)}</dd>
-                    </div>
-                    <div>
-                      <dt>{t("request.plan.allowedPaths")}</dt>
-                      <dd>{valuesText(unit.allowedPaths)}</dd>
-                    </div>
-                    <div>
-                      <dt>{t("request.plan.capabilities")}</dt>
-                      <dd>{valuesText(unit.capabilities)}</dd>
-                    </div>
-                    <div>
-                      <dt>{t("request.plan.checks")}</dt>
-                      <dd>{checksSummary(unit)}</dd>
-                    </div>
-                  </dl>
-                </li>
-              ))}
-            </ol>
-          ) : specifications.length > 0 ? (
+          ) : hasGraphUnits ? (
             <ol className="request-workunits">
               {specifications.map((unit) => (
                 <li key={unit.id}>
@@ -246,6 +219,36 @@ export function RequestPlan({
                       <dd>
                         <code>{unit.status}</code>
                       </dd>
+                    </div>
+                  </dl>
+                </li>
+              ))}
+            </ol>
+          ) : hasLeadUnits ? (
+            <ol className="request-workunits">
+              {leadUnits.map((unit) => (
+                <li key={unit.id}>
+                  <div className="request-workunit-head">
+                    <code>{unit.id}</code>
+                    <span className="muted">{unit.kind}</span>
+                  </div>
+                  <p>{unit.description}</p>
+                  <dl className="request-workunit-facts">
+                    <div>
+                      <dt>{t("request.plan.dependsOn")}</dt>
+                      <dd>{valuesText(unit.dependsOn)}</dd>
+                    </div>
+                    <div>
+                      <dt>{t("request.plan.allowedPaths")}</dt>
+                      <dd>{valuesText(unit.allowedPaths)}</dd>
+                    </div>
+                    <div>
+                      <dt>{t("request.plan.capabilities")}</dt>
+                      <dd>{valuesText(unit.capabilities)}</dd>
+                    </div>
+                    <div>
+                      <dt>{t("request.plan.checks")}</dt>
+                      <dd>{checksSummary(unit)}</dd>
                     </div>
                   </dl>
                 </li>

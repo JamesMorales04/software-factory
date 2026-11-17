@@ -4034,7 +4034,10 @@ export const en = {
   "director.participants.workGraphNotPlannedTitle": "Planner pending.",
   "director.participants.workGraphNotPlanned":
     "There is no validated Planner WorkGraph, so participants, units and Campaign start stay blocked until Core plans and validates it.",
-  "director.participants.unassigned": "Not assigned",
+
+  "director.participants.plannerPendingTitle": "Planner plan pending.",
+  "director.participants.plannerPending":
+    "A validated WorkGraph exists but Core could not compile the participant plan yet. The causal problem is shown below; no unit or Campaign start is invented.",  "director.participants.unassigned": "Not assigned",
   "director.participants.noRoles":
     "No reviewer roles are recorded for this route.",
   "director.participants.independentReceipts":

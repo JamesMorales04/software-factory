@@ -4182,7 +4182,10 @@ export const es: Catalog = {
   "director.participants.workGraphNotPlannedTitle": "Planner pendiente.",
   "director.participants.workGraphNotPlanned":
     "No hay un WorkGraph validado del Planner, así que participantes, unidades y start de Campaign quedan bloqueados hasta que Core lo planifique y valide.",
-  "director.participants.unassigned": "Sin asignar",
+
+  "director.participants.plannerPendingTitle": "Plan del Planner pendiente.",
+  "director.participants.plannerPending":
+    "Existe un WorkGraph validado pero Core aún no pudo compilar el participant plan. Abajo se muestra el problema causal; no se inventa unidad ni start de Campaign.",  "director.participants.unassigned": "Sin asignar",
   "director.participants.noRoles":
     "No hay roles de revisión registrados para esta ruta.",
   "director.participants.independentReceipts":
