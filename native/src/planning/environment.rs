@@ -3524,12 +3524,23 @@ pub type EnvironmentResolutionFuture<'a> = Pin<
     >,
 >;
 
+pub type EnvironmentBuilderRefreshFuture<'a> =
+    Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
+
 /// Builder port for the Nix/devenv image and Node/Playwright runtime. The
 /// builder runs outside Core with no Factory/provider/GitHub credentials, no
 /// host network and no host socket. It receives an already frozen spec and must
 /// return evidence bound to that exact hash.
 pub trait EnvironmentBuilder {
     fn descriptor(&self) -> EnvironmentBuilderDescriptor;
+
+    /// Refresh cached availability from the builder control plane. This is a
+    /// read-only readiness probe: it must never replay an environment
+    /// operation whose outcome is ambiguous. Builders without a control plane
+    /// keep their current status.
+    fn refresh<'a>(&'a self) -> EnvironmentBuilderRefreshFuture<'a> {
+        Box::pin(async {})
+    }
 
     /// Resolve and pin a generated environment's lock data before freeze.
     /// Existing committed environments with a lock may skip this step. The
@@ -3725,6 +3736,22 @@ impl EnvironmentBuilder for TestEnvironmentBuilder {
     }
 }
 
+fn broker_reports_ready(health: &serde_json::Value, image: &str, digest: &str) -> bool {
+    let projection = health.get("environmentBuilder");
+    projection
+        .and_then(|value| value.get("status"))
+        .and_then(serde_json::Value::as_str)
+        == Some("READY")
+        && projection
+            .and_then(|value| value.get("image"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == image)
+        && projection
+            .and_then(|value| value.get("digest"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == digest)
+}
+
 /// Environment builder that calls the trusted runtime broker. The broker owns
 /// the builder image identity, workspace staging, network proxy, resource
 /// limits and cleanup; Core only supplies a typed plan/spec and a bounded file
@@ -3800,25 +3827,15 @@ impl RuntimeBrokerEnvironmentBuilder {
         let broker = RuntimeBrokerClient::new(&broker_url, token, ResourceOwner::Environment)
             .map_err(|error| error.to_string())?;
         // The runtime may still be importing the builder bundle when Core
-        // starts. Retry for a bounded window; never substitute a fake READY.
+        // starts. Probe a bounded number of times; never substitute a fake
+        // READY. A later operation refreshes this cached status, so a broker
+        // that only becomes reachable after this startup window does not leave
+        // Core permanently blocked.
         let mut status = EnvironmentBuilderStatus::Unavailable;
         for attempt in 0..24u32 {
             match broker.health().await {
                 Ok(health) => {
-                    let projection = health.get("environmentBuilder");
-                    let ready = projection
-                        .and_then(|value| value.get("status"))
-                        .and_then(serde_json::Value::as_str)
-                        == Some("READY")
-                        && projection
-                            .and_then(|value| value.get("image"))
-                            .and_then(serde_json::Value::as_str)
-                            .is_some_and(|value| value == descriptor.image)
-                        && projection
-                            .and_then(|value| value.get("digest"))
-                            .and_then(serde_json::Value::as_str)
-                            .is_some_and(|value| value == descriptor.digest);
-                    if ready {
+                    if broker_reports_ready(&health, &descriptor.image, &descriptor.digest) {
                         status = EnvironmentBuilderStatus::Ready;
                         break;
                     }
@@ -3841,6 +3858,55 @@ impl RuntimeBrokerEnvironmentBuilder {
             descriptor,
             status: std::sync::RwLock::new(status),
         })))
+    }
+
+    /// Probe the broker once and cache the truthful builder status. A
+    /// non-ready projection, a mismatched image/digest or an unreachable broker
+    /// all remain UNAVAILABLE; a later successful probe can recover.
+    async fn refresh_status(&self) -> EnvironmentBuilderStatus {
+        let status = match self.broker.health().await {
+            Ok(health)
+                if broker_reports_ready(
+                    &health,
+                    &self.descriptor.image,
+                    &self.descriptor.digest,
+                ) =>
+            {
+                EnvironmentBuilderStatus::Ready
+            }
+            _ => EnvironmentBuilderStatus::Unavailable,
+        };
+        self.set_status(status);
+        status
+    }
+
+    /// Cache the truthful status after one operation attempt. Only a failure
+    /// that proves the broker did not accept the operation may clear readiness.
+    /// An ambiguous failure (timeout, truncated response, reset after send) is
+    /// not retried and must not trigger an automatic recompile on the next
+    /// resume, so it leaves the reachable builder available.
+    fn record_broker_error(&self, error: &crate::runtime_broker::BrokerError) {
+        use crate::runtime_broker::BrokerError;
+        let unavailable = match error {
+            BrokerError::Request(error) => error.is_connect(),
+            BrokerError::InvalidConfiguration(_) => true,
+            BrokerError::RefusedCode { code, .. } => code == "ENVIRONMENT_BUILDER_UNAVAILABLE",
+            BrokerError::Refused(body) => serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("code")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .is_some_and(|code| code == "ENVIRONMENT_BUILDER_UNAVAILABLE"),
+            _ => false,
+        };
+        self.set_status(if unavailable {
+            EnvironmentBuilderStatus::Unavailable
+        } else {
+            EnvironmentBuilderStatus::Ready
+        });
     }
 
     fn status(&self) -> EnvironmentBuilderStatus {
@@ -3891,10 +3957,16 @@ impl RuntimeBrokerEnvironmentBuilder {
         request: &crate::runtime_broker::EnvironmentBrokerRequest,
         timeout: Option<std::time::Duration>,
     ) -> Result<crate::runtime_broker::EnvironmentBrokerResult, EnvironmentError> {
-        self.broker
-            .environment_build(request, timeout)
-            .await
-            .map_err(environment_error_from_broker)
+        match self.broker.environment_build(request, timeout).await {
+            Ok(result) => {
+                self.set_status(EnvironmentBuilderStatus::Ready);
+                Ok(result)
+            }
+            Err(error) => {
+                self.record_broker_error(&error);
+                Err(environment_error_from_broker(error))
+            }
+        }
     }
 }
 
@@ -3905,12 +3977,23 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
         descriptor
     }
 
+    fn refresh<'a>(&'a self) -> EnvironmentBuilderRefreshFuture<'a> {
+        Box::pin(async move {
+            if self.status() == EnvironmentBuilderStatus::Unavailable {
+                let _ = self.refresh_status().await;
+            }
+        })
+    }
+
     fn resolve<'a>(
         &'a self,
         plan: &'a EnvironmentPlan,
         workspace: Option<&'a std::path::Path>,
     ) -> EnvironmentResolutionFuture<'a> {
         Box::pin(async move {
+            if self.status() == EnvironmentBuilderStatus::Unavailable {
+                let _ = self.refresh_status().await;
+            }
             if self.status() == EnvironmentBuilderStatus::Unavailable {
                 return Err(EnvironmentError::new(
                     EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
@@ -3926,7 +4009,6 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
             )?;
             self.set_status(EnvironmentBuilderStatus::Building);
             let result = self.call(&request, None).await;
-            self.set_status(EnvironmentBuilderStatus::Ready);
             let result = result?;
             let resolution = result.resolution.ok_or_else(|| {
                 EnvironmentError::new(
@@ -3947,6 +4029,9 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
     ) -> EnvironmentBuilderFuture<'a> {
         Box::pin(async move {
             if self.status() == EnvironmentBuilderStatus::Unavailable {
+                let _ = self.refresh_status().await;
+            }
+            if self.status() == EnvironmentBuilderStatus::Unavailable {
                 return Err(EnvironmentError::new(
                     EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
                     "the runtime environment builder is not available",
@@ -3961,7 +4046,6 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
             )?;
             self.set_status(EnvironmentBuilderStatus::Building);
             let result = self.call(&request, None).await;
-            self.set_status(EnvironmentBuilderStatus::Ready);
             let result = result?;
             let receipt = result.receipt.ok_or_else(|| {
                 EnvironmentError::new(
@@ -4622,6 +4706,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::process::Command;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     fn git(repository: &Path, arguments: &[&str]) -> String {
         let output = Command::new("git")
@@ -6302,5 +6388,250 @@ mod tests {
         let error = EnvironmentError::new(EnvironmentBlockerCode::EnvironmentPlanInvalid, value);
         assert!(error.message.chars().count() <= 1_000);
         assert!(error.message.contains("error: unicode cause 🚀"));
+    }
+
+    #[derive(Clone)]
+    struct FakeBrokerState {
+        projection: Arc<Mutex<(String, String, String)>>,
+        resolve_requests: Arc<AtomicUsize>,
+    }
+
+    impl FakeBrokerState {
+        fn projection(status: &str, image: &str, digest: &str) -> Self {
+            Self {
+                projection: Arc::new(Mutex::new((
+                    status.to_owned(),
+                    image.to_owned(),
+                    digest.to_owned(),
+                ))),
+                resolve_requests: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn set(&self, status: &str, image: &str, digest: &str) {
+            *self.projection.lock().unwrap() =
+                (status.to_owned(), image.to_owned(), digest.to_owned());
+        }
+    }
+
+    async fn fake_broker_health(
+        axum::extract::State(state): axum::extract::State<FakeBrokerState>,
+    ) -> axum::response::Response {
+        let (status, image, digest) = state.projection.lock().unwrap().clone();
+        axum::response::IntoResponse::into_response(axum::Json(serde_json::json!({
+            "healthy": true,
+            "environmentBuilder": {
+                "status": status,
+                "image": image,
+                "digest": digest,
+            },
+        })))
+    }
+
+    async fn fake_broker_resolve(
+        axum::extract::State(state): axum::extract::State<FakeBrokerState>,
+    ) -> axum::response::Response {
+        state.resolve_requests.fetch_add(1, Ordering::SeqCst);
+        // A syntactically valid response that does not bind the requested
+        // operation. The operation may have executed, so the client must not
+        // replay it automatically.
+        axum::response::IntoResponse::into_response(axum::Json(serde_json::json!({})))
+    }
+
+    async fn start_fake_broker(port: u16, state: FakeBrokerState) -> tokio::task::JoinHandle<()> {
+        use axum::routing::{get, post};
+        let router = axum::Router::new()
+            .route("/health", get(fake_broker_health))
+            .route("/v1/environments/resolve", post(fake_broker_resolve))
+            .with_state(state);
+        let mut attempts = 0;
+        let listener = loop {
+            match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+                Ok(listener) => break listener,
+                Err(error) if attempts < 200 => {
+                    attempts += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    let _ = error;
+                }
+                Err(error) => panic!("fake broker could not bind 127.0.0.1:{port}: {error}"),
+            }
+        };
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        })
+    }
+
+    fn free_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    fn runtime_broker_builder(
+        url: &str,
+        image: &str,
+        digest: &str,
+    ) -> RuntimeBrokerEnvironmentBuilder {
+        RuntimeBrokerEnvironmentBuilder {
+            broker: crate::runtime_broker::RuntimeBrokerClient::new(
+                url,
+                "t".repeat(64),
+                crate::runtime_broker::ResourceOwner::Environment,
+            )
+            .unwrap(),
+            descriptor: EnvironmentBuilderDescriptor {
+                image: image.to_owned(),
+                digest: digest.to_owned(),
+                platform: DEFAULT_PLATFORM.into(),
+                policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                default_nixpkgs: DEFAULT_ENVIRONMENT_NIXPKGS.into(),
+                status: EnvironmentBuilderStatus::Unavailable,
+            },
+            status: std::sync::RwLock::new(EnvironmentBuilderStatus::Unavailable),
+        }
+    }
+
+    fn generated_plan_for_broker_test() -> EnvironmentPlan {
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        compile(&repository, &base, &values)
+    }
+
+    #[tokio::test]
+    async fn runtime_builder_recovers_readiness_after_the_startup_window_without_recreating_it() {
+        let image = "localhost/software-factory-environment-builder:dev";
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let port = free_port();
+        let builder = runtime_broker_builder(&format!("http://127.0.0.1:{port}"), image, &digest);
+        builder.refresh().await;
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Unavailable,
+            "an absent broker must stay truthful"
+        );
+
+        let state = FakeBrokerState::projection("READY", image, &digest);
+        let server = start_fake_broker(port, state).await;
+        builder.refresh().await;
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Ready,
+            "the same builder must recover when the broker starts listening"
+        );
+        assert!(builder.descriptor().is_available());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn runtime_builder_recovers_after_the_broker_drops_and_returns() {
+        let image = "localhost/software-factory-environment-builder:dev";
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let port = free_port();
+        let builder = runtime_broker_builder(&format!("http://127.0.0.1:{port}"), image, &digest);
+        let state = FakeBrokerState::projection("READY", image, &digest);
+        let server = start_fake_broker(port, state).await;
+        builder.refresh().await;
+        assert_eq!(builder.descriptor().status, EnvironmentBuilderStatus::Ready);
+
+        server.abort();
+        let _ = server.await;
+        let plan = generated_plan_for_broker_test();
+        let error = builder
+            .resolve(&plan, None)
+            .await
+            .expect_err("a dropped broker must fail the operation");
+        assert_eq!(
+            error.code,
+            EnvironmentBlockerCode::EnvironmentBuilderUnavailable
+        );
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Unavailable,
+            "an unreachable operation must clear the cached readiness"
+        );
+
+        let server =
+            start_fake_broker(port, FakeBrokerState::projection("READY", image, &digest)).await;
+        builder.refresh().await;
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Ready,
+            "a returned broker must recover without rebuilding the client"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn runtime_builder_does_not_replay_an_ambiguous_resolve_operation() {
+        let image = "localhost/software-factory-environment-builder:dev";
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let port = free_port();
+        let builder = runtime_broker_builder(&format!("http://127.0.0.1:{port}"), image, &digest);
+        let state = FakeBrokerState::projection("READY", image, &digest);
+        let requests = Arc::clone(&state.resolve_requests);
+        let server = start_fake_broker(port, state).await;
+        builder.refresh().await;
+        assert_eq!(builder.descriptor().status, EnvironmentBuilderStatus::Ready);
+
+        let plan = generated_plan_for_broker_test();
+        let error = builder
+            .resolve(&plan, None)
+            .await
+            .expect_err("an unbound response is not success");
+        assert_eq!(error.code, EnvironmentBlockerCode::EnvironmentBuildFailed);
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "one operation attempt must send exactly one broker request"
+        );
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Ready,
+            "an ambiguous failure must not force an automatic recompile on resume"
+        );
+
+        let _ = builder.resolve(&plan, None).await;
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            2,
+            "only a new explicit operation may send another request"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn runtime_builder_readiness_rejects_non_ready_or_mismatched_projections() {
+        let image = "localhost/software-factory-environment-builder:dev";
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let port = free_port();
+        let builder = runtime_broker_builder(&format!("http://127.0.0.1:{port}"), image, &digest);
+        let state = FakeBrokerState::projection("UNAVAILABLE", "", "");
+        let server = start_fake_broker(port, state.clone()).await;
+
+        builder.refresh_status().await;
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Unavailable,
+            "a non-ready broker projection must not pass"
+        );
+        state.set("READY", "localhost/other-builder:dev", &digest);
+        builder.refresh_status().await;
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Unavailable,
+            "a different builder image must not pass"
+        );
+        state.set("READY", image, &format!("sha256:{}", "c".repeat(64)));
+        builder.refresh_status().await;
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Unavailable,
+            "a different builder digest must not pass"
+        );
+        state.set("READY", image, &digest);
+        builder.refresh_status().await;
+        assert_eq!(builder.descriptor().status, EnvironmentBuilderStatus::Ready);
+        server.abort();
     }
 }

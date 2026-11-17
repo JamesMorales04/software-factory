@@ -1063,6 +1063,10 @@ async fn shutdown_signal() {
 }
 
 async fn health(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    // A cached UNAVAILABLE may predate a slow broker start. Refresh it from the
+    // read-only broker health projection so readiness can recover in place; a
+    // non-ready projection still reports UNAVAILABLE and never a fake READY.
+    app.environment_builder().refresh().await;
     Json(json!({
         "healthy": true,
         "version": "0.1.0",
@@ -19423,6 +19427,12 @@ async fn prepare_autonomous_environment(
     context: &AgenticTriageContext,
 ) -> Result<(), Error> {
     ensure_autopilot_not_withdrawn(app, &record.lead_request_id).await?;
+    // A startup probe can end before a slow broker starts listening. Refresh the
+    // cached builder status before deciding a stored builder blocker is still
+    // current, so a recovered broker is usable without restarting Core. This is
+    // a read-only health probe and never replays an ambiguous environment
+    // operation.
+    app.environment_builder().refresh().await;
     let action = app.db.action(&record.action_id).await?;
     let mut stored = match app.db.latest_environment_plan(&record.id).await {
         Ok(plan) => Some(plan),
@@ -29403,6 +29413,58 @@ mod tests {
         }
 
         #[cfg(feature = "test-support")]
+        struct ReadinessProbeEnvironmentBuilder {
+            inner: factory_native::planning::environment::SharedEnvironmentBuilder,
+            broker_ready: Arc<std::sync::atomic::AtomicBool>,
+            status: std::sync::atomic::AtomicBool,
+        }
+
+        #[cfg(feature = "test-support")]
+        impl factory_native::planning::environment::EnvironmentBuilder
+            for ReadinessProbeEnvironmentBuilder
+        {
+            fn descriptor(
+                &self,
+            ) -> factory_native::planning::environment::EnvironmentBuilderDescriptor {
+                let mut descriptor = self.inner.descriptor();
+                descriptor.status = if self.status.load(Ordering::SeqCst) {
+                    factory_native::planning::environment::EnvironmentBuilderStatus::Ready
+                } else {
+                    factory_native::planning::environment::EnvironmentBuilderStatus::Unavailable
+                };
+                descriptor
+            }
+
+            fn refresh<'a>(
+                &'a self,
+            ) -> factory_native::planning::environment::EnvironmentBuilderRefreshFuture<'a>
+            {
+                Box::pin(async move {
+                    self.status
+                        .store(self.broker_ready.load(Ordering::SeqCst), Ordering::SeqCst);
+                })
+            }
+
+            fn resolve<'a>(
+                &'a self,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                workspace: Option<&'a std::path::Path>,
+            ) -> factory_native::planning::environment::EnvironmentResolutionFuture<'a>
+            {
+                self.inner.resolve(plan, workspace)
+            }
+
+            fn build<'a>(
+                &'a self,
+                spec: &'a factory_native::planning::environment::EnvironmentSpec,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                workspace: Option<&'a std::path::Path>,
+            ) -> factory_native::planning::environment::EnvironmentBuilderFuture<'a> {
+                self.inner.build(spec, plan, workspace)
+            }
+        }
+
+        #[cfg(feature = "test-support")]
         #[tokio::test]
         async fn an_unavailable_builder_does_not_append_a_blocked_revision_per_resume() {
             let (fixture, app, _calls, intake_id) =
@@ -29458,9 +29520,19 @@ mod tests {
                     .environment_required,
                 "the test Action must require an environment"
             );
-            app.set_environment_builder(
-                factory_native::planning::environment::unavailable_environment_builder(),
-            );
+            let Some(inner) =
+                factory_native::planning::environment::test_environment_builder_from_env()
+            else {
+                panic!("the test-support deterministic builder must be available");
+            };
+            let broker_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let refreshable: factory_native::planning::environment::SharedEnvironmentBuilder =
+                Arc::new(ReadinessProbeEnvironmentBuilder {
+                    inner,
+                    broker_ready: Arc::clone(&broker_ready),
+                    status: std::sync::atomic::AtomicBool::new(false),
+                });
+            app.set_environment_builder(refreshable);
             let config = fixture
                 .app
                 .db
@@ -29517,18 +29589,51 @@ mod tests {
                     "attempt {attempt}: the same unavailable builder must not append a revision"
                 );
             }
-            // A changed builder descriptor is the recovery signal; it compiles
-            // exactly one new revision (the review phase may still fail).
-            if let Some(builder) =
+            // The same builder instance recovers when its readiness refresh
+            // observes the broker: no builder replacement and no Core restart.
+            broker_ready.store(true, Ordering::SeqCst);
+            let _ = prepare_autonomous_environment(&app, &record, &context).await;
+            assert!(
+                fixture.app.db.environment_plan(&intake_id, 2).await.is_ok(),
+                "a refreshed builder must recompile the blocked environment once"
+            );
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn health_refreshes_a_recovered_builder_without_false_ready() {
+            let (fixture, app, _calls, _intake_id) =
+                autonomous_autopilot_fixture("autopilot-health-builder").await;
+            let Some(inner) =
                 factory_native::planning::environment::test_environment_builder_from_env()
-            {
-                app.set_environment_builder(builder);
-                let _ = prepare_autonomous_environment(&app, &record, &context).await;
-                assert!(
-                    fixture.app.db.environment_plan(&intake_id, 2).await.is_ok(),
-                    "a changed builder must recompile the blocked environment once"
-                );
-            }
+            else {
+                panic!("the test-support deterministic builder must be available");
+            };
+            let broker_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let refreshable: factory_native::planning::environment::SharedEnvironmentBuilder =
+                Arc::new(ReadinessProbeEnvironmentBuilder {
+                    inner,
+                    broker_ready: Arc::clone(&broker_ready),
+                    status: std::sync::atomic::AtomicBool::new(false),
+                });
+            app.set_environment_builder(refreshable);
+
+            let before = health(State(Arc::clone(&app))).await.0;
+            assert_eq!(
+                before["environmentBuilder"]["status"], "UNAVAILABLE",
+                "health must not report READY before the broker is ready"
+            );
+            broker_ready.store(true, Ordering::SeqCst);
+            let after = health(State(Arc::clone(&app))).await.0;
+            assert_eq!(
+                after["environmentBuilder"]["status"], "READY",
+                "health must recover the cached builder without a Core restart"
+            );
 
             app.db.close().await;
             fixture.app.db.close().await;
