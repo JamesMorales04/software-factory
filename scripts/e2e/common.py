@@ -71,6 +71,22 @@ def read_json(path: Path) -> Any:
         raise ScenarioError(f"invalid JSON in {path}: {error}") from error
 
 
+def _strip_control_characters(value):
+    """Remove raw control characters so a capture is always strict JSON.
+
+    A Core projection can carry a control character inside a free-form string;
+    writing it verbatim produced a capture that could not be parsed strictly.
+    """
+
+    if isinstance(value, str):
+        return "".join(ch for ch in value if ch == "\n" or ch == "\t" or ord(ch) >= 0x20)
+    if isinstance(value, list):
+        return [_strip_control_characters(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _strip_control_characters(item) for key, item in value.items()}
+    return value
+
+
 def tail(value: str, limit: int = 12_000) -> str:
     return value if len(value) <= limit else value[-limit:]
 
@@ -1739,7 +1755,9 @@ def capture_final_evidence(
             try:
                 projection = api.get(f"/intake/requests/{intake_id}")
                 record("projection.json", "CAPTURED",
-                       body=json.dumps(projection, indent=2, sort_keys=True))
+                       body=json.dumps(
+                           _strip_control_characters(projection), indent=2, sort_keys=True
+                       ))
             except Exception as error:  # noqa: BLE001
                 record("projection.json", "NOT_CAPTURED", f"projection failed: {error}")
         else:

@@ -138,6 +138,25 @@ def prepare(context: Context) -> None:
     context.state.set("run_dir", str(config.run_dir))
 
 
+def record_builder_readiness(context: Context) -> None:
+    """Record the builder status Core reports after the readiness boundary.
+
+    This is a factual observation for diagnostics: it does not restart, refresh
+    or retry anything. Core owns builder recovery (CR-19) and this record exists
+    so a run shows what Core reported, not what the harness assumed.
+    """
+
+    from common import now_utc
+
+    diagnostics = ensure_dir(context.config.artifacts_dir / "diagnostics")
+    health = context.api.get("/health") or {}
+    builder = health.get("environmentBuilder") or {}
+    write_json(
+        diagnostics / "builder-readiness.json",
+        {"at": now_utc(), "status": builder.get("status"), "digest": builder.get("digest")},
+    )
+
+
 @stage("start", "start the canonical Compose stack and wait for every readiness boundary")
 def start(context: Context) -> None:
     config = context.config
@@ -167,64 +186,9 @@ def start(context: Context) -> None:
     wait_url(f"{config.base}/core-api/health", config.readiness_timeout)
     wait_core(context.compose, "http://supervisor:8766/health", config.readiness_timeout)
     wait_core(context.compose, "http://runtime:8770/health", config.readiness_timeout)
-    recover_environment_builder(context)
+    record_builder_readiness(context)
     wait_core(context.compose, "http://git-fixture:8080/repo.git/HEAD", config.readiness_timeout)
     wait_core(context.compose, "http://model-fixture:8080/health", config.readiness_timeout)
-
-
-def recover_environment_builder(context: Context) -> None:
-    """Restart Core at most once when it cached the builder before readiness.
-
-    Recovery runs in `start`, before enrollment, import or any intake request, so
-    no operation of this run can be in flight. The decision, timestamps and the
-    builder state before/after are written to the diagnostics directory, and an
-    authenticated request list that is unexpectedly non-empty blocks the restart
-    instead of restarting blindly.
-    """
-
-    diagnostics = ensure_dir(context.config.artifacts_dir / "diagnostics")
-    record: dict[str, object] = {"checkedAt": now_utc(), "target": "/health"}
-    health = context.api.get("/health")
-    before = str(((health.get("environmentBuilder") or {}).get("status")) or "").upper()
-    record["before"] = before
-    if before != "UNAVAILABLE":
-        record["recovery_restart_core"] = "not_needed"
-        write_json(diagnostics / "recovery.json", record)
-        return
-    in_flight = False
-    try:
-        listed = context.api.get("/intake/requests")
-        requests = listed if isinstance(listed, list) else (listed.get("requests") or [])
-        in_flight = bool(requests)
-    except ScenarioError:
-        # Unauthenticated start: enrollment has not happened, so this run cannot
-        # have an in-flight request.
-        in_flight = False
-    record["inFlightRequests"] = in_flight
-    if in_flight:
-        record["recovery_restart_core"] = "skipped_in_flight"
-        write_json(diagnostics / "recovery.json", record)
-        raise ScenarioError(
-            "environment builder is unavailable while intake requests exist; "
-            "refusing to restart Core blindly"
-        )
-    log("Core cached the environment builder as unavailable; restarting Core once")
-    context.compose.run(
-        ["restart", "core"],
-        check=True,
-        log_name="compose-restart-core",
-        timeout=context.config.run_timeout,
-    )
-    record["recovery_restart_core"] = "applied"
-    record["restartAt"] = now_utc()
-    wait_url(f"{context.config.base}/health", context.config.readiness_timeout)
-    after = str(
-        (((context.api.get("/health") or {}).get("environmentBuilder") or {}).get("status"))
-        or ""
-    ).upper()
-    record["after"] = after
-    write_json(diagnostics / "recovery.json", record)
-    require(after != "UNAVAILABLE", "environment builder stayed unavailable after the restart")
 
 
 @stage("enroll", "perform first-run owner enrollment and wait for the Worker")
@@ -1059,6 +1023,29 @@ def autonomous_request(context: Context) -> None:
     context.state.set("model_request_context", str(request_context))
 
 
+def projected_graph_units(projection: dict) -> list:
+    """Work units live either at the top level or inside the nested graph JSON.
+
+    Core projects `/agentic/requests/{id}/plan` as `{"graph": {..., "graphJson":
+    "<string>"}}`; the string carries the units, so a top-level read finds none.
+    """
+
+    for candidate in (projection, projection.get("graph") or {}):
+        units = candidate.get("units")
+        if units:
+            return units
+        raw = candidate.get("graphJson")
+        if isinstance(raw, str):
+            try:
+                nested = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            units = nested.get("units")
+            if units:
+                return units
+    return []
+
+
 def review_status_accepted(planning: dict) -> bool:
     """The plan review status is a closed set of explicit approvals."""
 
@@ -1157,7 +1144,7 @@ def autonomous_campaign(context: Context) -> None:
     assert_equal(plan_hash, context.state.get("plan_hash") and context.state.get("plan_hash") or plan_hash, "plan hash stability")
 
     graph = context.api.get(f"/agentic/requests/{intake_id}/plan")
-    units = graph.get("units") or (graph.get("graph") or {}).get("units") or []
+    units = projected_graph_units(graph)
     require(bool(units), "autopilot Plan projection has no work units")
     graph_sha = graph.get("graphSha256") or (graph.get("graph") or {}).get("graphSha256")
     require(bool(graph_sha), "autopilot Plan projection has no graph digest")

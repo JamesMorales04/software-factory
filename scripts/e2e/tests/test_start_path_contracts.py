@@ -118,63 +118,6 @@ class CampaignHelperTests(unittest.TestCase):
 
 
 
-def recovery_context(statuses, requests=None, unauthenticated=False):
-    import tempfile
-
-    context = mock.Mock()
-    context.config.readiness_timeout = 1
-    context.config.run_timeout = 1
-    context.config.base = "http://127.0.0.1:1"
-    context.config.artifacts_dir = Path(tempfile.mkdtemp(prefix="cr-recovery-"))
-    health = iter(statuses)
-
-    def get(path):
-        if path == "/health":
-            return {"environmentBuilder": {"status": next(health)}}
-        if path == "/intake/requests":
-            if unauthenticated:
-                raise ScenarioError("401 unauthorized")
-            return {"requests": requests or []}
-        raise AssertionError(f"unexpected path {path}")
-
-    context.api.get.side_effect = get
-    return context
-
-
-class BuilderRecoveryTests(unittest.TestCase):
-    """CR-19 recovery: one bounded Core restart when the builder was cached."""
-
-    def test_recovery_is_skipped_when_the_builder_is_ready(self) -> None:
-        context = recovery_context(["READY"])
-        compose_intake.recover_environment_builder(context)
-        context.compose.run.assert_not_called()
-
-    def test_recovery_restarts_once_and_requires_a_ready_builder(self) -> None:
-        context = recovery_context(["UNAVAILABLE", "READY"])
-        with mock.patch.object(compose_intake, "wait_url"):
-            compose_intake.recover_environment_builder(context)
-        self.assertEqual(context.compose.run.call_count, 1)
-
-    def test_recovery_fails_when_the_builder_stays_unavailable(self) -> None:
-        context = recovery_context(["UNAVAILABLE", "UNAVAILABLE"], unauthenticated=True)
-        with mock.patch.object(compose_intake, "wait_url"):
-            with self.assertRaises(ScenarioError):
-                compose_intake.recover_environment_builder(context)
-        self.assertEqual(context.compose.run.call_count, 1)
-
-    def test_recovery_refuses_to_restart_with_requests_in_flight(self) -> None:
-        context = recovery_context(["UNAVAILABLE"], requests=[{"id": "intake-1"}])
-        with self.assertRaises(ScenarioError):
-            compose_intake.recover_environment_builder(context)
-        context.compose.run.assert_not_called()
-        record = json.loads(
-            (context.config.artifacts_dir / "diagnostics" / "recovery.json").read_text()
-        )
-        self.assertEqual(record["recovery_restart_core"], "skipped_in_flight")
-
-
-
-
 class OneshotPrerequisiteTests(unittest.TestCase):
     """The start consumer requires init and the bundles to finish with exit 0.
 
@@ -205,6 +148,35 @@ class OneshotPrerequisiteTests(unittest.TestCase):
         compose.container_state.return_value = ("running", 0)
         with self.assertRaises(ScenarioError):
             common.wait_oneshot(compose, "init", 0.2)
+
+
+
+
+class ProjectionShapeTests(unittest.TestCase):
+    """CR-23/CR-24: strict-JSON captures and nested graph units."""
+
+    def test_graph_units_are_read_from_the_nested_json(self) -> None:
+        nested = json.dumps({"units": [{"id": "u1"}], "graphSha256": "x" * 64})
+        projection = {"graph": {"graphJson": nested, "plannerProvider": "fixture"}}
+        self.assertEqual(len(compose_intake.projected_graph_units(projection)), 1)
+
+    def test_flat_units_still_work(self) -> None:
+        self.assertEqual(
+            compose_intake.projected_graph_units({"units": [{"id": "a"}]}), [{"id": "a"}]
+        )
+
+    def test_missing_or_broken_graph_returns_no_units(self) -> None:
+        self.assertEqual(compose_intake.projected_graph_units({}), [])
+        self.assertEqual(
+            compose_intake.projected_graph_units({"graph": {"graphJson": "not json"}}), []
+        )
+
+    def test_capture_strips_raw_control_characters(self) -> None:
+        dirty = {"detail": "bad\x01value\nok", "nested": ["a\x02b"]}
+        cleaned = common._strip_control_characters(dirty)
+        self.assertEqual(cleaned["detail"], "badvalue\nok")
+        self.assertEqual(cleaned["nested"], ["ab"])
+        json.dumps(cleaned)  # strict JSON on the cleaned value
 
 
 if __name__ == "__main__":
