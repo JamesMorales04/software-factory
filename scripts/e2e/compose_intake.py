@@ -1086,13 +1086,43 @@ def receipt_binds_frozen_spec(environment: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def attempt_is_worker_leased(attempts: list) -> bool:
-    """A real Worker claim is an observable; RUNNING alone is not execution."""
+def attempt_chain_is_observable(campaign: dict, campaign_id: str) -> tuple[bool, str]:
+    """Check campaign -> task.attempt_id -> attempt.id -> attempt.run_id -> run.
 
-    return any(
-        str(attempt.get("status") or "").upper() in {"LEASED", "RUNNING", "COMPLETED"}
-        for attempt in attempts
-    )
+    This is the strict relation the public projection supports. Worker identity,
+    lease generation and lease expiry are NOT exposed by any existing surface, so
+    they are not asserted here; a registered Worker alone is not evidence of an
+    assignment either.
+    """
+
+    tasks = campaign.get("tasks") or []
+    attempts = campaign.get("attempts") or []
+    runs = campaign.get("runs") or []
+    if not tasks:
+        return False, "the Campaign has no tasks"
+    campaign_runs = {
+        str(run.get("id"))
+        for run in runs
+        if str(run.get("campaign_id") or run.get("campaignId") or "") == campaign_id
+    }
+    if not campaign_runs:
+        return False, "the Campaign has no run"
+    by_id = {str(attempt.get("id")): attempt for attempt in attempts}
+    observed = []
+    for task in tasks:
+        attempt_id = str(task.get("attempt_id") or task.get("attemptId") or "")
+        if not attempt_id:
+            return False, "a task has no attempt_id"
+        attempt = by_id.get(attempt_id)
+        if attempt is None:
+            return False, "the task attempt is not projected for this Campaign"
+        run_id = str(attempt.get("run_id") or attempt.get("runId") or "")
+        if run_id not in campaign_runs:
+            return False, "the attempt run does not belong to this Campaign"
+        observed.append(str(attempt.get("status") or "").upper())
+    if not any(status in {"LEASED", "RUNNING", "COMPLETED"} for status in observed):
+        return False, "no attempt is leased, running or completed"
+    return True, ""
 
 
 def review_status_accepted(planning: dict) -> bool:
@@ -1194,14 +1224,12 @@ def autonomous_campaign(context: Context) -> None:
     require(environment.get("required") is True, "environment is not marked required")
     receipt_ok, receipt_problem = receipt_binds_frozen_spec(environment)
     require(receipt_ok, receipt_problem)
-    attempts = context.api.get(f"/campaigns/{campaign_id}").get("attempts") or []
-    require(bool(attempts), "the Campaign has no Attempt")
-    require(
-        attempt_is_worker_leased(attempts),
-        "the Attempt is not leased or running by a Worker",
-    )
-    context.state.set("acceptance_scope", "CAMPAIGN_START_WITH_RECEIPT_AND_WORKER_LEASE")
+    campaign_projection = context.api.get(f"/campaigns/{campaign_id}")
+    chain_ok, chain_problem = attempt_chain_is_observable(campaign_projection, campaign_id)
+    require(chain_ok, chain_problem)
+    context.state.set("acceptance_scope", "CAMPAIGN_START_WITH_RECEIPT")
     context.state.set("receipt_surface", "environment.builder.receipt")
+    context.state.set("worker_assignment", "NOT_OBSERVABLE")
     plan_hash = projected_plan_hash(projection)
     require(bool(plan_hash), "autopilot produced no plan hash")
     assert_equal(plan_hash, context.state.get("plan_hash") and context.state.get("plan_hash") or plan_hash, "plan hash stability")
@@ -1387,10 +1415,9 @@ def autonomous_summary(context: Context) -> None:
         and context.state.get("manual_planning_calls", 0) == 0
     )
     result = {
-        "acceptance_scope": context.state.get(
-            "acceptance_scope", "CAMPAIGN_START_WITH_RECEIPT_AND_WORKER_LEASE"
-        ),
+        "acceptance_scope": context.state.get("acceptance_scope", "CAMPAIGN_START_WITH_RECEIPT"),
         "receipt_surface": context.state.get("receipt_surface", "environment.builder.receipt"),
+        "worker_assignment": context.state.get("worker_assignment", "NOT_OBSERVABLE"),
         "status": "PASS" if passed else "PARTIAL",
         "diagnosticOnly": not clean,
         "mode": "AUTONOMOUS",

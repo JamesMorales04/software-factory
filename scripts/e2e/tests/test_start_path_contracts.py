@@ -239,10 +239,44 @@ class ExactProjectionContractTests(unittest.TestCase):
             ok, problem = compose_intake.receipt_binds_frozen_spec(environment)
             self.assertFalse(ok, problem)
 
-    def test_only_a_worker_lease_counts_as_execution(self) -> None:
-        self.assertTrue(compose_intake.attempt_is_worker_leased([{"status": "LEASED"}]))
-        self.assertFalse(compose_intake.attempt_is_worker_leased([{"status": "QUEUED"}]))
-        self.assertFalse(compose_intake.attempt_is_worker_leased([]))
+    def real_campaign(self):
+        return {
+            "tasks": [{"task_id": "t1", "attempt_id": "a1"}],
+            "attempts": [{"id": "a1", "run_id": "r1", "status": "LEASED"}],
+            "runs": [{"id": "r1", "campaign_id": "c1"}],
+        }
+
+    def test_the_real_attempt_chain_is_accepted(self) -> None:
+        ok, problem = compose_intake.attempt_chain_is_observable(self.real_campaign(), "c1")
+        self.assertTrue(ok, problem)
+
+    def test_running_without_a_projected_attempt_is_refused(self) -> None:
+        campaign = self.real_campaign()
+        campaign["attempts"] = []
+        ok, problem = compose_intake.attempt_chain_is_observable(campaign, "c1")
+        self.assertFalse(ok, problem)
+
+    def test_attempt_run_from_another_campaign_is_refused(self) -> None:
+        campaign = self.real_campaign()
+        campaign["runs"] = [{"id": "r1", "campaign_id": "other"}]
+        ok, problem = compose_intake.attempt_chain_is_observable(campaign, "c1")
+        self.assertFalse(ok, problem)
+
+    def test_unknown_attempt_or_missing_task_attempt_is_refused(self) -> None:
+        campaign = self.real_campaign()
+        campaign["tasks"] = [{"task_id": "t1", "attempt_id": "missing"}]
+        ok, problem = compose_intake.attempt_chain_is_observable(campaign, "c1")
+        self.assertFalse(ok, problem)
+        campaign = self.real_campaign()
+        campaign["tasks"] = [{"task_id": "t1"}]
+        ok, problem = compose_intake.attempt_chain_is_observable(campaign, "c1")
+        self.assertFalse(ok, problem)
+
+    def test_queued_attempt_is_not_execution(self) -> None:
+        campaign = self.real_campaign()
+        campaign["attempts"] = [{"id": "a1", "run_id": "r1", "status": "QUEUED"}]
+        ok, problem = compose_intake.attempt_chain_is_observable(campaign, "c1")
+        self.assertFalse(ok, problem)
 
 
 if __name__ == "__main__":
