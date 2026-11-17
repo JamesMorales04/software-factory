@@ -19,6 +19,7 @@ mismatch fails here the same way it fails against the real Core.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -41,7 +42,8 @@ PLAN_HASH = "193abcbf2764082a91a127fa8ba1aef35e65b2d91a777dedf3ed1a22350b56ae"
 OTHER_PLAN_HASH = "cd" * 32
 GRAPH_SHA = "0e595b182e583449f4a50ed47572757a3cf0baa85f569db3af82b9a37c4ca1b6"
 SPEC_SHA = "dd25f6724f3169a6" + "ab" * 24
-PLAN_DIGEST = "ef" * 32
+PLAN_JSON = '{"route":"FORMAL_SPEC","assurance":"NONE","assignments":[]}'
+PLAN_DIGEST = hashlib.sha256(PLAN_JSON.encode("utf-8")).hexdigest()
 
 
 class State:
@@ -76,7 +78,7 @@ class Api:
                 "assurance": "None",
                 "workUnits": 3,
                 "reviewerCount": 2,
-                "planJson": "{}",
+                "planJson": PLAN_JSON,
                 "planSha256": PLAN_DIGEST,
                 "createdAt": "2026-11-17T04:51:43.802618703+00:00",
                 "updatedAt": "2026-11-17T04:51:43.802618703+00:00",
@@ -283,6 +285,16 @@ class AutonomousStageSequenceTests(unittest.TestCase):
             return projection
 
         self.api.projection = truncated  # type: ignore[method-assign]
+        with self.assertRaises(ScenarioError):
+            self.run_campaign()
+
+    def test_campaign_fails_when_the_claimed_plan_digest_does_not_match(self) -> None:
+        self.api.participants["plan"]["planSha256"] = OTHER_PLAN_HASH
+        with self.assertRaises(ScenarioError):
+            self.run_campaign()
+
+    def test_campaign_fails_when_the_plan_json_is_empty(self) -> None:
+        self.api.participants["plan"]["planJson"] = ""
         with self.assertRaises(ScenarioError):
             self.run_campaign()
 

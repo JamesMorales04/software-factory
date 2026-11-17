@@ -8,6 +8,7 @@ every one of those defects.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -496,11 +497,13 @@ class AutonomousCampaignStageTests(unittest.TestCase):
                 "plannerModel": "deepseek-v4.1-flash",
             }
         }
+        plan_json = '{"route":"FORMAL_SPEC","assurance":"NONE","assignments":[]}'
         participants = {
             "plan": {
                 "graphSha256": "sha1",
                 "workUnits": 1,
-                "planSha256": "ef" * 32,
+                "planJson": plan_json,
+                "planSha256": hashlib.sha256(plan_json.encode("utf-8")).hexdigest(),
             }
         }
 

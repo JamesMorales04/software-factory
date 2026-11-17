@@ -11,6 +11,7 @@ interface and of the scenario manifest.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -1271,6 +1272,29 @@ def is_sha256_digest(value: object) -> bool:
     return all(character in "0123456789abcdef" for character in value)
 
 
+def participant_plan_digest_matches(participant_plan: dict) -> tuple[bool, str]:
+    """The claimed digest must equal SHA-256 of the exact planJson bytes.
+
+    The durable record stores `plan_json` exactly as written; the digest is over
+    `planJson.encode("utf-8")` with no re-canonicalisation. Hashing a redacted or
+    reserialised copy is a mismatch, not a pass.
+    """
+
+    plan_json = participant_plan.get("planJson")
+    claimed = participant_plan.get("planSha256")
+    if not isinstance(plan_json, str) or not plan_json:
+        return False, "participant plan has no planJson string"
+    if not is_sha256_digest(claimed):
+        return False, "participant plan has no 64-hex planSha256"
+    computed = hashlib.sha256(plan_json.encode("utf-8")).hexdigest()
+    if computed != claimed:
+        return False, (
+            "participant plan digest mismatch: "
+            f"claimed {claimed[:12]}… computed {computed[:12]}…"
+        )
+    return True, ""
+
+
 @stage(
     "autonomous_campaign",
     "observe autopilot preparation: plan, graph, participants, environment and Campaign",
@@ -1401,10 +1425,8 @@ def autonomous_campaign(context: Context) -> None:
         int(participant_plan.get("workUnits") or 0) > 0,
         "participant plan has no work units",
     )
-    require(
-        is_sha256_digest(participant_plan.get("planSha256")),
-        "participant plan has no 64-hex plan digest",
-    )
+    digest_ok, digest_problem = participant_plan_digest_matches(participant_plan)
+    require(digest_ok, digest_problem)
 
     campaign = context.api.get(f"/campaigns/{campaign_id}")
     tasks = campaign.get("tasks") or []
