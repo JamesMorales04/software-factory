@@ -781,6 +781,41 @@ impl LeadPlanProposal {
         self.work_units.len() + self.max_repair_cycles as usize
     }
 
+    /// Validate the resolved executable unit count against the Campaign's
+    /// attempt/session budget. The Planner WorkGraph, not the Lead proposal,
+    /// supplies that count during an explicit start.
+    pub fn validate_resolved_units(&self, unit_count: usize) -> Result<(), LeadError> {
+        if unit_count == 0 || unit_count > MAX_WORK_UNITS {
+            return Err(LeadError::WorkGraph(format!(
+                "resolved WorkGraph requires 1..={MAX_WORK_UNITS} implementation units"
+            )));
+        }
+        if self.budget.max_attempts == 0 {
+            return Err(LeadError::Budget(
+                "Campaign attempt budget must be positive".into(),
+            ));
+        }
+        let implementer_attempts = unit_count
+            .checked_add(self.max_repair_cycles as usize)
+            .and_then(|count| count.checked_mul(self.budget.max_attempts as usize))
+            .ok_or_else(|| LeadError::Budget("implementer attempt count overflow".into()))?;
+        if implementer_attempts > LEGACY_MAX_CAMPAIGN_IMPLEMENTER_RUNS {
+            return Err(LeadError::Budget(
+                "resolved WorkGraph implementer attempts exceed the supported Campaign ceiling"
+                    .into(),
+            ));
+        }
+        let required_sessions = 1usize
+            .checked_add(implementer_attempts)
+            .ok_or_else(|| LeadError::Budget("session count overflow".into()))?;
+        if required_sessions > self.max_sessions as usize {
+            return Err(LeadError::Budget(
+                "resolved WorkGraph exceeds the Campaign session ceiling".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Effective transitive scope for integration or fan-in units.
     pub fn unit_scope(&self, unit_id: &str) -> Option<(Vec<String>, Vec<Capability>)> {
         let by_id: HashMap<&str, &LeadWorkUnit> = self
@@ -2768,6 +2803,21 @@ mod tests {
         value.intent = Intent::Change;
         value.proposal.as_mut().unwrap().work_units = vec![unit("api")];
         value.validate(&assessment_input()).unwrap();
+    }
+
+    #[test]
+    fn resolved_work_graph_units_must_fit_the_session_budget() {
+        let mut value = proposal(vec![unit("api")]);
+        value.budget.max_attempts = 1;
+        value.max_repair_cycles = 0;
+        value.max_sessions = 3;
+        // One assessment plus two implementation attempts fit 3 sessions.
+        value.validate_resolved_units(2).unwrap();
+        // Three units would require a fourth session and are rejected before
+        // any per-unit ActionSpec or attempt is created.
+        let error = value.validate_resolved_units(3).unwrap_err();
+        assert!(matches!(error, LeadError::Budget(_)), "{error}");
+        assert!(value.validate_resolved_units(0).is_err());
     }
 
     #[test]

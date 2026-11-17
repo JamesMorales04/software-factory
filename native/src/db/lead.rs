@@ -2004,6 +2004,12 @@ async fn start_lead_campaign_in_tx(
         }
     }
     proposal.validate_v2(grant, &config.binding(), &action, Utc::now())?;
+    // The Lead proposal may carry no units; validate the resolved WorkGraph
+    // count before any per-unit ActionSpec or run/attempt is created. Legacy
+    // proposals without a graph keep their previously frozen budget path.
+    if graph.is_some() {
+        proposal.validate_resolved_units(units.len())?;
+    }
     if proposal.objective != request.objective {
         return Err(Error::Forbidden(
             "proposal objective differs from the original Lead request".into(),
