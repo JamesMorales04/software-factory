@@ -11694,7 +11694,7 @@ async fn agentic_projection_for_request(
         "leadPlanReady": prerequisites.lead_plan_ready,
         "actionSpecReady": prerequisites.action_spec_ready,
         "triage": triage,
-        "planningLane": planning_lane_code(context.planning_lane),
+        "planningLane": planning_lane_code(effective_lane),
         "planning": {
             "artifacts": planning_artifacts,
             "review": plan_review,
@@ -18892,39 +18892,7 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             Ok(lead) => lead,
             Err(_) => continue,
         };
-        let semantic = app
-            .db
-            .agentic_assessment(&record.id)
-            .await
-            .ok()
-            .and_then(|record| {
-                serde_json::from_str::<factory_native::agentic::AgenticTriageModel>(
-                    &record.response_json,
-                )
-                .ok()
-            });
-        let expected_work_units = semantic
-            .as_ref()
-            .and_then(|model| model.expected_work_units);
-        let cross_module = semantic.as_ref().is_some_and(|model| model.cross_module);
         let stack = agentic_stack_for_project(&app, &record.project_id).await;
-        let signals = factory_native::agentic::TriageSignals {
-            objective: record.objective.clone(),
-            files: Vec::new(),
-            domains: Vec::new(),
-            risk: "low".into(),
-            expected_work_units,
-            ambiguous: semantic.is_none(),
-            architecture_uncertainty: false,
-            cross_module,
-            public_contract: false,
-            data_or_schema: false,
-            security_boundary: false,
-            explicit_informational: false,
-            explicit_audit: false,
-            explicit_repair: false,
-        };
-        let triage = factory_native::agentic::triage(&signals);
         let context = match agentic_triage_context(&app, &record).await {
             Ok(context) => context,
             Err(_) => continue,
@@ -18939,9 +18907,16 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             .ok()
             .map(|graph| graph.graph_sha256);
         let assurance = context.assurance();
-        let lane = effective_planning_lane_for_request(&app, &record.id, context.planning_lane)
-            .await
-            .unwrap_or(context.planning_lane);
+        let lane = match effective_planning_lane_for_request(
+            &app,
+            &record.id,
+            context.planning_lane,
+        )
+        .await
+        {
+            Ok(lane) => lane,
+            Err(error) => return api_error(error),
+        };
         let reviewer_plan = factory_native::planning::route::required_reviewers(lane, assurance);
         let participant_source = participant_record
             .as_ref()
@@ -18994,9 +18969,9 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             objective: record.objective,
             mode: format!("{:?}", record.mode),
             state,
-            route: triage.route,
+            route: context.triage.route,
             assurance,
-            request_kind: triage.request_kind,
+            request_kind: context.triage.request_kind,
             work_units,
             participant_count,
             participant_state,
@@ -37707,6 +37682,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(planned["participantState"], "PLANNED");
+        assert_eq!(planned["planningLane"], "FORMAL_SPEC");
         assert!(
             planned["specifications"]
                 .as_array()
