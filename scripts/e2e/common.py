@@ -810,6 +810,32 @@ class Compose:
                 return name.strip()
         return ""
 
+    def container_state(self, service: str) -> tuple[str, int] | None:
+        """Return ("exited", code) / ("running", code) for a service, or None."""
+
+        name = self.service_container(service)
+        if not name:
+            return None
+        result = _bounded_run(
+            [
+                "podman",
+                "inspect",
+                "--format",
+                "{{.State.Status}} {{.State.ExitCode}}",
+                name,
+            ],
+            cwd=self.config.root,
+            env=self.config.environment(),
+            timeout=self.config.operation_timeout,
+        )
+        parts = (result.stdout or "").split()
+        if len(parts) != 2:
+            return None
+        try:
+            return parts[0], int(parts[1])
+        except ValueError:
+            return None
+
     def exec_service(self, service: str, arguments: Iterable[str], *, check: bool = True) -> str:
         container = self.service_container(service)
         if not container:
@@ -1039,6 +1065,26 @@ def wait_url(url: str, timeout: int | None, *, interval: float = 1.0) -> None:
             last_heartbeat = now
         time.sleep(interval)
     raise ScenarioError(f"explicit readiness deadline {timeout}s reached for {url}: {last_error}")
+
+
+def wait_oneshot(compose: Compose, service: str, timeout: int | None) -> None:
+    """Require a one-shot prerequisite (init/bundles) to finish with exit 0."""
+
+    deadline = None if timeout is None else time.monotonic() + timeout
+    last: tuple[str, int] | None = None
+    while deadline is None or time.monotonic() < deadline:
+        state = compose.container_state(service)
+        if state is None:
+            raise ScenarioError(f"prerequisite {service} container is missing")
+        last = state
+        if state[0] == "exited":
+            if state[1] == 0:
+                return
+            raise ScenarioError(
+                f"prerequisite {service} exited with {state[1]} instead of 0"
+            )
+        time.sleep(1.0)
+    raise ScenarioError(f"prerequisite {service} did not finish: {last!r}")
 
 
 def wait_service(compose: Compose, service: str, url: str, timeout: int | None) -> None:

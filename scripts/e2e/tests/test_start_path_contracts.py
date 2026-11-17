@@ -173,5 +173,39 @@ class BuilderRecoveryTests(unittest.TestCase):
         self.assertEqual(record["recovery_restart_core"], "skipped_in_flight")
 
 
+
+
+class OneshotPrerequisiteTests(unittest.TestCase):
+    """The start consumer requires init and the bundles to finish with exit 0.
+
+    The canonical bring-up is kept: the guard validates the real order (up first,
+    then the one-shots) and never imposes a runtime-first alternative.
+    """
+
+    def test_missing_prerequisite_container_is_a_hard_error(self) -> None:
+        compose = mock.Mock()
+        compose.container_state.return_value = None
+        with self.assertRaises(ScenarioError):
+            common.wait_oneshot(compose, "init", 1)
+
+    def test_failed_prerequisite_exit_code_is_rejected(self) -> None:
+        compose = mock.Mock()
+        compose.container_state.return_value = ("exited", 3)
+        with self.assertRaises(ScenarioError):
+            common.wait_oneshot(compose, "dependency-bundle", 1)
+
+    def test_successful_prerequisite_exit_is_accepted(self) -> None:
+        compose = mock.Mock()
+        compose.container_state.return_value = ("exited", 0)
+        common.wait_oneshot(compose, "environment-builder-bundle", 1)
+        compose.container_state.assert_called()
+
+    def test_running_prerequisite_times_out_closed(self) -> None:
+        compose = mock.Mock()
+        compose.container_state.return_value = ("running", 0)
+        with self.assertRaises(ScenarioError):
+            common.wait_oneshot(compose, "init", 0.2)
+
+
 if __name__ == "__main__":
     unittest.main()

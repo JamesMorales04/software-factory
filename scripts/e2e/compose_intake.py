@@ -35,6 +35,7 @@ from common import (
     restore_volumes,
     tail,
     wait_core,
+    wait_oneshot,
     wait_service,
     wait_until,
     wait_url,
@@ -148,6 +149,16 @@ def start(context: Context) -> None:
     # One canonical bring-up: init and the bundle services must run before the
     # runtime can import the builder, and the runtime has no depends_on.
     context.compose.up(build=not config.no_build)
+    # The runtime can only import the builder after init and the bundle
+    # services have finished; a missing or failed one-shot is a hard state error,
+    # not something to wait out.
+    for service in (
+        "init",
+        "provider-bundle",
+        "dependency-bundle",
+        "environment-builder-bundle",
+    ):
+        wait_oneshot(context.compose, service, config.readiness_timeout)
     core = context.compose.core_container()
     require(bool(core), "Core container was not created")
     context.state.set("core_container", core)
