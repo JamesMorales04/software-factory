@@ -748,13 +748,16 @@ class Compose:
                     f"refusing --no-build: image {image} is not the built digest {image_id}"
                 )
 
-    def up(self, *, build: bool) -> None:
+    def up(self, *, build: bool, services: list[str] | None = None) -> None:
         if build:
             self.prebuild_sequential()
         else:
             self._verify_prebuilt_binding()
+        command = ["up", "-d", "--no-build"]
+        if services:
+            command.extend(services)
         self.run(
-            ["up", "-d", "--no-build"],
+            command,
             check=True,
             log_name="compose-up",
             timeout=self.config.run_timeout,

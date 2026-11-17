@@ -144,7 +144,12 @@ def start(context: Context) -> None:
         restore_volumes(config, context.compose)
     else:
         context.compose.down(volumes=True)
-    context.compose.up(build=not config.no_build)
+    # Start the runtime broker first and wait for it: Core probes the broker once
+    # with a bounded window, and a broker that becomes ready afterwards leaves
+    # the environment builder cached as unavailable for the whole run.
+    context.compose.up(build=not config.no_build, services=["runtime"])
+    wait_core(context.compose, "http://runtime:8770/health", config.readiness_timeout)
+    context.compose.up(build=False)
     core = context.compose.core_container()
     require(bool(core), "Core container was not created")
     context.state.set("core_container", core)
