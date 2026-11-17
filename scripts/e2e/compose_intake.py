@@ -1141,6 +1141,12 @@ def autonomous_campaign(context: Context) -> None:
         assert_equal(planning.get("startReady"), True, "Core start-ready flag")
     assert_equal(environment.get("status"), "FROZEN", "environment freeze")
     require(bool(environment.get("specSha256")), "environment spec digest is missing")
+    # The Campaign may exist with a frozen plan/spec and no build receipt, and no
+    # public projection exposes the receipt. This journey therefore proves the
+    # Campaign start, not an executable environment: never label it as execution.
+    require(environment.get("required") is True, "environment is not marked required")
+    context.state.set("acceptance_scope", "CAMPAIGN_START_ONLY")
+    context.state.set("receipt_surface", "NOT_EXPOSED")
     plan_hash = projected_plan_hash(projection)
     require(bool(plan_hash), "autopilot produced no plan hash")
     assert_equal(plan_hash, context.state.get("plan_hash") and context.state.get("plan_hash") or plan_hash, "plan hash stability")
@@ -1327,6 +1333,8 @@ def autonomous_summary(context: Context) -> None:
         and context.state.get("manual_planning_calls", 0) == 0
     )
     result = {
+        "acceptance_scope": context.state.get("acceptance_scope", "CAMPAIGN_START_ONLY"),
+        "receipt_surface": context.state.get("receipt_surface", "NOT_EXPOSED"),
         "status": "PASS" if passed else "PARTIAL",
         "diagnosticOnly": not clean,
         "mode": "AUTONOMOUS",
