@@ -611,10 +611,10 @@ async fn execute<B: factory_native::execution::VolumeBackend + 'static>(
     else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), grant);
+    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), handle.generation, grant);
     let result = app
         .manager
-        .execute(&workspace_id, &input, app.max_runtime)
+        .execute(&workspace_id, handle.generation, &input, app.max_runtime)
         .await;
     fence.abort();
     match result {
@@ -646,7 +646,11 @@ async fn apply_files<B: factory_native::execution::VolumeBackend>(
     }
     let mut input = input;
     input.allowed_paths = grant.allowed_paths;
-    match app.manager.apply_files(&workspace_id, &input).await {
+    match app
+        .manager
+        .apply_files(&workspace_id, handle.generation, &input)
+        .await
+    {
         Ok(candidate) => (StatusCode::OK, Json(candidate)).into_response(),
         Err(error) => execution_error(error),
     }
@@ -675,7 +679,11 @@ async fn write_files<B: factory_native::execution::VolumeBackend>(
     }
     let mut input = input;
     input.allowed_paths = grant.allowed_paths;
-    match app.manager.write_files(&workspace_id, &input).await {
+    match app
+        .manager
+        .write_files(&workspace_id, handle.generation, &input)
+        .await
+    {
         Ok(handle) => (StatusCode::OK, Json(handle)).into_response(),
         Err(error) => execution_error(error),
     }
@@ -745,11 +753,14 @@ async fn run_tool<B: factory_native::execution::VolumeBackend + 'static>(
     else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), grant);
-    let result = app.manager.run_tool(&workspace_id, &input).await;
+    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), handle.generation, grant);
+    let result = app
+        .manager
+        .run_tool(&workspace_id, handle.generation, &input)
+        .await;
     let discarded = app
         .manager
-        .discard_outside_scope(&workspace_id, &allowed_paths)
+        .discard_outside_scope(&workspace_id, handle.generation, &allowed_paths)
         .await;
     fence.abort();
     if let Err(error) = discarded {
@@ -797,16 +808,27 @@ async fn environment_check<B: factory_native::execution::VolumeBackend + 'static
         Err(error) => return execution_error(error),
     };
     let check_token = uuid::Uuid::new_v4().to_string();
-    if let Err(error) =
-        app.manager
-            .begin_environment_check(&workspace_id, &workspace_volume, &check_token)
+    if let Err(error) = app
+        .manager
+        .begin_environment_check(
+            &workspace_id,
+            handle.generation,
+            &workspace_volume,
+            &check_token,
+        )
+        .await
     {
         return execution_error(error);
     }
     // The fence revokes a builder check that outlives its operation grant.
     // `cancel_active` addresses the broker-owned check container by workspace
     // volume; the Supervisor never guesses a container name.
-    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), grant_token);
+    let fence = spawn_operation_fence(
+        app.clone(),
+        workspace_id.clone(),
+        handle.generation,
+        grant_token,
+    );
     let response = async {
         if Duration::from_secs(u64::from(input.check.timeout_secs)) > app.max_runtime {
             return (
@@ -841,7 +863,11 @@ async fn environment_check<B: factory_native::execution::VolumeBackend + 'static
         // Snapshot and replace the exact current worktree. `podman volume
         // import` merges into an existing volume, so the manager removes and
         // recreates it before importing; stale files cannot survive a check.
-        if let Err(error) = app.manager.stage_workspace_for_check(&workspace_id).await {
+        if let Err(error) = app
+            .manager
+            .stage_workspace_for_check(&workspace_id, handle.generation)
+            .await
+        {
             return execution_error(error);
         }
         if app.manager.environment_check_cancelled(&workspace_id) {
@@ -930,6 +956,7 @@ async fn acquire_dependencies<B: factory_native::execution::VolumeBackend + 'sta
     let fence = spawn_operation_fence(
         app.clone(),
         workspace_id.clone(),
+        handle.generation,
         headers
             .get("x-factory-operation-grant")
             .and_then(|value| value.to_str().ok())
@@ -938,7 +965,7 @@ async fn acquire_dependencies<B: factory_native::execution::VolumeBackend + 'sta
     );
     let result = app
         .manager
-        .acquire_dependencies(&workspace_id, &input)
+        .acquire_dependencies(&workspace_id, handle.generation, &input)
         .await;
     fence.abort();
     match result {
@@ -964,7 +991,11 @@ async fn finalize<B: factory_native::execution::VolumeBackend>(
     if operation_grant(&headers, &app, &handle, "finalize", &digest).is_none() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    match app.manager.finalize_workspace(&workspace_id).await {
+    match app
+        .manager
+        .finalize_workspace(&workspace_id, handle.generation)
+        .await
+    {
         Ok(candidate) => (StatusCode::OK, Json(candidate)).into_response(),
         Err(error) => execution_error(error),
     }
@@ -989,10 +1020,10 @@ async fn cleanup<B: factory_native::execution::VolumeBackend>(
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
 ) -> Response {
-    if authorized_workspace(&headers, &app, &workspace_id).is_none() {
+    let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
-    match app.manager.cleanup(&workspace_id).await {
+    };
+    match app.manager.cleanup(&workspace_id, handle.generation).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => execution_error(error),
     }
@@ -1179,6 +1210,7 @@ fn operation_grant<B: factory_native::execution::VolumeBackend>(
 fn spawn_operation_fence<B: factory_native::execution::VolumeBackend + 'static>(
     app: Arc<App<B>>,
     workspace_id: String,
+    generation: i64,
     grant: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -1217,14 +1249,14 @@ fn spawn_operation_fence<B: factory_native::execution::VolumeBackend + 'static>(
                     // cancelled, then stop. The cancellation marker also makes
                     // the handler refuse to start a later check.
                     for _ in 0..20 {
-                        match app.manager.cancel_active(&workspace_id).await {
+                        match app.manager.cancel_active(&workspace_id, generation).await {
                             Ok(true) => return,
                             Ok(false) | Err(_) => {
                                 tokio::time::sleep(Duration::from_millis(100)).await;
                             }
                         }
                     }
-                    let _ = app.manager.cancel_active(&workspace_id).await;
+                    let _ = app.manager.cancel_active(&workspace_id, generation).await;
                     return;
                 }
             }
@@ -1654,12 +1686,20 @@ mod tests {
     }
 
     fn allocation_body(attempt_id: &str, repository: &Path) -> serde_json::Value {
+        allocation_body_for_generation(attempt_id, repository, 1)
+    }
+
+    fn allocation_body_for_generation(
+        attempt_id: &str,
+        repository: &Path,
+        generation: i64,
+    ) -> serde_json::Value {
         let base = base(repository);
         let spec_sha256 = "a".repeat(64);
         let claims = factory_native::attempt_grant::AttemptGrantClaims {
             attempt_id: attempt_id.into(),
             worker_id: "worker-test".into(),
-            generation: 1,
+            generation,
             repository: repository.to_string_lossy().into_owned(),
             base_commit: base.clone(),
             action_spec_sha256: spec_sha256.clone(),
@@ -1670,7 +1710,7 @@ mod tests {
             "attemptId": attempt_id,
             "repository": repository,
             "baseCommit": base,
-            "generation": 1,
+            "generation": generation,
             "actionSpecSha256": spec_sha256,
             "attemptGrant": grant
         })
@@ -2358,6 +2398,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn newer_generation_lease_recovers_and_invalidates_the_old_capability() {
+        let fixture = fixture();
+        let router = build_router(fixture.app.clone());
+        let attempt = "attempt-generation-recovery";
+        let first = body_json(
+            router
+                .clone()
+                .oneshot(json_request(
+                    "/v1/workspaces",
+                    Some(TEST_TOKEN),
+                    &allocation_body_for_generation(attempt, &fixture.repository, 1),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = first["workspaceId"].as_str().unwrap().to_owned();
+        let old_capability = first["capability"].as_str().unwrap().to_owned();
+
+        // A larger body generation alone is not authority: the signed grant
+        // must bind that exact generation.
+        let next = allocation_body_for_generation(attempt, &fixture.repository, 2);
+        let mut forged = next.clone();
+        forged["attemptGrant"] =
+            allocation_body_for_generation(attempt, &fixture.repository, 3)["attemptGrant"].clone();
+        assert_eq!(
+            status(
+                &router,
+                json_request("/v1/workspaces", Some(TEST_TOKEN), &forged)
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+
+        let response = router
+            .clone()
+            .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &next))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let recovered = body_json(response).await;
+        assert_eq!(recovered["workspaceId"], workspace_id);
+        assert_eq!(recovered["generation"], 2);
+        let new_capability = recovered["capability"].as_str().unwrap().to_owned();
+
+        let status_request = |id: &str, token: &str| {
+            Request::builder()
+                .uri(format!("/v1/workspaces/{id}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        assert_eq!(
+            status(&router, status_request(&workspace_id, &old_capability)).await,
+            StatusCode::UNAUTHORIZED,
+            "the old generation capability must be invalidated"
+        );
+        assert_eq!(
+            status(&router, status_request(&workspace_id, &new_capability)).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
     async fn workspace_mutations_require_a_matching_unexpired_operation_grant() {
         let fixture = fixture();
         let router = build_router(fixture.app.clone());
@@ -2664,27 +2768,42 @@ mod tests {
     #[tokio::test]
     async fn concurrent_environment_check_registration_keeps_the_first_token() {
         let fixture = fixture();
-        let workspace_id = uuid::Uuid::new_v4().to_string();
-        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
+        let handle = fixture
+            .app
+            .manager
+            .allocate(&factory_native::execution::WorkspaceAllocation {
+                attempt_id: "check-registration".into(),
+                repository: fixture.repository.to_string_lossy().into_owned(),
+                base_commit: base(&fixture.repository),
+                generation: 1,
+                action_spec_sha256: String::new(),
+                attempt_grant: String::new(),
+            })
+            .await
+            .unwrap();
+        let workspace_id = handle.workspace_id.clone();
+        let volume = fixture.app.manager.workspace_volume(&workspace_id).unwrap();
         let first_token = uuid::Uuid::new_v4().to_string();
         let second_token = uuid::Uuid::new_v4().to_string();
         fixture
             .app
             .manager
-            .begin_environment_check(&workspace_id, &volume, &first_token)
+            .begin_environment_check(&workspace_id, 1, &volume, &first_token)
+            .await
             .unwrap();
         assert!(matches!(
             fixture
                 .app
                 .manager
-                .begin_environment_check(&workspace_id, &volume, &second_token),
+                .begin_environment_check(&workspace_id, 1, &volume, &second_token)
+                .await,
             Err(ExecutionError::Conflict)
         ));
         assert!(
             fixture
                 .app
                 .manager
-                .cancel_active(&workspace_id)
+                .cancel_active(&workspace_id, 1)
                 .await
                 .unwrap(),
             "the first registration must remain cancellable"
