@@ -1321,7 +1321,7 @@ fn execution_error(error: ExecutionError) -> Response {
     let status = match &error {
         ExecutionError::Invalid(_) => StatusCode::BAD_REQUEST,
         ExecutionError::NotFound => StatusCode::NOT_FOUND,
-        ExecutionError::Conflict => StatusCode::CONFLICT,
+        ExecutionError::Conflict | ExecutionError::ConflictReason(_) => StatusCode::CONFLICT,
         ExecutionError::Archive(ArchiveError::Invalid(_)) => StatusCode::BAD_REQUEST,
         ExecutionError::Archive(ArchiveError::TooLarge(_)) => StatusCode::PAYLOAD_TOO_LARGE,
         ExecutionError::Workspace(WorkspaceError::Invalid(_)) => StatusCode::BAD_REQUEST,
@@ -2121,6 +2121,17 @@ mod tests {
             .await
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn allocation_conflict_reasons_return_409_without_secrets() {
+        let response = execution_error(ExecutionError::ConflictReason("active_environment_check"));
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body_json(response).await;
+        assert_eq!(
+            body["error"],
+            "workspace allocation conflict: active_environment_check"
+        );
     }
 
     #[tokio::test]

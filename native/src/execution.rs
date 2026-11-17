@@ -60,6 +60,10 @@ pub enum ExecutionError {
     Sandbox(#[from] SandboxError),
     #[error("workspace already has a different identity")]
     Conflict,
+    /// A rejected workspace allocation with a bounded, non-secret reason used
+    /// by the Supervisor response and the next real-lifecycle probe.
+    #[error("workspace allocation conflict: {0}")]
+    ConflictReason(&'static str),
     #[error("workspace not found")]
     NotFound,
 }
@@ -1033,7 +1037,9 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
                     .to_string_lossy()
                     .eq_ignore_ascii_case(&input.repository)
             {
-                return Err(ExecutionError::Conflict);
+                return Err(ExecutionError::ConflictReason(
+                    "repository_or_base_mismatch",
+                ));
             }
             let recovering_generation = record.generation != input.generation;
             if recovering_generation {
@@ -1054,13 +1060,20 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
                     .lock()
                     .unwrap()
                     .contains_key(&record.workspace_id);
-                if input.generation <= record.generation
-                    || record.status == WorkspaceStatus::Completed
-                    || active
-                    || check_active
-                    || record.container.is_some()
-                {
-                    return Err(ExecutionError::Conflict);
+                if input.generation <= record.generation {
+                    return Err(ExecutionError::ConflictReason("generation_not_newer"));
+                }
+                if record.status == WorkspaceStatus::Completed {
+                    return Err(ExecutionError::ConflictReason("completed_workspace"));
+                }
+                if active {
+                    return Err(ExecutionError::ConflictReason("active_execution"));
+                }
+                if check_active {
+                    return Err(ExecutionError::ConflictReason("active_environment_check"));
+                }
+                if record.container.is_some() {
+                    return Err(ExecutionError::ConflictReason("stale_container_reference"));
                 }
                 // The record carries no live container reference and no
                 // operation/check is registered. Remove any stale volume before
@@ -3078,9 +3091,8 @@ mod tests {
         fixture.manager.allocate(&allocation).await.unwrap();
         let mut changed = allocation;
         changed.base_commit = "0".repeat(40);
-        assert!(matches!(
-            fixture.manager.allocate(&changed).await,
-            Err(ExecutionError::Conflict)
+        assert!(is_allocation_conflict(
+            fixture.manager.allocate(&changed).await
         ));
     }
 
@@ -3393,9 +3405,8 @@ mod tests {
         fixture.manager.allocate(&allocation).await.unwrap();
         let mut stale = allocation.clone();
         stale.generation = 1;
-        assert!(matches!(
-            fixture.manager.allocate(&stale).await,
-            Err(ExecutionError::Conflict)
+        assert!(is_allocation_conflict(
+            fixture.manager.allocate(&stale).await
         ));
     }
 
@@ -3421,10 +3432,7 @@ mod tests {
         let mut next = allocation.clone();
         next.generation = 2;
         assert!(
-            matches!(
-                fixture.manager.allocate(&next).await,
-                Err(ExecutionError::Conflict)
-            ),
+            is_allocation_conflict(fixture.manager.allocate(&next).await),
             "a live old generation must not be replaced"
         );
         fixture
@@ -3471,9 +3479,8 @@ mod tests {
         assert!(completed.candidate.is_some());
         let mut next = allocation.clone();
         next.generation = 2;
-        assert!(matches!(
-            fixture.manager.allocate(&next).await,
-            Err(ExecutionError::Conflict)
+        assert!(is_allocation_conflict(
+            fixture.manager.allocate(&next).await
         ));
         let record = fixture
             .manager
@@ -3501,16 +3508,14 @@ mod tests {
         let mut wrong_base = allocation.clone();
         wrong_base.generation = 2;
         wrong_base.base_commit = "0".repeat(40);
-        assert!(matches!(
-            fixture.manager.allocate(&wrong_base).await,
-            Err(ExecutionError::Conflict)
+        assert!(is_allocation_conflict(
+            fixture.manager.allocate(&wrong_base).await
         ));
         let mut wrong_repository = allocation.clone();
         wrong_repository.generation = 2;
         wrong_repository.repository = "/tmp/not-the-registered-repository".into();
-        assert!(matches!(
-            fixture.manager.allocate(&wrong_repository).await,
-            Err(ExecutionError::Conflict)
+        assert!(is_allocation_conflict(
+            fixture.manager.allocate(&wrong_repository).await
         ));
     }
 
@@ -3782,10 +3787,7 @@ mod tests {
         let mut next = allocation.clone();
         next.generation = 2;
         assert!(
-            matches!(
-                fixture.manager.allocate(&next).await,
-                Err(ExecutionError::Conflict)
-            ),
+            is_allocation_conflict(fixture.manager.allocate(&next).await),
             "an active environment check must block recovery"
         );
         fixture.manager.end_environment_check(&first.workspace_id);
@@ -3829,10 +3831,7 @@ mod tests {
         let mut next = allocation.clone();
         next.generation = 2;
         assert!(
-            matches!(
-                fixture.manager.allocate(&next).await,
-                Err(ExecutionError::Conflict)
-            ),
+            is_allocation_conflict(fixture.manager.allocate(&next).await),
             "recovery must fail closed while a container reference is live"
         );
         fixture
@@ -3852,6 +3851,180 @@ mod tests {
             "the failed record must be removed only after cleanup succeeds"
         );
         assert!(fixture.manager.allocate(&next).await.is_ok());
+    }
+
+    fn is_allocation_conflict<T>(result: Result<T, ExecutionError>) -> bool {
+        matches!(
+            result,
+            Err(ExecutionError::Conflict | ExecutionError::ConflictReason(_))
+        )
+    }
+
+    async fn allocation_conflict_reason(
+        manager: &Arc<WorkspaceManager<LocalBackend>>,
+        allocation: &WorkspaceAllocation,
+    ) -> &'static str {
+        match manager.allocate(allocation).await {
+            Err(ExecutionError::ConflictReason(reason)) => reason,
+            other => panic!("expected a typed allocation conflict, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn allocation_guards_have_distinct_redacted_reasons() {
+        // repository/base mismatch
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "reason-binding".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base.clone(),
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        fixture.manager.allocate(&allocation).await.unwrap();
+        let mut wrong = allocation.clone();
+        wrong.generation = 2;
+        wrong.base_commit = "0".repeat(40);
+        assert_eq!(
+            allocation_conflict_reason(&fixture.manager, &wrong).await,
+            "repository_or_base_mismatch"
+        );
+
+        // older generation
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let mut allocation = WorkspaceAllocation {
+            attempt_id: "reason-generation".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 2,
+        };
+        fixture.manager.allocate(&allocation).await.unwrap();
+        allocation.generation = 1;
+        assert_eq!(
+            allocation_conflict_reason(&fixture.manager, &allocation).await,
+            "generation_not_newer"
+        );
+
+        // completed candidate
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "reason-completed".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let handle = fixture.manager.allocate(&allocation).await.unwrap();
+        fixture
+            .manager
+            .execute(
+                &handle.workspace_id,
+                handle.generation,
+                &ExecuteWorkspace {
+                    image: "test/image:1".into(),
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "printf 'completed\n' > completed.txt".into(),
+                    ],
+                    timeout_secs: 30,
+                },
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        let mut next = allocation.clone();
+        next.generation = 2;
+        assert_eq!(
+            allocation_conflict_reason(&fixture.manager, &next).await,
+            "completed_workspace"
+        );
+
+        // live in-process execution
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "reason-active".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let handle = fixture.manager.allocate(&allocation).await.unwrap();
+        fixture
+            .manager
+            .active
+            .lock()
+            .unwrap()
+            .insert(handle.workspace_id.clone(), "factory-exec-test".into());
+        let mut next = allocation.clone();
+        next.generation = 2;
+        assert_eq!(
+            allocation_conflict_reason(&fixture.manager, &next).await,
+            "active_execution"
+        );
+
+        // live environment check
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "reason-check".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let handle = fixture.manager.allocate(&allocation).await.unwrap();
+        let volume = fixture
+            .manager
+            .workspace_volume(&handle.workspace_id)
+            .unwrap();
+        fixture
+            .manager
+            .begin_environment_check(&handle.workspace_id, 1, &volume, "check-token-123456")
+            .await
+            .unwrap();
+        let mut next = allocation.clone();
+        next.generation = 2;
+        assert_eq!(
+            allocation_conflict_reason(&fixture.manager, &next).await,
+            "active_environment_check"
+        );
+
+        // retained stale container reference
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "reason-container".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        fixture.manager.allocate(&allocation).await.unwrap();
+        let mut record = fixture
+            .manager
+            .load_record(&allocation.attempt_id)
+            .unwrap()
+            .unwrap();
+        record.container = Some(format!("factory-exec-{}", Uuid::new_v4()));
+        fixture.manager.write_record(&record).unwrap();
+        let mut next = allocation.clone();
+        next.generation = 2;
+        assert_eq!(
+            allocation_conflict_reason(&fixture.manager, &next).await,
+            "stale_container_reference"
+        );
     }
 
     #[tokio::test]

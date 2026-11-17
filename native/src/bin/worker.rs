@@ -2479,11 +2479,12 @@ async fn run_provider_tool_loop(
         .send()
         .await?;
     if !response.status().is_success() {
-        return Err(format!(
-            "Supervisor refused provider workspace allocation: {}",
-            response.status()
-        )
-        .into());
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let body = body.chars().take(512).collect::<String>();
+        return Err(
+            format!("Supervisor refused provider workspace allocation: {status} {body}").into(),
+        );
     }
     let handle: WorkspaceHandle = response.json().await?;
 
@@ -3655,11 +3656,12 @@ async fn run_codex_tool_loop(
         .send()
         .await?;
     if !response.status().is_success() {
-        return Err(format!(
-            "Supervisor refused provider workspace allocation: {}",
-            response.status()
-        )
-        .into());
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let body = body.chars().take(512).collect::<String>();
+        return Err(
+            format!("Supervisor refused provider workspace allocation: {status} {body}").into(),
+        );
     }
     let handle: WorkspaceHandle = response.json().await?;
     let prompt_text = match codex_prompt(context) {
