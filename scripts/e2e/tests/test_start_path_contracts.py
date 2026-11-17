@@ -609,6 +609,77 @@ class DiagnosticsSafetyTests(unittest.TestCase):
             )
         self.assertEqual(list((self.artifacts / "diagnostics").glob("*intake*")), [])
 
+    def test_diagnostic_error_text_redacts_before_truncating(self) -> None:
+        message = "token=canary " + ("x" * 900)
+        rendered = common._diagnostic_error_text(RuntimeError(message))
+        self.assertIn("token=[REDACTED]", rendered)
+        self.assertNotIn("canary", rendered)
+        self.assertLessEqual(len(rendered), 540)
+
+    def test_diagnostic_artifacts_and_stdout_never_contain_the_secret(self) -> None:
+        import contextlib
+        import io
+        from common import State
+
+        class Api:
+            def get(self, path):
+                if path == "/workers":
+                    raise ScenarioError("upstream failed token=canary")
+                return {}
+
+        buffer = io.StringIO()
+        with mock.patch.object(common, "_bounded_run", side_effect=FileNotFoundError("podman")), contextlib.redirect_stdout(buffer):
+            common.collect_diagnostics(
+                self.config(), self.compose(), State(self.artifacts / "state.json"), Api()
+            )
+        rendered = (self.artifacts / "diagnostics" / "workers.json.error.txt").read_text(encoding="utf-8")
+        self.assertIn("[REDACTED]", rendered)
+        self.assertNotIn("canary", rendered + buffer.getvalue())
+
+    def test_unicode_encode_error_in_one_writer_does_not_abort_api_capture(self) -> None:
+        from common import State
+        from pathlib import Path as FilePath
+
+        class Api:
+            def get(self, path):
+                if path == "/workers":
+                    return [{"worker_id": "compose-worker"}]
+                return {}
+
+        original = FilePath.write_text
+
+        def failing(self, data, *args, **kwargs):
+            if self.name == "logs-core.txt":
+                raise UnicodeEncodeError("utf-8", "x", 0, 1, "bad character")
+            return original(self, data, *args, **kwargs)
+
+        with mock.patch.object(common, "_bounded_run", side_effect=FileNotFoundError("podman")), mock.patch.object(FilePath, "write_text", failing):
+            common.collect_diagnostics(
+                self.config(), self.compose(), State(self.artifacts / "state.json"), Api()
+            )
+        self.assertTrue((self.artifacts / "diagnostics" / "workers.json").exists())
+
+    def test_writer_failure_logs_without_the_original_message(self) -> None:
+        from common import State
+        from pathlib import Path as FilePath
+
+        original = FilePath.write_text
+        logged: list[str] = []
+
+        def failing(self, data, *args, **kwargs):
+            raise UnicodeEncodeError("utf-8", "token=canary", 0, 1, "bad character")
+
+        class Api:
+            def get(self, path):
+                return {}
+
+        with mock.patch.object(common, "_bounded_run", side_effect=FileNotFoundError("podman")), mock.patch.object(FilePath, "write_text", failing), mock.patch.object(common, "log", side_effect=logged.append):
+            common.collect_diagnostics(
+                self.config(), self.compose(), State(self.artifacts / "state.json"), Api()
+            )
+        self.assertTrue(logged)
+        self.assertFalse(any("canary" in line for line in logged))
+
     def test_service_lookup_failure_still_captures_workers(self) -> None:
         from common import Compose, State
 

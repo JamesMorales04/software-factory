@@ -1434,8 +1434,10 @@ def _write_diagnostic(directory: Path, name: str, body: str) -> None:
 
     try:
         directory.joinpath(name).write_text(body, encoding="utf-8")
-    except OSError:
-        pass
+    except Exception as error:  # noqa: BLE001 - one artifact must not abort the rest
+        # Never print the original message here: it may carry a secret that the
+        # redaction step has not processed yet.
+        log(f"diagnostic write failed for {name}: {type(error).__name__}")
 
 
 def _diagnostic_file_name(key: str, endpoint: str) -> str:
@@ -1452,10 +1454,16 @@ def _diagnostic_file_name(key: str, endpoint: str) -> str:
 
 
 def _diagnostic_error_text(error: BaseException) -> str:
-    """One bounded, redaction-safe line for a failed diagnostic artifact."""
+    """One bounded, redaction-safe line for a failed diagnostic artifact.
 
-    message = str(error).replace("\n", " ")[:500]
-    return f"{type(error).__name__}: {message}\n"
+    Redaction happens on the raw message BEFORE newline flattening and the
+    500-character truncation, so a secret cannot survive because the pattern was
+    cut in half. The class name is safe by construction.
+    """
+
+    redacted = redact_text(str(error))
+    flattened = " ".join(redacted.split())[:500]
+    return f"{type(error).__name__}: {flattened}\n"
 
 
 def collect_diagnostics(
@@ -1518,7 +1526,9 @@ def collect_diagnostics(
                     encoding="utf-8",
                 )
             except Exception as error:  # noqa: BLE001 - diagnostics must never mask the primary failure
-                _write_diagnostic(directory, f"{name}.error.txt", str(error))
+                _write_diagnostic(
+                    directory, f"{name}.error.txt", _diagnostic_error_text(error)
+                )
         for key, endpoint in (
             ("intake_id", "/intake/requests/{id}"),
             ("campaign_id", "/campaigns/{id}"),
@@ -1537,7 +1547,9 @@ def collect_diagnostics(
                 )
             except Exception as error:  # noqa: BLE001
                 _write_diagnostic(
-                    directory, _diagnostic_file_name(key, endpoint), str(error)
+                    directory,
+                    _diagnostic_file_name(key, endpoint),
+                    _diagnostic_error_text(error),
                 )
 
 
