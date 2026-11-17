@@ -1176,6 +1176,9 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         validate_files(&input.allowed_paths, &input.files)?;
         let _write = self.lock.lock().await;
         let mut record = self.find_by_id_fenced(workspace_id, generation)?;
+        if self.cancelled.lock().unwrap().remove(workspace_id) {
+            return Err(ExecutionError::Conflict);
+        }
         if record.status != WorkspaceStatus::Allocated {
             return Err(ExecutionError::Conflict);
         }
@@ -1265,10 +1268,10 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
     ) -> Result<(), ExecutionError> {
         validate_workspace_id(workspace_id)?;
         let _write = self.lock.lock().await;
+        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if self.cancelled.lock().unwrap().contains(workspace_id) {
             return Err(ExecutionError::Conflict);
         }
-        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if record.status != WorkspaceStatus::Allocated {
             return Err(ExecutionError::Conflict);
         }
@@ -1305,10 +1308,10 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             ));
         }
         let _write = self.lock.lock().await;
+        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if self.cancelled.lock().unwrap().remove(workspace_id) {
             return Err(ExecutionError::Conflict);
         }
-        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if record.status != WorkspaceStatus::Allocated {
             return Err(ExecutionError::Conflict);
         }
@@ -1443,10 +1446,10 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         let container = format!("{DEPENDENCY_CONTAINER_PREFIX}{}", Uuid::new_v4());
         let (workspace, volume) = {
             let _write = self.lock.lock().await;
+            let mut record = self.find_by_id_fenced(workspace_id, generation)?;
             if self.cancelled.lock().unwrap().remove(workspace_id) {
                 return Err(ExecutionError::Conflict);
             }
-            let mut record = self.find_by_id_fenced(workspace_id, generation)?;
             if record.status != WorkspaceStatus::Allocated {
                 return Err(ExecutionError::Conflict);
             }
@@ -1484,7 +1487,12 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         .await;
         self.active.lock().unwrap().remove(workspace_id);
         let _ = self.backend.remove_container(&container).await;
-        if self.cancelled.lock().unwrap().remove(workspace_id) {
+        let cancelled = {
+            let _write = self.lock.lock().await;
+            self.find_by_id_fenced(workspace_id, generation)?;
+            self.cancelled.lock().unwrap().remove(workspace_id)
+        };
+        if cancelled {
             self.fail_dependency_acquisition(
                 workspace_id,
                 &container,
@@ -1527,11 +1535,11 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             return Err(ExecutionError::Archive(error));
         }
         let _write = self.lock.lock().await;
+        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if self.cancelled.lock().unwrap().remove(workspace_id) {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(ExecutionError::Conflict);
         }
-        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if record.status != WorkspaceStatus::Running
             || record.container.as_deref() != Some(container.as_str())
         {
@@ -1590,6 +1598,9 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         validate_workspace_id(workspace_id)?;
         let _write = self.lock.lock().await;
         let record = self.find_by_id_fenced(workspace_id, generation)?;
+        if self.cancelled.lock().unwrap().remove(workspace_id) {
+            return Err(ExecutionError::Conflict);
+        }
         if record.status != WorkspaceStatus::Allocated {
             return Ok(0);
         }
@@ -1607,10 +1618,10 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
     ) -> Result<CandidateRevision, ExecutionError> {
         validate_workspace_id(workspace_id)?;
         let _write = self.lock.lock().await;
+        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if self.cancelled.lock().unwrap().remove(workspace_id) {
             return Err(ExecutionError::Conflict);
         }
-        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if record.status == WorkspaceStatus::Completed {
             return record.candidate.ok_or_else(|| {
                 ExecutionError::Invalid("completed workspace has no candidate".into())
@@ -1641,10 +1652,10 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         validate_workspace_id(workspace_id)?;
         validate_files(&input.allowed_paths, &input.files)?;
         let _write = self.lock.lock().await;
+        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if self.cancelled.lock().unwrap().remove(workspace_id) {
             return Err(ExecutionError::Conflict);
         }
-        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if record.status == WorkspaceStatus::Completed {
             return record.candidate.ok_or_else(|| {
                 ExecutionError::Invalid("completed workspace has no candidate".into())
@@ -1693,10 +1704,10 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             ));
         }
         let _write = self.lock.lock().await;
+        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if self.cancelled.lock().unwrap().remove(workspace_id) {
             return Err(ExecutionError::Conflict);
         }
-        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if record.status == WorkspaceStatus::Completed {
             let candidate = record.candidate.clone().ok_or_else(|| {
                 ExecutionError::Invalid("completed workspace has no candidate".into())
@@ -1857,9 +1868,9 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
 
     pub async fn cleanup(&self, workspace_id: &str, generation: i64) -> Result<(), ExecutionError> {
         validate_workspace_id(workspace_id)?;
-        self.cancelled.lock().unwrap().remove(workspace_id);
         let _write = self.lock.lock().await;
         let record = self.find_by_id_fenced(workspace_id, generation)?;
+        self.cancelled.lock().unwrap().remove(workspace_id);
         if let Some(container) = &record.container {
             self.backend.remove_container(container).await?;
         }
@@ -3542,6 +3553,102 @@ mod tests {
             fixture.manager.backend.volumes.lock().unwrap().len(),
             1,
             "concurrent recovery must not leave two workspace volumes"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_generation_does_not_clear_the_newer_cancellation_marker() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-cancel".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let first = fixture.manager.allocate(&allocation).await.unwrap();
+        let mut next = allocation.clone();
+        next.generation = 2;
+        fixture.manager.allocate(&next).await.unwrap();
+        fixture
+            .manager
+            .cancel_active(&first.workspace_id, 2)
+            .await
+            .unwrap();
+        let execution = ExecuteWorkspace {
+            image: "test/image:1".into(),
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf 'stale\n' > stale.txt".into(),
+            ],
+            timeout_secs: 30,
+        };
+        assert!(matches!(
+            fixture
+                .manager
+                .execute(&first.workspace_id, 1, &execution, Duration::from_secs(30))
+                .await,
+            Err(ExecutionError::Conflict)
+        ));
+        assert!(
+            fixture
+                .manager
+                .cancelled
+                .lock()
+                .unwrap()
+                .contains(&first.workspace_id),
+            "a stale generation must not clear the newer cancellation marker"
+        );
+        assert!(matches!(
+            fixture
+                .manager
+                .execute(&first.workspace_id, 2, &execution, Duration::from_secs(30))
+                .await,
+            Err(ExecutionError::Conflict)
+        ));
+        assert!(
+            !fixture
+                .manager
+                .cancelled
+                .lock()
+                .unwrap()
+                .contains(&first.workspace_id),
+            "the current generation must consume its revocation marker"
+        );
+
+        fixture
+            .manager
+            .cancel_active(&first.workspace_id, 2)
+            .await
+            .unwrap();
+        assert!(matches!(
+            fixture.manager.cleanup(&first.workspace_id, 1).await,
+            Err(ExecutionError::Conflict)
+        ));
+        assert!(
+            fixture
+                .manager
+                .cancelled
+                .lock()
+                .unwrap()
+                .contains(&first.workspace_id),
+            "a stale cleanup must not clear the newer cancellation marker"
+        );
+        fixture
+            .manager
+            .cleanup(&first.workspace_id, 2)
+            .await
+            .unwrap();
+        assert!(
+            !fixture
+                .manager
+                .cancelled
+                .lock()
+                .unwrap()
+                .contains(&first.workspace_id)
         );
     }
 
