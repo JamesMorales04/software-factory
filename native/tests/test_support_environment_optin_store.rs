@@ -15,6 +15,11 @@ use factory_native::planning::environment::{
     ProjectConventions, ResourceLimits, SandboxPolicy, sha256_hex,
 };
 
+/// Tests that mutate the process environment serialize on this guard so the
+/// default parallel test runtime cannot interleave an opted-in caller with an
+/// unset one. No extra dependency: tokio's const mutex is already available.
+static ENV_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn database(label: &str) -> (Database, std::path::PathBuf) {
     let path = std::env::temp_dir().join(format!(
         "factory-cr15-{label}-{}.sqlite",
@@ -141,6 +146,7 @@ fn frozen_pair(
 /// different plan is refused without touching the stored binding.
 #[tokio::test]
 async fn the_first_real_binding_is_accepted_then_idempotent_then_refused() {
+    let _env = ENV_GUARD.lock().await;
     unsafe { std::env::remove_var("FACTORY_TEST_ENVIRONMENT_BINDING") };
     let (db, path) = database("cas").await;
     let repository =
@@ -272,6 +278,7 @@ async fn insert_review(path: &std::path::Path, plan: &EnvironmentPlan) {
 /// database alone does not prove it.
 #[tokio::test]
 async fn the_frozen_resume_is_read_only() {
+    let _env = ENV_GUARD.lock().await;
     unsafe { std::env::remove_var("FACTORY_TEST_ENVIRONMENT_BINDING") };
     let (db, path) = database("resume").await;
     let repository =
@@ -345,8 +352,9 @@ async fn the_frozen_resume_is_read_only() {
 /// The ON case: with the variable set to "1" the seam applies the fixture
 /// binding to a real ActionSpec. Without this case a suite could pass while the
 /// gate never opens.
-#[test]
-fn the_seam_applies_the_placeholder_on_explicit_opt_in() {
+#[tokio::test]
+async fn the_seam_applies_the_placeholder_on_explicit_opt_in() {
+    let _env = ENV_GUARD.lock().await;
     let mut spec = crate::action_spec_for_opt_in_test();
     unsafe { std::env::set_var("FACTORY_TEST_ENVIRONMENT_BINDING", "1") };
     factory_native::db::apply_test_environment_binding_if_enabled(&mut spec, "action-on");

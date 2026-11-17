@@ -11,6 +11,10 @@ use factory_native::db::{
     test_environment_binding, test_environment_binding_opt_in,
 };
 
+/// Every test in this binary that mutates the process environment serializes
+/// here, so the parallel runtime cannot mix an opted-in case with an unset one.
+static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn set_gate(value: Option<&str>) {
     match value {
         Some(raw) => unsafe { std::env::set_var("FACTORY_TEST_ENVIRONMENT_BINDING", raw) },
@@ -21,6 +25,7 @@ fn set_gate(value: Option<&str>) {
 /// The predicate is the single decision point, and only `"1"` opens the gate.
 #[test]
 fn the_opt_in_predicate_accepts_only_an_explicit_one() {
+    let _env = ENV_GUARD.lock().expect("env guard");
     assert!(test_environment_binding_opt_in(Some("1")));
     for raw in [
         None,
@@ -41,6 +46,7 @@ fn the_opt_in_predicate_accepts_only_an_explicit_one() {
 /// the exact contract it had before the gate existed.
 #[test]
 fn the_fixture_binding_identity_is_stable() {
+    let _env = ENV_GUARD.lock().expect("env guard");
     let binding = test_environment_binding("action-1");
     assert_eq!(binding.plan_id, "test-plan-action-1");
     assert_eq!(binding.spec_id, "test-spec-action-1");
@@ -52,6 +58,7 @@ fn the_fixture_binding_identity_is_stable() {
 /// Real environment variable, real seam function, one case at a time.
 #[test]
 fn the_seam_reads_the_real_environment_variable() {
+    let _env = ENV_GUARD.lock().expect("env guard");
     for (raw, expected) in [
         (None, false),
         (Some(""), false),
@@ -81,6 +88,7 @@ fn the_seam_reads_the_real_environment_variable() {
 /// itself is unchanged, so fixture-only code paths keep working verbatim.
 #[test]
 fn explicit_opt_in_still_applies_the_fixture_binding() {
+    let _env = ENV_GUARD.lock().expect("env guard");
     // `apply_test_environment_binding` is the same function the seam calls; this
     // check pins that the gate changed only the automatic call site.
     let _ = apply_test_environment_binding as fn(&mut factory_native::db::ActionSpec, &str);
