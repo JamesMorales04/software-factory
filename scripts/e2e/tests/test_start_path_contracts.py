@@ -422,5 +422,129 @@ class AsyncTerminalFailureTests(unittest.TestCase):
         )
 
 
+class AutonomousCampaignStageTests(unittest.TestCase):
+    """Exercise the stage call site, not only the helpers it calls.
+
+    The 3c95766e run crashed with `name 'config' is not defined` after the
+    product had frozen the environment: the helpers were tested directly, so
+    the stage's own call site was never executed.
+    """
+
+    class State:
+        def __init__(self, values):
+            self.values = dict(values)
+            self.written = {}
+
+        def require(self, *keys):
+            for key in keys:
+                if key not in self.values:
+                    raise AssertionError(f"missing state {key}")
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        def set(self, key, value):
+            self.values[key] = value
+            self.written[key] = value
+
+    class Compose:
+        def run(self, arguments, check=False):
+            payload = {
+                "counters": {
+                    "assessment": 1,
+                    "lead_stack_selection": 1,
+                    "planner": 1,
+                    "environment": 1,
+                    "spec": 1,
+                },
+                "errors": {},
+            }
+            return subprocess.CompletedProcess(
+                args=list(arguments), returncode=0, stdout=json.dumps(payload) + "\n", stderr=""
+            )
+
+    def context(self):
+        projection = {
+            "state": "EXECUTING",
+            "campaignId": "c1",
+            "planning": {
+                "ready": True,
+                "missingArtifacts": [],
+                "participantPlan": {"ready": True},
+                "reviewStatus": "AUTO_APPROVED",
+                "reviewApproved": True,
+            },
+            "environment": {
+                "status": "FROZEN",
+                "specSha256": "spec1",
+                "required": True,
+                "builder": {"receipt": {"specSha256": "spec1", "status": "SUCCEEDED"}},
+            },
+            "plan": {"planHash": "ph1"},
+        }
+        campaign = {
+            "campaign": {"status": "AUTHORIZED", "effective_status": "AUTHORIZED"},
+            "tasks": [{"task_id": "t1", "attempt_id": "a1"}],
+            "attempts": [{"id": "a1", "run_id": "r1", "status": "LEASED"}],
+            "runs": [{"id": "r1", "campaign_id": "c1"}],
+        }
+        graph = {
+            "graph": {
+                "graphJson": json.dumps({"units": [{"unit_id": "u1"}]}),
+                "graphSha256": "sha1",
+                "plannerProvider": "opencode-go",
+                "plannerModel": "deepseek-v4.1-flash",
+            }
+        }
+
+        class Api:
+            def get(self, path):
+                if path.startswith("/intake/requests/"):
+                    return projection
+                if path.startswith("/campaigns/"):
+                    return campaign
+                if path == "/workers":
+                    return [{"worker_id": "compose-worker"}]
+                if path == "/provider/sessions":
+                    return [
+                        {
+                            "attempt_id": "a1",
+                            "worker_id": "compose-worker",
+                            "generation": 1,
+                            "state": "ACTIVE",
+                        }
+                    ]
+                if path.endswith("/plan"):
+                    return graph
+                if path.endswith("/participants"):
+                    return {"compiled": {"ready": True, "graphSha256": "sha1"}}
+                raise AssertionError(f"unexpected path {path}")
+
+        config = mock.Mock()
+        config.run_timeout = None
+        config.readiness_timeout = 5
+        return mock.Mock(
+            api=Api(),
+            config=config,
+            compose=self.Compose(),
+            state=self.State({"intake_id": "i1"}),
+        )
+
+    def test_stage_call_site_completes_and_records_the_scope(self) -> None:
+        context = self.context()
+        compose_intake.autonomous_campaign(context)
+        self.assertEqual(
+            context.state.written.get("acceptance_scope"),
+            "CAMPAIGN_START_WITH_RECEIPT_AND_WORKER_ASSIGNMENT",
+        )
+
+    def test_stage_aborts_when_the_receipt_does_not_bind_the_spec(self) -> None:
+        context = self.context()
+        broken = context.api.get("/intake/requests/i1")
+        broken["environment"]["builder"]["receipt"]["specSha256"] = "other"
+        with self.assertRaises(ScenarioError):
+            compose_intake.autonomous_campaign(context)
+
+
 if __name__ == "__main__":
     unittest.main()

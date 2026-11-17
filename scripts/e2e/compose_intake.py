@@ -1263,6 +1263,7 @@ def projected_plan_hash(projection: dict) -> str:
 )
 def autonomous_campaign(context: Context) -> None:
     context.state.require("intake_id")
+    config = context.config
     intake_id = context.state.get("intake_id")
     lead_id = str(context.state.get("intake_lead_request_id") or "")
     deadline = _optional_deadline(context.config)
