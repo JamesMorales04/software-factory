@@ -27,6 +27,10 @@ sys.path.insert(0, str(HERE.parent))
 
 from environment_builder import BUILDER_POLICY_REVISION, LICENSE_POLICY_REVISION  # noqa: E402
 import environment_builder.cli as cli  # noqa: E402
+import environment_builder.license_policy as license_policy_data  # noqa: E402
+_LICENSE_CATALOG, _LICENSE_PROFILE = license_policy_data.load_default()
+_CATALOG_SHA = license_policy_data.catalog_content_sha256(_LICENSE_CATALOG)
+_PROFILE_SHA = license_policy_data.profile_content_sha256(_LICENSE_PROFILE)
 from environment_builder.cli import _resolution_file  # noqa: E402
 from environment_builder.errors import BuilderError  # noqa: E402
 from environment_builder.policy import (  # noqa: E402
@@ -148,6 +152,8 @@ def license_inventory(packages: list[dict], overrides: list[dict] | None = None)
         "schemaVersion": 1,
         "policyRevision": LICENSE_POLICY_REVISION,
         "allowUnfree": False,
+        "catalogSha256": _CATALOG_SHA,
+        "profileSha256": _PROFILE_SHA,
         "entries": entries,
         "overrides": overrides or [],
         "blockers": [],
@@ -819,51 +825,29 @@ class PolicyTests(unittest.TestCase):
             [entry["name"] for entry in validated],
             ["python3", "typing-extensions"],
         )
-        # Core selects packages from ALLOWED_SPDX, not the closure catalogue.
+        # Core selects packages from the selected context, not the closure profile.
         with self.assertRaises(BuilderError) as raised:
             validate_license_expression("Python-2.0")
         self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
 
-    def test_closure_catalog_is_shared_and_complete(self) -> None:
-        import environment_builder.policy as policy
+    def test_license_catalog_and_profile_are_shared_and_legacy(self) -> None:
+        import environment_builder.license_policy as policy_data
 
-        path = Path(policy.__file__).with_name("closure_allowed_spdx.json")
-        document = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(document["schema"], 1)
-        self.assertIs(type(document["schema"]), int)
-        self.assertEqual(document["revision"], "nix-devenv-closure-catalog-v1")
-        ids = document["ids"]
-        self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(
-            hashlib.sha256(("\n".join(sorted(ids)) + "\n").encode("utf-8")).hexdigest(),
-            document["sha256"],
-        )
-        self.assertEqual(
-            set(policy.CLOSURE_ALLOWED_SPDX),
-            set(policy.ALLOWED_SPDX) | set(ids),
-        )
+        catalog, profile = policy_data.load_default()
+        self.assertEqual(catalog.revision, "spdx-catalog-2026-11-16")
+        self.assertEqual(len(catalog.entries), 35)
+        self.assertEqual(profile.mode, "legacy-current")
+        self.assertFalse(policy_data.b_active(profile))
+        selected = set(profile.contexts["selected"]["allowedIds"])
+        closure = set(profile.contexts["closure"]["allowedIds"])
+        self.assertEqual(len(selected), 16)
+        self.assertEqual(len(closure), 30)
         for identifier in ("BSD-4-Clause-UC", "Python-2.0"):
-            self.assertIn(identifier, policy.CLOSURE_ALLOWED_SPDX)
-            self.assertNotIn(identifier, policy.ALLOWED_SPDX)
-
-    def test_closure_catalog_schema_strict_matches_rust_as_u64(self) -> None:
-        """Python must reject every non-integer/other-than-one schema, matching
-        Rust's ``document["schema"].as_u64() == Some(1)``."""
-        import environment_builder.policy as policy
-
-        path = Path(policy.__file__).with_name("closure_allowed_spdx.json")
-        document = json.loads(path.read_text(encoding="utf-8"))
-        for malformed in (True, False, 1.0, "1", None, -1, 0):
-            candidate = {**document, "schema": malformed}
-            with mock.patch.object(
-                Path, "read_text", return_value=json.dumps(candidate)
-            ):
-                with self.assertRaises(RuntimeError, msg=repr(malformed)):
-                    policy._load_closure_catalog()
-        with mock.patch.object(Path, "read_text", return_value=json.dumps(document)):
-            self.assertEqual(
-                policy._load_closure_catalog(), frozenset(document["ids"])
-            )
+            self.assertIn(identifier, closure)
+            self.assertNotIn(identifier, selected)
+        self.assertIn("publicDomain", closure)
+        self.assertNotIn("Public Domain", closure)
+        self.assertEqual(catalog.alias_index["Public Domain"], "publicDomain")
 
     def test_real_33_entry_inventory_is_accepted_by_the_shared_closure_catalog(
         self,
@@ -2011,6 +1995,8 @@ class SbomTests(unittest.TestCase):
             {
                 "schemaVersion",
                 "policyRevision",
+                "catalogSha256",
+                "profileSha256",
                 "allowUnfree",
                 "entries",
                 "overrides",
@@ -2019,6 +2005,16 @@ class SbomTests(unittest.TestCase):
                 "sbomSha256",
             },
         )
+
+    def test_inventory_copy_preserves_the_policy_hashes(self) -> None:
+        plan = {"licenseInventory": license_inventory([])}
+        copied = license_inventory_copy(plan)
+        self.assertEqual(copied["catalogSha256"], _CATALOG_SHA)
+        self.assertEqual(copied["profileSha256"], _PROFILE_SHA)
+        broken = {"licenseInventory": dict(plan["licenseInventory"])}
+        broken["licenseInventory"].pop("profileSha256")
+        with self.assertRaises(ValueError):
+            license_inventory_copy(broken)
 
 
 class AttestationTests(unittest.TestCase):

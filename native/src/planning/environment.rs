@@ -26,6 +26,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::lead::SpecCheck;
+use crate::planning::license_policy::{
+    LicenseContext, LicenseDecision, default_catalog, default_catalog_sha256, default_profile,
+    default_profile_sha256, evaluate,
+};
 use crate::project_import::{git_blob, git_tree, is_commit_id};
 
 pub const ENVIRONMENT_SCHEMA_VERSION: u32 = 1;
@@ -2046,6 +2050,7 @@ impl EnvironmentPlan {
                 "license inventory content does not match its inventory hash",
             ));
         }
+        validate_current_policy_binding(&self.license_inventory)?;
         if !self.license_inventory.blockers.is_empty() {
             return Err(license_blocked(
                 self.license_inventory
@@ -2465,6 +2470,8 @@ pub struct LicenseInventory {
     pub schema_version: u32,
     #[serde(default)]
     pub policy_revision: String,
+    pub catalog_sha256: String,
+    pub profile_sha256: String,
     #[serde(default)]
     pub allow_unfree: bool,
     #[serde(default)]
@@ -2484,6 +2491,8 @@ impl Default for LicenseInventory {
         Self {
             schema_version: ENVIRONMENT_SCHEMA_VERSION,
             policy_revision: LICENSE_POLICY_REVISION.into(),
+            catalog_sha256: default_catalog_sha256().to_owned(),
+            profile_sha256: default_profile_sha256().to_owned(),
             allow_unfree: false,
             entries: Vec::new(),
             overrides: Vec::new(),
@@ -2503,6 +2512,8 @@ impl LicenseInventory {
         canonical_hash(&(
             ENVIRONMENT_SCHEMA_VERSION,
             LICENSE_POLICY_REVISION,
+            &self.catalog_sha256,
+            &self.profile_sha256,
             plan_id,
             false,
             &self.entries,
@@ -2520,79 +2531,21 @@ impl LicenseInventory {
     }
 }
 
-const ALLOWED_SPDX: &[&str] = &[
-    "0BSD",
-    "Apache-2.0",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "BSL-1.0",
-    "CC0-1.0",
-    "ISC",
-    "LGPL-2.1-only",
-    "LGPL-2.1-or-later",
-    "LGPL-3.0-only",
-    "LGPL-3.0-or-later",
-    "MIT",
-    "MIT-0",
-    "MPL-2.0",
-    "Unlicense",
-    "Zlib",
-];
+// Licence classification and context verdicts are the shared, versioned
+// license_catalog.json + license_profile.json pair. The legacy-current profile
+// reproduces the previous selected/closure verdicts. Classification is not
+// acceptance; selected and closure remain distinct contexts.
 
-const DENIED_SPDX: &[&str] = &[
-    "AGPL-3.0-only",
-    "AGPL-3.0-or-later",
-    "BUSL-1.1",
-    "Commons-Clause",
-    "SSPL-1.0",
-];
-
-/// Closure-wide policy accepts common copyleft licences that are not denied,
-/// while still rejecting every unfree/denied/unknown transitive package. The
-/// closure-only additions live in one shared, versioned catalogue also read by
-/// the builder's Python validator, so the two enforcement points cannot drift.
-/// Selected-package `ALLOWED_SPDX` and `DENIED_SPDX` stay separate on purpose:
-/// a closure-wide allowance is not a selected-package grant.
-const CLOSURE_CATALOG: &str = include_str!(
-    "../../../deploy/environment-builder/environment_builder/closure_allowed_spdx.json"
-);
-
-fn closure_allowed_spdx() -> &'static BTreeSet<String> {
-    static SET: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
-    SET.get_or_init(|| {
-        let document: serde_json::Value = serde_json::from_str(CLOSURE_CATALOG)
-            .expect("the shared closure licence catalogue is valid JSON");
-        assert_eq!(
-            document["schema"].as_u64(),
-            Some(1),
-            "unsupported closure licence catalogue schema"
-        );
-        let ids = document["ids"]
-            .as_array()
-            .expect("closure catalogue ids must be an array");
-        let mut additions = BTreeSet::new();
-        for id in ids {
-            let id = id.as_str().expect("closure catalogue ids must be strings");
-            assert!(
-                additions.insert(id.to_owned()),
-                "the closure catalogue must not contain duplicate ids"
-            );
-        }
-        let canonical = format!(
-            "{}\n",
-            additions.iter().cloned().collect::<Vec<_>>().join("\n")
-        );
-        assert_eq!(
-            document["sha256"].as_str(),
-            Some(sha256_hex(canonical.as_bytes()).as_str()),
-            "the shared closure catalogue hash is inconsistent"
-        );
-        ALLOWED_SPDX
-            .iter()
-            .map(|id| (*id).to_owned())
-            .chain(additions)
-            .collect()
-    })
+fn validate_current_policy_binding(inventory: &LicenseInventory) -> Result<(), EnvironmentError> {
+    if inventory.catalog_sha256 != default_catalog_sha256()
+        || inventory.profile_sha256 != default_profile_sha256()
+    {
+        return Err(EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentHashMismatch,
+            "the license inventory is bound to a different licence catalogue or profile",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_license_expression(value: &str) -> Result<(), EnvironmentError> {
@@ -2607,31 +2560,20 @@ fn validate_license_expression(value: &str) -> Result<(), EnvironmentError> {
             "the license expression {value} is unknown and blocks the plan"
         )));
     }
-    if DENIED_SPDX.contains(&value) {
-        return Err(license_blocked(format!(
+    match evaluate(
+        value,
+        LicenseContext::Selected,
+        default_catalog(),
+        default_profile(),
+    ) {
+        LicenseDecision::Allowed => Ok(()),
+        LicenseDecision::Denied => Err(license_blocked(format!(
             "the license expression {value} is denied by the frozen policy"
-        )));
+        ))),
+        LicenseDecision::Unknown | LicenseDecision::NotEvaluated => Err(license_blocked(format!(
+            "the license expression {value} is unknown and blocks the plan"
+        ))),
     }
-    if ALLOWED_SPDX.contains(&value) {
-        return Ok(());
-    }
-    // Permit simple SPDX AND/OR expressions where every atom is known.
-    let normalized = value
-        .replace(['(', ')'], " ")
-        .replace(" AND ", " ")
-        .replace(" OR ", " ")
-        .replace(" WITH ", " ");
-    let atoms = normalized.split_whitespace().collect::<Vec<_>>();
-    if !atoms.is_empty()
-        && atoms
-            .iter()
-            .all(|atom| ALLOWED_SPDX.contains(atom) || atom.starts_with("LLVM-exception"))
-    {
-        return Ok(());
-    }
-    Err(license_blocked(format!(
-        "the license expression {value} is unknown and blocks the plan"
-    )))
 }
 
 fn validate_closure_license_expression(value: &str) -> Result<(), EnvironmentError> {
@@ -2642,32 +2584,22 @@ fn validate_closure_license_expression(value: &str) -> Result<(), EnvironmentErr
             format!("the closure license expression {value:?} is unknown"),
         ));
     }
-    if DENIED_SPDX.contains(&value) {
-        return Err(EnvironmentError::new(
+    match evaluate(
+        value,
+        LicenseContext::Closure,
+        default_catalog(),
+        default_profile(),
+    ) {
+        LicenseDecision::Allowed => Ok(()),
+        LicenseDecision::Denied => Err(EnvironmentError::new(
             EnvironmentBlockerCode::EnvironmentLicenseDenied,
             format!("the closure license expression {value} is denied by policy"),
-        ));
+        )),
+        LicenseDecision::Unknown | LicenseDecision::NotEvaluated => Err(EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+            format!("the closure license expression {value} is unknown"),
+        )),
     }
-    if closure_allowed_spdx().contains(value) {
-        return Ok(());
-    }
-    let normalized = value
-        .replace(['(', ')'], " ")
-        .replace(" AND ", " ")
-        .replace(" OR ", " ")
-        .replace(" WITH ", " ");
-    let atoms = normalized.split_whitespace().collect::<Vec<_>>();
-    if !atoms.is_empty()
-        && atoms.iter().all(|atom| {
-            closure_allowed_spdx().contains(*atom) || atom.starts_with("LLVM-exception")
-        })
-    {
-        return Ok(());
-    }
-    Err(EnvironmentError::new(
-        EnvironmentBlockerCode::EnvironmentLicenseUnknown,
-        format!("the closure license expression {value} is unknown"),
-    ))
 }
 
 fn substrate_license_entries() -> Vec<LicenseEntry> {
@@ -2713,6 +2645,8 @@ fn build_license_inventory(
     let mut inventory = LicenseInventory {
         schema_version: ENVIRONMENT_SCHEMA_VERSION,
         policy_revision: LICENSE_POLICY_REVISION.into(),
+        catalog_sha256: default_catalog_sha256().into(),
+        profile_sha256: default_profile_sha256().into(),
         allow_unfree: false,
         entries: substrate_license_entries(),
         overrides: overrides.to_vec(),
@@ -4332,6 +4266,7 @@ pub struct EnvironmentExecutionBinding {
 impl EnvironmentExecutionBinding {
     pub fn validate(&self) -> Result<(), EnvironmentError> {
         self.plan.validate(Utc::now())?;
+        validate_current_policy_binding(&self.plan.license_inventory)?;
         self.spec.validate()?;
         self.receipt.validate_for(&self.spec)?;
         if self.spec.plan_sha256 != self.plan.plan_sha256 {
@@ -4588,6 +4523,99 @@ pub fn check_runner_blocker(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/// Test-support only: build a valid plan from a throw-away repository so the
+/// compiled policy probe can exercise `EnvironmentPlan::validate` with a real
+/// inventory and stale/forged policy hashes. Not compiled into production.
+#[cfg(feature = "test-support")]
+pub fn policy_probe_plan() -> Result<EnvironmentPlan, EnvironmentError> {
+    use std::process::Command;
+
+    fn git(root: &Path, arguments: &[&str]) -> Result<String, EnvironmentError> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(arguments)
+            .output()
+            .map_err(|error| {
+                EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentPlanInvalid,
+                    format!("policy probe git failed: {error}"),
+                )
+            })?;
+        if !output.status.success() {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentPlanInvalid,
+                format!("policy probe git {arguments:?} failed"),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let root = std::env::temp_dir().join(format!(
+        "factory-policy-probe-{}-{stamp}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).map_err(|error| {
+        EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentPlanInvalid,
+            format!("policy probe repository: {error}"),
+        )
+    })?;
+    std::fs::write(root.join("README.md"), "# Policy probe\n").map_err(|error| {
+        EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentPlanInvalid,
+            format!("policy probe README: {error}"),
+        )
+    })?;
+    let result = (|| -> Result<EnvironmentPlan, EnvironmentError> {
+        git(&root, &["init", "-q", "-b", "main"])?;
+        git(&root, &["config", "user.name", "Policy Probe"])?;
+        git(&root, &["config", "user.email", "probe@example.invalid"])?;
+        git(&root, &["add", "--all"])?;
+        git(&root, &["commit", "-qm", "base"])?;
+        let base = git(&root, &["rev-parse", "HEAD"])?;
+        let conventions = discover_project_conventions("project-1", &root, &base, Utc::now())?;
+        let mut requirements = EnvironmentRequirements {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            explicit_constraints: ExplicitEnvironmentConstraints::default(),
+            proposal: None,
+            allow_unfree: false,
+            owner_overrides: Vec::new(),
+            resource_limits: ResourceLimits::default(),
+            network: NetworkPolicy::default(),
+        };
+        requirements.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        compile_environment_plan(CompileEnvironmentInput {
+            plan_id: "policy-probe-plan".into(),
+            project_id: "project-1",
+            request_id: "policy-probe-request",
+            action_id: "policy-probe-action",
+            campaign_id: None,
+            revision: 1,
+            risk_class: "R0",
+            conventions: &conventions,
+            requirements: &requirements,
+            builder: EnvironmentBuilderDescriptor {
+                image: "factory/environment-builder".into(),
+                digest: format!("sha256:{}", "a".repeat(64)),
+                platform: DEFAULT_PLATFORM.into(),
+                policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                default_nixpkgs: "github:NixOS/nixpkgs/2222222222222222222222222222222222222222"
+                    .into(),
+                status: EnvironmentBuilderStatus::Ready,
+            },
+            now: Utc::now(),
+        })
+    })();
+    let _ = std::fs::remove_dir_all(&root);
+    result
+}
 
 #[cfg(test)]
 mod tests {
@@ -5508,25 +5536,26 @@ mod tests {
     }
 
     #[test]
-    fn closure_catalog_is_shared_and_complete() {
-        let document: serde_json::Value = serde_json::from_str(CLOSURE_CATALOG).unwrap();
-        assert_eq!(document["schema"], 1);
-        let ids: BTreeSet<String> = document["ids"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|id| id.as_str().unwrap().to_owned())
-            .collect();
-        let expected: BTreeSet<String> = ALLOWED_SPDX
-            .iter()
-            .map(|id| (*id).to_owned())
-            .chain(ids.iter().cloned())
-            .collect();
-        assert_eq!(closure_allowed_spdx(), &expected);
+    fn license_catalog_and_profile_are_shared_and_legacy() {
+        let catalog = crate::planning::license_policy::default_catalog();
+        let profile = crate::planning::license_policy::default_profile();
+        assert_eq!(catalog.entries.len(), 35);
+        assert_eq!(
+            catalog.alias_index.get("Public Domain"),
+            Some(&"publicDomain".to_owned())
+        );
+        assert_eq!(profile.mode, "legacy-current");
+        assert!(!profile.b_active());
+        let selected = &profile.contexts["selected"].allowed_ids;
+        let closure = &profile.contexts["closure"].allowed_ids;
+        assert_eq!(selected.len(), 16);
+        assert_eq!(closure.len(), 30);
         for identifier in ["BSD-4-Clause-UC", "Python-2.0"] {
-            assert!(closure_allowed_spdx().contains(identifier));
-            assert!(!ALLOWED_SPDX.contains(&identifier));
+            assert!(closure.iter().any(|id| id.as_str() == identifier));
+            assert!(!selected.iter().any(|id| id.as_str() == identifier));
         }
+        assert!(closure.iter().any(|id| id.as_str() == "publicDomain"));
+        assert!(!closure.iter().any(|id| id.as_str() == "Public Domain"));
     }
 
     #[test]
@@ -5549,65 +5578,92 @@ mod tests {
     }
 
     #[test]
-    fn lead_environment_review_payload_contract_binds_exact_plan_identity() {
+    fn plan_rejects_inventory_bound_to_another_policy_even_if_self_consistent() {
         let (repository, base) = repository(&[("README.md", "# Empty\n")]);
         let mut values = requirements();
         values.explicit_constraints.nixpkgs =
             Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
-        let plan = compile(&repository, &base, &values);
-        let valid = serde_json::json!({
-            "schemaVersion": 1,
-            "requestId": plan.request_id,
-            "actionId": plan.action_id,
-            "planSha256": plan.plan_sha256,
-            "planRevision": plan.revision,
-            "riskClass": plan.risk_class,
-            "decision": "APPROVE",
-            "rationale": "The plan is pinned, licensed and bounded.",
-            "constraints": []
-        });
-        let review = crate::model_output::decode_environment_lead_review(
-            serde_json::to_vec(&valid).unwrap().as_slice(),
-        )
-        .expect("the valid Lead review payload must pass schema and decoding");
-        review
-            .validate_for(&plan, now())
-            .expect("the valid payload must bind the exact plan identity");
-
-        for (field, value) in [
-            ("requestId", serde_json::json!("other-request")),
-            ("actionId", serde_json::json!("other-action")),
-            ("planSha256", serde_json::json!("0".repeat(64))),
-            ("riskClass", serde_json::json!("R3")),
-        ] {
-            let mut wrong = valid.clone();
-            wrong[field] = value;
-            let review = crate::model_output::decode_environment_lead_review(
-                serde_json::to_vec(&wrong).unwrap().as_slice(),
-            )
-            .unwrap();
-            assert!(
-                review.validate_for(&plan, now()).is_err(),
-                "{field} must not bind a different plan"
+        for field in ["catalog_sha256", "profile_sha256"] {
+            let mut plan = compile(&repository, &base, &values);
+            if field == "catalog_sha256" {
+                plan.license_inventory.catalog_sha256 = "0".repeat(64);
+            } else {
+                plan.license_inventory.profile_sha256 = "0".repeat(64);
+            }
+            plan.license_inventory.refresh_hashes(&plan.plan_id);
+            plan.license_inventory_sha256 = plan.license_inventory.inventory_sha256.clone();
+            plan.refresh_hash();
+            let error = plan.validate(now()).unwrap_err();
+            assert_eq!(
+                error.code,
+                EnvironmentBlockerCode::EnvironmentHashMismatch,
+                "{field}"
             );
         }
+    }
 
-        let mut invalid_decision = valid.clone();
-        invalid_decision["decision"] = serde_json::json!("MAYBE");
-        assert!(
-            crate::model_output::decode_environment_lead_review(
-                serde_json::to_vec(&invalid_decision).unwrap().as_slice(),
-            )
-            .is_err()
-        );
+    #[test]
+    fn inventory_requires_policy_hashes_on_deserialization() {
+        let value = serde_json::json!({
+            "schemaVersion": ENVIRONMENT_SCHEMA_VERSION,
+            "policyRevision": LICENSE_POLICY_REVISION,
+            "allowUnfree": false,
+            "entries": [],
+            "overrides": [],
+            "blockers": [],
+            "inventorySha256": "0".repeat(64),
+            "sbomSha256": "0".repeat(64)
+        });
+        assert!(serde_json::from_value::<LicenseInventory>(value).is_err());
+    }
 
-        let mut short_rationale = valid.clone();
-        short_rationale["rationale"] = serde_json::json!("short");
-        if let Ok(review) = crate::model_output::decode_environment_lead_review(
-            serde_json::to_vec(&short_rationale).unwrap().as_slice(),
-        ) {
-            assert!(review.validate_for(&plan, now()).is_err());
-        }
+    #[test]
+    fn execution_binding_rejects_stale_policy_inventory() {
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        let mut plan = compile(&repository, &base, &values);
+        let content = "{\"nodes\":{}}".to_string();
+        plan.resolution = Some(EnvironmentResolution {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            plan_sha256: plan.plan_sha256.clone(),
+            files: vec![EnvironmentFile {
+                path: "flake.lock".into(),
+                sha256: sha256_hex(content.as_bytes()),
+                origin: EnvironmentFileOrigin::Generated,
+                content: Some(content),
+            }],
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            packages: Vec::new(),
+            closure_licenses: vec![closure_license()],
+        });
+        plan.files.push(EnvironmentFile {
+            path: "flake.lock".into(),
+            sha256: sha256_hex("{\"nodes\":{}}".as_bytes()),
+            origin: EnvironmentFileOrigin::Generated,
+            content: Some("{\"nodes\":{}}".into()),
+        });
+        plan.refresh_hash();
+        plan.resolution.as_mut().expect("resolution").plan_sha256 = plan.plan_sha256.clone();
+        let review = approve(&mut plan);
+        let spec = freeze(&mut plan, &review);
+        let receipt = receipt(&spec);
+
+        let mut stale = plan;
+        stale.license_inventory.profile_sha256 = "0".repeat(64);
+        stale.license_inventory.refresh_hashes(&stale.plan_id);
+        stale.license_inventory_sha256 = stale.license_inventory.inventory_sha256.clone();
+        stale.refresh_hash();
+        stale.resolution.as_mut().expect("resolution").plan_sha256 = stale.plan_sha256.clone();
+        let binding = EnvironmentExecutionBinding {
+            plan: stale,
+            spec,
+            receipt,
+        };
+        let error = binding.validate().unwrap_err();
+        assert_eq!(error.code, EnvironmentBlockerCode::EnvironmentHashMismatch);
     }
 
     #[test]

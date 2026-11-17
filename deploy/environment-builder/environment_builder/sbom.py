@@ -269,9 +269,17 @@ def license_inventory_copy(plan: dict[str, Any]) -> dict[str, Any]:
     inventory = plan.get("licenseInventory")
     if not isinstance(inventory, dict):
         raise ValueError("the plan has no license inventory")
+    catalog_sha = inventory.get("catalogSha256")
+    profile_sha = inventory.get("profileSha256")
+    if not isinstance(catalog_sha, str) or not catalog_sha:
+        raise ValueError("the plan license inventory has no catalogue hash")
+    if not isinstance(profile_sha, str) or not profile_sha:
+        raise ValueError("the plan license inventory has no profile hash")
     return {
         "schemaVersion": inventory.get("schemaVersion", SCHEMA_VERSION),
         "policyRevision": inventory.get("policyRevision", LICENSE_POLICY_REVISION),
+        "catalogSha256": catalog_sha,
+        "profileSha256": profile_sha,
         "allowUnfree": False,
         "entries": inventory.get("entries", []),
         "overrides": inventory.get("overrides", []),

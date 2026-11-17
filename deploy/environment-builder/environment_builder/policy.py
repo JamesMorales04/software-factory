@@ -32,6 +32,7 @@ from .util import (
     sha256_bytes,
     sha256_text,
 )
+from . import license_policy as _license_policy
 
 MAX_ENVIRONMENT_FILES: Final[int] = 64
 MAX_ENVIRONMENT_FILE_BYTES: Final[int] = 512 * 1024
@@ -51,62 +52,11 @@ MIN_TIMEOUT_SECS: Final[int] = 30
 MAX_TIMEOUT_SECS: Final[int] = 7_200
 NIXPKGS_PREFIX: Final[str] = "github:NixOS/nixpkgs/"
 
-ALLOWED_SPDX: Final[frozenset[str]] = frozenset(
-    {
-        "0BSD",
-        "Apache-2.0",
-        "BSD-2-Clause",
-        "BSD-3-Clause",
-        "BSL-1.0",
-        "CC0-1.0",
-        "ISC",
-        "LGPL-2.1-only",
-        "LGPL-2.1-or-later",
-        "LGPL-3.0-only",
-        "LGPL-3.0-or-later",
-        "MIT",
-        "MIT-0",
-        "MPL-2.0",
-        "Unlicense",
-        "Zlib",
-    }
-)
-DENIED_SPDX: Final[frozenset[str]] = frozenset(
-    {
-        "AGPL-3.0-only",
-        "AGPL-3.0-or-later",
-        "BUSL-1.1",
-        "Commons-Clause",
-        "SSPL-1.0",
-    }
-)
-
-# Closure-wide licensing accepts common copyleft licences that are not denied
-# by product policy, while still rejecting every unfree/denied/unknown package.
-# The closure-only additions live in one shared, versioned catalogue
-# (closure_allowed_spdx.json) consumed by both this builder and Core's Rust
-# validator, so the two enforcement points cannot drift. Selected-package
-# ALLOWED_SPDX and DENIED_SPDX stay separate on purpose: a closure-wide
-# allowance is not a selected-package grant and does not change deny/unfree.
-def _load_closure_catalog() -> frozenset[str]:
-    path = Path(__file__).with_name("closure_allowed_spdx.json")
-    document = json.loads(path.read_text(encoding="utf-8"))
-    if type(document.get("schema")) is not int or document.get("schema") != 1:
-        raise RuntimeError("unsupported closure licence catalogue schema")
-    ids = document.get("ids")
-    if not isinstance(ids, list) or not all(
-        isinstance(item, str) and item for item in ids
-    ):
-        raise RuntimeError("invalid closure licence catalogue ids")
-    if len(set(ids)) != len(ids):
-        raise RuntimeError("closure licence catalogue contains duplicate ids")
-    canonical = "\n".join(sorted(ids)) + "\n"
-    if sha256_text(canonical) != document.get("sha256"):
-        raise RuntimeError("closure licence catalogue hash is inconsistent")
-    return frozenset(ids)
-
-
-CLOSURE_ALLOWED_SPDX: Final[frozenset[str]] = ALLOWED_SPDX | _load_closure_catalog()
+# License classification and context verdicts are one shared, versioned pair of
+# data artifacts: license_catalog.json (classification) and license_profile.json
+# (context policy). The legacy-current profile reproduces the previous verdicts.
+# Selected and closure remain distinct contexts; classification is not acceptance.
+_LICENSE_CATALOG, _LICENSE_PROFILE = _license_policy.load_default()
 MAX_CLOSURE_PACKAGES: Final[int] = 4096
 
 # Patterns that make a generated/project environment untrusted code instead of
@@ -1057,42 +1007,17 @@ def validate_license_expression(value: str) -> None:
     value = value.strip()
     if not value or value in ("NONE", "NOASSERTION", "UNLICENSED", "UNKNOWN"):
         fail("ENVIRONMENT_LICENSE_UNKNOWN", f"the license expression {value!r} is unknown")
-    if value in DENIED_SPDX:
+    decision = _license_policy.evaluate(
+        value,
+        _license_policy.LicenseContext.SELECTED,
+        _LICENSE_CATALOG,
+        _LICENSE_PROFILE,
+    )
+    if decision is _license_policy.LicenseDecision.ALLOWED:
+        return
+    if decision is _license_policy.LicenseDecision.DENIED:
         fail("ENVIRONMENT_LICENSE_DENIED", f"the license expression {value} is denied by policy")
-    if value in ALLOWED_SPDX:
-        return
-    normalized = (
-        value.replace("(", " ")
-        .replace(")", " ")
-        .replace(" AND ", " ")
-        .replace(" OR ", " ")
-        .replace(" WITH ", " ")
-    )
-    atoms = normalized.split()
-    if atoms and all(
-        atom in ALLOWED_SPDX or atom.startswith("LLVM-exception") for atom in atoms
-    ):
-        return
     fail("ENVIRONMENT_LICENSE_UNKNOWN", f"the license expression {value} is unknown")
-
-
-def _closure_license_known(value: str) -> bool:
-    if value in DENIED_SPDX:
-        return False
-    if value in CLOSURE_ALLOWED_SPDX:
-        return True
-    normalized = (
-        value.replace("(", " ")
-        .replace(")", " ")
-        .replace(" AND ", " ")
-        .replace(" OR ", " ")
-        .replace(" WITH ", " ")
-    )
-    atoms = normalized.split()
-    return bool(atoms) and all(
-        atom in CLOSURE_ALLOWED_SPDX or atom.startswith("LLVM-exception")
-        for atom in atoms
-    )
 
 
 def validate_closure_licenses(entries: Any) -> list[dict[str, Any]]:
@@ -1117,12 +1042,18 @@ def validate_closure_licenses(entries: Any) -> list[dict[str, Any]]:
                 "ENVIRONMENT_UNFREE_REQUIRES_OWNER",
                 f"transitive closure package {name} {version} is unfree",
             )
-        if license_value in DENIED_SPDX:
+        decision = _license_policy.evaluate(
+            license_value,
+            _license_policy.LicenseContext.CLOSURE,
+            _LICENSE_CATALOG,
+            _LICENSE_PROFILE,
+        )
+        if decision is _license_policy.LicenseDecision.DENIED:
             fail(
                 "ENVIRONMENT_LICENSE_DENIED",
                 f"transitive closure package {name} {version} uses denied license {license_value}",
             )
-        if not _closure_license_known(license_value):
+        if decision is not _license_policy.LicenseDecision.ALLOWED:
             fail(
                 "ENVIRONMENT_LICENSE_UNKNOWN",
                 f"transitive closure package {name} {version} has unknown license {license_value}",
@@ -1165,6 +1096,12 @@ def validate_license_inventory(
         fail("ENVIRONMENT_LICENSE_DENIED", "the license inventory must keep allowUnfree=false")
     if inventory.get("policyRevision") != LICENSE_POLICY_REVISION:
         fail("ENVIRONMENT_LICENSE_UNKNOWN", "the license inventory uses an unknown policy revision")
+    catalog_sha = _license_policy.catalog_content_sha256(_LICENSE_CATALOG)
+    profile_sha = _license_policy.profile_content_sha256(_LICENSE_PROFILE)
+    if inventory.get("catalogSha256") != catalog_sha:
+        fail("ENVIRONMENT_HASH_MISMATCH", "the license inventory catalogue hash is inconsistent")
+    if inventory.get("profileSha256") != profile_sha:
+        fail("ENVIRONMENT_HASH_MISMATCH", "the license inventory profile hash is inconsistent")
     blockers = _require_list(inventory.get("blockers", []), "plan.licenseInventory.blockers")
     if blockers:
         first = blockers[0] if isinstance(blockers[0], dict) else {}

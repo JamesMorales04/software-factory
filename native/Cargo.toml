@@ -42,6 +42,11 @@ name = "factory-core"
 path = "src/bin/core.rs"
 
 [[bin]]
+name = "factory-policy-probe"
+path = "src/bin/policy_probe.rs"
+required-features = ["test-support"]
+
+[[bin]]
 name = "factory-worker"
 path = "src/bin/worker.rs"
 

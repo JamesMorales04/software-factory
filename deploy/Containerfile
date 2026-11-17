@@ -18,7 +18,8 @@ COPY factory-cli/src factory-cli/src
 COPY native/Cargo.toml native/Cargo.toml
 COPY native/src native/src
 COPY native/fixtures native/fixtures
-COPY deploy/environment-builder/environment_builder/closure_allowed_spdx.json /build/deploy/environment-builder/environment_builder/
+COPY deploy/environment-builder/environment_builder/license_catalog.json /build/deploy/environment-builder/environment_builder/
+COPY deploy/environment-builder/environment_builder/license_profile.json /build/deploy/environment-builder/environment_builder/
 COPY xtask/Cargo.toml xtask/Cargo.toml
 COPY xtask/src xtask/src
 COPY migrations migrations
@@ -42,7 +43,8 @@ RUN cargo build --locked --release -p factory-native \
 FROM workspace AS core-e2e-builder
 RUN cargo build --locked -p factory-native --features test-support \
       --bin factory-core \
-      --bin factory-compose-init
+      --bin factory-compose-init \
+      --bin factory-policy-probe
 
 FROM node:${NODE_VERSION}-bookworm-slim AS office-builder
 
@@ -85,6 +87,7 @@ RUN apt-get update \
 
 COPY --from=core-e2e-builder /build/target/debug/factory-core /usr/local/bin/factory-core
 COPY --from=core-e2e-builder /build/target/debug/factory-compose-init /usr/local/bin/factory-compose-init
+COPY --from=core-e2e-builder /build/target/debug/factory-policy-probe /usr/local/bin/factory-policy-probe
 COPY --from=office-builder /office/dist /app/office
 
 ENV FACTORY_DATABASE=/data/factory.sqlite \

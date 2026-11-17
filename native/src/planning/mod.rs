@@ -16,6 +16,7 @@ pub mod docs;
 pub mod dod;
 pub mod environment;
 pub mod findings;
+pub mod license_policy;
 pub mod prompts;
 pub mod route;
 pub mod skill_refresh;
