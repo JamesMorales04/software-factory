@@ -3608,6 +3608,8 @@ export const en = {
   "director.stack.evidence": "Evidence: {values}",
   "director.agents.title": "Compiled participants",
   "director.agents.count": "{count} assignment(s)",
+  "director.table.agents": "Participant assignments table",
+  "director.table.specs": "Specifications table",
   "director.agents.role": "Role",
   "director.agents.specialization": "Specialization",
   "director.agents.countLabel": "Count",

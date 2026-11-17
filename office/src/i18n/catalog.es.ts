@@ -3745,6 +3745,8 @@ export const es: Catalog = {
   "director.stack.evidence": "Evidencia: {values}",
   "director.agents.title": "Participantes compilados",
   "director.agents.count": "{count} asignación(es)",
+  "director.table.agents": "Tabla de asignaciones de participantes",
+  "director.table.specs": "Tabla de especificaciones",
   "director.agents.role": "Rol",
   "director.agents.specialization": "Especialización",
   "director.agents.countLabel": "Cantidad",

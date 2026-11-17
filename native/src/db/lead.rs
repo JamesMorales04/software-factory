@@ -733,6 +733,131 @@ impl Database {
         ))
     }
 
+    /// Test-support only: create an isolated request bound to a historical V1
+    /// delegation so the P1a seed route can prove it fails closed. Rows are
+    /// copied from a seeded request; the immutable source rows are untouched.
+    #[cfg(feature = "test-support")]
+    pub async fn seed_legacy_v1_request_for_test(
+        &self,
+        template_request_id: &str,
+    ) -> Result<String, Error> {
+        let request_id = "legacy-v1-request";
+        let lead_id = "legacy-v1-lead";
+        let action_id = "legacy-v1-action";
+        let delegation_id = "legacy-v1-delegation";
+        let now = Utc::now().to_rfc3339();
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let (project_id,): (String,) =
+            sqlx::query_as::query_as("SELECT project_id FROM intake_requests WHERE id=?1")
+                .bind(template_request_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .ok_or(Error::NotFound)?;
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO standing_delegations
+             (id,principal_id,audit_id,project_id,revision,content_hash,content_json,created_at)
+             VALUES (?1,'owner','fixture',?2,1,?3,'{}',?4)",
+        )
+        .bind(delegation_id)
+        .bind(&project_id)
+        .bind(sha256_hex(delegation_id.as_bytes()))
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO actions
+             (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+             SELECT ?1,project_id,objective,provider,model,risk,status,objective_sha256,created_at
+             FROM actions WHERE id=(SELECT action_id FROM intake_requests WHERE id=?2)",
+        )
+        .bind(action_id)
+        .bind(template_request_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO lead_requests
+             (id,project_id,action_id,delegation_id,objective,request_hash,
+              project_config_hash,state,created_at,updated_at)
+             SELECT ?1,project_id,?2,?3,objective,request_hash,project_config_hash,state,
+                    created_at,updated_at
+             FROM lead_requests WHERE id=(SELECT lead_request_id FROM intake_requests WHERE id=?4)",
+        )
+        .bind(lead_id)
+        .bind(action_id)
+        .bind(delegation_id)
+        .bind(template_request_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO intake_requests
+             (id,project_id,objective,mode,profile_id,profile_revision_id,profile_revision,
+              profile_hash,profile_name,action_id,delegation_id,lead_request_id,campaign_id,
+              submission_json,submission_hash,idempotency_key,created_at,updated_at)
+             SELECT ?1,project_id,objective,mode,profile_id,profile_revision_id,profile_revision,
+                    profile_hash,profile_name,?2,?3,?4,campaign_id,submission_json,submission_hash,
+                    'legacy-v1-idempotency',created_at,updated_at
+             FROM intake_requests WHERE id=?5",
+        )
+        .bind(request_id)
+        .bind(action_id)
+        .bind(delegation_id)
+        .bind(lead_id)
+        .bind(template_request_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(request_id.into())
+    }
+
+    /// Test-support only: persist a fixture assessment and its empty-units
+    /// proposal for an already seeded request without changing its real
+    /// lifecycle state. No production path calls this method.
+    #[cfg(feature = "test-support")]
+    pub async fn seed_lead_assessment_and_proposal(
+        &self,
+        request_id: &str,
+        assessment: &LeadAssessment,
+        proposal: &LeadPlanProposal,
+    ) -> Result<(), Error> {
+        let assessment_json = serde_json::to_string(assessment)
+            .map_err(|_| Error::Invalid("fixture assessment encoding"))?;
+        let proposal_json = serde_json::to_string(proposal)
+            .map_err(|_| Error::Invalid("fixture proposal encoding"))?;
+        let schema_sha256 = crate::model_output::lead_assessment_schema_sha256();
+        let now = Utc::now().to_rfc3339();
+        let assessment_id = Uuid::new_v4().to_string();
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query::query(
+            "INSERT INTO lead_assessments
+             (id,request_id,mechanism,assessment_json,schema_sha256,created_at)
+             VALUES (?1,?2,'FIXTURE',?3,?4,?5)",
+        )
+        .bind(&assessment_id)
+        .bind(request_id)
+        .bind(&assessment_json)
+        .bind(&schema_sha256)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "INSERT INTO lead_proposals
+             (id,request_id,assessment_id,proposal_json,proposal_hash,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(request_id)
+        .bind(&assessment_id)
+        .bind(&proposal_json)
+        .bind(sha256_hex(proposal_json.as_bytes()))
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
     pub async fn begin_lead_assessment(&self, id: &str) -> Result<LeadRequestRecord, Error> {
         self.transition_lead_request(id, LeadRequestState::Submitted, LeadRequestState::Assessing)
             .await

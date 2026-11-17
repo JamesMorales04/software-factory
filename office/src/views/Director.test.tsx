@@ -551,6 +551,17 @@ describe("Director", () => {
     expect(screen.queryByRole("button", { name: "Run assessment" })).toBeNull();
   });
 
+  it("makes horizontal table regions keyboard focusable", async () => {
+    renderDirector();
+    await screen.findAllByText("Implement the ICS exporter");
+    const wraps = Array.from(document.querySelectorAll(".director-table-wrap"));
+    expect(wraps.length).toBeGreaterThan(0);
+    for (const wrap of wraps) {
+      expect(wrap.getAttribute("tabindex")).toBe("0");
+      expect(wrap.getAttribute("role")).toBe("region");
+    }
+  });
+
   it("shows required reviewer roles, assigned principals and independent receipts", async () => {
     renderDirector();
     expect(await screen.findByText("Required reviewer roles")).toBeDefined();

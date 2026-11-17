@@ -2176,7 +2176,8 @@ export function Director() {
                       })}
                     </span>
                   </div>
-                  <div className="director-table-wrap">
+                  {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable table region must be keyboard reachable (WCAG 2.1.1) */}
+                  <div className="director-table-wrap" role="region" aria-label={t("director.table.agents")} tabIndex={0}>
                     <table className="director-table">
                       <thead>
                         <tr>
@@ -2257,7 +2258,8 @@ export function Director() {
                       description={t("director.specs.emptyDescription")}
                     />
                   ) : (
-                    <div className="director-table-wrap">
+                    // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable table region must be keyboard reachable (WCAG 2.1.1)
+                    <div className="director-table-wrap" role="region" aria-label={t("director.table.specs")} tabIndex={0}>
                       <table className="director-table">
                         <thead>
                           <tr>

@@ -1368,7 +1368,8 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route(
             "/test-support/wave12/trace-fault/{id}",
             post(wave12_support::arm_trace_failure),
-        );
+        )
+        .route("/test-support/p1a/seed", post(p1a_seed));
 
     let api = api
         .with_state(Arc::clone(&app))
@@ -1756,7 +1757,8 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/test-support/wave12/trace-fault/{id}",
             post(wave12_support::arm_trace_failure),
-        );
+        )
+        .route("/test-support/p1a/seed", post(p1a_seed));
 
     api.with_state(app)
 }
@@ -10123,11 +10125,15 @@ async fn assess_lead_request(
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(1)
-            .clamp(1, 8)
+            .clamp(0, 8)
     } else {
         1
     };
-    if requested_units > 1 {
+    if requested_units == 0 {
+        // Deterministic test support for the P1a empty-Lead-units contract:
+        // the Planner WorkGraph is the only executable decomposition.
+        proposal.work_units.clear();
+    } else if requested_units > 1 {
         let fanin = env::var("FACTORY_LEAD_FIXTURE_MODE").ok().as_deref() == Some("fanin");
         proposal.budget.max_attempts = 1;
         proposal.max_sessions = (1 + requested_units) as u32;
@@ -11558,14 +11564,28 @@ async fn agentic_projection_for_request(
         .ok(),
         Err(_) => None,
     };
-    let participant_attempt = match &graph {
-        Some(graph) => Some(deterministic_participant_plan(app, record, &context, graph).await),
-        None => None,
-    };
-    let (participants, participant_problem) = match participant_attempt {
-        Some(Ok(plan)) => (Some(plan), None),
-        Some(Err(failure)) => (None, Some(failure)),
-        None => (None, None),
+    // `PLANNED` requires the persisted participant plan, the same record the
+    // intake planning projection reads. When a graph exists without that row,
+    // the projection is consistently PLANNED_PENDING; the causal compilation
+    // failure is preserved when one is observable.
+    let participant_record = app.db.agentic_participant_plan(&record.id).await.ok();
+    let participants = participant_record.as_ref().and_then(|record| {
+        serde_json::from_str::<factory_native::agentic::ParticipantPlan>(&record.plan_json).ok()
+    });
+    let participant_problem = if participants.is_none() {
+        match graph.as_ref() {
+            Some(graph) => match deterministic_participant_plan(app, record, &context, graph).await
+            {
+                Err(failure) => Some(failure),
+                Ok(_) => Some(ParticipantPlanFailure {
+                    code: "PARTICIPANT_PLAN_NOT_RECORDED",
+                    message: "the participant plan is not recorded".into(),
+                }),
+            },
+            None => None,
+        }
+    } else {
+        None
     };
     let plan = app.db.frozen_lead_plan(&record.lead_request_id).await.ok();
     let prerequisites = lead_planning_prerequisites(app, record).await?;
@@ -18662,6 +18682,132 @@ async fn assess_agentic_request(
             "costMicros": result.cost_micros,
             "usageKnown": result.usage_known,
         }
+    }))
+    .into_response()
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct P1aSeedInput {
+    request_id: String,
+    #[serde(default)]
+    drop_graph: bool,
+    #[serde(default)]
+    persist_participant: bool,
+}
+
+/// Test-support: give an already seeded request a valid Lead proposal with an
+/// empty `workUnits` array, optionally dropping its WorkGraph and persisting
+/// the compiled participant plan. Production builds do not expose this route.
+#[cfg(feature = "test-support")]
+async fn p1a_seed(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<P1aSeedInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&input.request_id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let lead = match app.db.lead_request(&record.lead_request_id).await {
+        Ok(lead) => lead,
+        Err(error) => return api_error(error),
+    };
+    if app.db.lead_proposal(&lead.id).await.is_ok() {
+        return Json(json!({
+            "requestId": record.id,
+            "proposal": "existing",
+            "authority": "test-support fixture; no paid inference and no model authority",
+        }))
+        .into_response();
+    }
+    // No synthetic authorization: the seeded request must already have a
+    // current V2 delegation, project config and frozen ActionSpec. The legacy
+    // wave12 fixture is intentionally rejected rather than bypassed.
+    let grant = match app.db.standing_delegation_v2(&lead.delegation_id).await {
+        Ok(grant) => grant,
+        Err(error) => return api_error(error),
+    };
+    let config = match app.db.project_config(&record.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let action_spec = match app.db.action(&record.action_id).await {
+        Ok(action) => action.spec,
+        Err(error) => return api_error(error),
+    };
+    let binding = factory_native::lead::ActionBinding {
+        id: record.action_id.clone(),
+        project_id: record.project_id.clone(),
+        status: factory_native::lead::ActionStatus::Pending,
+    };
+    let (assessment, mut proposal) = match factory_native::lead::fixture_lead_assessment(
+        &lead.id,
+        &config,
+        &binding,
+        &action_spec,
+        &record.objective,
+        &grant,
+        chrono::Utc::now(),
+    ) {
+        Ok(value) => value,
+        Err(error) => return api_error(error.into()),
+    };
+    proposal.work_units.clear();
+    if let Err(error) = app
+        .db
+        .seed_lead_assessment_and_proposal(&lead.id, &assessment, &proposal)
+        .await
+    {
+        return api_error(error);
+    }
+    if input.drop_graph
+        && let Err(error) = app.db.delete_seeded_work_graph(&record.id).await
+    {
+        return api_error(error);
+    }
+    let mut participant = json!(null);
+    if input.persist_participant {
+        let context = match agentic_triage_context(&app, &record).await {
+            Ok(context) => context,
+            Err(error) => return api_error(error),
+        };
+        let graph =
+            match app.db.agentic_work_graph(&record.id).await {
+                Ok(graph_record) => serde_json::from_str::<
+                    factory_native::agentic::ValidatedWorkGraph,
+                >(&graph_record.graph_json)
+                .ok(),
+                Err(_) => None,
+            };
+        if let Some(graph) = graph {
+            match deterministic_participant_plan(&app, &record, &context, &graph).await {
+                Ok(plan) => {
+                    if let Err(error) = app
+                        .db
+                        .save_agentic_participant_plan(&record.id, Some(&graph.graph_sha256), &plan)
+                        .await
+                    {
+                        return api_error(error);
+                    }
+                    participant = json!({"persisted": true, "reviewerCount": plan.reviewer_count});
+                }
+                Err(failure) => {
+                    participant = json!({"persisted": false, "code": failure.code, "message": failure.message});
+                }
+            }
+        }
+    }
+    Json(json!({
+        "requestId": record.id,
+        "proposal": "empty-work-units",
+        "dropGraph": input.drop_graph,
+        "participant": participant,
+        "authority": "test-support fixture; no paid inference and no model authority",
     }))
     .into_response()
 }
@@ -37348,5 +37494,154 @@ mod tests {
                 "{method} {uri} must require the operator credential"
             );
         }
+    }
+    #[tokio::test]
+    async fn p1a_seed_creates_v2_proposal_and_projection_states() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-p1a-seed-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&path).await;
+        let router = build_router(app.clone());
+        app.db.seed_wave12_fixtures("owner").await.unwrap();
+
+        async fn call(
+            router: axum::Router,
+            method: &str,
+            uri: &str,
+            body: Option<&str>,
+        ) -> (StatusCode, serde_json::Value) {
+            let request = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("authorization", "Bearer operator-token")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.unwrap_or("{}").to_string()))
+                .unwrap();
+            let response = router.oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1_000_000)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+            )
+        }
+
+        for (request_id, body) in [
+            (
+                "44444444-4444-4444-8444-444444444444",
+                r#"{"requestId":"44444444-4444-4444-8444-444444444444"}"#,
+            ),
+            (
+                "33333333-3333-4333-8333-333333333333",
+                r#"{"requestId":"33333333-3333-4333-8333-333333333333","dropGraph":true}"#,
+            ),
+            (
+                "11111111-1111-4111-8111-111111111111",
+                r#"{"requestId":"11111111-1111-4111-8111-111111111111","persistParticipant":true}"#,
+            ),
+        ] {
+            let (status, response) =
+                call(router.clone(), "POST", "/test-support/p1a/seed", Some(body)).await;
+            assert_eq!(status, StatusCode::OK, "{request_id}: {response}");
+        }
+
+        let (status, proposal) = call(
+            router.clone(),
+            "GET",
+            "/intake/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            proposal["proposal"]["workUnits"].as_array().map(Vec::len),
+            Some(0)
+        );
+
+        let (status, pending) = call(
+            router.clone(),
+            "GET",
+            "/agentic/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(pending["participantState"], "PLANNED_PENDING");
+        assert!(
+            pending["specifications"]
+                .as_array()
+                .is_some_and(|units| !units.is_empty())
+        );
+
+        let (status, missing) = call(
+            router.clone(),
+            "GET",
+            "/agentic/requests/33333333-3333-4333-8333-333333333333",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(missing["participantState"], "WORK_GRAPH_NOT_PLANNED");
+        assert_eq!(missing["specifications"].as_array().map(Vec::len), Some(0));
+
+        let (status, planned) = call(
+            router.clone(),
+            "GET",
+            "/agentic/requests/11111111-1111-4111-8111-111111111111",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_ne!(planned["participantState"], "WORK_GRAPH_NOT_PLANNED");
+        assert!(
+            planned["specifications"]
+                .as_array()
+                .is_some_and(|units| !units.is_empty())
+        );
+
+        // Absent request: the test-only route fails closed and writes nothing.
+        let (status, _) = call(
+            router.clone(),
+            "POST",
+            "/test-support/p1a/seed",
+            Some(r#"{"requestId":"00000000-0000-4000-8000-000000000000"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Legacy V1 delegation: the seed route must not synthesize or bypass
+        // authorization, and must not write a proposal.
+        let legacy_request = app
+            .db
+            .seed_legacy_v1_request_for_test("55555555-5555-4555-8555-555555555555")
+            .await
+            .unwrap();
+        let (status, response) = call(
+            router.clone(),
+            "POST",
+            "/test-support/p1a/seed",
+            Some(&format!(r#"{{"requestId":"{legacy_request}"}}"#)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{response}");
+        assert!(app.db.lead_proposal("legacy-v1-lead").await.is_err());
+
+        // No operator credential: the route fails closed before any write.
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/test-support/p1a/seed")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"requestId":"11111111-1111-4111-8111-111111111111"}"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            router.oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
     }
 }
