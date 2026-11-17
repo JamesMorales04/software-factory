@@ -321,6 +321,33 @@ class AutonomousStageSequenceTests(unittest.TestCase):
         self.assertEqual(summary["counters_by_phase"]["post_restart_live"]["planner"], 0)
         self.assertEqual(summary["fixture_counters"]["planner"], 1)
 
+    def test_snapshot_binding_matrix_is_strict(self) -> None:
+        cases = {
+            "missing_recorded_run": lambda values: values["autonomous_counters_snapshot"].pop("run_id"),
+            "missing_recorded_candidate": lambda values: values["autonomous_counters_snapshot"].pop("candidate_sha"),
+            "missing_stage": lambda values: values["autonomous_counters_snapshot"].pop("stage"),
+            "wrong_stage": lambda values: values["autonomous_counters_snapshot"].update(stage="autonomous_restart"),
+            "missing_captured_at": lambda values: values["autonomous_counters_snapshot"].pop("captured_at"),
+            "invalid_captured_at": lambda values: values["autonomous_counters_snapshot"].update(captured_at="not-a-date"),
+            "naive_captured_at": lambda values: values["autonomous_counters_snapshot"].update(captured_at="2026-11-17T05:20:00"),
+            "mismatch_run": lambda values: values["autonomous_counters_snapshot"].update(run_id="another-run"),
+            "mismatch_candidate": lambda values: values["autonomous_counters_snapshot"].update(candidate_sha="another"),
+            "missing_current_run": lambda values: values.pop("run_id"),
+            "missing_current_candidate": lambda values: values.pop("candidate_sha"),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label=label):
+                api = Api(self.artifacts_dir)
+                context = context_factory(api, self.artifacts_dir)
+                compose_intake.autonomous_campaign(context)
+                mutate(context.state.values)
+                compose_intake.autonomous_negative(context)
+                compose_intake.autonomous_restart(context)
+                compose_intake.autonomous_summary(context)
+                summary = json.loads((self.artifacts_dir / "summary.json").read_text(encoding="utf-8"))
+                self.assertEqual(summary["status"], "PARTIAL", label)
+                self.assertEqual(summary["counters_source"], "missing", label)
+
     def test_summary_is_partial_when_the_stored_snapshot_is_missing(self) -> None:
         self.run_campaign()
         state = self.context.state

@@ -1273,6 +1273,38 @@ def is_sha256_digest(value: object) -> bool:
 
 
 COUNTER_ACTIVITY_KEYS = ("assessment", "lead_stack_selection", "planner", "environment", "spec")
+COUNTER_SNAPSHOT_STAGE = "autonomous_campaign"
+
+
+def snapshot_binding_ok(snapshot: object, state) -> bool:
+    """The counters snapshot must be strictly bound to this run and phase.
+
+    Recorded and current `run_id`/`candidate_sha` must both be non-empty and
+    equal, the stage must be exactly the campaign, and `captured_at` must be a
+    valid UTC timestamp with an offset. This is provenance, not a clock gate.
+    """
+
+    if not isinstance(snapshot, dict) or not snapshot:
+        return False
+    if snapshot.get("stage") != COUNTER_SNAPSHOT_STAGE:
+        return False
+    for key in ("run_id", "candidate_sha"):
+        recorded = snapshot.get(key)
+        current = state.get(key)
+        if not isinstance(recorded, str) or not recorded:
+            return False
+        if not isinstance(current, str) or not current:
+            return False
+        if recorded != current:
+            return False
+    captured = snapshot.get("captured_at")
+    if not isinstance(captured, str) or not captured:
+        return False
+    try:
+        parsed = datetime.fromisoformat(captured.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
 
 
 def counters_have_activity(counters: object) -> bool:
@@ -1624,12 +1656,7 @@ def autonomous_summary(context: Context) -> None:
     snapshot = context.state.get("autonomous_counters_snapshot") or {}
     stored = snapshot.get("counters") or context.state.get("autonomous_counters") or {}
     live = _fixture_counters(context)
-    binding_ok = True
-    for key in ("candidate_sha", "run_id"):
-        recorded = snapshot.get(key)
-        current = context.state.get(key)
-        if recorded and current and recorded != current:
-            binding_ok = False
+    binding_ok = snapshot_binding_ok(snapshot, context.state)
     restart_ran = any(
         str(item.get("name") or "").endswith("restart")
         for item in (context.state.get("stage_results") or [])
