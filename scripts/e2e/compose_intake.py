@@ -1000,6 +1000,19 @@ def autonomous_request(context: Context) -> None:
     context.state.set("model_request_context", str(request_context))
 
 
+def review_status_accepted(planning: dict) -> bool:
+    """The plan review status is a closed set of explicit approvals."""
+
+    return str(planning.get("reviewStatus")) in {"AUTO_APPROVED", "OWNER_APPROVED"}
+
+
+def projected_plan_hash(projection: dict) -> str:
+    """The plan hash comes from the projected plan, never from a stray local."""
+
+    plan = projection.get("plan") or {}
+    return plan.get("planHash") or plan.get("plan_hash") or ""
+
+
 @stage(
     "autonomous_campaign",
     "observe autopilot preparation: plan, graph, participants, environment and Campaign",
@@ -1070,10 +1083,7 @@ def autonomous_campaign(context: Context) -> None:
     # Membership over a closed set, not a substring check: `assert_in` takes a
     # single expected string, so a tuple here raised a TypeError and lost the
     # whole preparation window.
-    require(
-        str(planning.get("reviewStatus")) in {"AUTO_APPROVED", "OWNER_APPROVED"},
-        "plan review status",
-    )
+    require(review_status_accepted(planning), "plan review status")
     assert_equal(planning.get("reviewApproved"), True, "plan review approval")
     # Core publishes these only after the stage-1 fix. They are optional here so
     # the baseline can still be observed failing without inventing fields.
@@ -1083,8 +1093,7 @@ def autonomous_campaign(context: Context) -> None:
         assert_equal(planning.get("startReady"), True, "Core start-ready flag")
     assert_equal(environment.get("status"), "FROZEN", "environment freeze")
     require(bool(environment.get("specSha256")), "environment spec digest is missing")
-    plan_projection = projection.get("plan") or {}
-    plan_hash = plan_projection.get("planHash") or plan_projection.get("plan_hash")
+    plan_hash = projected_plan_hash(projection)
     require(bool(plan_hash), "autopilot produced no plan hash")
     assert_equal(plan_hash, context.state.get("plan_hash") and context.state.get("plan_hash") or plan_hash, "plan hash stability")
 
