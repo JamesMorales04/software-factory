@@ -810,6 +810,44 @@ class Compose:
                 return name.strip()
         return ""
 
+    def service_container(self, service: str) -> str:
+        result = _bounded_run(
+            [
+                "podman",
+                "ps",
+                "--filter",
+                f"label=com.docker.compose.project={self.config.project}",
+                "--filter",
+                f"label=com.docker.compose.service={service}",
+                "--format",
+                "{{.Names}}",
+            ],
+            cwd=self.config.root,
+            env=self.config.environment(),
+            timeout=self.config.operation_timeout,
+        )
+        names = [line.strip() for line in result.splitlines() if line.strip()]
+        return names[0] if names else ""
+
+    def exec_service(self, service: str, arguments: Iterable[str], *, check: bool = True) -> str:
+        container = self.service_container(service)
+        if not container:
+            raise ScenarioError(f"{service} container is not present")
+        result = subprocess.run(
+            ["podman", "exec", container, *arguments],
+            cwd=self.config.root,
+            env=self.config.environment(),
+            text=True,
+            capture_output=True,
+            timeout=self.config.run_timeout,
+            check=False,
+        )
+        if check and result.returncode != 0:
+            raise ScenarioError(
+                f"{service} exec failed: {tail(result.stderr) or tail(result.stdout)}"
+            )
+        return result.stdout
+
     def exec_core(self, arguments: Iterable[str], *, check: bool = True) -> str:
         core = self.core_container()
         if not core:
@@ -1020,6 +1058,26 @@ def wait_url(url: str, timeout: int | None, *, interval: float = 1.0) -> None:
             last_heartbeat = now
         time.sleep(interval)
     raise ScenarioError(f"explicit readiness deadline {timeout}s reached for {url}: {last_error}")
+
+
+def wait_service(compose: Compose, service: str, url: str, timeout: int | None) -> None:
+    deadline = None if timeout is None else time.monotonic() + timeout
+    last_error: Exception | None = None
+    last_heartbeat = time.monotonic()
+    while deadline is None or time.monotonic() < deadline:
+        try:
+            compose.exec_service(service, ["curl", "-fsS", url], check=True)
+            return
+        except (ScenarioError, OSError, subprocess.TimeoutExpired) as error:
+            last_error = error
+        now = time.monotonic()
+        if now - last_heartbeat >= 30:
+            log(f"waiting for {service} {url}: activity=undetermined last_error={last_error!r}")
+            last_heartbeat = now
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        time.sleep(1.0)
+    raise ScenarioError(f"{service} did not become ready at {url}: {last_error!r}")
 
 
 def wait_core(compose: Compose, url: str, timeout: int | None, *, interval: float = 1.0) -> None:

@@ -35,6 +35,7 @@ from common import (
     restore_volumes,
     tail,
     wait_core,
+    wait_service,
     wait_until,
     wait_url,
     write_json,
@@ -148,7 +149,12 @@ def start(context: Context) -> None:
     # with a bounded window, and a broker that becomes ready afterwards leaves
     # the environment builder cached as unavailable for the whole run.
     context.compose.up(build=not config.no_build, services=["runtime"])
-    wait_core(context.compose, "http://runtime:8770/health", config.readiness_timeout)
+    wait_service(
+        context.compose,
+        "runtime",
+        "http://127.0.0.1:8770/health",
+        config.readiness_timeout,
+    )
     context.compose.up(build=False)
     core = context.compose.core_container()
     require(bool(core), "Core container was not created")
