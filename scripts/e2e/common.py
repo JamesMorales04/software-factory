@@ -810,25 +810,6 @@ class Compose:
                 return name.strip()
         return ""
 
-    def service_container(self, service: str) -> str:
-        result = _bounded_run(
-            [
-                "podman",
-                "ps",
-                "--filter",
-                f"label=com.docker.compose.project={self.config.project}",
-                "--filter",
-                f"label=com.docker.compose.service={service}",
-                "--format",
-                "{{.Names}}",
-            ],
-            cwd=self.config.root,
-            env=self.config.environment(),
-            timeout=self.config.operation_timeout,
-        )
-        names = [line.strip() for line in result.splitlines() if line.strip()]
-        return names[0] if names else ""
-
     def exec_service(self, service: str, arguments: Iterable[str], *, check: bool = True) -> str:
         container = self.service_container(service)
         if not container:
