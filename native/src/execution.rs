@@ -13,7 +13,10 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -972,6 +975,80 @@ impl VolumeBackend for RootlessPodmanVolumes {
     }
 }
 
+/// One in-flight Supervisor-proxied environment check.
+///
+/// The lease is the check's only finalization identity: it carries the
+/// workspace volume and the unguessable check token, so a stale generation can
+/// neither cancel nor release a newer registration. `orphaned` is set only when
+/// the task that owns the check disappears without finalizing, which lets a
+/// newer generation ask the backend that owns the check whether any live
+/// container remains before takeover.
+/// Cancellation is requested first and only becomes confirmed once the backend
+/// that owns the check reports it gone.
+const CHECK_CANCEL_NONE: u8 = 0;
+const CHECK_CANCEL_REQUESTED: u8 = 1;
+const CHECK_CANCEL_CONFIRMED: u8 = 2;
+
+#[derive(Clone)]
+pub struct EnvironmentCheckLease {
+    workspace_id: String,
+    generation: i64,
+    volume: String,
+    token: String,
+    orphaned: Arc<AtomicBool>,
+    /// Cancellation state lives in the lease, not in a process-wide token map,
+    /// so an aborted task cannot leave orphaned tokens behind.
+    cancellation: Arc<AtomicU8>,
+}
+
+impl EnvironmentCheckLease {
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
+    pub fn generation(&self) -> i64 {
+        self.generation
+    }
+
+    pub fn volume(&self) -> &str {
+        &self.volume
+    }
+
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// True only when the owning task is gone. A check that is merely
+    /// unresponsive is still owned and must stay fail-closed.
+    pub fn is_orphaned(&self) -> bool {
+        self.orphaned.load(Ordering::SeqCst)
+    }
+
+    pub fn mark_orphaned(&self) {
+        self.orphaned.store(true, Ordering::SeqCst);
+    }
+
+    /// True once cancellation was requested for this exact check.
+    pub fn cancellation_requested(&self) -> bool {
+        self.cancellation.load(Ordering::SeqCst) != CHECK_CANCEL_NONE
+    }
+
+    /// True only once the owning backend confirmed the check is gone.
+    pub fn cancellation_confirmed(&self) -> bool {
+        self.cancellation.load(Ordering::SeqCst) == CHECK_CANCEL_CONFIRMED
+    }
+
+    fn mark_cancel_requested(&self) {
+        self.cancellation
+            .fetch_max(CHECK_CANCEL_REQUESTED, Ordering::SeqCst);
+    }
+
+    fn mark_cancel_confirmed(&self) {
+        self.cancellation
+            .fetch_max(CHECK_CANCEL_CONFIRMED, Ordering::SeqCst);
+    }
+}
+
 pub struct WorkspaceManager<B: VolumeBackend> {
     workspace_root: PathBuf,
     state_root: PathBuf,
@@ -981,10 +1058,16 @@ pub struct WorkspaceManager<B: VolumeBackend> {
     operation_locks:
         Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     active: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
-    /// Workspace volume for an in-flight Supervisor-proxied environment check.
-    /// The broker owns the check container, so cancellation is addressed by the
-    /// volume rather than a guessed container name.
-    active_checks: Arc<std::sync::Mutex<std::collections::HashMap<String, (String, String)>>>,
+    /// In-flight Supervisor-proxied environment checks, keyed by workspace. The
+    /// broker owns the check container, so cancellation is addressed by the
+    /// lease volume and token rather than a guessed container name.
+    active_checks: Arc<std::sync::Mutex<std::collections::HashMap<String, EnvironmentCheckLease>>>,
+    /// Check-token cancellations. A check token is unguessable and unique per
+    /// check, so a late cancellation of an older check can never block a newer
+    /// Generation of the last revocation observed for a workspace. A check may
+    /// only start for a generation that has not been revoked, and a revocation
+    /// of an older generation can never block a newer one.
+    check_revocations: Arc<std::sync::Mutex<std::collections::HashMap<String, i64>>>,
     cancelled: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
@@ -1020,6 +1103,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             operation_locks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             active: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             active_checks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            check_revocations: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             cancelled: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         })
     }
@@ -1055,11 +1139,12 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
                     .lock()
                     .unwrap()
                     .contains_key(&record.workspace_id);
-                let check_active = self
+                let check = self
                     .active_checks
                     .lock()
                     .unwrap()
-                    .contains_key(&record.workspace_id);
+                    .get(&record.workspace_id)
+                    .cloned();
                 if input.generation <= record.generation {
                     return Err(ExecutionError::ConflictReason("generation_not_newer"));
                 }
@@ -1069,8 +1154,18 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
                 if active {
                     return Err(ExecutionError::ConflictReason("active_execution"));
                 }
-                if check_active {
-                    return Err(ExecutionError::ConflictReason("active_environment_check"));
+                if let Some(check) = check {
+                    if !check.is_orphaned() {
+                        return Err(ExecutionError::ConflictReason("active_environment_check"));
+                    }
+                    // The task that owned this check is gone, so no handler can
+                    // finalize it. Release the registration only after the
+                    // backend that owns the check confirms that no live check
+                    // container remains; an unreachable or ambiguous backend
+                    // stays fail-closed under the same typed reason.
+                    if self.cancel_environment_check(&check).await.is_err() {
+                        return Err(ExecutionError::ConflictReason("active_environment_check"));
+                    }
                 }
                 if record.container.is_some() {
                     return Err(ExecutionError::ConflictReason("stale_container_reference"));
@@ -1206,16 +1301,16 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         Ok(record.handle())
     }
 
-    /// Register one in-flight environment check. A second check for the same
-    /// workspace conflicts instead of replacing the volume another builder
-    /// check is currently reading.
+    /// Register one in-flight environment check and return its finalization
+    /// lease. A second check for the same workspace conflicts instead of
+    /// replacing the volume another builder check is currently reading.
     pub async fn begin_environment_check(
         &self,
         workspace_id: &str,
         generation: i64,
         volume: &str,
         check_token: &str,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<EnvironmentCheckLease, ExecutionError> {
         validate_workspace_id(workspace_id)?;
         let _write = self.lock.lock().await;
         self.find_by_id_fenced(workspace_id, generation)?;
@@ -1225,27 +1320,98 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
                 "environment check token is invalid".into(),
             ));
         }
+        if self.check_generation_cancelled(workspace_id, generation) {
+            return Err(ExecutionError::Conflict);
+        }
+        let existing = self
+            .active_checks
+            .lock()
+            .unwrap()
+            .get(workspace_id)
+            .cloned();
+        if let Some(existing) = existing {
+            if !existing.is_orphaned() {
+                return Err(ExecutionError::Conflict);
+            }
+            // The owning task is gone, so this registration can never be
+            // finalized by a handler. Release it only after the backend that
+            // owns the check confirms there is no live container; otherwise the
+            // registration stays and the retry remains fail-closed.
+            if self.cancel_environment_check(&existing).await.is_err() {
+                return Err(ExecutionError::Conflict);
+            }
+        }
         let mut checks = self.active_checks.lock().unwrap();
         if checks.contains_key(workspace_id) {
             return Err(ExecutionError::Conflict);
         }
-        checks.insert(
-            workspace_id.to_owned(),
-            (volume.to_owned(), check_token.to_owned()),
-        );
+        let lease = EnvironmentCheckLease {
+            workspace_id: workspace_id.to_owned(),
+            generation,
+            volume: volume.to_owned(),
+            token: check_token.to_owned(),
+            orphaned: Arc::new(AtomicBool::new(false)),
+            cancellation: Arc::new(AtomicU8::new(CHECK_CANCEL_NONE)),
+        };
+        checks.insert(workspace_id.to_owned(), lease.clone());
+        Ok(lease)
+    }
+
+    /// Finalize the check that `lease` identifies. Returns true when that exact
+    /// check was cancelled.
+    ///
+    /// A cancellation is only honoured once the backend that owns the check has
+    /// confirmed termination. If cancellation was requested but never confirmed,
+    /// the registration is kept fail-closed and marked orphaned so a later
+    /// allocation or same-generation registration can retry the same
+    /// authority-backed cancellation. A stale lease cannot release a newer
+    /// registration for the same workspace.
+    pub fn end_environment_check(&self, lease: &EnvironmentCheckLease) -> bool {
+        if lease.cancellation_requested() && !lease.cancellation_confirmed() {
+            lease.mark_orphaned();
+            return true;
+        }
+        self.remove_check_registration(lease);
+        lease.cancellation_requested()
+    }
+
+    fn remove_check_registration(&self, lease: &EnvironmentCheckLease) -> bool {
+        let mut checks = self.active_checks.lock().unwrap();
+        match checks.get(lease.workspace_id()) {
+            Some(current) if current.token() == lease.token() => {
+                checks.remove(lease.workspace_id());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn check_generation_cancelled(&self, workspace_id: &str, generation: i64) -> bool {
+        self.check_revocations
+            .lock()
+            .unwrap()
+            .get(workspace_id)
+            .is_some_and(|revoked| *revoked == generation)
+    }
+
+    /// Cancel one environment check through the backend that owns its container
+    /// and release the registration only after that backend reports the check
+    /// as gone. Any error leaves the registration in place, so allocation keeps
+    /// returning the typed conflict instead of taking over a volume that may
+    /// still be in use.
+    pub async fn cancel_environment_check(
+        &self,
+        lease: &EnvironmentCheckLease,
+    ) -> Result<(), ExecutionError> {
+        validate_workspace_id(lease.workspace_id())?;
+        validate_volume_name(lease.volume())?;
+        lease.mark_cancel_requested();
+        self.backend
+            .cancel_environment_check(lease.volume(), lease.token())
+            .await?;
+        lease.mark_cancel_confirmed();
+        self.remove_check_registration(lease);
         Ok(())
-    }
-
-    /// Unregister a finished environment check. Returns true when the check was
-    /// cancelled and clears the cancellation marker for that operation.
-    pub fn end_environment_check(&self, workspace_id: &str) -> bool {
-        self.active_checks.lock().unwrap().remove(workspace_id);
-        self.cancelled.lock().unwrap().remove(workspace_id)
-    }
-
-    /// True when the workspace cancellation marker is set.
-    pub fn environment_check_cancelled(&self, workspace_id: &str) -> bool {
-        self.cancelled.lock().unwrap().contains(workspace_id)
     }
 
     /// Replace a workspace volume with an exact snapshot. `podman volume
@@ -1278,11 +1444,14 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         &self,
         workspace_id: &str,
         generation: i64,
+        check: Option<&EnvironmentCheckLease>,
     ) -> Result<(), ExecutionError> {
         validate_workspace_id(workspace_id)?;
         let _write = self.lock.lock().await;
         let mut record = self.find_by_id_fenced(workspace_id, generation)?;
-        if self.cancelled.lock().unwrap().contains(workspace_id) {
+        if check.is_some_and(|lease| lease.cancellation_requested())
+            || self.check_generation_cancelled(workspace_id, generation)
+        {
             return Err(ExecutionError::Conflict);
         }
         if record.status != WorkspaceStatus::Allocated {
@@ -1298,7 +1467,9 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         .map_err(|error| ExecutionError::Invalid(format!("snapshot task: {error}")))??;
         self.replace_workspace_volume(&record.workspace_id, &record.volume, &snapshot.bytes)
             .await?;
-        if self.cancelled.lock().unwrap().contains(workspace_id) {
+        if check.is_some_and(|lease| lease.cancellation_requested())
+            || self.check_generation_cancelled(workspace_id, generation)
+        {
             return Err(ExecutionError::Conflict);
         }
         record.updated_at_ms = now_ms();
@@ -1854,22 +2025,32 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
     ) -> Result<bool, ExecutionError> {
         validate_workspace_id(workspace_id)?;
         self.find_by_id_fenced(workspace_id, generation)?;
-        self.cancelled
+        // Record the revocation against this generation. A later generation is
+        // unaffected, so a stale revocation can neither block a newer check nor
+        // be cleared by a stale finalizer.
+        self.check_revocations
             .lock()
             .unwrap()
-            .insert(workspace_id.to_owned());
+            .insert(workspace_id.to_owned(), generation);
         let check = self
             .active_checks
             .lock()
             .unwrap()
             .get(workspace_id)
             .cloned();
-        if let Some((volume, check_token)) = check {
-            return self
-                .backend
-                .cancel_environment_check(&volume, &check_token)
-                .await;
+        if let Some(check) = check {
+            // Check cancellation is scoped to its unguessable token and may
+            // release the registration only after the owning backend confirms
+            // the check container is gone. It deliberately does not arm the
+            // workspace-wide revocation marker used by execution cancellation:
+            // that marker would otherwise leak into the next generation.
+            self.cancel_environment_check(&check).await?;
+            return Ok(true);
         }
+        self.cancelled
+            .lock()
+            .unwrap()
+            .insert(workspace_id.to_owned());
         let container = self.active.lock().unwrap().get(workspace_id).cloned();
         if let Some(container) = container {
             self.backend.remove_container(&container).await?;
@@ -1883,7 +2064,23 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         validate_workspace_id(workspace_id)?;
         let _write = self.lock.lock().await;
         let record = self.find_by_id_fenced(workspace_id, generation)?;
+        // Teardown is only allowed once the backend that owns an outstanding
+        // check confirms it is gone. An unconfirmed cancellation refuses the
+        // cleanup instead of deleting a volume that may still be in use.
+        let check = self
+            .active_checks
+            .lock()
+            .unwrap()
+            .get(workspace_id)
+            .cloned();
+        if let Some(check) = check {
+            self.cancel_environment_check(&check)
+                .await
+                .map_err(|_| ExecutionError::Conflict)?;
+        }
         self.cancelled.lock().unwrap().remove(workspace_id);
+        // The workspace is gone, so its revocation bookkeeping goes with it.
+        self.check_revocations.lock().unwrap().remove(workspace_id);
         if let Some(container) = &record.container {
             self.backend.remove_container(container).await?;
         }
@@ -3779,7 +3976,7 @@ mod tests {
             .manager
             .workspace_volume(&first.workspace_id)
             .unwrap();
-        fixture
+        let lease = fixture
             .manager
             .begin_environment_check(&first.workspace_id, 1, &volume, "check-token-123456")
             .await
@@ -3790,8 +3987,63 @@ mod tests {
             is_allocation_conflict(fixture.manager.allocate(&next).await),
             "an active environment check must block recovery"
         );
-        fixture.manager.end_environment_check(&first.workspace_id);
+        assert!(!fixture.manager.end_environment_check(&lease));
         assert!(fixture.manager.allocate(&next).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn stale_check_lease_cannot_release_a_newer_registration() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-stale-lease".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let first = fixture.manager.allocate(&allocation).await.unwrap();
+        let volume = fixture
+            .manager
+            .workspace_volume(&first.workspace_id)
+            .unwrap();
+        let stale = fixture
+            .manager
+            .begin_environment_check(&first.workspace_id, 1, &volume, "check-token-123456")
+            .await
+            .unwrap();
+        assert!(!fixture.manager.end_environment_check(&stale));
+        let mut next = allocation.clone();
+        next.generation = 2;
+        fixture.manager.allocate(&next).await.unwrap();
+        let newer = fixture
+            .manager
+            .begin_environment_check(&first.workspace_id, 2, &volume, "check-token-654321")
+            .await
+            .unwrap();
+        assert!(
+            !fixture.manager.end_environment_check(&stale),
+            "a stale generation lease must not release the newer registration"
+        );
+        assert!(
+            matches!(
+                fixture
+                    .manager
+                    .begin_environment_check(&first.workspace_id, 2, &volume, "check-token-777777")
+                    .await,
+                Err(ExecutionError::Conflict)
+            ),
+            "the newer registration must remain in place"
+        );
+        assert!(!fixture.manager.end_environment_check(&newer));
+        assert!(
+            fixture
+                .manager
+                .begin_environment_check(&first.workspace_id, 2, &volume, "check-token-777777")
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]

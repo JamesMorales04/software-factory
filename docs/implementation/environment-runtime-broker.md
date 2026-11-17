@@ -172,6 +172,81 @@ cancellation marker immediately before the broker call, and returns
 check timeout, `--network=none`, read-only root and mount/capability rules are
 unchanged.
 
+### Check-lease lifetime (generation-2 allocation conflict)
+
+A real recovery run reproduced a remaining defect: the Worker re-claimed a
+stale attempt at generation 2 (`worker.claimed generation=2`) and the Supervisor
+refused allocation with
+`409 workspace allocation conflict: active_environment_check`, even though the
+persisted workspace record still held `generation=1`, `status=ALLOCATED` and
+`container=null`. The typed reason, the guard order in
+`WorkspaceManager::allocate` and the record together excluded generation,
+completed-workspace, live-execution and stale-container causes: the only
+remaining input was an environment-check registration whose owner was gone.
+
+The registration used to live and die with the HTTP request future. Finalization
+(`WorkspaceManager::end_environment_check`) was reachable only from the request
+handler, while cancellation through the operation fence removed the broker
+container but never the registration. A requester that disconnected mid-check
+therefore left a registration that no code path could remove, and every newer
+generation stayed blocked until the Supervisor restarted.
+
+The check now has an explicit lease owned by a task, not by the request:
+
+- `begin_environment_check` returns an `EnvironmentCheckLease` carrying the
+  workspace, generation, volume and unguessable check token. Finalization and
+  cancellation match on that token, so a stale generation can neither release
+  nor cancel a newer registration.
+- The Supervisor spawns `run_environment_check`, which owns staging, the broker
+  call, the operation fence and finalization. The request only waits for the
+  result. Dropping the request closes a cancellation channel; the task then
+  cancels through the backend that owns the check container
+  (`POST /v1/environments/check/cancel`, already token/volume scoped) and
+  releases the registration **only after** that backend reports the check gone.
+- Cancellation is recorded as **requested** immediately and as **confirmed**
+  only after the owning backend reports the check gone. A finalization that
+  observes a requested-but-unconfirmed cancellation keeps the registration and
+  marks it orphaned, so a later broker success or error can never release a
+  registration whose termination was not confirmed.
+- Both cancellation states live **in the lease**, not in a process-wide token
+  map. A task aborted after a confirmed cancellation therefore leaves no
+  residual token that could block or release a later check; only the abandoned
+  lease still observes its own state.
+- A failed or ambiguous cancellation therefore keeps the registration, and
+  allocation keeps returning `active_environment_check`. A lease whose owning
+  task disappeared (panic or runtime abort) is marked orphaned; a newer
+  generation may reclaim it only by the same backend-confirmed cancellation,
+  and `begin_environment_check` applies the same rule to an orphan of the same
+  generation so an abandoned registration cannot block a fresh check forever.
+  `cleanup` refuses teardown (typed conflict) while a registration is
+  unconfirmed, and on success clears the registration, its cancellation markers
+  and the generation revocation. There is no time-based or generation-based
+  bypass, and the allocation guard itself is unchanged.
+- Check cancellations are tracked per token and per revoked generation. A
+  revocation recorded for generation 1 no longer arms a workspace-wide marker
+  for generation 2, so a late revocation cannot block the newer check, and a
+  stale finalizer cannot clear the newer cancellation.
+- A spawned check task discarded before its first poll is the only lifecycle
+  edge the orphan guard cannot observe. Tokio only drops a task that way while
+  the runtime is shutting down, and the registration is in-process state that
+  disappears with the Supervisor, so it cannot outlive that case.
+
+Regression coverage is deterministic and does not need a live engine:
+`environment_check_requester_drop_releases_the_registration` (dropped request,
+broker holds the check, recovery succeeds only after backend confirmation),
+`environment_check_stays_fail_closed_until_cancellation_is_confirmed`
+(unconfirmed cancellation keeps the 409, confirmed cancellation recovers),
+`unconfirmed_fence_cancellation_keeps_the_registration_until_confirmed`
+(a fence cancellation the backend cannot confirm is not released by a later
+broker completion), `same_generation_orphan_is_reclaimed_by_the_next_registration`,
+`confirmed_cancellation_leaves_no_residue_after_an_aborted_task`
+(a confirmed cancellation followed by a task abort leaves no token behind and
+does not block a newer registration or staging),
+`cleanup_refuses_an_unconfirmed_check_and_clears_after_confirmation`,
+`revocation_of_an_older_generation_does_not_block_the_newer_check`,
+`stale_check_lease_cannot_release_a_newer_registration`, and the existing
+live-check allocation conflict and fence-cancellation tests.
+
 ## 2. Image identity and allowlist
 
 - `FACTORY_RUNTIME_ENVIRONMENT_BUILDER_IMAGE` is the only image accepted for
@@ -305,12 +380,18 @@ fetch/resolve.
   delayed in validation beyond the old retry window, fabricated-PASS refusal,
   resource-limit cache purge/quarantine, bundle digest/cache bounds, narrow
   container arguments and timeout cleanup.
-- `cargo test -p factory-native --bin factory-supervisor` — 14 passed, including
+- `cargo test -p factory-native --bin factory-supervisor` — 24 passed, including
   grant/image/workspace refusal, successful typed proxy, a real Git worktree
   check that fails with npm exit 254 when the workspace volume is empty and
   passes after `stage_workspace_for_check`, stale-file replacement,
-  operation-fence cancellation of an active check, and a refused concurrent
-  registration that preserves the first check token.
+  operation-fence cancellation of an active check, a refused concurrent
+  registration that preserves the first check token, release of a dropped
+  requester's registration only after backend confirmation, fail-closed
+  behaviour while cancellation is unconfirmed (including a failed fence whose
+  broker later completes), same-generation orphan reclamation, teardown
+  refusal for an unconfirmed check, no residual token after a confirmed
+  cancellation whose task is aborted, and an older-generation revocation that
+  does not block the newer check.
 - `FACTORY_REAL_PODMAN_TESTS=1 cargo test -p factory-native --test
   real_podman_environment_check_staging` — 1 passed: restaging a real rootless
   Podman volume removes a deleted file, applies a modified file, and preserves
