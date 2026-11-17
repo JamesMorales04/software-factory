@@ -145,17 +145,9 @@ def start(context: Context) -> None:
         restore_volumes(config, context.compose)
     else:
         context.compose.down(volumes=True)
-    # Start the runtime broker first and wait for it: Core probes the broker once
-    # with a bounded window, and a broker that becomes ready afterwards leaves
-    # the environment builder cached as unavailable for the whole run.
-    context.compose.up(build=not config.no_build, services=["runtime"])
-    wait_service(
-        context.compose,
-        "runtime",
-        "http://127.0.0.1:8770/health",
-        config.readiness_timeout,
-    )
-    context.compose.up(build=False)
+    # One canonical bring-up: init and the bundle services must run before the
+    # runtime can import the builder, and the runtime has no depends_on.
+    context.compose.up(build=not config.no_build)
     core = context.compose.core_container()
     require(bool(core), "Core container was not created")
     context.state.set("core_container", core)
@@ -164,8 +156,35 @@ def start(context: Context) -> None:
     wait_url(f"{config.base}/core-api/health", config.readiness_timeout)
     wait_core(context.compose, "http://supervisor:8766/health", config.readiness_timeout)
     wait_core(context.compose, "http://runtime:8770/health", config.readiness_timeout)
+    recover_environment_builder(context)
     wait_core(context.compose, "http://git-fixture:8080/repo.git/HEAD", config.readiness_timeout)
     wait_core(context.compose, "http://model-fixture:8080/health", config.readiness_timeout)
+
+
+def recover_environment_builder(context: Context) -> None:
+    """Restart Core once when it cached the builder before the broker was ready.
+
+    Core probes the broker with a bounded window at startup; when the broker
+    becomes ready afterwards the builder stays UNAVAILABLE for the whole run
+    (CR-19, owned by Core). Restarting Core after the broker is healthy makes it
+    re-probe, and this recovery is bounded to one restart.
+    """
+
+    health = context.api.get("/health")
+    builder = (health.get("environmentBuilder") or {})
+    if str(builder.get("status") or "").upper() != "UNAVAILABLE":
+        return
+    log("Core cached the environment builder as unavailable; restarting Core once")
+    context.compose.run(
+        ["restart", "core"],
+        check=True,
+        log_name="compose-restart-core",
+        timeout=context.config.run_timeout,
+    )
+    wait_url(f"{context.config.base}/health", context.config.readiness_timeout)
+    after = context.api.get("/health")
+    status = str(((after.get("environmentBuilder") or {}).get("status")) or "").upper()
+    require(status != "UNAVAILABLE", "environment builder stayed unavailable after the restart")
 
 
 @stage("enroll", "perform first-run owner enrollment and wait for the Worker")

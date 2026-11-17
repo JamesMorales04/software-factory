@@ -115,5 +115,40 @@ class CampaignHelperTests(unittest.TestCase):
         self.assertEqual(compose_intake.projected_plan_hash({"plan": None}), "")
 
 
+
+
+def recovery_context(statuses: list[str]):
+    context = mock.Mock()
+    context.config.readiness_timeout = 1
+    context.config.run_timeout = 1
+    context.config.base = "http://127.0.0.1:1"
+    context.api.get.side_effect = [
+        {"environmentBuilder": {"status": status}} for status in statuses
+    ]
+    return context
+
+
+class BuilderRecoveryTests(unittest.TestCase):
+    """CR-19 recovery: one bounded Core restart when the builder was cached."""
+
+    def test_recovery_is_skipped_when_the_builder_is_ready(self) -> None:
+        context = recovery_context(["READY"])
+        compose_intake.recover_environment_builder(context)
+        context.compose.run.assert_not_called()
+
+    def test_recovery_restarts_once_and_requires_a_ready_builder(self) -> None:
+        context = recovery_context(["UNAVAILABLE", "READY"])
+        with mock.patch.object(compose_intake, "wait_url"):
+            compose_intake.recover_environment_builder(context)
+        self.assertEqual(context.compose.run.call_count, 1)
+
+    def test_recovery_fails_when_the_builder_stays_unavailable(self) -> None:
+        context = recovery_context(["UNAVAILABLE", "UNAVAILABLE"])
+        with mock.patch.object(compose_intake, "wait_url"):
+            with self.assertRaises(ScenarioError):
+                compose_intake.recover_environment_builder(context)
+        self.assertEqual(context.compose.run.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
