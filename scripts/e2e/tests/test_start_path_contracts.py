@@ -374,5 +374,27 @@ class AsyncConsumerTests(unittest.TestCase):
             compose_intake.await_attempt_chain(api, "c1", 0.2)
 
 
+class AsyncTerminalFailureTests(unittest.TestCase):
+    """A terminal Campaign cancels the wait with a cause, never loops forever."""
+
+    def test_chain_wait_cancels_on_a_terminal_campaign(self) -> None:
+        class Api:
+            def get(self, path):
+                return {"state": "BLOCKED", "stateDetail": "environment blocked"}
+
+        with self.assertRaises(ScenarioError) as caught:
+            compose_intake.await_attempt_chain(Api(), "c1", 5)
+        self.assertIn("BLOCKED", str(caught.exception))
+
+    def test_assignment_wait_cancels_on_a_terminal_campaign(self) -> None:
+        class Api:
+            def get(self, path):
+                return {"state": "CANCELLED", "stateDetail": "owner cancelled"}
+
+        with self.assertRaises(ScenarioError) as caught:
+            compose_intake.await_worker_assignment(Api(), "c1", "a1", 5)
+        self.assertIn("CANCELLED", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

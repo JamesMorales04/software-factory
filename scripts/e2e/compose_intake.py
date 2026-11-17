@@ -1072,6 +1072,19 @@ def projected_graph_provenance(projection: dict) -> tuple[str, str, str]:
     return digest, provider, model
 
 
+TERMINAL_CAMPAIGN_STATES = {"BLOCKED", "FAILED", "REJECTED", "CANCELLED"}
+
+
+def campaign_terminal_failure(projection: dict) -> str:
+    """Return the terminal state when the Campaign cannot progress any further."""
+
+    state = str(projection.get("state") or "").upper()
+    if state in TERMINAL_CAMPAIGN_STATES:
+        detail = str(projection.get("stateDetail") or "")
+        return f"Campaign reached {state}: {detail}" if detail else f"Campaign reached {state}"
+    return ""
+
+
 def await_attempt_chain(api, campaign_id: str, timeout: int | None) -> dict:
     """Wait for the asynchronous Worker lease chain, then return the campaign.
 
@@ -1083,6 +1096,9 @@ def await_attempt_chain(api, campaign_id: str, timeout: int | None) -> dict:
 
     def ready() -> bool:
         projection = api.get(f"/campaigns/{campaign_id}")
+        terminal = campaign_terminal_failure(projection)
+        if terminal:
+            raise ScenarioError(terminal)
         ok, problem = attempt_chain_is_observable(projection, campaign_id)
         state["problem"] = problem
         return ok
@@ -1126,6 +1142,34 @@ def worker_assignment_from_sessions(
             continue
         return worker_id, generation, ""
     return "", 0, "no provider session proves a Worker assignment for this attempt"
+
+
+def await_worker_assignment(
+    api, campaign_id: str, attempt_id: str, timeout: int | None
+) -> tuple[str, int]:
+    """Wait for the provider-session assignment, cancelling on terminal failure."""
+
+    from common import wait_until
+
+    state: dict[str, str | int] = {"worker": "", "generation": 0}
+
+    def assigned() -> bool:
+        projection = api.get(f"/campaigns/{campaign_id}")
+        terminal = campaign_terminal_failure(projection)
+        if terminal:
+            raise ScenarioError(terminal)
+        workers = {str(item.get("worker_id") or "") for item in api.get("/workers")}
+        worker_id, generation, _ = worker_assignment_from_sessions(
+            api.get("/provider/sessions") or [], attempt_id, workers
+        )
+        if not worker_id:
+            return False
+        state["worker"] = worker_id
+        state["generation"] = generation
+        return True
+
+    wait_until(assigned, timeout, "the Worker provider session")
+    return str(state["worker"]), int(state["generation"])
 
 
 def receipt_binds_frozen_spec(environment: dict) -> tuple[bool, str]:
@@ -1286,26 +1330,10 @@ def autonomous_campaign(context: Context) -> None:
     attempt_id = str(
         ((campaign_projection.get("tasks") or [{}])[0].get("attempt_id")) or ""
     )
-    workers = {str(item.get("worker_id") or "") for item in context.api.get("/workers")}
-    # The assignment is asynchronous: poll the existing surface instead of
-    # failing on the first read after the Campaign starts.
-    assignment: dict[str, str | int] = {}
-
-    def assigned() -> bool:
-        worker_id, generation, _ = worker_assignment_from_sessions(
-            context.api.get("/provider/sessions") or [], attempt_id, workers
-        )
-        if not worker_id:
-            return False
-        assignment["worker_id"] = worker_id
-        assignment["generation"] = generation
-        return True
-
-    wait_until(assigned, config.readiness_timeout, "the Worker provider session")
-    worker_id, generation, problem = worker_assignment_from_sessions(
-        context.api.get("/provider/sessions") or [], attempt_id, workers
+    worker_id, generation = await_worker_assignment(
+        context.api, campaign_id, attempt_id, config.readiness_timeout
     )
-    require(bool(worker_id), problem)
+    require(bool(worker_id), "the Worker assignment is not observable")
     context.state.set("acceptance_scope", "CAMPAIGN_START_WITH_RECEIPT_AND_WORKER_ASSIGNMENT")
     context.state.set("receipt_surface", "environment.builder.receipt")
     context.state.set("worker_assignment", "PROVEN")
