@@ -335,5 +335,44 @@ class WorkerAssignmentTests(unittest.TestCase):
         self.assertEqual(worker, "")
 
 
+class AsyncConsumerTests(unittest.TestCase):
+    """The consumer waits for the lease instead of reading once."""
+
+    def api(self, projections):
+        class Api:
+            def __init__(self):
+                self.calls = 0
+
+            def get(self, path):
+                index = min(self.calls, len(projections) - 1)
+                self.calls += 1
+                return projections[index]
+
+        return Api()
+
+    def leased(self):
+        return {
+            "tasks": [{"task_id": "t1", "attempt_id": "a1"}],
+            "attempts": [{"id": "a1", "run_id": "r1", "status": "LEASED"}],
+            "runs": [{"id": "r1", "campaign_id": "c1"}],
+        }
+
+    def unleased(self):
+        campaign = self.leased()
+        campaign["attempts"] = [{"id": "a1", "run_id": "r1", "status": "PENDING"}]
+        return campaign
+
+    def test_consumer_waits_for_a_late_lease(self) -> None:
+        api = self.api([self.unleased(), self.unleased(), self.leased()])
+        projection = compose_intake.await_attempt_chain(api, "c1", 5)
+        self.assertTrue(projection.get("tasks"))
+        self.assertGreaterEqual(api.calls, 3)
+
+    def test_consumer_fails_closed_when_the_lease_never_arrives(self) -> None:
+        api = self.api([self.unleased()])
+        with self.assertRaises(ScenarioError):
+            compose_intake.await_attempt_chain(api, "c1", 0.2)
+
+
 if __name__ == "__main__":
     unittest.main()

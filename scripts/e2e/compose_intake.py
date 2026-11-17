@@ -1072,6 +1072,31 @@ def projected_graph_provenance(projection: dict) -> tuple[str, str, str]:
     return digest, provider, model
 
 
+def await_attempt_chain(api, campaign_id: str, timeout: int | None) -> dict:
+    """Wait for the asynchronous Worker lease chain, then return the campaign.
+
+    The campaign projection can exist before the Worker claims its attempt, so the
+    consumer polls the existing surface instead of reading once and aborting.
+    """
+
+    state = {"problem": ""}
+
+    def ready() -> bool:
+        projection = api.get(f"/campaigns/{campaign_id}")
+        ok, problem = attempt_chain_is_observable(projection, campaign_id)
+        state["problem"] = problem
+        return ok
+
+    from common import wait_until
+
+    wait_until(ready, timeout, "the Worker attempt lease")
+    projection = api.get(f"/campaigns/{campaign_id}")
+    ok, problem = attempt_chain_is_observable(projection, campaign_id)
+    if not ok:
+        raise ScenarioError(problem or state["problem"])
+    return projection
+
+
 def worker_assignment_from_sessions(
     sessions: list, attempt_id: str, known_workers: set[str]
 ) -> tuple[str, int, str]:
@@ -1255,23 +1280,9 @@ def autonomous_campaign(context: Context) -> None:
     require(environment.get("required") is True, "environment is not marked required")
     receipt_ok, receipt_problem = receipt_binds_frozen_spec(environment)
     require(receipt_ok, receipt_problem)
-    # The Worker lease is asynchronous: poll the existing wait for the chain
-    # instead of reading once and aborting while the claim is still in flight.
-    chain_problem = {"value": ""}
-
-    def chain_ready() -> bool:
-        ok, problem = attempt_chain_is_observable(
-            context.api.get(f"/campaigns/{campaign_id}"), campaign_id
-        )
-        chain_problem["value"] = problem
-        return ok
-
-    wait_until(chain_ready, config.readiness_timeout, "the Worker attempt lease")
-    campaign_projection = context.api.get(f"/campaigns/{campaign_id}")
-    chain_ok, chain_problem_text = attempt_chain_is_observable(
-        campaign_projection, campaign_id
+    campaign_projection = await_attempt_chain(
+        context.api, campaign_id, config.readiness_timeout
     )
-    require(chain_ok, chain_problem_text or chain_problem["value"])
     attempt_id = str(
         ((campaign_projection.get("tasks") or [{}])[0].get("attempt_id")) or ""
     )
