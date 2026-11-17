@@ -16854,10 +16854,14 @@ async fn deterministic_participant_plan(
         code: "PROFILE_NOT_EXECUTABLE",
         message: "the frozen execution profile has no executable v2 content".into(),
     })?;
-    let reviewer_plan = factory_native::planning::route::required_reviewers(
-        context.planning_lane,
-        context.assurance(),
-    );
+    let lane = effective_planning_lane_for_request(app, &record.id, context.planning_lane)
+        .await
+        .map_err(|_| ParticipantPlanFailure {
+            code: "PLANNING_LANE_UNAVAILABLE",
+            message: "the effective planning lane is unavailable".into(),
+        })?;
+    let reviewer_plan =
+        factory_native::planning::route::required_reviewers(lane, context.assurance());
     let reviewer_assignments = app
         .reviewer_identities
         .assignments_for_plan(
@@ -37565,7 +37569,22 @@ mod tests {
             "factory-core-p1a-seed-{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let app = test_app(&path).await;
+        let repository = std::path::PathBuf::from("/tmp/factory-wp10-browser-repository");
+        std::fs::create_dir_all(&repository).unwrap();
+        std::fs::write(repository.join("README.md"), "# fixture\n").unwrap();
+        std::fs::write(repository.join("AGENTS.md"), "# fixture\n").unwrap();
+        std::fs::write(
+            repository.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let app = test_app_with_master_key_and_options(
+            &path,
+            None,
+            false,
+            Some(std::path::PathBuf::from("/tmp")),
+        )
+        .await;
         let router = build_router(app.clone());
         app.db.seed_wave12_fixtures("owner").await.unwrap();
 
@@ -37683,6 +37702,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(planned["participantState"], "PLANNED");
         assert_eq!(planned["planningLane"], "FORMAL_SPEC");
+        assert_eq!(planned["triage"]["route"], "DIRECT");
         assert!(
             planned["specifications"]
                 .as_array()
@@ -37700,6 +37720,21 @@ mod tests {
             planned_intake["planning"]["participantPlan"]["workGraphState"],
             "PLANNED"
         );
+        assert_eq!(planned_intake["planning"]["lane"], "FORMAL_SPEC");
+
+        let (status, planned_portfolio) =
+            call(router.clone(), "GET", "/agentic/portfolio", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let planned_entry = planned_portfolio
+            .as_array()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry["id"] == "11111111-1111-4111-8111-111111111111")
+            })
+            .expect("planned portfolio entry");
+        assert_eq!(planned_entry["participantState"], "PLANNED");
+        assert_eq!(planned_entry["route"], "DIRECT");
 
         // Persisted plan followed by graph removal must not remain PLANNED.
         let (status, response) = call(
