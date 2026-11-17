@@ -1048,6 +1048,53 @@ def projected_graph_units(projection: dict) -> list:
     return units
 
 
+def projected_graph_provenance(projection: dict) -> tuple[str, str, str]:
+    """Digest and planner identity come from the real nested graph object.
+
+    Core projects `/agentic/requests/{id}/plan` as `{"graph": {"graphJson": ...,
+    "graphSha256": ..., "plannerProvider": ..., "plannerModel": ...}}`. There is
+    no flat provider/model field and no fallback digest; a missing field is a hard
+    failure so the provenance cannot be silently assumed.
+    """
+
+    graph = projection.get("graph")
+    if not isinstance(graph, dict):
+        raise ScenarioError("plan projection has no graph object")
+    digest = graph.get("graphSha256")
+    provider = graph.get("plannerProvider")
+    model = graph.get("plannerModel")
+    if not isinstance(digest, str) or not digest:
+        raise ScenarioError("plan projection graph has no graphSha256")
+    if not isinstance(provider, str) or not provider:
+        raise ScenarioError("plan projection graph has no plannerProvider")
+    if not isinstance(model, str) or not model:
+        raise ScenarioError("plan projection graph has no plannerModel")
+    return digest, provider, model
+
+
+def receipt_binds_frozen_spec(environment: dict) -> tuple[bool, str]:
+    """The projected builder receipt must bind the frozen spec and have succeeded."""
+
+    builder = environment.get("builder") or {}
+    receipt = builder.get("receipt")
+    if not isinstance(receipt, dict):
+        return False, "no environment builder receipt is projected"
+    if receipt.get("specSha256") != environment.get("specSha256"):
+        return False, "receipt does not bind the frozen spec"
+    if str(receipt.get("status") or "").upper() != "SUCCEEDED":
+        return False, "the environment build receipt is not SUCCEEDED"
+    return True, ""
+
+
+def attempt_is_worker_leased(attempts: list) -> bool:
+    """A real Worker claim is an observable; RUNNING alone is not execution."""
+
+    return any(
+        str(attempt.get("status") or "").upper() in {"LEASED", "RUNNING", "COMPLETED"}
+        for attempt in attempts
+    )
+
+
 def review_status_accepted(planning: dict) -> bool:
     """The plan review status is a closed set of explicit approvals."""
 
@@ -1145,8 +1192,16 @@ def autonomous_campaign(context: Context) -> None:
     # public projection exposes the receipt. This journey therefore proves the
     # Campaign start, not an executable environment: never label it as execution.
     require(environment.get("required") is True, "environment is not marked required")
-    context.state.set("acceptance_scope", "CAMPAIGN_START_ONLY")
-    context.state.set("receipt_surface", "NOT_EXPOSED")
+    receipt_ok, receipt_problem = receipt_binds_frozen_spec(environment)
+    require(receipt_ok, receipt_problem)
+    attempts = context.api.get(f"/campaigns/{campaign_id}").get("attempts") or []
+    require(bool(attempts), "the Campaign has no Attempt")
+    require(
+        attempt_is_worker_leased(attempts),
+        "the Attempt is not leased or running by a Worker",
+    )
+    context.state.set("acceptance_scope", "CAMPAIGN_START_WITH_RECEIPT_AND_WORKER_LEASE")
+    context.state.set("receipt_surface", "environment.builder.receipt")
     plan_hash = projected_plan_hash(projection)
     require(bool(plan_hash), "autopilot produced no plan hash")
     assert_equal(plan_hash, context.state.get("plan_hash") and context.state.get("plan_hash") or plan_hash, "plan hash stability")
@@ -1154,10 +1209,9 @@ def autonomous_campaign(context: Context) -> None:
     graph = context.api.get(f"/agentic/requests/{intake_id}/plan")
     units = projected_graph_units(graph)
     require(bool(units), "autopilot Plan projection has no work units")
-    graph_sha = graph.get("graphSha256") or (graph.get("graph") or {}).get("graphSha256")
-    require(bool(graph_sha), "autopilot Plan projection has no graph digest")
-    assert_equal(graph.get("provider"), "opencode-go", "WorkGraph provider provenance")
-    assert_equal(graph.get("model"), "deepseek-v4.1-flash", "WorkGraph model provenance")
+    graph_sha, planner_provider, planner_model = projected_graph_provenance(graph)
+    assert_equal(planner_provider, "opencode-go", "WorkGraph provider provenance")
+    assert_equal(planner_model, "deepseek-v4.1-flash", "WorkGraph model provenance")
 
     participants = context.api.get(f"/agentic/requests/{intake_id}/participants")
     compiled = participants.get("compiled") or participants
@@ -1333,8 +1387,10 @@ def autonomous_summary(context: Context) -> None:
         and context.state.get("manual_planning_calls", 0) == 0
     )
     result = {
-        "acceptance_scope": context.state.get("acceptance_scope", "CAMPAIGN_START_ONLY"),
-        "receipt_surface": context.state.get("receipt_surface", "NOT_EXPOSED"),
+        "acceptance_scope": context.state.get(
+            "acceptance_scope", "CAMPAIGN_START_WITH_RECEIPT_AND_WORKER_LEASE"
+        ),
+        "receipt_surface": context.state.get("receipt_surface", "environment.builder.receipt"),
         "status": "PASS" if passed else "PARTIAL",
         "diagnosticOnly": not clean,
         "mode": "AUTONOMOUS",

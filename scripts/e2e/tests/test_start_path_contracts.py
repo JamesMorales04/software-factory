@@ -191,5 +191,59 @@ class CaptureWriterTests(unittest.TestCase):
         self.assertNotIn("a" * 40, payload)
 
 
+class ExactProjectionContractTests(unittest.TestCase):
+    """The exact nested shapes Core projects, including provenance and receipt."""
+
+    def real_graph(self):
+        nested = json.dumps({"units": [{"id": "u1"}], "graphSha256": "y" * 64})
+        return {
+            "graph": {
+                "graphJson": nested,
+                "graphSha256": "y" * 64,
+                "plannerProvider": "opencode-go",
+                "plannerModel": "deepseek-v4.1-flash",
+                "costMicros": 0,
+                "createdAt": "2026-11-17T02:53:02Z",
+                "inputTokens": 0,
+                "outputTokens": 0,
+            }
+        }
+
+    def test_provenance_comes_from_the_nested_graph_only(self) -> None:
+        digest, provider, model = compose_intake.projected_graph_provenance(self.real_graph())
+        self.assertEqual(digest, "y" * 64)
+        self.assertEqual(provider, "opencode-go")
+        self.assertEqual(model, "deepseek-v4.1-flash")
+
+    def test_missing_provenance_fails_clearly(self) -> None:
+        for field in ("graphSha256", "plannerProvider", "plannerModel"):
+            projection = self.real_graph()
+            del projection["graph"][field]
+            with self.subTest(field=field), self.assertRaises(ScenarioError):
+                compose_intake.projected_graph_provenance(projection)
+
+    def test_receipt_must_bind_the_frozen_spec(self) -> None:
+        environment = {
+            "specSha256": "s" * 64,
+            "builder": {"receipt": {"specSha256": "s" * 64, "status": "SUCCEEDED"}},
+        }
+        self.assertEqual(compose_intake.receipt_binds_frozen_spec(environment), (True, ""))
+
+    def test_receipt_mismatch_and_failure_are_refused(self) -> None:
+        for receipt in (
+            {"specSha256": "x" * 64, "status": "SUCCEEDED"},
+            {"specSha256": "s" * 64, "status": "FAILED"},
+            None,
+        ):
+            environment = {"specSha256": "s" * 64, "builder": {"receipt": receipt}}
+            ok, problem = compose_intake.receipt_binds_frozen_spec(environment)
+            self.assertFalse(ok, problem)
+
+    def test_only_a_worker_lease_counts_as_execution(self) -> None:
+        self.assertTrue(compose_intake.attempt_is_worker_leased([{"status": "LEASED"}]))
+        self.assertFalse(compose_intake.attempt_is_worker_leased([{"status": "QUEUED"}]))
+        self.assertFalse(compose_intake.attempt_is_worker_leased([]))
+
+
 if __name__ == "__main__":
     unittest.main()

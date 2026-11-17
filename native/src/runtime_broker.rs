@@ -990,10 +990,20 @@ impl RuntimeBrokerClient {
     /// Read the broker's authenticated-free health projection. It contains no
     /// token or credential, only capability availability.
     pub async fn health(&self) -> Result<serde_json::Value, BrokerError> {
+        self.health_with_timeout(Duration::from_secs(10)).await
+    }
+
+    /// Read the health projection with an explicit bound. Readiness callers use
+    /// a shorter bound than the general control timeout so a hung broker cannot
+    /// exceed an outer health-check deadline.
+    pub async fn health_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, BrokerError> {
         let response = self
             .client
             .get(self.join("health")?)
-            .timeout(Duration::from_secs(10))
+            .timeout(timeout)
             .send()
             .await?;
         if !response.status().is_success() {
