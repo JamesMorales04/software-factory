@@ -28090,6 +28090,309 @@ mod tests {
 
         #[cfg(feature = "test-support")]
         #[tokio::test]
+        async fn prepare_autonomous_environment_preserves_frozen_binding_without_a_new_review() {
+            use factory_native::planning::environment::{
+                CompileEnvironmentInput, EnvironmentLeadReviewModel,
+                EnvironmentLeadReviewModelDecision, EnvironmentRequirements,
+                EnvironmentReviewModelCall, ExplicitEnvironmentConstraints, LeadReviewDecision,
+                RecordLeadReviewInput, compile_environment_plan, record_lead_review,
+            };
+
+            let (fixture, app, calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-prepare-frozen").await;
+            assert!(
+                app.environment_builder().descriptor().is_available(),
+                "the deterministic test builder must be available"
+            );
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            let mut conventions = factory_native::planning::environment::ProjectConventions {
+                schema_version: factory_native::planning::environment::ENVIRONMENT_SCHEMA_VERSION,
+                project_id: record.project_id.clone(),
+                base_commit: config.base_commit.clone(),
+                conventions_sha256: String::new(),
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+                files: Vec::new(),
+                commands: Vec::new(),
+                conflicts: Vec::new(),
+                truncated: false,
+                skipped_entries: 0,
+                provenance: "test-support deterministic frozen fixture".into(),
+                existing_environment:
+                    factory_native::planning::environment::ExistingEnvironmentKind::None,
+            };
+            conventions.conventions_sha256 = conventions.compute_sha256();
+            let requirements = EnvironmentRequirements {
+                explicit_constraints: ExplicitEnvironmentConstraints {
+                    nixpkgs: Some(
+                        "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
+                    ),
+                    ..Default::default()
+                },
+                ..EnvironmentRequirements::default()
+            };
+            let plan = compile_environment_plan(CompileEnvironmentInput {
+                plan_id: "prepare-frozen-plan".into(),
+                project_id: &record.project_id,
+                request_id: &record.id,
+                action_id: &record.action_id,
+                campaign_id: None,
+                revision: 1,
+                risk_class: "R0",
+                conventions: &conventions,
+                requirements: &requirements,
+                builder: app.environment_builder().descriptor(),
+                now: chrono::Utc::now(),
+            })
+            .unwrap();
+            let mut resolved = resolve_generated_environment(&app, &plan, None)
+                .await
+                .expect("the deterministic builder resolves the generated plan");
+            // This review record is test-support metadata. No model is invoked:
+            // the settled ledger provenance is inserted directly below, so the
+            // gateway `calls` vector must stay exactly at its prepared value.
+            let model_review = EnvironmentLeadReviewModel {
+                schema_version: 1,
+                request_id: resolved.request_id.clone(),
+                action_id: resolved.action_id.clone(),
+                plan_sha256: resolved.plan_sha256.clone(),
+                plan_revision: resolved.revision,
+                risk_class: resolved.risk_class.clone(),
+                decision: EnvironmentLeadReviewModelDecision::Approve,
+                rationale:
+                    "The deterministic test builder resolved the frozen environment exactly.".into(),
+                constraints: Vec::new(),
+            };
+            model_review
+                .validate_for(&resolved, chrono::Utc::now())
+                .unwrap();
+            let review = record_lead_review(
+                &mut resolved,
+                RecordLeadReviewInput {
+                    review_id: "review-prepare-frozen".into(),
+                    principal_id: &format!("lead:{}", record.lead_request_id),
+                    recorded_by: "core:lead-environment-review",
+                    decision: LeadReviewDecision::Approved,
+                    rationale: &model_review.rationale,
+                    constraints: Vec::new(),
+                    evidence_refs: Vec::new(),
+                    model_call: EnvironmentReviewModelCall {
+                        mechanism: "MODEL".into(),
+                        provider: "opencode-go".into(),
+                        model: "deepseek-v4.1-flash".into(),
+                        reservation_id: "reservation-prepare-frozen".into(),
+                        request_sha256: "d".repeat(64),
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        total_tokens: 2,
+                        cost_micros: 1,
+                        usage_known: true,
+                    },
+                    now: chrono::Utc::now(),
+                },
+            )
+            .unwrap();
+            fixture
+                .app
+                .db
+                .save_environment_plan(&resolved)
+                .await
+                .unwrap();
+            // The review row must bind a settled Lead model call. This fixture
+            // inserts that ledger provenance directly: it never touches the
+            // model gateway, so the replayed `calls` vector must stay unchanged.
+            let reservation_pool = sqlx_sqlite::SqlitePool::connect_with(
+                sqlx_sqlite::SqliteConnectOptions::new()
+                    .filename(&fixture.path)
+                    .create_if_missing(false),
+            )
+            .await
+            .unwrap();
+            let now = chrono::Utc::now();
+            sqlx::query::query(
+                "INSERT INTO model_call_reservations
+                 (reservation_id,role,principal_id,project_id,objective_id,scope_id,
+                  provider,model,purpose,request_sha256,max_input_tokens,
+                  max_output_tokens,max_total_tokens,max_cost_micros,input_tokens,
+                  output_tokens,total_tokens,cost_micros,usage_known,response_text,
+                  state,error,expires_at_ms,created_at,updated_at,ledger_reservation_id,
+                  dispatched_at_ms,provider_request_id)
+                 VALUES ('reservation-prepare-frozen','LEAD',?1,?2,?3,?4,
+                         'opencode-go','deepseek-v4.1-flash','lead_environment_review',
+                         ?5,1,1,2,1,1,1,2,1,1,'{}','SETTLED',NULL,?6,?7,?7,
+                         NULL,NULL,NULL)",
+            )
+            .bind(format!("lead:{}", record.lead_request_id))
+            .bind(&record.project_id)
+            .bind(&record.lead_request_id)
+            .bind("scope-prepare-frozen")
+            .bind("d".repeat(64))
+            .bind(now.timestamp_millis() + 60_000)
+            .bind(now.to_rfc3339())
+            .execute(&reservation_pool)
+            .await
+            .unwrap();
+            reservation_pool.close().await;
+            fixture
+                .app
+                .db
+                .save_environment_plan_review(&review)
+                .await
+                .unwrap();
+            let spec = factory_native::planning::environment::freeze_environment_spec(
+                &resolved,
+                &review,
+                factory_native::planning::environment::FreezeEnvironmentInput {
+                    spec_id: "spec-prepare-frozen".into(),
+                    nix_version: "2.28.3",
+                    devenv_version: "1.11.2",
+                    now: chrono::Utc::now(),
+                },
+            )
+            .expect("the reviewed plan freezes into a real spec");
+            fixture
+                .app
+                .db
+                .save_environment_license_inventory(
+                    &resolved.plan_sha256,
+                    Some(&spec.spec_sha256),
+                    &resolved.license_inventory,
+                )
+                .await
+                .unwrap();
+            fixture.app.db.save_environment_spec(&spec).await.unwrap();
+            fixture
+                .app
+                .db
+                .mark_environment_plan_status(
+                    &resolved.plan_sha256,
+                    factory_native::planning::environment::EnvironmentPlanStatus::Frozen,
+                )
+                .await
+                .unwrap();
+            let mut frozen_plan = resolved.clone();
+            frozen_plan.status =
+                factory_native::planning::environment::EnvironmentPlanStatus::Frozen;
+            fixture
+                .app
+                .db
+                .set_action_environment_binding(&record.action_id, &frozen_plan, &spec)
+                .await
+                .unwrap();
+
+            let review_marker = "Review exactly one frozen Candidate EnvironmentPlan";
+            let review_calls_before = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call.to_string().contains(review_marker))
+                .count();
+            let total_calls_before = calls.lock().unwrap().len();
+            assert_eq!(
+                review_calls_before, 0,
+                "the state was prepared directly; no review call may be fabricated"
+            );
+            let frozen_before = fixture
+                .app
+                .db
+                .latest_environment_plan(&intake_id)
+                .await
+                .unwrap();
+            assert_eq!(frozen_before.status, "FROZEN");
+            let spec_before = fixture
+                .app
+                .db
+                .environment_spec_for_request(&intake_id)
+                .await
+                .unwrap();
+            let action_before = fixture.app.db.action(&record.action_id).await.unwrap().spec;
+            let context = agentic_triage_context(&app, &record).await.unwrap();
+
+            prepare_autonomous_environment(&app, &record, &context)
+                .await
+                .expect("first FROZEN invocation");
+            prepare_autonomous_environment(&app, &record, &context)
+                .await
+                .expect("second FROZEN invocation");
+
+            let review_calls_after = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call.to_string().contains(review_marker))
+                .count();
+            let total_calls_after = calls.lock().unwrap().len();
+            assert_eq!(
+                review_calls_after, review_calls_before,
+                "a FROZEN plan must not issue another environment review"
+            );
+            assert_eq!(
+                total_calls_after, total_calls_before,
+                "a FROZEN prepare must not dispatch any model call"
+            );
+            let frozen_after = fixture
+                .app
+                .db
+                .latest_environment_plan(&intake_id)
+                .await
+                .unwrap();
+            assert_eq!(frozen_after.status, "FROZEN");
+            assert_eq!(frozen_after.plan_sha256, frozen_before.plan_sha256);
+            let spec_after = fixture
+                .app
+                .db
+                .environment_spec_for_request(&intake_id)
+                .await
+                .unwrap();
+            assert_eq!(spec_after.spec.spec_sha256, spec_before.spec.spec_sha256);
+            let action_after = fixture.app.db.action(&record.action_id).await.unwrap().spec;
+            assert_eq!(
+                action_after.environment_plan_id,
+                action_before.environment_plan_id
+            );
+            assert_eq!(
+                action_after.environment_plan_sha256,
+                action_before.environment_plan_sha256
+            );
+            assert_eq!(
+                action_after.environment_spec_id,
+                action_before.environment_spec_id
+            );
+            assert_eq!(
+                action_after.environment_spec_sha256,
+                action_before.environment_spec_sha256
+            );
+            assert_eq!(
+                action_after.environment_builder_image,
+                action_before.environment_builder_image
+            );
+            assert_eq!(
+                action_after.environment_builder_image_digest,
+                action_before.environment_builder_image_digest
+            );
+            let record_after = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            assert!(
+                record_after.campaign_id.is_none(),
+                "the FROZEN prepare path must not start a Campaign"
+            );
+            assert!(
+                fixture.app.db.campaigns().await.unwrap().is_empty(),
+                "no Campaign may exist before the readiness/start transaction"
+            );
+
+            app.db.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
         async fn autopilot_replay_is_idempotent_and_does_not_repeat_inference() {
             let (fixture, app, calls, intake_id) =
                 autonomous_autopilot_fixture("autopilot-replay").await;
