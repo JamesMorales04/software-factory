@@ -1072,7 +1072,8 @@ def autonomous_campaign(context: Context) -> None:
         assert_equal(planning.get("startReady"), True, "Core start-ready flag")
     assert_equal(environment.get("status"), "FROZEN", "environment freeze")
     require(bool(environment.get("specSha256")), "environment spec digest is missing")
-    plan_hash = plan.get("planHash") or plan.get("plan_hash")
+    plan_projection = projection.get("plan") or {}
+    plan_hash = plan_projection.get("planHash") or plan_projection.get("plan_hash")
     require(bool(plan_hash), "autopilot produced no plan hash")
     assert_equal(plan_hash, context.state.get("plan_hash") and context.state.get("plan_hash") or plan_hash, "plan hash stability")
 
