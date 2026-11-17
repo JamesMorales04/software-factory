@@ -11570,10 +11570,10 @@ async fn agentic_projection_for_request(
     // the projection is consistently PLANNED_PENDING; the causal compilation
     // failure is preserved when one is observable.
     let participant_record = app.db.agentic_participant_plan(&record.id).await.ok();
-    let reviewer_plan = factory_native::planning::route::required_reviewers(
-        context.planning_lane,
-        context.assurance(),
-    );
+    let effective_lane =
+        effective_planning_lane_for_request(app, &record.id, context.planning_lane).await?;
+    let reviewer_plan =
+        factory_native::planning::route::required_reviewers(effective_lane, context.assurance());
     let participant_source = participant_record
         .as_ref()
         .map(|record| ParticipantPlanSource {
@@ -15163,6 +15163,9 @@ fn assess_participant_plan(
         return readiness;
     }
     if let Err(error) = reviewer_plan.validate() {
+        if work_graph_sha256.is_some() {
+            readiness.work_graph_state = "PLANNED_PENDING";
+        }
         readiness_problem(
             &mut readiness.problems,
             format!("the frozen reviewer plan is invalid: {error}"),
@@ -15364,6 +15367,19 @@ async fn latest_planning_revision(app: &App, request_id: &str) -> Result<u32, Er
         .chain(artifact_revision)
         .max()
         .unwrap_or(1))
+}
+
+async fn effective_planning_lane_for_request(
+    app: &App,
+    request_id: &str,
+    fallback: factory_native::planning::PlanningLane,
+) -> Result<factory_native::planning::PlanningLane, Error> {
+    let frozen = match app.db.latest_planning_artifact(request_id, "PLAN").await {
+        Ok(artifact) => frozen_planning_lane(&artifact),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    Ok(effective_planning_lane(frozen, fallback))
 }
 
 async fn planning_readiness(
@@ -18876,21 +18892,6 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             Ok(lead) => lead,
             Err(_) => continue,
         };
-        let proposal = app
-            .db
-            .lead_proposal(&record.lead_request_id)
-            .await
-            .ok()
-            .and_then(|record| {
-                serde_json::from_str::<factory_native::lead::LeadPlanProposal>(
-                    &record.proposal_json,
-                )
-                .ok()
-            });
-        let risk = proposal
-            .as_ref()
-            .map(|p| p.risk_class)
-            .unwrap_or(factory_native::lead::RiskClass::R0);
         let semantic = app
             .db
             .agentic_assessment(&record.id)
@@ -18924,6 +18925,10 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             explicit_repair: false,
         };
         let triage = factory_native::agentic::triage(&signals);
+        let context = match agentic_triage_context(&app, &record).await {
+            Ok(context) => context,
+            Err(_) => continue,
+        };
         // The portfolio reports persisted, validated units; an unplanned
         // request stays at zero instead of a synthesized unit.
         let participant_record = app.db.agentic_participant_plan(&record.id).await.ok();
@@ -18933,9 +18938,10 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             .await
             .ok()
             .map(|graph| graph.graph_sha256);
-        let assurance = triage.assurance.max(assurance_for_risk(risk));
-        let lane = factory_native::agentic::lane_for_route(triage.route)
-            .unwrap_or(factory_native::planning::PlanningLane::Direct);
+        let assurance = context.assurance();
+        let lane = effective_planning_lane_for_request(&app, &record.id, context.planning_lane)
+            .await
+            .unwrap_or(context.planning_lane);
         let reviewer_plan = factory_native::planning::route::required_reviewers(lane, assurance);
         let participant_source = participant_record
             .as_ref()
@@ -18945,7 +18951,7 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
                 plan_json: &record.plan_json,
             });
         let readiness = assess_participant_plan(
-            triage.route,
+            context.triage.route,
             assurance,
             &reviewer_plan,
             participant_source,
