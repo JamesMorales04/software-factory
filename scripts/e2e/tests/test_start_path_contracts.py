@@ -8,6 +8,7 @@ every one of those defects.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import unittest
@@ -117,14 +118,26 @@ class CampaignHelperTests(unittest.TestCase):
 
 
 
-def recovery_context(statuses: list[str]):
+def recovery_context(statuses, requests=None, unauthenticated=False):
+    import tempfile
+
     context = mock.Mock()
     context.config.readiness_timeout = 1
     context.config.run_timeout = 1
     context.config.base = "http://127.0.0.1:1"
-    context.api.get.side_effect = [
-        {"environmentBuilder": {"status": status}} for status in statuses
-    ]
+    context.config.artifacts_dir = Path(tempfile.mkdtemp(prefix="cr-recovery-"))
+    health = iter(statuses)
+
+    def get(path):
+        if path == "/health":
+            return {"environmentBuilder": {"status": next(health)}}
+        if path == "/intake/requests":
+            if unauthenticated:
+                raise ScenarioError("401 unauthorized")
+            return {"requests": requests or []}
+        raise AssertionError(f"unexpected path {path}")
+
+    context.api.get.side_effect = get
     return context
 
 
@@ -143,11 +156,21 @@ class BuilderRecoveryTests(unittest.TestCase):
         self.assertEqual(context.compose.run.call_count, 1)
 
     def test_recovery_fails_when_the_builder_stays_unavailable(self) -> None:
-        context = recovery_context(["UNAVAILABLE", "UNAVAILABLE"])
+        context = recovery_context(["UNAVAILABLE", "UNAVAILABLE"], unauthenticated=True)
         with mock.patch.object(compose_intake, "wait_url"):
             with self.assertRaises(ScenarioError):
                 compose_intake.recover_environment_builder(context)
         self.assertEqual(context.compose.run.call_count, 1)
+
+    def test_recovery_refuses_to_restart_with_requests_in_flight(self) -> None:
+        context = recovery_context(["UNAVAILABLE"], requests=[{"id": "intake-1"}])
+        with self.assertRaises(ScenarioError):
+            compose_intake.recover_environment_builder(context)
+        context.compose.run.assert_not_called()
+        record = json.loads(
+            (context.config.artifacts_dir / "diagnostics" / "recovery.json").read_text()
+        )
+        self.assertEqual(record["recovery_restart_core"], "skipped_in_flight")
 
 
 if __name__ == "__main__":

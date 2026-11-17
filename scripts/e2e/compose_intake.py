@@ -162,18 +162,41 @@ def start(context: Context) -> None:
 
 
 def recover_environment_builder(context: Context) -> None:
-    """Restart Core once when it cached the builder before the broker was ready.
+    """Restart Core at most once when it cached the builder before readiness.
 
-    Core probes the broker with a bounded window at startup; when the broker
-    becomes ready afterwards the builder stays UNAVAILABLE for the whole run
-    (CR-19, owned by Core). Restarting Core after the broker is healthy makes it
-    re-probe, and this recovery is bounded to one restart.
+    Recovery runs in `start`, before enrollment, import or any intake request, so
+    no operation of this run can be in flight. The decision, timestamps and the
+    builder state before/after are written to the diagnostics directory, and an
+    authenticated request list that is unexpectedly non-empty blocks the restart
+    instead of restarting blindly.
     """
 
+    diagnostics = ensure_dir(context.config.artifacts_dir / "diagnostics")
+    record: dict[str, object] = {"checkedAt": now_utc(), "target": "/health"}
     health = context.api.get("/health")
-    builder = (health.get("environmentBuilder") or {})
-    if str(builder.get("status") or "").upper() != "UNAVAILABLE":
+    before = str(((health.get("environmentBuilder") or {}).get("status")) or "").upper()
+    record["before"] = before
+    if before != "UNAVAILABLE":
+        record["recovery_restart_core"] = "not_needed"
+        write_json(diagnostics / "recovery.json", record)
         return
+    in_flight = False
+    try:
+        listed = context.api.get("/intake/requests")
+        requests = listed if isinstance(listed, list) else (listed.get("requests") or [])
+        in_flight = bool(requests)
+    except ScenarioError:
+        # Unauthenticated start: enrollment has not happened, so this run cannot
+        # have an in-flight request.
+        in_flight = False
+    record["inFlightRequests"] = in_flight
+    if in_flight:
+        record["recovery_restart_core"] = "skipped_in_flight"
+        write_json(diagnostics / "recovery.json", record)
+        raise ScenarioError(
+            "environment builder is unavailable while intake requests exist; "
+            "refusing to restart Core blindly"
+        )
     log("Core cached the environment builder as unavailable; restarting Core once")
     context.compose.run(
         ["restart", "core"],
@@ -181,10 +204,16 @@ def recover_environment_builder(context: Context) -> None:
         log_name="compose-restart-core",
         timeout=context.config.run_timeout,
     )
+    record["recovery_restart_core"] = "applied"
+    record["restartAt"] = now_utc()
     wait_url(f"{context.config.base}/health", context.config.readiness_timeout)
-    after = context.api.get("/health")
-    status = str(((after.get("environmentBuilder") or {}).get("status")) or "").upper()
-    require(status != "UNAVAILABLE", "environment builder stayed unavailable after the restart")
+    after = str(
+        (((context.api.get("/health") or {}).get("environmentBuilder") or {}).get("status"))
+        or ""
+    ).upper()
+    record["after"] = after
+    write_json(diagnostics / "recovery.json", record)
+    require(after != "UNAVAILABLE", "environment builder stayed unavailable after the restart")
 
 
 @stage("enroll", "perform first-run owner enrollment and wait for the Worker")
