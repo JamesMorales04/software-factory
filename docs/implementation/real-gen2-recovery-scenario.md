@@ -190,6 +190,17 @@ the admission.
   is author evidence. The Verifier/Reviewer and the Core Quality Gate remain the
   acceptance authority.
 - P4 live is `NOT_TESTED`; the deterministic regression is the negative control.
+- On any failure after the admission, the driver reconciles the intake/lead
+  projection and durable `model_call_reservations` (plus assessments, sessions
+  and receipts) with short read-only reads, captures `failure.json`,
+  `failure-intake.json` and a sanitized `failure-db.json` (no prompts, bodies,
+  ciphertext or raw errors), and only then decides. A missing/unreadable
+  critical query, a `RESERVED`/`AMBIGUOUS`/`UNKNOWN` model call or an active
+  `SUBMITTED`/`ASSESSING` intake without a terminal assessment is
+  `MODEL_CALL_OUTCOME_UNKNOWN`; the stack and database stay with
+  `STACK_RETAINED_FOR_RECONCILIATION` and an explicit owner action/condition.
+  Cleanup runs only after a terminal reconciliation and captured evidence; a
+  timeout never re-sends the assessment.
 
 ## 6. Stop conditions
 
