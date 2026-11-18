@@ -16,6 +16,11 @@ sys.path.insert(0, str(HERE.parents[1]))
 import real_recovery  # noqa: E402
 
 
+COMMAND_SHA = "d" * 64
+SESSION2 = "sess-2"
+CANDIDATE_ID = "cand-1"
+
+
 def observation(**overrides):
     defaults = dict(
         attempt_id="attempt-1",
@@ -25,14 +30,20 @@ def observation(**overrides):
         generation_two_session_state="COMPLETED",
         generation_two_session_error="",
         generation_one_receipts=[
-            real_recovery.CheckReceipt("attempt-1", 1, real_recovery.STATUS, "PASS", "a" * 64, "rec-1", "2026-11-17T23:59:00Z")
+            real_recovery.CheckReceipt(
+                "attempt-1", 1, real_recovery.STATUS, "PASS", "a" * 64, "rec-1",
+                "2026-11-17T23:59:00Z", COMMAND_SHA, "sess-1", 1, "call-1", "unit-1",
+            )
         ],
         generation_two_receipts=[
-            real_recovery.CheckReceipt("attempt-1", 2, real_recovery.VERSION, "PASS", "b" * 64, "rec-2", "2026-11-18T00:01:00Z")
+            real_recovery.CheckReceipt(
+                "attempt-1", 2, real_recovery.VERSION, "PASS", "b" * 64, "rec-2",
+                "2026-11-18T00:01:00Z", COMMAND_SHA, SESSION2, 2, "call-2", "unit-1",
+            )
         ],
         pre_intervention_version_outcome="",
         candidates_after_claim=[
-            {"id": "cand-1", "attempt_id": "attempt-1", "created_at": "2026-11-18T00:02:00Z"}
+            {"id": CANDIDATE_ID, "attempt_id": "attempt-1", "created_at": "2026-11-18T00:02:00Z"}
         ],
         allocation_conflict=False,
         gen2_provider="opencode-go",
@@ -41,6 +52,16 @@ def observation(**overrides):
         candidate_sha="a" * 40,
         candidate_tree="b" * 40,
         candidate_base="c" * 40,
+        expected_provider="opencode-go",
+        expected_model="deepseek-v4.1-flash",
+        expected_provider_mode="build",
+        expected_work_item="unit-1",
+        expected_command_sha256=COMMAND_SHA,
+        gen2_session_record_id=SESSION2,
+        candidate_id=CANDIDATE_ID,
+        gate_candidate_id=CANDIDATE_ID,
+        campaign_action="act-1",
+        expected_action="act-1",
     )
     defaults.update(overrides)
     return real_recovery.Observation(**defaults)
@@ -86,17 +107,50 @@ class RecoveryOracleTests(unittest.TestCase):
         kill, claim = "2026-11-18T00:00:00Z", "2026-11-18T00:01:00Z"
         legit = [{"kind": "provider.session_terminal", "recorded_at": "2026-11-18T00:00:10Z"}]
         dangerous = [{"kind": "provider.tool_event", "detail": "decision=RESULT", "recorded_at": "2026-11-18T00:00:20Z"}]
-        self.assertEqual(real_recovery.classify_late_effects(legit, kill, claim)[0], "NONE")
-        self.assertEqual(real_recovery.classify_late_effects(dangerous, kill, claim)[0], "DANGEROUS")
+        self.assertEqual(real_recovery.classify_late_effects(legit, kill, claim, ["sess-1"])[0], "NONE")
+        self.assertEqual(real_recovery.classify_late_effects(dangerous, kill, claim, ["sess-1"])[0], "DANGEROUS")
+        late_gen1 = [{"kind": "provider.tool_event", "subject_id": "sess-1", "recorded_at": "2026-11-18T00:02:00Z"}]
+        self.assertEqual(real_recovery.classify_late_effects(late_gen1, kill, claim, ["sess-1"])[0], "DANGEROUS")
+
+    def test_receipt_command_mismatch_is_not_tested(self):
+        data = observation()
+        receipt = data.generation_two_receipts[0]
+        broken = real_recovery.CheckReceipt(
+            receipt.attempt_id, receipt.generation, receipt.check_id, receipt.outcome,
+            receipt.candidate_sha256, receipt.receipt_id, receipt.recorded_at,
+            "e" * 64, receipt.session_record_id, receipt.sequence, receipt.call_id, receipt.work_item_id,
+        )
+        verdict = real_recovery.classify_recovery(observation(generation_two_receipts=[broken]))
+        self.assertEqual(verdict.status, "NOT_TESTED", verdict.reason)
+
+    def test_multiple_post_claim_candidates_are_not_tested(self):
+        extra = {"id": "cand-2", "attempt_id": "attempt-1", "created_at": "2026-11-18T00:03:00Z"}
+        data = observation()
+        verdict = real_recovery.classify_recovery(
+            observation(candidates_after_claim=[*data.candidates_after_claim, extra])
+        )
+        self.assertEqual(verdict.status, "NOT_TESTED", verdict.reason)
+
+    def test_gate_candidate_mismatch_is_not_tested(self):
+        verdict = real_recovery.classify_recovery(observation(gate_candidate_id="other"))
+        self.assertEqual(verdict.status, "NOT_TESTED", verdict.reason)
+
+    def test_candidate_base_missing_is_not_tested(self):
+        verdict = real_recovery.classify_recovery(observation(candidate_base=""))
+        self.assertEqual(verdict.status, "NOT_TESTED", verdict.reason)
 
     def test_barrier_failures_are_not_guaranteed(self):
         snapshot = {
             "status_pass": True, "version_pass_absent": True, "attempt_status": "LEASED",
             "active_turns": 0, "gen1_quiescent": True, "quiescence_backend_confirmed": True,
             "p2_check_absent": True, "p2_artifacts_absent": True, "candidate_count": 0,
-            "lease_state": "LIVE",
+            "lease_state": "LIVE", "runtime_health": "healthy", "supervisor_health": "healthy",
+            "worker_health": "healthy",
         }
         self.assertEqual(real_recovery.barrier_failures(snapshot), [])
+        snapshot["worker_health"] = "unhealthy"
+        self.assertTrue(real_recovery.barrier_failures(snapshot))
+        snapshot["worker_health"] = "healthy"
         snapshot["active_turns"] = 1
         self.assertIn("active_turns=1", real_recovery.barrier_failures(snapshot))
         snapshot["active_turns"] = 0
@@ -151,6 +205,36 @@ class ContractTests(unittest.TestCase):
         for check in plan["checks"]:
             self.assertNotIn("grep", check["command"])
             self.assertIn("assert app.", " ".join(check["command"]))
+
+
+class AuthorizationContractTests(unittest.TestCase):
+    def record(self, **overrides):
+        record = {
+            "campaignId": "campaign-1", "authorizationId": "auth-1", "riskClass": "R0",
+            "executionMode": "TRUSTED_LOCAL_PROVIDER", "actor": "operator", "rationale": "owner",
+            "authorizedPaths": ["src"], "provider": "opencode-go", "model": "deepseek-v4.1-flash",
+            "providerMode": "build", "delegationId": "delegation-1",
+            "schemaVersion": 2, "policy": {"monetaryEnvelopeId": "owner-ref"}, "createdAt": "2026-11-18T00:00:00Z",
+        }
+        record.update(overrides)
+        return record
+
+    def test_core_camel_case_record_is_valid(self):
+        problems = real_recovery.authorization_problems(self.record(), "campaign-1", "opencode-go", "deepseek-v4.1-flash", "build", 5_000_000)
+        self.assertEqual(problems, [])
+
+    def test_envelope_must_live_in_policy_v2(self):
+        record = self.record(policy={})
+        problems = real_recovery.authorization_problems(record, "campaign-1", "opencode-go", "deepseek-v4.1-flash", "build", 5_000_000)
+        self.assertIn("policy.monetaryEnvelopeId missing", problems)
+
+    def test_wrong_mode_or_campaign_or_micros_fails(self):
+        for record, micros in (
+            (self.record(executionMode="FIXTURE"), 5_000_000),
+            (self.record(campaignId="other"), 5_000_000),
+            (self.record(), 0),
+        ):
+            self.assertTrue(real_recovery.authorization_problems(record, "campaign-1", "opencode-go", "deepseek-v4.1-flash", "build", micros))
 
 
 class CliTests(unittest.TestCase):

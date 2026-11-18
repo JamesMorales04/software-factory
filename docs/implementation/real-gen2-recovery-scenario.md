@@ -37,11 +37,18 @@ after review). It is development/UAT tooling, not the product install path.
 - Destination: a **new** disposable project (`*recovery*`/`*uat*`) with its own
   `factory-data` and `factory-config-core` volumes. No product DB or config is
   cloned; no product operator/reviewer/master identity is carried.
-- Source access is read-only: volume exports into a 0700 temporary directory,
-  files 0600, `umask 077`, `set +x`, trap cleanup.
+- Source access is read-only and in-container: the source data/config volumes are
+  mounted `:ro` into a short-lived tool container; there is **no whole-volume
+  export**, no host copy of the database or config and no source tar. `umask
+  077`, `set +x`. The source project must have no running container: the
+  snapshot is opened with SQLite `immutable=1`, so a live writer would make the
+  read inconsistent; the script refuses instead of guessing.
 - Copy allowlist: exactly one `provider_settings` row for `opencode-go` with the
   schema's exact column list (ciphertext, nonce, fingerprint; no plaintext, no
-  other provider, no `provider_settings_audit`, no other table).
+  other provider, no `provider_settings_audit`, no other table). The row is
+  read with a read-only SQLite connection and inserted into the fresh database
+  through the SQLite API; the destination is checkpointed with
+  `PRAGMA wal_checkpoint(TRUNCATE)` instead of deleting WAL/SHM files.
 - `master.key` is transferred volume-to-volume, 0600, 64 lowercase hex, never
   printed or logged.
 - Destination operator/reviewer/verifier tokens and remaining keys are generated
@@ -94,9 +101,10 @@ Driver: `scripts/e2e/real_recovery.py` (`--plan`, `--dry-run`, `--execute`).
   intervention snapshot, events, receipts (exact columns), provider sessions,
   candidate, Gate, Campaign, negative direct-authorization response.
 - No secrets, ciphertext, plaintext credentials, raw prompts or provider bodies.
-- The independent package (`real-e2e-authorized/independent`) validates the
-  bundle; the Verifier/Reviewer and the Core Quality Gate remain the acceptance
-  authority.
+- The independent package (`real-e2e-authorized/independent`) belongs to the
+  independent lane; this author lane does not write it. The author's test suite
+  is author evidence. The Verifier/Reviewer and the Core Quality Gate remain the
+  acceptance authority.
 - P4 live is `NOT_TESTED`; the deterministic regression is the negative control.
 
 ## 6. Stop conditions

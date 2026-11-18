@@ -117,6 +117,17 @@ class Observation:
     restart_observed: bool = False
     late_effect_risk: str = ""
     kill_at: str = ""
+    kill_started_at: str = ""
+    expected_provider: str = ""
+    expected_model: str = ""
+    expected_provider_mode: str = ""
+    expected_work_item: str = ""
+    expected_command_sha256: str = ""
+    gen2_session_record_id: str = ""
+    candidate_id: str = ""
+    gate_candidate_id: str = ""
+    campaign_action: str = ""
+    expected_action: str = ""
 
 
 @dataclass(frozen=True)
@@ -132,6 +143,12 @@ class ScenarioError(RuntimeError):
 
 class ScenarioInvalid(ScenarioError):
     """The scenario preconditions were not met; the run is NOT_TESTED."""
+
+
+def command_sha256(command: list[str]) -> str:
+    import hashlib
+
+    return hashlib.sha256(json.dumps(command, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def barrier_failures(snapshot: dict[str, Any]) -> list[str]:
@@ -158,6 +175,9 @@ def barrier_failures(snapshot: dict[str, Any]) -> list[str]:
         failures.append(f"candidate_count={snapshot.get('candidate_count')}")
     if not str(snapshot.get("lease_state") or "").strip():
         failures.append("lease_state not observed")
+    for service in ("runtime", "supervisor", "worker"):
+        if snapshot.get(f"{service}_health") != "healthy":
+            failures.append(f"{service}_health={snapshot.get(f'{service}_health')!r}")
     return failures
 
 
@@ -190,11 +210,25 @@ def classify_p2_precondition(observation: Observation) -> tuple[str, str]:
     return "PENDING", "generation 1 has no passing version receipt"
 
 
+def _parse_iso(value: str):
+    from datetime import datetime
+
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else None
+
+
 LEGITIMATE_LATE = {
     "provider.session_terminal",
     "provider.session_cleaned",
     "worker.terminal_reported",
     "worker.session_rotated",
+    "worker.claimed",
+    "run.status_changed",
     "cleanup",
 }
 DANGEROUS_LATE = {
@@ -207,48 +241,56 @@ DANGEROUS_LATE = {
 }
 
 
-def classify_late_effects(events: Iterable[dict[str, Any]], kill_at: str, claim_at: str) -> tuple[str, str]:
-    """Classify events between the kill and the generation-2 claim.
+def classify_late_effects(
+    events: Iterable[dict[str, Any]],
+    kill_at: str,
+    claim_at: str,
+    gen1_session_ids: Iterable[str] = (),
+) -> tuple[str, str]:
+    """Classify events after the kill, including the post-claim window.
 
-    Dangerous generation-1 effects (tool RESULT, provider turns, receipts,
-    candidates, progress) invalidate the scenario. Session terminal/cleanup and
-    worker terminal reporting are legitimate. Anything unrecognised is
-    ambiguous and must not become a PASS.
+    A generation-1 tool result or check after the kill (even after the gen2
+    claim) is dangerous; it proves gen1 was still working when the recovery was
+    supposed to start. The generation-2 claim, run lifecycle, session terminal
+    and cleanup are legitimate. Anything unrecognised is ambiguous and never a
+    PASS.
     """
 
     kill = _parse_iso(kill_at)
     claim = _parse_iso(claim_at)
     if kill is None:
         return "AMBIGUOUS", "kill timestamp is missing"
+    gen1 = {str(value) for value in gen1_session_ids if value}
     for event in events:
         recorded = _parse_iso(str(event.get("recorded_at") or ""))
         if recorded is None or recorded < kill:
             continue
-        if claim is not None and recorded > claim:
-            continue
         kind = str(event.get("kind") or "")
-        if kind in LEGITIMATE_LATE or kind.startswith("cleanup") or kind.startswith("audit"):
+        if kind == "provider.tool_event":
+            subject = str(event.get("subject_id") or "")
+            before_claim = claim is None or recorded <= claim
+            if subject in gen1 or (before_claim and "RESULT" in str(event.get("detail") or "").upper()):
+                return "DANGEROUS", f"tool event at {event.get('recorded_at')}"
             continue
         if kind in DANGEROUS_LATE:
-            return "DANGEROUS", f"{kind} at {event.get('recorded_at')}"
-        if kind == "provider.tool_event":
-            if str(event.get("detail") or "").upper().find("RESULT") >= 0:
-                return "DANGEROUS", f"tool RESULT at {event.get('recorded_at')}"
+            # Turn changes after the gen2 claim belong to the recovered session;
+            # before the claim they are late generation-1 effects.
+            if claim is None or recorded <= claim:
+                return "DANGEROUS", f"{kind} at {event.get('recorded_at')}"
+            continue
+        if kind in LEGITIMATE_LATE or kind.startswith("cleanup") or kind.startswith("audit"):
             continue
         return "AMBIGUOUS", f"unclassified event {kind} at {event.get('recorded_at')}"
     return "NONE", ""
 
 
-def _parse_iso(value: str):
-    from datetime import datetime
+def _is_after(value: str, reference) -> bool:
+    parsed = _parse_iso(str(value or ""))
+    return parsed is not None and reference is not None and parsed > reference
 
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else None
+
+def _is_git_sha(value: str) -> bool:
+    return len(value) == 40 and all(ch in "0123456789abcdef" for ch in value.lower())
 
 
 def classify_recovery(observation: Observation) -> Verdict:
@@ -298,17 +340,38 @@ def classify_recovery(observation: Observation) -> Verdict:
     if version_receipt is None:
         return Verdict("FAIL", "P3: generation 2 has no passing version receipt for the pending work", evidence)
     evidence["p3_version_receipt"] = version_receipt.__dict__
+    receipt_problems = []
+    if not observation.expected_command_sha256 or version_receipt.command_sha256 != observation.expected_command_sha256:
+        receipt_problems.append("command_sha256")
+    if not observation.expected_work_item or version_receipt.work_item_id != observation.expected_work_item:
+        receipt_problems.append("work_item_id")
+    if not observation.gen2_session_record_id or version_receipt.session_record_id != observation.gen2_session_record_id:
+        receipt_problems.append("session_record_id")
+    if int(version_receipt.sequence or 0) <= 0 or not version_receipt.call_id:
+        receipt_problems.append("sequence/call_id")
+    if receipt_problems:
+        return Verdict("NOT_TESTED", "P3 receipt identity incomplete: " + ", ".join(receipt_problems), evidence)
 
     fresh = [c for c in observation.candidates_after_claim if str(c.get("attempt_id") or "") == observation.attempt_id]
     if not fresh:
         return Verdict("NOT_TESTED", "no candidate exists for the attempt after the generation-2 claim", evidence)
+    if len(fresh) != 1:
+        return Verdict("NOT_TESTED", f"{len(fresh)} candidates exist for the attempt after the claim", evidence)
     candidate = fresh[0]
     evidence["candidate"] = candidate
     for field_name in ("provider", "model", "provider_mode"):
-        if not getattr(observation, f"gen2_{field_name}", ""):
-            return Verdict("NOT_TESTED", f"gen2 session route {field_name} not observed", evidence)
-    if not observation.candidate_sha or not observation.candidate_tree or not observation.candidate_base:
-        return Verdict("NOT_TESTED", "candidate sha/tree/base not observed", evidence)
+        actual = getattr(observation, f"gen2_{field_name}", "")
+        expected = getattr(observation, f"expected_{field_name}", "")
+        if not actual or (expected and actual != expected):
+            return Verdict("NOT_TESTED", f"gen2 session route {field_name}={actual!r} expected {expected!r}", evidence)
+    if not _is_git_sha(observation.candidate_sha) or not _is_git_sha(observation.candidate_tree) or not _is_git_sha(observation.candidate_base):
+        return Verdict("NOT_TESTED", "candidate sha/tree/base are not exact Git object ids", evidence)
+    if not observation.candidate_id or str(candidate.get("id") or "") != observation.candidate_id:
+        return Verdict("NOT_TESTED", "the candidate detail is not the same post-claim candidate", evidence)
+    if observation.gate_candidate_id != observation.candidate_id:
+        return Verdict("NOT_TESTED", "the gate does not reference the same candidate", evidence)
+    if observation.expected_action and observation.campaign_action != observation.expected_action:
+        return Verdict("NOT_TESTED", "the campaign does not reference the expected action", evidence)
     missing = []
     if observation.gate_outcome != "ACCEPTED":
         missing.append(f"quality gate={observation.gate_outcome or 'missing'}")
@@ -327,6 +390,55 @@ def classify_recovery(observation: Observation) -> Verdict:
         "generation-1 verified, pending work completed and verified in generation 2, candidate after the claim, Gate/Campaign satisfied",
         evidence,
     )
+
+
+def authorization_problems(
+    record: dict[str, Any],
+    campaign_id: str,
+    provider: str,
+    model: str,
+    provider_mode: str,
+    authorized_micros: int,
+) -> list[str]:
+    """Validate the Core CampaignAuthorizationRecord shape (camelCase serde)."""
+
+    def field(name: str, snake: str) -> str:
+        return str(record.get(name) or record.get(snake) or "")
+
+    schema_version = int(record.get("schemaVersion") or record.get("schema_version") or 0)
+    authorization_id = field("authorizationId", "authorization_id")
+    row_campaign = field("campaignId", "campaign_id")
+    execution_mode = field("executionMode", "execution_mode")
+    delegation_id = field("delegationId", "delegation_id")
+    row_provider = field("provider", "provider")
+    row_model = field("model", "model")
+    row_mode = field("providerMode", "provider_mode")
+    policy = record.get("policy") or {}
+    envelope = str(
+        policy.get("monetaryEnvelopeId")
+        or policy.get("monetary_envelope_id")
+        or record.get("monetaryEnvelopeId")
+        or record.get("monetary_envelope_id")
+        or ""
+    )
+    problems = []
+    if schema_version != 2:
+        problems.append(f"schemaVersion={schema_version}")
+    if not authorization_id:
+        problems.append("authorizationId missing")
+    if row_campaign != campaign_id:
+        problems.append(f"campaignId={row_campaign!r}")
+    if execution_mode != "TRUSTED_LOCAL_PROVIDER":
+        problems.append(f"executionMode={execution_mode!r}")
+    if row_provider != provider or row_model != model or row_mode != provider_mode:
+        problems.append(f"route={row_provider}/{row_model}/{row_mode}")
+    if not delegation_id:
+        problems.append("delegationId missing")
+    if not envelope:
+        problems.append("policy.monetaryEnvelopeId missing")
+    if authorized_micros <= 0:
+        problems.append("authorized_micros is not positive")
+    return problems
 
 
 def contract_mismatch(approved_checks: list[dict[str, Any]]) -> str:
@@ -466,6 +578,9 @@ class Scenario:
         self.authorization_record: dict[str, Any] = {}
         self.action_checks: list[dict[str, Any]] = []
         self.restart_required = False
+        self.core_record: dict[str, Any] = {}
+        self.expected_command_sha256 = ""
+        self.work_item_id = ""
         self.evidence.mkdir(parents=True, exist_ok=True)
         os.chmod(self.evidence, 0o700)
 
@@ -549,21 +664,49 @@ class Scenario:
         spec = action.get("spec") or action
         checks = action.get("checks") or spec.get("checks") or []
         self.action_checks = checks
-        self.restart_required = bool(spec.get("restart_required"))
+        self.restart_required = bool(spec.get("restart_required") is True)
+        self.expected_command_sha256 = command_sha256(CHECKS[VERSION]["command"])
         self.write("approved-action.json", action)
         mismatch = contract_mismatch(checks)
         if mismatch:
             raise ScenarioError(f"approved ActionSpec mismatch: {mismatch}")
 
         record = self.api.get(f"/campaigns/{self.campaign}/authorization")
-        self.authorization_record = record if isinstance(record, dict) else {}
-        self.write("authorization-record.json", self.authorization_record)
-        if not self.authorization_record.get("authorization_id"):
-            raise ScenarioError("Core has no durable authorization record for the Campaign")
-        if self.args.authorized_micros <= 0:
-            raise ScenarioError("authorized_micros must be positive")
-        if not self.authorization_record.get("monetary_envelope_id"):
-            raise ScenarioError("Core authorization has no monetary envelope reference")
+        if not isinstance(record, dict):
+            raise ScenarioError("Core authorization record is not an object")
+        self.authorization_record = record
+        self.write("authorization-record.json", record)
+        problems = authorization_problems(
+            record, self.campaign, self.args.provider, self.args.model, "build", self.args.authorized_micros
+        )
+        if problems:
+            raise ScenarioError("Core authorization record invalid: " + "; ".join(problems))
+
+        authorized_event = next(
+            (
+                event
+                for event in reversed(self.events())
+                if event.get("kind") == "campaign.authorized" and str(event.get("subject_id")) == self.campaign
+            ),
+            {},
+        )
+        core_record = {
+            "authorization_id": authorization_id,
+            "owner_reference": self.args.authorization,
+            "event_sequence": int(authorized_event.get("sequence") or 0),
+            "recorded_at": str(authorized_event.get("recorded_at") or record.get("createdAt") or ""),
+            "action_id": self.action,
+            "spec_id": str(projection.get("specId") or action.get("specId") or ""),
+            "spec_binding_hash": str(action.get("specSha256") or projection.get("planHash") or ""),
+            "core_path": f"/campaigns/{self.campaign}/authorization",
+            "core_path_sha256": __import__("hashlib").sha256(
+                json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+        }
+        self.core_record = core_record
+        self.write("core-authorization-record.json", core_record)
+        if core_record["event_sequence"] <= 0 or not core_record["recorded_at"]:
+            raise ScenarioError("Core authorization event sequence/time missing")
 
         # Negative: a direct TRUSTED_LOCAL_PROVIDER authorization must be refused.
         status, body = self.api.post_status(
@@ -599,7 +742,11 @@ class Scenario:
             raise ScenarioError(f"direct TRUSTED_LOCAL_PROVIDER authorization was not refused: {status}")
 
     def campaign_detail(self) -> dict[str, Any]:
-        return self.api.get(f"/campaigns/{self.campaign}")
+        detail = self.api.get(f"/campaigns/{self.campaign}") or {}
+        if not self.work_item_id:
+            tasks = detail.get("tasks") or []
+            self.work_item_id = str((tasks[0] if tasks else {}).get("unit_id") or "")
+        return detail
 
     def attempt_id(self) -> str:
         detail = self.campaign_detail()
@@ -661,6 +808,8 @@ class Scenario:
         turn_authorized = [e for e in events if e.get("kind") == "provider.turn_authorized" and str(e.get("subject_id")) == self.attempt]
         turn_settled = [e for e in events if e.get("kind") == "provider.turn_settled" and str(e.get("subject_id")) == self.attempt]
         active_turns = max(0, len(turn_authorized) - len(turn_settled))
+        attempt_events = [e for e in events if str(e.get("subject_id")) == self.attempt]
+        last_event_at = str((attempt_events or [{}])[-1].get("recorded_at") or "")
         last_turn_event_at = str((turn_settled or turn_authorized or [{}])[-1].get("recorded_at") or "")
         participants = self.api.get(f"/office/participants?campaign_id={self.campaign}&limit=200") or {}
         rows = participants.get("participants") if isinstance(participants, dict) else participants
@@ -675,9 +824,14 @@ class Scenario:
         version_receipts = _receipts_for(self._receipts(1), VERSION, 1)
         version_pass = any(r.outcome == "PASS" for r in version_receipts)
         candidates = [c for c in (self.api.get("/candidates") or []) if str(c.get("attempt_id")) == self.attempt]
-        gen1_quiescent = bool(sessions) and all(
-            str(s.get("state") or "").upper() in {"ACTIVE", "COMPLETED"} for s in sessions
-        ) and active_turns == 0
+        health = {service: self._container_health(service) for service in ("runtime", "supervisor", "worker")}
+        gen1_quiescent = (
+            bool(sessions)
+            and all(str(s.get("state") or "").upper() in {"ACTIVE", "COMPLETED"} for s in sessions)
+            and all(str(s.get("turn_id") or "").strip() for s in sessions)
+            and active_turns == 0
+            and bool(last_turn_event_at)
+        )
         lease_state = str(implementer.get("lease_state") or "")
         return {
             "observed_at": utc(),
@@ -687,15 +841,36 @@ class Scenario:
             "gen1_sessions": sessions,
             "gen1_tool_events": tool_events,
             "last_turn_event_at": last_turn_event_at,
+            "last_event_at": last_event_at,
+            "turn_authorized": len(turn_authorized),
+            "turn_settled": len(turn_settled),
             "active_turns": active_turns,
             "lease_state": lease_state,
+            "runtime_health": health["runtime"],
+            "supervisor_health": health["supervisor"],
+            "worker_health": health["worker"],
             "gen1_quiescent": gen1_quiescent,
-            "quiescence_backend_confirmed": gen1_quiescent and lease_state in {"LIVE", "LEASED", "EXPIRED"},
+            "quiescence_backend_confirmed": (
+                gen1_quiescent
+                and lease_state in {"LIVE", "LEASED", "EXPIRED"}
+                and all(value == "healthy" for value in health.values())
+            ),
             "p2_check_absent": not version_pass and not version_events and not version_receipts,
             "p2_artifacts_absent": not version_events and not version_receipts,
             "candidate_count": len(candidates),
             "version_outcome": self._version_outcome(1),
         }
+
+    def _container_health(self, service: str) -> str:
+        name = f"{self.project}_{service}_1"
+        result = subprocess.run(
+            ["podman", "inspect", name, "--format", "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}"],
+            text=True,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            return "missing"
+        return result.stdout.strip() or "unknown"
 
     def _status_passed(self, generation: int) -> bool:
         return _find_passing(self._receipts(generation), STATUS, generation) is not None
@@ -751,27 +926,23 @@ class Scenario:
         }
 
     def intervene(self, snapshot: dict[str, Any]) -> None:
-        # Revalidate the pending precondition immediately before the kill: a late
-        # generation-1 version receipt or check event invalidates the scenario.
-        late = self._version_outcome(1)
-        version_events = [
-            e for e in (self.api.get(f"/provider/sessions/{s.get('session_record_id')}/tool_events") or [])
-            for s in snapshot.get("gen1_sessions") or []
-            if str(((e.get("execution_check") or {}).get("check_id")) or "") == VERSION
-        ]
-        if late == "PASS" or version_events:
+        # Revalidate the whole barrier immediately before the kill.
+        current = self._pre_intervention_snapshot(self.events())
+        failures = barrier_failures(current)
+        if failures:
             self.write("result.json", {
                 "status": "NOT_TESTED",
-                "reason": "generation-1 P2 changed immediately before the kill",
-                "snapshot": snapshot,
+                "reason": "pre-kill barrier changed: " + "; ".join(failures),
+                "snapshot": current,
                 "captured_utc": utc(),
             })
-            raise ScenarioInvalid("P2 changed before the kill; scenario invalid")
+            raise ScenarioInvalid("pre-kill barrier failed: " + "; ".join(failures))
+        current["kill_started_at"] = utc()
         result = _podman_compose(self.project, self.root, self.git_dir, ["kill", "worker"])
         self.killed = True
-        snapshot["kill_at"] = utc()
-        self.write("pre-intervention.json", snapshot)
-        self.log(f"kill_worker exit={result.returncode} at={snapshot['kill_at']}")
+        current["kill_at"] = utc()
+        self.write("pre-intervention.json", current)
+        self.log(f"kill_worker exit={result.returncode} at={current['kill_at']} started={current['kill_started_at']}")
         if result.returncode != 0:
             raise ScenarioError(f"kill worker failed: {result.stderr.strip()[:160]}")
         # Await the lease expiry from Core projection; never sleep blindly.
@@ -793,6 +964,7 @@ class Scenario:
     def watch_gen2(self, snapshot: dict[str, Any], timeout: int = 3600) -> Observation:
         deadline = time.monotonic() + timeout
         claimed = None
+        candidates: list[dict[str, Any]] = []
         while time.monotonic() < deadline:
             events = self.events()
             for event in events:
@@ -826,56 +998,78 @@ class Scenario:
             {},
         )
         claim_at = str((claimed or {}).get("recorded_at") or "")
-        kill_at = str(snapshot.get("kill_at") or "")
-        if claimed is not None and (not kill_at or claim_at < kill_at):
+        kill_started = str(snapshot.get("kill_started_at") or snapshot.get("kill_at") or "")
+        if claimed is not None and (not kill_started or claim_at < kill_started):
             self.write("result.json", {
                 "status": "NOT_TESTED",
-                "reason": "the generation-2 claim did not follow the recorded kill",
+                "reason": "the generation-2 claim did not follow the recorded kill_started_at",
                 "snapshot": snapshot,
                 "claimed_at": claim_at,
                 "captured_utc": utc(),
             })
             raise ScenarioInvalid("kill/claim order invalid")
+
+        candidate = candidates[0] if candidates else {}
+        detail: dict[str, Any] = {}
+        inspection: dict[str, Any] = {}
+        if candidate.get("id"):
+            detail = self.api.get(f"/quality/candidates/{candidate['id']}") or {}
+            try:
+                inspection = self.api.get(f"/quality/candidates/{candidate['id']}/inspection") or {}
+            except Exception:  # noqa: BLE001 - base commit is NOT_TESTED without it
+                inspection = {}
+        gate = self._gate_detail(str(candidate.get("id") or ""))
+        campaign = self.campaign_detail().get("campaign") or {}
+        gen1_ids = {str(s.get("session_record_id")) for s in snapshot.get("gen1_sessions") or [] if s.get("session_record_id")}
+
         observation = Observation(
             attempt_id=self.attempt,
             campaign_id=self.campaign,
             claimed_generation_two=claimed is not None,
-            claimed_at=str((claimed or {}).get("recorded_at") or ""),
+            claimed_at=claim_at,
             generation_two_session_state=str(gen2.get("state") or ""),
             generation_two_session_error=str(gen2.get("error") or ""),
             generation_one_receipts=self._receipts(1),
             generation_two_receipts=self._receipts(2),
             pre_intervention_version_outcome=self._pre_intervention_outcome(),
             candidates_after_claim=[
-                c for c in (self.api.get("/candidates") or [])
-                if str(c.get("attempt_id")) == self.attempt
-                and str(c.get("created_at") or "") > str((claimed or {}).get("recorded_at") or "")
+                c for c in candidates if _is_after(str(c.get("created_at") or ""), _parse_iso(claim_at))
             ],
             allocation_conflict=any("allocation conflict" in str(e.get("detail") or "") for e in self.events()),
             gen2_provider=str(gen2.get("provider") or ""),
             gen2_model=str(gen2.get("model") or ""),
             gen2_provider_mode=str(gen2.get("provider_mode") or ""),
-            gate_outcome=self._gate_outcome(),
-            candidate_sha=str((candidates[0] if candidates else {}).get("commit_sha") or ""),
-            candidate_tree=str((candidates[0] if candidates else {}).get("tree_sha") or ""),
-            candidate_base=str((candidates[0] if candidates else {}).get("base_commit") or ""),
-            campaign_status=str((self.campaign_detail().get("campaign") or {}).get("status") or ""),
+            gate_outcome=str((gate or {}).get("outcome") or ""),
+            candidate_sha=str(detail.get("commit_sha") or ""),
+            candidate_tree=str(detail.get("tree_sha") or ""),
+            candidate_base=str(inspection.get("base_commit") or ""),
+            campaign_status=str(campaign.get("status") or ""),
             restart_required=self.restart_required,
             restart_observed=False,
-            late_effect_risk=classify_late_effects(self.events(), kill_at, claim_at)[0],
-            kill_at=kill_at,
+            late_effect_risk=classify_late_effects(self.events(), kill_started, claim_at, gen1_ids)[0],
+            kill_at=str(snapshot.get("kill_at") or ""),
+            kill_started_at=kill_started,
+            expected_provider=self.args.provider,
+            expected_model=self.args.model,
+            expected_provider_mode="build",
+            expected_work_item=self.work_item_id,
+            expected_command_sha256=self.expected_command_sha256,
+            gen2_session_record_id=str(gen2.get("session_record_id") or ""),
+            candidate_id=str(candidate.get("id") or ""),
+            gate_candidate_id=str((gate or {}).get("candidate_id") or ""),
+            campaign_action=str(campaign.get("action_id") or ""),
+            expected_action=self.action,
         )
         return observation
 
-    def _gate_outcome(self) -> str:
-        candidates = [c for c in (self.api.get("/candidates") or []) if str(c.get("attempt_id")) == self.attempt]
-        if not candidates:
-            return ""
+    def _gate_detail(self, candidate_id: str) -> dict[str, Any]:
+        if not candidate_id:
+            return {}
         try:
-            gate = self.api.get(f"/quality/candidates/{candidates[0]['id']}/gate")
+            gate = self.api.get(f"/quality/candidates/{candidate_id}/gate")
+            return gate if isinstance(gate, dict) else {}
         except Exception:  # noqa: BLE001 - missing gate is NOT_TESTED, not a crash
-            return ""
-        return str((gate or {}).get("outcome") or "")
+            return {}
 
     def _pre_intervention_outcome(self) -> str:
         path = self.evidence / "pre-intervention.json"
