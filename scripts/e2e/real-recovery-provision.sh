@@ -123,6 +123,7 @@ check plan:
   target volumes:  $DATA_VOLUME, $CONFIG_VOLUME
   copy:            provider_settings($PROVIDER) one row + master.key (0600, opaque)
   method:          read-only source mounts + in-container SQLite ATTACH + WAL checkpoint
+  bundles:         init + provider/dependency/environment-builder bundles before core
   generate:        operator/reviewer/verifier tokens and remaining keys via factory-compose-init
   never copied:    product DB/config files, product operator/reviewer/master identity, other providers/tables
   source:          read-only; never modified; no host export/tar
@@ -142,8 +143,61 @@ podman run --rm -i --user "$TOOL_USER" \
   -v "$CONFIG_VOLUME:/dst-config" \
   "$TOOL_IMAGE" sh -c 'install -m 0600 /src-config/master.key /dst-config/master.key'
 
-# --- canonical initialization + migrations ----------------------------------
-compose up -d init core
+# --- canonical initialization + image bundles -------------------------------
+# `core` waits for `/bundles/environment-builder.digest`. The one-shot bundle
+# services must run first; on a fresh volume Core would otherwise wait its 900s
+# guard and the database would never be migrated.
+BUNDLE_VOLUME="${PROJECT}_factory-image-bundle"
+STACK_SERVICES=(
+  core runtime supervisor worker verifier
+  reviewer-functional reviewer-architecture reviewer-code-quality
+  reviewer-security reviewer-testing reviewer-operability git-fixture
+)
+
+service_state() {
+  local service=$1 name
+  name=$(podman ps -a \
+    --filter "label=com.docker.compose.project=$PROJECT" \
+    --filter "label=com.docker.compose.service=$service" \
+    --format '{{.Names}}' | head -1)
+  [[ -n "$name" ]] || { printf 'missing'; return; }
+  podman inspect "$name" --format '{{.State.Status}}:{{.State.ExitCode}}'
+}
+
+compose up -d init provider-bundle dependency-bundle environment-builder-bundle
+BUNDLES_READY=0
+for _ in $(seq 1 300); do
+  STATES_OK=1
+  for service in init provider-bundle dependency-bundle environment-builder-bundle; do
+    state=$(service_state "$service")
+    case "$state" in
+      exited:0) ;;
+      exited:*)
+        echo "$service=$state" >&2
+        fail "image bundle $service failed before Core started"
+        ;;
+      *) STATES_OK=0 ;;
+    esac
+  done
+  if [[ "$STATES_OK" == 1 ]]; then
+    if podman run --rm -i --user "$TOOL_USER" \
+      -v "$BUNDLE_VOLUME:/bundles:ro" "$TOOL_IMAGE" \
+      sh -c 'test -s /bundles/environment-builder.digest' >/dev/null 2>&1; then
+      BUNDLES_READY=1
+      break
+    fi
+    fail "image bundles exited cleanly but environment-builder.digest is missing"
+  fi
+  sleep 1
+done
+if [[ "$BUNDLES_READY" != 1 ]]; then
+  for service in init provider-bundle dependency-bundle environment-builder-bundle; do
+    echo "$service=$(service_state "$service")" >&2
+  done
+  fail "image bundles did not become ready; Core cannot migrate on a fresh bundle volume"
+fi
+
+compose up -d core
 CORE=""
 for _ in $(seq 1 60); do
   CORE=$(podman ps --filter "label=com.docker.compose.project=$PROJECT" --filter 'label=com.docker.compose.service=core' --format '{{.Names}}' | head -1)
@@ -151,16 +205,19 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 [[ -n "$CORE" ]] || fail "Core container did not start"
-for _ in $(seq 1 120); do
+CORE_HEALTHY=0
+for _ in $(seq 1 300); do
   if podman exec "$CORE" curl -fsS --max-time 5 -H 'Host: localhost:8765' http://core-control:8765/health >/dev/null 2>&1; then
+    CORE_HEALTHY=1
     break
   fi
   sleep 1
 done
+[[ "$CORE_HEALTHY" == 1 ]] || fail "Core did not become healthy after the image bundles completed"
 compose stop core >/dev/null
 
 # Copy exactly one row into the migrated destination DB with SQLite ATTACH.
-podman run --rm -i --user "$TOOL_USER" \
+if ! podman run --rm -i --user "$TOOL_USER" \
   -v "$SOURCE_DATA_VOLUME:/src-data:ro" \
   -v "$DATA_VOLUME:/dst-data" \
   "$TOOL_IMAGE" python3 - "$INSERT_COLUMNS" <<'PY'
@@ -168,19 +225,37 @@ import sqlite3
 import sys
 
 columns = [column for column in sys.argv[1].split(",") if column]
-source = sqlite3.connect("file:/src-data/factory.sqlite?mode=ro&immutable=1", uri=True)
-row = source.execute(
-    f"SELECT {','.join(columns)} FROM provider_settings WHERE provider='opencode-go'"
-).fetchone()
+try:
+    source = sqlite3.connect("file:/src-data/factory.sqlite?mode=ro&immutable=1", uri=True)
+    row = source.execute(
+        f"SELECT {','.join(columns)} FROM provider_settings WHERE provider='opencode-go'"
+    ).fetchone()
+except sqlite3.DatabaseError as error:
+    print("SOURCE_DB_UNREADABLE", error)
+    sys.exit(1)
 if row is None:
     print("SOURCE_ROW_MISSING")
     sys.exit(1)
-destination = sqlite3.connect("/dst-data/factory.sqlite")
+try:
+    destination = sqlite3.connect("/dst-data/factory.sqlite")
+    schema = destination.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='provider_settings'"
+    ).fetchone()[0]
+except sqlite3.DatabaseError as error:
+    print("DEST_DB_UNREADABLE", error)
+    sys.exit(1)
+if schema != 1:
+    print("DEST_SCHEMA_MISSING provider_settings")
+    sys.exit(1)
 placeholders = ",".join("?" for _ in columns)
-destination.execute(
-    f"INSERT INTO provider_settings ({','.join(columns)}) VALUES ({placeholders})", row
-)
-destination.commit()
+try:
+    destination.execute(
+        f"INSERT INTO provider_settings ({','.join(columns)}) VALUES ({placeholders})", row
+    )
+    destination.commit()
+except sqlite3.DatabaseError as error:
+    print("DEST_ROW_COPY_FAILED", error)
+    sys.exit(1)
 # Consistent checkpoint instead of deleting WAL/SHM files.
 result = destination.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
 integrity = destination.execute("PRAGMA integrity_check").fetchone()[0]
@@ -189,17 +264,24 @@ if integrity != "ok":
     sys.exit(1)
 print("ROW_COPY_OK", result[0])
 PY
+then
+  fail "destination provider row copy failed"
+fi
 
 # --- start and preflight -----------------------------------------------------
-compose up -d
+# Start only the stack services so the one-shot bundles do not run twice.
+compose up -d "${STACK_SERVICES[@]}"
 CORE=$(podman ps --filter "label=com.docker.compose.project=$PROJECT" --filter 'label=com.docker.compose.service=core' --format '{{.Names}}' | head -1)
 [[ -n "$CORE" ]] || fail "Core container did not start"
-for _ in $(seq 1 180); do
+STACK_HEALTHY=0
+for _ in $(seq 1 300); do
   if podman exec "$CORE" curl -fsS --max-time 5 -H 'Host: localhost:8765' http://core-control:8765/health >/dev/null 2>&1; then
+    STACK_HEALTHY=1
     break
   fi
   sleep 1
 done
+[[ "$STACK_HEALTHY" == 1 ]] || fail "the disposable stack Core did not become healthy"
 
 podman exec "$CORE" cat /config/operator.token >"$OPERATOR_TOKEN"
 chmod 600 "$OPERATOR_TOKEN"

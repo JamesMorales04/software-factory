@@ -75,6 +75,14 @@ after review). It is development/UAT tooling, not the product install path.
 - Destination operator/reviewer/verifier tokens and remaining keys are generated
   by the canonical `factory-compose-init` service; none are copied. The
   pre-installed `master.key` lets Core decrypt the provider credential.
+- On a fresh volume the one-shot `init`, `provider-bundle`,
+  `dependency-bundle` and `environment-builder-bundle` services run **before**
+  Core. Core waits for `/bundles/environment-builder.digest`; the script waits
+  for every one-shot exit and the digest, and aborts immediately on a non-zero
+  bundle exit or a missing digest. It only then starts Core, waits for health
+  and migration, stops Core, verifies the destination `provider_settings` table
+  exists and copies the single row. A failed bundle or an unmigrated database
+  aborts before any credential row is copied or the stack is started.
 - Preflight: exactly one configured/default `opencode-go` row, ciphertext and
   fingerprint present, no plaintext credential column, `PRAGMA integrity_check`
   ok, `FACTORY_LEAD_FIXTURE_ASSESSOR=0`, no test-support grants or seeds.
