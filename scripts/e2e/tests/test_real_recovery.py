@@ -254,6 +254,24 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(code, 2)
 
+    def test_disposable_project_is_required(self):
+        base = [
+            "--dry-run",
+            "--core-api", "http://127.0.0.1:8899/core-api",
+            "--operator-token-file", "/tmp/opencode/operator.token",
+            "--project-id", "project-1",
+            "--authorization", "owner-ref",
+            "--evidence-dir", "/tmp/opencode/evidence",
+            "--git-dir", "/tmp/opencode/git",
+            "--authorized-micros", "5000000",
+        ]
+        import contextlib
+        import io
+
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(real_recovery.main([*base, "--compose-project", "software-factory"]), 2)
+            self.assertEqual(real_recovery.main([*base, "--compose-project", "sfe2e-recovery"]), 0)
+
     def test_plan_is_available_without_inputs(self):
         import contextlib
         import io

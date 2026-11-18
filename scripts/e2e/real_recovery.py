@@ -1132,6 +1132,10 @@ def main(argv: list[str] | None = None) -> int:
     _require(args.git_dir, "--git-dir", errors)
     if args.authorized_micros <= 0:
         errors.append("--authorized-micros must be positive (no zero/unbounded bypass)")
+    if args.compose_project == "software-factory" or not any(
+        token in args.compose_project for token in ("recovery", "uat")
+    ):
+        errors.append("--compose-project must be a disposable *recovery*/*uat* project")
     if errors:
         print("invalid scenario inputs: " + ", ".join(errors), file=sys.stderr)
         return 2
