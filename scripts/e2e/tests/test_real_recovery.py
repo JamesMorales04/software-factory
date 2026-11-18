@@ -1120,7 +1120,7 @@ class OrchestratorConsumerTests(unittest.TestCase):
         with self.assertRaises(real_recovery.ScenarioError):
             scenario.verify_contract()
 
-    def test_prepare_sends_legitimate_python_toolchain_constraints(self):
+    def test_prepare_sends_only_the_committed_nixpkgs_pin(self):
         scenario = self.scenario()
         scenario.api = FakeApi(
             get_routes={"/execution-profiles/profile-1": profile_fixture()},
@@ -1140,13 +1140,30 @@ class OrchestratorConsumerTests(unittest.TestCase):
             constraints["nixpkgs"],
             "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
         )
-        self.assertEqual(constraints["toolchains"], [{
-            "id": "python",
-            "version": "3.12.7",
-            "source": "https://www.python.org/downloads/release/python-3127/",
-            "evidence": ["https://www.python.org/downloads/release/python-3127/"],
-        }])
+        self.assertEqual(
+            set(constraints),
+            {"nixpkgs"},
+        )
         self.assertNotIn("packages", constraints)
+        self.assertNotIn("toolchains", constraints)
+
+    def test_committed_flake_template_provides_python3_without_third_party(self):
+        flake = (
+            "{\n"
+            "  description = \"Factory UAT committed environment\";\n"
+            "  inputs.nixpkgs.url = \"github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d\";\n"
+            "  outputs = { self, nixpkgs }: {\n"
+            "    devShells.x86_64-linux.default =\n"
+            "      (import nixpkgs { system = \"x86_64-linux\"; }).mkShell {\n"
+            "        buildInputs = [ (import nixpkgs { system = \"x86_64-linux\"; }).python312 ];\n"
+            "      };\n"
+            "  };\n"
+            "}\n"
+        )
+        self.assertIn("ac62194c3917d5f474c1a844b6fd6da2db95077d", flake)
+        self.assertIn("python312", flake)
+        self.assertNotIn("pip", flake)
+        self.assertNotIn("python3Packages", flake)
 
     def test_objective_and_checks_keep_the_exact_status_and_version_contract(self):
         self.assertIn("status() must return exactly", real_recovery.OBJECTIVE)

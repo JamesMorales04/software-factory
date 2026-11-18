@@ -4967,6 +4967,44 @@ mod tests {
     }
 
     #[test]
+    fn committed_python312_flake_is_selected_without_generation() {
+        let pin = "ac62194c3917d5f474c1a844b6fd6da2db95077d";
+        let (repository, base) = repository(&[
+            (
+                "flake.nix",
+                "{\n  description = \"Factory UAT committed environment\";\n  inputs.nixpkgs.url = \"github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d\";\n  outputs = { self, nixpkgs }: {\n    devShells.x86_64-linux.default =\n      (import nixpkgs { system = \"x86_64-linux\"; }).mkShell {\n        buildInputs = [ (import nixpkgs { system = \"x86_64-linux\"; }).python312 ];\n      };\n  };\n}\n",
+            ),
+            ("flake.lock", &flake_lock(pin)),
+            (
+                "pyproject.toml",
+                "[project]\nname = \"factory-e2e\"\nversion = \"0.1.0\"\nrequires-python = \">=3.12\"\nlicense = { text = \"MIT\" }\n",
+            ),
+            ("src/seed.txt", "factory-e2e seed\n"),
+        ]);
+        let conventions =
+            discover_project_conventions("project-1", &repository, &base, now()).unwrap();
+        assert_eq!(
+            conventions.existing_environment,
+            ExistingEnvironmentKind::Flake
+        );
+        let plan = compile(&repository, &base, &requirements());
+        assert_eq!(plan.source, EnvironmentPlanSource::ProjectCommitted);
+        assert!(plan.nix.nixpkgs.ends_with(pin));
+        assert!(plan.files.iter().any(|file| file.path == "flake.nix"));
+        assert!(plan.files.iter().any(|file| file.path == "flake.lock"));
+        assert!(plan
+            .files
+            .iter()
+            .all(|file| file.origin == EnvironmentFileOrigin::Project));
+        let flake = plan
+            .files
+            .iter()
+            .find(|file| file.path == "flake.nix")
+            .expect("committed flake.nix");
+        assert!(flake.sha256.len() == 64);
+    }
+
+    #[test]
     fn detects_an_existing_flake_without_generating_a_competing_environment() {
         let (repository, base) = repository(&[
             (

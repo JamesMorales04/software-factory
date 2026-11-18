@@ -91,27 +91,38 @@ after review). It is development/UAT tooling, not the product install path.
 - `.containerignore` excludes `*.db`, `master.key`, `*.token` and `evidence/` so
   no database, key or token enters a build context.
 
-### 3.1 UAT fixture and environment constraints (Run3)
+### 3.1 UAT fixture and committed environment (Run3)
 
-The disposable UAT project must be Python 3.12 stdlib-only so the Lead does not
-have to add a third-party package whose selected license may be outside the
-frozen profile:
+The disposable UAT project is Python 3.12 stdlib-only. The environment source
+changes deliberately from `GENERATED` to `PROJECT_COMMITTED`; this is a new
+fixture/base provenance, never a relabel of the previous base.
 
-- The fixture commit (a **new** base, never a relabel of `9a3987e2…`) contains a
-  real `LICENSE` (MIT) for our UAT code, a `pyproject.toml` declaring
-  `requires-python >= 3.12` and the MIT project license, and `src/seed.txt`.
-- The objective keeps the exact `status()`/`version()` checks and adds only the
-  stdlib-only/no-third-party and MIT statements.
-- The intake sends legitimate `RequestEnvironmentConstraints` from the existing
-  contract: the builder's pinned nixpkgs revision and a `python` `3.12.7`
-  toolchain with its official source/evidence. No `packages` are invented.
-- This does not change `license_catalog.json`, `license_profile.json`, Core
-  policy or the selected/closure rule: `Python-2.0` remains invalid as a
-  selected package license. Python is a toolchain/closure dependency here.
-- If the Lead still proposes `Python-2.0` as a selected package, the run is
-  captured as a product/licence failure and the prompt/contract is repaired in
-  a separate authorized batch; it is never masked, substituted or retried
-  blindly.
+- The fixture commit contains a real `LICENSE` (MIT), a `pyproject.toml`
+  (`requires-python >= 3.12`, MIT project license), `src/seed.txt`, and a
+  committed `flake.nix`:
+  `devShells.x86_64-linux.default = pkgs.mkShell { buildInputs = [ pkgs.python312 ]; };`
+  with `inputs.nixpkgs.url = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"`.
+  No `path:` input, no `builtins.currentSystem`, no third-party packages, no pip.
+- Freeze requires a committed `flake.lock` as well: without it Core refuses a
+  frozen environment spec. The operator generates it with the pinned Nix
+  builder (`nix flake lock`) and commits both files; the locked `rev` must be
+  `ac62194c…` and the `narHash` must be the canonical value reported by Nix
+  (documented candidate `sha256-16KkgfdYqjaeRGBaYsNrhPRRENs0qzkQVUooNHtoy2w=`,
+  never accepted without `nix flake lock` verification). This is a
+  deterministic environment step, not a model call.
+- The objective keeps the exact `status()`/`version()` checks and only adds the
+  stdlib-only/no-third-party and MIT statements. Checks, receipts, Gate,
+  Campaign and restart stay unchanged.
+- The intake sends only the matching nixpkgs pin in
+  `RequestEnvironmentConstraints`; it sends no generated toolchain or package.
+  With a committed flake Core selects `PROJECT_COMMITTED` and does not generate
+  `buildInputs`.
+- No `license_catalog.json`, `license_profile.json`, Core generator or policy
+  changes: `Python-2.0` remains invalid as a selected package license. If the
+  Lead still proposes it, the run is captured as a product/licence failure and
+  repaired in a separate authorized batch, never masked or blindly retried.
+- The operator verifies the committed environment canonically in the pinned Nix
+  builder container before Run3 (flake check/devShell provides `python3`).
 
 ## 4. Scenario flow
 
