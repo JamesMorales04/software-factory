@@ -310,6 +310,17 @@ class ApiOriginTests(unittest.TestCase):
             self.assertEqual(request.get_header("Authorization"), "Bearer test-token")
             self.assertEqual(request.full_url, base.rstrip("/") + "/projects")
 
+    def test_post_status_uses_the_full_model_timeout(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            response = mock.MagicMock()
+            response.read.return_value = b"{}"
+            response.status = 200
+            urlopen.return_value.__enter__.return_value = response
+            api = real_recovery.Api("http://127.0.0.1:8901/core-api", "token")
+            status, _ = api.post_status("/intake/requests/intake-1/assess", {})
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(urlopen.call_args.kwargs.get("timeout", 0), 300)
+
     def test_post_uses_the_same_origin(self):
         request = self.request_with("http://127.0.0.1:8901/core-api", "post", "/projects")
         self.assertEqual(request.get_header("Origin"), "http://127.0.0.1:8901")
