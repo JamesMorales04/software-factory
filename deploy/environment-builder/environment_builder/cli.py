@@ -918,6 +918,9 @@ REVIEWED_SUBSTRATE_IDENTITIES: dict[
 REVIEWED_DERIVERLESS_HELPERS: frozenset[str] = frozenset(
     {
         "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
+        # Stdenv's generated move-docs helper: exact deriver-less path observed
+        # in the reviewed builder SBOM for the pinned nixpkgs revision.
+        "/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh",
     }
 )
 STORE_NAME_VERSION = re.compile(r"^([A-Za-z0-9_+.-]+?)-(\d.*)$")
