@@ -650,6 +650,7 @@ class Api:
         self.base = base.rstrip("/")
         self.token = token
         self.last_request: tuple[str, str] = ("", "")
+        self.last_error: tuple[int, str] | None = None
         # The bounded Lead assessment runs a real model call synchronously
         # (profile modelRequestTimeoutSecs=300), so the HTTP client must not
         # abort before Core's own timeout.
@@ -669,9 +670,14 @@ class Api:
                 "Origin": self.origin,
             },
         )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            body = response.read().decode("utf-8")
-            return json.loads(body) if body else None
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                body = response.read().decode("utf-8")
+                return json.loads(body) if body else None
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")
+            self.last_error = (error.code, detail[:1_000])
+            raise
 
     def get(self, path: str) -> Any:
         return self._request("GET", path)
@@ -683,6 +689,7 @@ class Api:
         return self._request("PUT", path, payload)
 
     def post_status(self, path: str, payload: dict[str, Any]) -> tuple[int, Any]:
+        self.last_request = ("POST", path)
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             self.base + path,
@@ -959,18 +966,55 @@ class Scenario:
         })
         self.log(f"admission={self.admission_id}")
 
+    def _staged_assess_403_valid(self) -> dict[str, Any]:
+        """A 403 is accepted only when the durable assessment already exists."""
+
+        projection = self.api.get(f"/intake/requests/{self.intake}") or {}
+        state = str(projection.get("state") or "")
+        proposal = projection.get("proposal") or {}
+        assessment = projection.get("assessment") or {}
+        authorization = projection.get("authorization") or {}
+        if state not in {"PLAN_READY", "AWAITING_APPROVAL"}:
+            raise ScenarioError(f"staged assess 403 has state {state!r}")
+        if not proposal or not assessment:
+            raise ScenarioError("staged assess 403 has no durable proposal/assessment")
+        if str(proposal.get("objective") or "") != OBJECTIVE:
+            raise ScenarioError("staged assess 403 proposal objective is not exact")
+        if str(authorization.get("reason") or "") != "PLAN_NOT_READY":
+            raise ScenarioError(
+                f"staged assess 403 reason is {authorization.get('reason')!r}"
+            )
+        rows = self._db_rows(
+            "SELECT state FROM model_call_reservations "
+            "WHERE project_id=?1 AND purpose='lead_assessment'",
+            (self.args.project_id,),
+        )
+        if [str(row[0]) for row in rows] != ["SETTLED"]:
+            raise ScenarioError(f"staged assess 403 reservations are {rows!r}")
+        return projection
+
     def assess(self, timeout: int = 1800) -> None:
         """Run the single Lead assessment; the plan is frozen in a later step."""
 
-        projection = self.api.post(f"/intake/requests/{self.intake}/assess", {})
+        status, projection = self.api.post_status(f"/intake/requests/{self.intake}/assess", {})
+        if status == 403:
+            body = projection if isinstance(projection, dict) else {}
+            self.write("assess-403.json", {
+                "status": status,
+                "code": str(body.get("code") or ""),
+                "error": str(body.get("error") or ""),
+            })
+            projection = self._staged_assess_403_valid()
+        elif status not in {200, 201}:
+            raise ScenarioError(f"assessment returned HTTP {status}")
         state = str(projection.get("state") or "")
         if state not in {"PLAN_READY", "AWAITING_APPROVAL"}:
             raise ScenarioError(f"assessment state is {state!r}")
         plan = projection.get("plan") or {}
         self.plan_hash = str(plan.get("plan_hash") or "")
         profile = projection.get("profile") or {}
-        self.profile_revision_id = str(profile.get("revisionId") or "")
-        self.profile_hash = str(profile.get("contentHash") or "")
+        self.profile_revision_id = str(profile.get("revisionId") or self.profile_revision_id)
+        self.profile_hash = str(profile.get("contentHash") or self.profile_hash)
         if not self.profile_revision_id or not _is_sha256(self.profile_hash):
             raise ScenarioError("assessment did not expose the frozen profile identity")
         self.assessment_projection = projection
@@ -1937,7 +1981,13 @@ class Scenario:
             "provider_sessions": facts["provider_sessions"],
             "execution_check_receipts": facts["execution_check_receipts"],
             "model_calls": [
-                {"role": row[0], "state": row[1], "provider": row[2], "model": row[3]}
+                {
+                    "role": row[0],
+                    "state": row[1],
+                    "purpose": row[2],
+                    "provider": row[3],
+                    "model": row[4],
+                }
                 for row in facts["calls"]
             ],
             "settle_timeout_secs": settle_timeout,
@@ -1998,6 +2048,8 @@ class Scenario:
 
         # Only wait for a Core reconciliation when a model call could exist.
         settle = 0.0 if (stage == "scenario_invalid" or not self.intake or not self.admission_id) else 180.0
+        failed_request = list(getattr(self.api, "last_request", ("", "")))
+        failed_error = getattr(self.api, "last_error", None)
         reconciliation = self.reconcile_failure(settle_timeout=settle)
         try:
             self.write(
@@ -2020,7 +2072,8 @@ class Scenario:
             "campaign": self.campaign,
             "attempt": self.attempt,
             "admission_id": self.admission_id,
-            "last_request": list(self.api.last_request),
+            "last_request": failed_request,
+            "last_error": failed_error,
             "transport_timeout_secs": self.api.timeout,
             "reconciliation": reconciliation,
         }
