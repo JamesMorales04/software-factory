@@ -91,6 +91,28 @@ after review). It is development/UAT tooling, not the product install path.
 - `.containerignore` excludes `*.db`, `master.key`, `*.token` and `evidence/` so
   no database, key or token enters a build context.
 
+### 3.1 UAT fixture and environment constraints (Run3)
+
+The disposable UAT project must be Python 3.12 stdlib-only so the Lead does not
+have to add a third-party package whose selected license may be outside the
+frozen profile:
+
+- The fixture commit (a **new** base, never a relabel of `9a3987e2…`) contains a
+  real `LICENSE` (MIT) for our UAT code, a `pyproject.toml` declaring
+  `requires-python >= 3.12` and the MIT project license, and `src/seed.txt`.
+- The objective keeps the exact `status()`/`version()` checks and adds only the
+  stdlib-only/no-third-party and MIT statements.
+- The intake sends legitimate `RequestEnvironmentConstraints` from the existing
+  contract: the builder's pinned nixpkgs revision and a `python` `3.12.7`
+  toolchain with its official source/evidence. No `packages` are invented.
+- This does not change `license_catalog.json`, `license_profile.json`, Core
+  policy or the selected/closure rule: `Python-2.0` remains invalid as a
+  selected package license. Python is a toolchain/closure dependency here.
+- If the Lead still proposes `Python-2.0` as a selected package, the run is
+  captured as a product/licence failure and the prompt/contract is repaired in
+  a separate authorized batch; it is never masked, substituted or retried
+  blindly.
+
 ## 4. Scenario flow
 
 Driver: `scripts/e2e/real_recovery.py` (`--plan`, `--dry-run`, `--execute`).

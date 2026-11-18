@@ -69,9 +69,26 @@ OBJECTIVE = (
     "Implement src/app.py with two functions. status() must return exactly "
     "{'service': 'factory-e2e', 'status': 'ok'} and version() must return "
     "exactly {'version': '1.0'}. Both frozen checks must pass. Commit only the "
-    "required source change."
+    "required source change. Use only the Python 3.12 standard library; do not "
+    "add third-party dependencies. The project is MIT-licensed."
 )
 ALLOWED_PATHS = ["src"]
+# Legitimate request-scoped environment constraints from the documented
+# contract: the UAT project is Python 3.12 stdlib-only, so Python is a
+# toolchain (closure-classified), not a selected third-party package. The
+# pinned nixpkgs is the builder's documented default revision. No license
+# catalogue or policy entry is changed.
+ENVIRONMENT_CONSTRAINTS = {
+    "nixpkgs": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+    "toolchains": [
+        {
+            "id": "python",
+            "version": "3.12.7",
+            "source": "https://www.python.org/downloads/release/python-3127/",
+            "evidence": ["https://www.python.org/downloads/release/python-3127/"],
+        }
+    ],
+}
 # The current production MODEL path is subscription-funded: the request-scoped
 # Owner admission is Core-created for an AUTONOMOUS R0 request and the V2 policy
 # carries `urn:factory:no-billable-inference`. A positive value is only the
@@ -771,6 +788,7 @@ class Scenario:
             "execution_profile_id": self.args.profile_id,
             "mode": "REVIEW_PLAN",
             "idempotency_key": f"{self.args.authorization}:recovery-intake",
+            "environment_constraints": ENVIRONMENT_CONSTRAINTS,
         }
         if self.args.authorized_micros > 0:
             intake["authorized_micros"] = self.args.authorized_micros
