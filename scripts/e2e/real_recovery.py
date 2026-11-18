@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -638,6 +639,21 @@ def plan_document() -> dict[str, Any]:
     }
 
 
+_REDACTIONS = (
+    (re.compile(r"(?i)bearer\s+\S+"), "Bearer <redacted>"),
+    (re.compile(r"(?i)(token|secret|password)\s*[=:]\s*\S+"), r"\1=<redacted>"),
+)
+
+
+def _redact_text(value: str, limit: int = 16 * 1024) -> str:
+    """Bound and redact a captured log tail; never emit credentials."""
+
+    text = value[:limit]
+    for pattern, replacement in _REDACTIONS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 class Api:
     def __init__(self, base: str, token: str, timeout: float = 360.0) -> None:
         parts = urlsplit(base)
@@ -651,6 +667,7 @@ class Api:
         self.token = token
         self.last_request: tuple[str, str] = ("", "")
         self.last_error: tuple[int, str] | None = None
+        self.last_error_request: tuple[str, str] | None = None
         # The bounded Lead assessment runs a real model call synchronously
         # (profile modelRequestTimeoutSecs=300), so the HTTP client must not
         # abort before Core's own timeout.
@@ -658,6 +675,11 @@ class Api:
 
     def _request(self, method: str, path: str, payload: Any | None = None) -> Any:
         self.last_request = (method, path)
+        # An error belongs to the request that produced it. Without this reset a
+        # later transport timeout would inherit an earlier staged 403 and be
+        # misattributed to the timed-out request.
+        self.last_error = None
+        self.last_error_request = None
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             self.base + path,
@@ -677,6 +699,7 @@ class Api:
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
             self.last_error = (error.code, detail[:1_000])
+            self.last_error_request = (method, path)
             raise
 
     def get(self, path: str) -> Any:
@@ -690,6 +713,8 @@ class Api:
 
     def post_status(self, path: str, payload: dict[str, Any]) -> tuple[int, Any]:
         self.last_request = ("POST", path)
+        self.last_error = None
+        self.last_error_request = None
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             self.base + path,
@@ -709,6 +734,7 @@ class Api:
         except urllib.error.HTTPError as error:
             body = error.read().decode("utf-8")
             self.last_error = (error.code, body[:1_000])
+            self.last_error_request = ("POST", path)
             try:
                 payload = json.loads(body) if body else None
             except json.JSONDecodeError:
@@ -1043,17 +1069,61 @@ class Scenario:
         self.write("environment-recompile.json", response)
         self.log(f"environment_plan={plan_id} revision={revision} status={status}")
 
+    #: Documented model request timeout for the bounded Lead review call.
+    ENVIRONMENT_MODEL_TIMEOUT_SECS = 300
+    #: Documented transport margin on top of the plan's own resource budget.
+    ENVIRONMENT_TRANSPORT_MARGIN_SECS = 60
+
+    def _environment_review_deadline(self) -> tuple[float, dict[str, Any]]:
+        """Derive the composite stage deadline from the plan's own budget.
+
+        Review is not a model-only call: Core may run the model review (bounded
+        by the profile model timeout) inside the plan's declared resource budget.
+        The transport bound is therefore plan ``resources.timeoutSecs`` plus the
+        model timeout plus a documented margin, never an invented constant.
+        """
+
+        resources = (self.environment_plan or {}).get("resources") or {}
+        try:
+            plan_budget = int(resources.get("timeoutSecs") or 0)
+        except (TypeError, ValueError):
+            plan_budget = 0
+        if plan_budget <= 0:
+            plan_budget = 0
+        deadline = float(
+            plan_budget
+            + self.ENVIRONMENT_MODEL_TIMEOUT_SECS
+            + self.ENVIRONMENT_TRANSPORT_MARGIN_SECS
+        )
+        return deadline, {
+            "planResourceTimeoutSecs": plan_budget,
+            "modelRequestTimeoutSecs": self.ENVIRONMENT_MODEL_TIMEOUT_SECS,
+            "transportMarginSecs": self.ENVIRONMENT_TRANSPORT_MARGIN_SECS,
+            "transportDeadlineSecs": deadline,
+            "reason": (
+                "review is a composite stage: model review plus the plan's declared "
+                "resource budget plus a documented transport margin"
+            ),
+        }
+
     def environment_review(self) -> None:
         """Review and freeze the compiled environment; the Lead review is funded."""
 
         plan = self.environment_plan
-        response = self.api.post(
-            f"/agentic/requests/{self.intake}/environment/review",
-            {
-                "planSha256": str(plan.get("planSha256") or ""),
-                "planRevision": int(plan.get("planRevision") or 0),
-            },
-        )
+        deadline, derivation = self._environment_review_deadline()
+        self.write("environment-review-deadline.json", derivation)
+        previous = self.api.timeout
+        self.api.timeout = deadline
+        try:
+            response = self.api.post(
+                f"/agentic/requests/{self.intake}/environment/review",
+                {
+                    "planSha256": str(plan.get("planSha256") or ""),
+                    "planRevision": int(plan.get("planRevision") or 0),
+                },
+            )
+        finally:
+            self.api.timeout = previous
         if not isinstance(response, dict):
             raise ScenarioError("environment review returned no projection")
         status = str(response.get("status") or "")
@@ -2044,6 +2114,52 @@ class Scenario:
                 snapshot[name] = {"state": "NOT_CAPTURED", "error": type(error).__name__}
         return snapshot
 
+    def _capture_runtime_diagnostics(self) -> dict[str, Any]:
+        """Bounded, redacted Core/runtime tails taken before any cleanup."""
+
+        captured: dict[str, Any] = {"at": utc(), "services": {}}
+        for service in ("core", "runtime"):
+            name = f"{self.project}_{service}_1"
+            try:
+                result = subprocess.run(
+                    ["podman", "logs", "--tail", "200", name],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                text = _redact_text((result.stdout or "") + (result.stderr or ""))
+                captured["services"][service] = {
+                    "exit": result.returncode,
+                    "tail": text,
+                }
+            except Exception as error:  # noqa: BLE001 - diagnostics are best-effort
+                captured["services"][service] = {
+                    "state": "NOT_CAPTURED",
+                    "error": type(error).__name__,
+                }
+        return captured
+
+    def _environment_job_fact(self) -> dict[str, Any]:
+        """Observe the environment job instead of assuming the model outcome."""
+
+        previous = self.api.timeout
+        self.api.timeout = 15.0
+        try:
+            projection = self.api.get(f"/intake/requests/{self.intake}") or {}
+        except Exception as error:  # noqa: BLE001 - record, never invent
+            return {"state": "UNREADABLE", "error": type(error).__name__}
+        finally:
+            self.api.timeout = previous
+        environment = projection.get("environment") or {}
+        plan = environment.get("plan") or {}
+        status = str(environment.get("status") or "")
+        return {
+            "status": status or None,
+            "planStatus": plan.get("status"),
+            "specSha256": environment.get("specSha256"),
+            "frozen": status == "FROZEN",
+        }
+
     def capture_failure(self, error: BaseException, stage: str = "") -> dict[str, Any]:
         """Preserve causal state before any cleanup; never claim a PASS."""
 
@@ -2051,7 +2167,29 @@ class Scenario:
         settle = 0.0 if (stage == "scenario_invalid" or not self.intake or not self.admission_id) else 180.0
         failed_request = list(getattr(self.api, "last_request", ("", "")))
         failed_error = getattr(self.api, "last_error", None)
+        failed_error_request = getattr(self.api, "last_error_request", None)
+        review_path = f"/agentic/requests/{self.intake}/environment/review"
+        is_timeout = isinstance(error, TimeoutError)
+        # Only the composite environment stage can own a background job; a model
+        # timeout on another stage keeps the existing model-only reconciliation.
+        env_stage_timeout = is_timeout and failed_request[1] == review_path
+        diagnostics = self._capture_runtime_diagnostics() if env_stage_timeout else None
+        env_job = self._environment_job_fact() if env_stage_timeout else None
         reconciliation = self.reconcile_failure(settle_timeout=settle)
+        # A settled model call does not prove the environment job finished. When
+        # the last POST timed out and the environment never froze, the job state
+        # is unknown and the stack must be retained.
+        if env_job is not None and not env_job.get("frozen"):
+            # Unreadable or still-unfrozen after a review timeout: the job state
+            # is unknown, so the stack must survive for reconciliation.
+            reconciliation = {
+                **reconciliation,
+                "model_outcome": reconciliation.get("outcome"),
+                "env_job": env_job,
+                "outcome": "ENV_JOB_UNKNOWN",
+            }
+        elif env_job is not None:
+            reconciliation = {**reconciliation, "env_job": env_job}
         try:
             self.write(
                 "failure-intake.json",
@@ -2075,6 +2213,8 @@ class Scenario:
             "admission_id": self.admission_id,
             "last_request": failed_request,
             "last_error": failed_error,
+            "last_error_request": failed_error_request,
+            "diagnostics": diagnostics,
             "transport_timeout_secs": self.api.timeout,
             "reconciliation": reconciliation,
         }
@@ -2132,12 +2272,17 @@ def _safe_to_cleanup(scenario: "Scenario") -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     outcome = str((payload.get("reconciliation") or {}).get("outcome") or "")
-    if outcome == "MODEL_CALL_OUTCOME_UNKNOWN":
+    if outcome in {"MODEL_CALL_OUTCOME_UNKNOWN", "ENV_JOB_UNKNOWN"}:
         scenario.write(
             "cleanup-held.json",
             {
                 "status": "STACK_RETAINED_FOR_RECONCILIATION",
-                "reason": "model-call outcome unknown; stack and database preserved for owner reconciliation",
+                "reason": (
+                    "model-call outcome unknown"
+                    if outcome == "MODEL_CALL_OUTCOME_UNKNOWN"
+                    else "environment job state unknown after a transport timeout"
+                )
+                + "; stack and database preserved for owner reconciliation",
                 "outcome": outcome,
                 "owner_action": (
                     "Reconcile the durable intake/lead/model-call rows to a terminal state and capture "

@@ -1959,3 +1959,70 @@ class CliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TransportDiagnosticsTests(unittest.TestCase):
+    """A timed-out POST must not inherit an earlier error, and must hold."""
+
+    def test_last_error_is_bound_to_the_request_that_raised_it(self) -> None:
+        import io
+        import urllib.error
+        from unittest import mock
+
+        api = real_recovery.Api("http://127.0.0.1:1/core-api", "t" * 32)
+        failure = urllib.error.HTTPError(
+            "http://x", 403, "forbidden", {}, io.BytesIO(b'{"error":"stale"}')
+        )
+        with mock.patch("urllib.request.urlopen", side_effect=failure):
+            with self.assertRaises(urllib.error.HTTPError):
+                api.post("/staged", {})
+        self.assertEqual(api.last_error_request, ("POST", "/staged"))
+        with mock.patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+            with self.assertRaises(TimeoutError):
+                api.post("/environment/review", {})
+        self.assertIsNone(api.last_error)
+        self.assertIsNone(api.last_error_request)
+
+    def test_log_tails_are_bounded_and_redacted(self) -> None:
+        tail = "Authorization: Bearer abcdef0123456789 token=supersecret" + "x" * 40_000
+        redacted = real_recovery._redact_text(tail)
+        self.assertNotIn("abcdef0123456789", redacted)
+        self.assertNotIn("supersecret", redacted)
+        self.assertLessEqual(len(redacted), 16 * 1024)
+
+    def test_unknown_environment_job_holds_cleanup(self) -> None:
+        import json
+        import tempfile
+        import types
+
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            (evidence / "failure.json").write_text(
+                json.dumps({"reconciliation": {"outcome": "ENV_JOB_UNKNOWN"}})
+            )
+            scenario = types.SimpleNamespace(
+                evidence=evidence,
+                project="factory-e2e-recovery-run9-fixture",
+                write=lambda name, payload: (evidence / name).write_text(json.dumps(payload)),
+            )
+            self.assertFalse(real_recovery._safe_to_cleanup(scenario))
+            held = json.loads((evidence / "cleanup-held.json").read_text())
+            self.assertEqual(held["status"], "STACK_RETAINED_FOR_RECONCILIATION")
+            self.assertIn("environment job", held["reason"])
+
+
+class CompositeStageDeadlineTests(unittest.TestCase):
+    def test_review_deadline_derives_from_the_plan_budget(self) -> None:
+        scenario = object.__new__(real_recovery.Scenario)
+        scenario.environment_plan = {"resources": {"timeoutSecs": 1800}}
+        deadline, derivation = scenario._environment_review_deadline()
+        self.assertEqual(deadline, 1800.0 + 300 + 60)
+        self.assertEqual(derivation["planResourceTimeoutSecs"], 1800)
+        self.assertIn("composite stage", derivation["reason"])
+
+    def test_review_deadline_without_a_plan_budget_keeps_the_model_bound(self) -> None:
+        scenario = object.__new__(real_recovery.Scenario)
+        scenario.environment_plan = {}
+        deadline, derivation = scenario._environment_review_deadline()
+        self.assertEqual(deadline, 300.0 + 60)
+        self.assertEqual(derivation["planResourceTimeoutSecs"], 0)
