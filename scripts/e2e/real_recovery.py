@@ -73,21 +73,13 @@ OBJECTIVE = (
     "add third-party dependencies. The project is MIT-licensed."
 )
 ALLOWED_PATHS = ["src"]
-# Legitimate request-scoped environment constraints from the documented
-# contract: the UAT project is Python 3.12 stdlib-only, so Python is a
-# toolchain (closure-classified), not a selected third-party package. The
-# pinned nixpkgs is the builder's documented default revision. No license
-# catalogue or policy entry is changed.
+# The UAT fixture commits a real flake.nix/flake.lock, so the environment
+# source is PROJECT_COMMITTED and Core does not generate `buildInputs` from
+# explicit packages. The request only pins the exact nixpkgs revision that the
+# committed flake and lock must reference. No generated toolchain/package is
+# implied, and no license catalogue or policy entry changes.
 ENVIRONMENT_CONSTRAINTS = {
     "nixpkgs": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
-    "toolchains": [
-        {
-            "id": "python",
-            "version": "3.12.7",
-            "source": "https://www.python.org/downloads/release/python-3127/",
-            "evidence": ["https://www.python.org/downloads/release/python-3127/"],
-        }
-    ],
 }
 # The current production MODEL path is subscription-funded: the request-scoped
 # Owner admission is Core-created for an AUTONOMOUS R0 request and the V2 policy
