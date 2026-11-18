@@ -1054,7 +1054,12 @@ class Scenario:
         self.environment_recompile()
         self.environment_review()
         self.plan_workgraph()
+        before_freeze = self.model_purposes()
         self.freeze_lead_plan()
+        after_freeze = self.model_purposes()
+        if after_freeze != before_freeze:
+            raise ScenarioError("lead freeze created a model reservation")
+        self.verify_model_purposes()
 
     def approve(self) -> None:
         # Negative production probe: a monetary claim on the subscription path
@@ -1765,7 +1770,7 @@ class Scenario:
         }
         critical = {
             "model_call_reservations": (
-                "SELECT role,state,provider,model,created_at FROM model_call_reservations "
+                "SELECT role,state,purpose,provider,model,created_at FROM model_call_reservations "
                 "WHERE project_id=?1 ORDER BY created_at",
                 (self.args.project_id,),
             ),
@@ -1806,6 +1811,45 @@ class Scenario:
         except Exception as error:  # noqa: BLE001
             result["db_errors"]["execution_check_receipts"] = f"{type(error).__name__}: {error}"
         return result
+
+    def model_purposes(self) -> dict[str, Any]:
+        rows = self._db_rows(
+            "SELECT purpose,state FROM model_call_reservations WHERE project_id=?1",
+            (self.args.project_id,),
+        )
+        purposes: dict[str, int] = {}
+        states: dict[str, list[str]] = {}
+        for purpose, state in rows:
+            key = str(purpose)
+            purposes[key] = purposes.get(key, 0) + 1
+            states.setdefault(key, []).append(str(state))
+        return {"purposes": purposes, "states": states}
+
+    def verify_model_purposes(self) -> dict[str, Any]:
+        """Exactly one settled reservation per required purpose; no ambiguity."""
+
+        snapshot = self.model_purposes()
+        purposes = snapshot["purposes"]
+        states = snapshot["states"]
+        expected = ("lead_assessment", "lead_environment_review", "agentic_planner")
+        problems = []
+        for purpose in expected:
+            if purposes.get(purpose, 0) != 1:
+                problems.append(f"{purpose}={purposes.get(purpose, 0)}")
+            elif states.get(purpose) != ["SETTLED"]:
+                problems.append(f"{purpose} states={states.get(purpose)!r}")
+        if purposes.get("lead_assessment", 0) > 1:
+            problems.append("second lead_assessment")
+        evidence = {
+            "purposes": purposes,
+            "states": states,
+            "expected": {purpose: {"count": 1, "state": "SETTLED"} for purpose in expected},
+            "captured_utc": utc(),
+        }
+        self.write("model-purposes.json", evidence)
+        if problems:
+            raise ScenarioError("model purpose contract invalid: " + ", ".join(problems))
+        return evidence
 
     def reconcile_failure(self, settle_timeout: float = 180.0) -> dict[str, Any]:
         """Classify the model-call outcome; never infer success from a timeout."""
@@ -1913,8 +1957,8 @@ class Scenario:
                 (self.lead_request_id or self.intake,),
             ),
             "model_call_reservations": (
-                "SELECT reservation_id,role,provider,model,state,input_tokens,output_tokens,"
-                "total_tokens,cost_micros,usage_known,created_at,updated_at "
+                "SELECT reservation_id,role,purpose,provider,model,state,input_tokens,"
+                "output_tokens,total_tokens,cost_micros,usage_known,created_at,updated_at "
                 "FROM model_call_reservations WHERE project_id=?1 ORDER BY created_at",
                 (self.args.project_id,),
             ),
