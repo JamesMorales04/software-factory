@@ -30,6 +30,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from real_recovery_profile import profile_mismatches
+
 STATUS = "status"
 VERSION = "version"
 STATUS_OBJECT = {"service": "factory-e2e", "status": "ok"}
@@ -590,7 +592,7 @@ def plan_document() -> dict[str, Any]:
         "authorized_micros": DEFAULT_AUTHORIZED_MICROS,
         "phases": [
             "prepare disposable real-provider stack; verify the provider route and a new operator identity",
-            "use the pre-run-bound project/execution policy; create the profile and post the Lead intake",
+            "use the pre-run-bound project, execution profile and grant; post the Lead intake",
             "record the request-scoped Owner subscription admission, run the bounded assessment and approve the exact frozen plan",
             "verify the approved ActionSpec checks against the exact contract before any intervention",
             "wait for generation-1 status PASS; prove no generation-1 version PASS receipt exists (P2 pending)",
@@ -731,38 +733,25 @@ class Scenario:
 
     # ---- phases -------------------------------------------------------
     def prepare(self) -> None:
-        profile = self.api.post(
-            "/execution-profiles",
-            {
-                "name": f"Real recovery {self.args.authorization}",
-                "description": "P1-P4 real generation-2 recovery scenario",
-                "category": "BALANCED",
-                "roles": {
-                    "lead": {"provider": self.args.provider, "model": self.args.model, "reasoning": "medium"},
-                    "implementer": {"provider": self.args.provider, "model": self.args.model, "reasoning": "medium"},
-                    "semanticReviewer": {"provider": self.args.provider, "model": self.args.model, "reasoning": "medium"},
-                },
-                "operations": {
-                    "modelRequestTimeoutSecs": 300,
-                    "toolCallTimeoutSecs": 600,
-                    "maxRequestBytes": 2_097_152,
-                    "maxResponseBytes": 2_097_152,
-                    "maxGenerationTokens": 32_768,
-                    "maxInFlightOperations": 2,
-                },
-                "progress": {
-                    "diagnoseAfterStagnantCheckpoints": 2,
-                    "escalateAfterUnsuccessfulReplans": 1,
-                    "observationTimeoutSecs": 300,
-                },
-                "auto_start": {"enabled": False, "risk_classes": []},
-            },
-        )
-        self.api.post(f"/execution-profiles/{profile['id']}/default", {"scope": "global"})
+        # The pre-run binding owns the project, execution profile and grant.
+        # This scenario consumes the exact profile and never creates one.
+        profile = self.api.get(f"/execution-profiles/{self.args.profile_id}")
+        problems = profile_mismatches(profile, provider=self.args.provider, model=self.args.model)
+        if problems:
+            raise ScenarioError(
+                "bound execution profile is not the canonical profile: " + ", ".join(problems)
+            )
+        if int(profile.get("schemaVersion") or 0) != 2:
+            raise ScenarioError(f"bound execution profile is not V2: {profile.get('schemaVersion')!r}")
+        self.profile_revision_id = str(profile.get("revisionId") or "")
+        self.profile_hash = str(profile.get("contentHash") or "")
+        if not self.profile_revision_id or not _is_sha256(self.profile_hash):
+            raise ScenarioError("bound execution profile has no frozen revision identity")
+        self.write("execution-profile.json", profile)
         intake = {
             "project_id": self.args.project_id,
             "objective": OBJECTIVE,
-            "execution_profile_id": profile["id"],
+            "execution_profile_id": self.args.profile_id,
             "mode": "REVIEW_PLAN",
             "idempotency_key": f"{self.args.authorization}:recovery-intake",
         }
@@ -771,9 +760,6 @@ class Scenario:
         created = self.api.post("/intake/requests", intake)
         self.intake = created["id"]
         self.action = created["actionId"]
-        profile = created.get("profile") or {}
-        self.profile_revision_id = str(profile.get("revisionId") or "")
-        self.profile_hash = str(profile.get("contentHash") or "")
         self.write("intake.json", created)
         self.log(f"intake={self.intake} action={self.action}")
 
@@ -1001,6 +987,10 @@ class Scenario:
         mismatch = contract_mismatch(checks)
         if mismatch:
             raise ScenarioError(f"approved ActionSpec mismatch: {mismatch}")
+        if str(spec.get("provider") or "") != self.args.provider or str(spec.get("model") or "") != self.args.model:
+            raise ScenarioError(
+                f"approved ActionSpec route differs: {spec.get('provider')}/{spec.get('model')}"
+            )
         if sorted(spec.get("allowed_paths") or []) != sorted(ALLOWED_PATHS):
             raise ScenarioError(f"approved ActionSpec allowed_paths differ: {spec.get('allowed_paths')!r}")
 
@@ -1636,7 +1626,7 @@ class Scenario:
         self.write("cleanup.json", {"exit": result.returncode, "at": utc()})
 
 
-def run_scenario(scenario: "Scenario") -> Verdict:
+def run_scenario(scenario: "Scenario") -> tuple[Verdict, Observation]:
     """The ordered consumer path: prepare, contract, gen1, kill, gen2, restart."""
 
     scenario.prepare()
@@ -1648,7 +1638,7 @@ def run_scenario(scenario: "Scenario") -> Verdict:
     snapshot = scenario.intervene(snapshot)
     observation = scenario.watch_gen2(snapshot)
     observation = replace(observation, restart_observed=scenario.verify_restart(observation))
-    return classify_recovery(observation)
+    return classify_recovery(observation), observation
 
 
 def _require(value: Any, name: str, errors: list[str]) -> None:
@@ -1665,6 +1655,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--core-api")
     parser.add_argument("--operator-token-file")
     parser.add_argument("--project-id")
+    parser.add_argument("--profile-id", help="execution profile created by the pre-run binding")
     parser.add_argument("--authorization")
     parser.add_argument("--evidence-dir")
     parser.add_argument("--compose-project")
@@ -1686,6 +1677,7 @@ def main(argv: list[str] | None = None) -> int:
     _require(args.core_api, "--core-api", errors)
     _require(args.operator_token_file, "--operator-token-file", errors)
     _require(args.project_id, "--project-id", errors)
+    _require(args.profile_id, "--profile-id", errors)
     _require(args.authorization, "--authorization", errors)
     _require(args.evidence_dir, "--evidence-dir", errors)
     _require(args.compose_project, "--compose-project", errors)
@@ -1711,7 +1703,7 @@ def main(argv: list[str] | None = None) -> int:
 
     scenario = Scenario(args)
     try:
-        verdict = run_scenario(scenario)
+        verdict, observation = run_scenario(scenario)
         scenario.capture(verdict, observation)
         scenario.cleanup()
         print(json.dumps({"status": verdict.status, "reason": verdict.reason}, indent=2))

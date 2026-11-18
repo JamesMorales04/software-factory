@@ -13,11 +13,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve()
 sys.path.insert(0, str(HERE.parents[1]))
 import real_recovery  # noqa: E402
+import real_recovery_profile  # noqa: E402
 
 
 COMMAND_SHA = "d" * 64
@@ -333,6 +335,31 @@ AUTHORIZATION_RECORD = {
 }
 
 
+def profile_fixture(**overrides):
+    canonical = real_recovery_profile.canonical_profile(
+        name="Compose Intake Balanced",
+        description="Deterministic Compose intake profile",
+        provider="opencode-go",
+        model="deepseek-v4.1-flash",
+    )
+    profile = {
+        "id": "profile-1",
+        "revision": 1,
+        "revisionId": "rev-1",
+        "schemaVersion": 2,
+        "contentHash": "8" * 64,
+        "executable": True,
+        **canonical,
+        "autoStart": {
+            "enabled": False,
+            "riskClasses": canonical["auto_start"]["risk_classes"],
+        },
+    }
+    profile.pop("auto_start", None)
+    profile.update(overrides)
+    return profile
+
+
 def action_record():
     return {
         "id": "act-1",
@@ -368,6 +395,7 @@ class OrchestratorConsumerTests(unittest.TestCase):
             core_api="http://127.0.0.1:8899",
             operator_token_file=str(token),
             project_id="project-1",
+            profile_id="profile-1",
             authorization="owner-ref",
             evidence_dir=str(Path(self.tmp.name) / "evidence"),
             compose_project="sfe2e-recovery",
@@ -417,6 +445,7 @@ class OrchestratorConsumerTests(unittest.TestCase):
         }
         scenario.api = FakeApi(
             get_routes={
+                "/execution-profiles/profile-1": profile_fixture(),
                 "/intake/requests/intake-1": projection,
                 "/actions": [action_record()],
                 "/campaigns/campaign-1/authorization": AUTHORIZATION_RECORD,
@@ -430,8 +459,6 @@ class OrchestratorConsumerTests(unittest.TestCase):
                 ],
             },
             post_routes={
-                "/execution-profiles": {"id": "profile-1"},
-                "/execution-profiles/profile-1/default": {},
                 "/intake/requests": {
                     "id": "intake-1",
                     "actionId": "act-1",
@@ -491,9 +518,8 @@ class OrchestratorConsumerTests(unittest.TestCase):
             "campaign": {"id": "campaign-1", "status": "AUTHORIZED", "action_id": "act-1"},
         }
         scenario.api = FakeApi(
+            get_routes={"/execution-profiles/profile-1": profile_fixture()},
             post_routes={
-                "/execution-profiles": {"id": "profile-1"},
-                "/execution-profiles/profile-1/default": {},
                 "/intake/requests": {
                     "id": "intake-1",
                     "actionId": "act-1",
@@ -682,6 +708,7 @@ class OrchestratorConsumerTests(unittest.TestCase):
         record = {**AUTHORIZATION_RECORD, "policy": {"monetaryEnvelopeId": real_recovery.NO_BILLABLE_ENVELOPE}}
         scenario.api = FakeApi(
             get_routes={
+                "/execution-profiles/profile-1": profile_fixture(),
                 "/intake/requests/intake-1": {
                     "id": "intake-1", "campaignId": "campaign-1", "state": "EXECUTING",
                     "spending": None,
@@ -694,8 +721,6 @@ class OrchestratorConsumerTests(unittest.TestCase):
                 ],
             },
             post_routes={
-                "/execution-profiles": {"id": "profile-1"},
-                "/execution-profiles/profile-1/default": {},
                 "/intake/requests": {
                     "id": "intake-1",
                     "actionId": "act-1",
@@ -731,12 +756,11 @@ class OrchestratorConsumerTests(unittest.TestCase):
         scenario = self.scenario()
         scenario.api = FakeApi(
             get_routes={
+                "/execution-profiles/profile-1": profile_fixture(),
                 "/intake/requests/intake-1": {"campaignId": "campaign-1", "spending": None},
                 "/actions": [],
             },
             post_routes={
-                "/execution-profiles": {"id": "profile-1"},
-                "/execution-profiles/profile-1/default": {},
                 "/intake/requests": {
                     "id": "intake-1",
                     "actionId": "act-1",
@@ -748,6 +772,23 @@ class OrchestratorConsumerTests(unittest.TestCase):
         scenario.campaign = "campaign-1"
         with self.assertRaises(real_recovery.ScenarioError):
             scenario.verify_contract()
+
+    def test_prepare_requires_the_bound_canonical_profile(self):
+        variants = [
+            profile_fixture(executable=False),
+            profile_fixture(roles={**profile_fixture()["roles"], "lead": {"provider": "other", "model": "x", "reasoning": "medium"}}),
+            profile_fixture(autoStart={"enabled": True, "risk_classes": ["R0"]}),
+            profile_fixture(progress={**profile_fixture()["progress"], "diagnoseAfterStagnantCheckpoints": 5}),
+        ]
+        for profile in variants:
+            scenario = self.scenario()
+            scenario.api = FakeApi(
+                get_routes={"/execution-profiles/profile-1": profile},
+                post_routes={},
+            )
+            with self.assertRaises(real_recovery.ScenarioError) as raised:
+                scenario.prepare()
+            self.assertIn("not the canonical profile", str(raised.exception))
 
     def test_intervene_returns_the_kill_times(self):
         scenario = self.scenario()
@@ -927,6 +968,79 @@ class OrchestratorConsumerTests(unittest.TestCase):
             real_recovery.Scenario._container_health = original_health
             real_recovery.time.sleep = original_sleep
 
+    def test_main_propagates_verdict_and_observation_to_capture(self):
+        class FakeMainScenario:
+            def __init__(self, args):
+                self.captured = None
+                self.cleaned = False
+
+            def prepare(self):
+                pass
+
+            def admit(self):
+                pass
+
+            def assess(self):
+                pass
+
+            def approve(self):
+                pass
+
+            def verify_contract(self):
+                pass
+
+            def watch_gen1(self):
+                return {"observed_at": "2026-11-18T00:00:00Z"}
+
+            def intervene(self, snapshot):
+                return {**snapshot, "kill_started_at": "2026-11-18T00:00:01Z"}
+
+            def watch_gen2(self, snapshot):
+                return observation(campaign_status="AUTHORIZED", gate_outcome="ACCEPTED")
+
+            def verify_restart(self, watched):
+                return True
+
+            def capture(self, verdict, watched):
+                self.captured = (verdict, watched)
+
+            def cleanup(self):
+                self.cleaned = True
+
+            def write(self, *args):
+                pass
+
+        args = [
+            "--execute",
+            "--core-api", "http://127.0.0.1:8899",
+            "--operator-token-file", "/tmp/opencode/operator.token",
+            "--project-id", "project-1",
+            "--profile-id", "profile-1",
+            "--authorization", "owner-ref",
+            "--evidence-dir", "/tmp/opencode/evidence",
+            "--compose-project", "sfe2e-recovery",
+            "--git-dir", "/tmp/opencode/git",
+            "--core-database", "/tmp/opencode/sfe2e-recovery/factory.sqlite",
+            "--assumption-file", "/tmp/opencode/assumption.json",
+            "--authorized-micros", "0",
+        ]
+        holder = {}
+
+        class CapturingScenario(FakeMainScenario):
+            def capture(self, verdict, watched):
+                holder["captured"] = (verdict, watched)
+
+            def cleanup(self):
+                holder["cleaned"] = True
+
+        with mock.patch.object(real_recovery, "Scenario", CapturingScenario):
+            code = real_recovery.main(args)
+        self.assertEqual(code, 0)
+        verdict, watched = holder["captured"]
+        self.assertEqual(verdict.status, "ACCEPTED", verdict.reason)
+        self.assertTrue(watched.restart_observed)
+        self.assertTrue(holder["cleaned"])
+
     def test_run_scenario_passes_the_intervened_snapshot(self):
         scenario = self.scenario()
         seen = {}
@@ -947,9 +1061,10 @@ class OrchestratorConsumerTests(unittest.TestCase):
         scenario.intervene = fake_intervene
         scenario.watch_gen2 = fake_watch_gen2
         scenario.verify_restart = lambda observation: True
-        verdict = real_recovery.run_scenario(scenario)
+        verdict, watched = real_recovery.run_scenario(scenario)
         self.assertEqual(seen["snapshot"]["kill_started_at"], "2026-11-18T00:00:01Z")
         self.assertEqual(verdict.status, "ACCEPTED", verdict.reason)
+        self.assertTrue(watched.restart_observed)
 
 
 class AuthorizationContractTests(unittest.TestCase):
@@ -1008,6 +1123,7 @@ class CliTests(unittest.TestCase):
             "--core-api", "http://127.0.0.1:8899/core-api",
             "--operator-token-file", "/tmp/opencode/operator.token",
             "--project-id", "project-1",
+            "--profile-id", "profile-1",
             "--authorization", "owner-ref",
             "--evidence-dir", "/tmp/opencode/evidence",
             "--compose-project", "sfe2e-recovery",
@@ -1027,6 +1143,7 @@ class CliTests(unittest.TestCase):
             "--core-api", "http://127.0.0.1:8899/core-api",
             "--operator-token-file", "/tmp/opencode/operator.token",
             "--project-id", "project-1",
+            "--profile-id", "profile-1",
             "--authorization", "owner-ref",
             "--evidence-dir", "/tmp/opencode/evidence",
             "--git-dir", "/tmp/opencode/git",
@@ -1046,6 +1163,7 @@ class CliTests(unittest.TestCase):
             "--core-api", "http://127.0.0.1:8899/core-api",
             "--operator-token-file", "/tmp/opencode/operator.token",
             "--project-id", "project-1",
+            "--profile-id", "profile-1",
             "--authorization", "owner-ref",
             "--evidence-dir", "/tmp/opencode/evidence",
             "--git-dir", "/tmp/opencode/git",
