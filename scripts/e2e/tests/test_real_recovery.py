@@ -285,6 +285,40 @@ class ContractTests(unittest.TestCase):
             self.assertIn("assert app.", " ".join(check["command"]))
 
 
+class ApiOriginTests(unittest.TestCase):
+    def request_with(self, base, method, path):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            response = mock.MagicMock()
+            response.read.return_value = b"{}"
+            response.status = 200
+            urlopen.return_value.__enter__.return_value = response
+            api = real_recovery.Api(base, "test-token")
+            getattr(api, method)(path, {}) if method == "post" else getattr(api, method)(path)
+            urlopen.assert_called_once()
+            return urlopen.call_args.args[0]
+
+    def test_origin_is_scheme_and_netloc(self):
+        for base, origin in (
+            ("http://127.0.0.1:8901/core-api", "http://127.0.0.1:8901"),
+            ("http://127.0.0.1:8901/core-api/", "http://127.0.0.1:8901"),
+            ("http://127.0.0.1:8901", "http://127.0.0.1:8901"),
+            ("https://factory.test/api", "https://factory.test"),
+        ):
+            request = self.request_with(base, "get", "/projects")
+            self.assertEqual(request.get_header("Origin"), origin)
+            self.assertEqual(request.get_header("Authorization"), "Bearer test-token")
+            self.assertEqual(request.full_url, base.rstrip("/") + "/projects")
+
+    def test_post_uses_the_same_origin(self):
+        request = self.request_with("http://127.0.0.1:8901/core-api", "post", "/projects")
+        self.assertEqual(request.get_header("Origin"), "http://127.0.0.1:8901")
+        self.assertEqual(request.full_url, "http://127.0.0.1:8901/core-api/projects")
+
+    def test_relative_base_is_refused(self):
+        with self.assertRaises(real_recovery.ScenarioError):
+            real_recovery.Api("/core-api", "token")
+
+
 class FakeApi:
     """Records calls and serves canonical Core JSON shapes."""
 
