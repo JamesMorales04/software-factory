@@ -1649,8 +1649,8 @@ class Scenario:
         critical = {
             "model_call_reservations": (
                 "SELECT role,state,provider,model,created_at FROM model_call_reservations "
-                "WHERE created_at>=?1 ORDER BY created_at",
-                (self.started_at,),
+                "WHERE project_id=?1 ORDER BY created_at",
+                (self.args.project_id,),
             ),
             "agentic_assessments": (
                 "SELECT count(*) FROM agentic_assessments WHERE request_id=?1",
@@ -1798,8 +1798,8 @@ class Scenario:
             "model_call_reservations": (
                 "SELECT reservation_id,role,provider,model,state,input_tokens,output_tokens,"
                 "total_tokens,cost_micros,usage_known,created_at,updated_at "
-                "FROM model_call_reservations WHERE created_at>=?1 ORDER BY created_at",
-                (self.started_at,),
+                "FROM model_call_reservations WHERE project_id=?1 ORDER BY created_at",
+                (self.args.project_id,),
             ),
             "provider_sessions": (
                 "SELECT session_record_id,attempt_id,generation,state,provider,model,"
