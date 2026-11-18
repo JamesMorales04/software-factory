@@ -573,6 +573,9 @@ class FailurePathTests(unittest.TestCase):
                 calls.append("assess")
                 raise TimeoutError("timed out")
 
+            def prepare_plan(self):
+                calls.append("prepare_plan")
+
             def write(self, name, payload):
                 (self.evidence / name).write_text(json.dumps(payload), encoding="utf-8")
 
@@ -834,8 +837,9 @@ class OrchestratorConsumerTests(unittest.TestCase):
         scenario = self.scenario()
         assess_projection = {
             "id": "intake-1",
-            "state": "AWAITING_APPROVAL",
-            "plan": {"plan_hash": "9" * 64},
+            "state": "PLAN_READY",
+            "plan": None,
+            "environment": {"status": "MISSING", "planId": None, "planSha256": None},
             "profile": {"id": "profile-1", "revisionId": "rev-1", "contentHash": "8" * 64},
         }
         admission = {
@@ -860,6 +864,31 @@ class OrchestratorConsumerTests(unittest.TestCase):
                  "transport": "OPENCODE_GO_SUBSCRIPTION"},
             ],
         }
+        recompiled = {
+            "status": "CORE_VALIDATED",
+            "planId": "env-plan-1",
+            "planRevision": 1,
+            "planSha256": "a" * 64,
+            "specSha256": None,
+            "plan": {"plan_id": "env-plan-1", "revision": 1},
+        }
+        reviewed = {
+            "status": "FROZEN",
+            "planId": "env-plan-1",
+            "planRevision": 1,
+            "planSha256": "a" * 64,
+            "specSha256": "b" * 64,
+            "spec": {"spec_id": "spec-1"},
+        }
+        planned = {
+            "validated": {"units": [{"id": "unit-1"}], "graph_sha256": "c" * 64},
+            "participantPlan": {"id": "participant-1"},
+            "planning": {"ready": True},
+        }
+        frozen = {
+            "plan": {"plan_hash": "9" * 64, "request_id": "lead-1"},
+            "request": {"state": "READY"},
+        }
         approval = {
             "campaignId": "campaign-1",
             "campaign": {"id": "campaign-1", "status": "AUTHORIZED", "action_id": "act-1"},
@@ -870,10 +899,15 @@ class OrchestratorConsumerTests(unittest.TestCase):
                 "/intake/requests": {
                     "id": "intake-1",
                     "actionId": "act-1",
+                    "leadRequestId": "lead-1",
                     "profile": {"revisionId": "rev-1", "contentHash": "8" * 64},
                 },
                 "/intake/requests/intake-1/assess": assess_projection,
                 "/intake/requests/intake-1/subscription-admission": admission,
+                "/agentic/requests/intake-1/environment/recompile": recompiled,
+                "/agentic/requests/intake-1/environment/review": reviewed,
+                "/agentic/requests/intake-1/plan": planned,
+                "/lead/requests/lead-1/freeze": frozen,
                 "/intake/requests/intake-1/approve": approval,
             },
             post_status_response=(409, {"code": "MONETARY_AUTHORIZATION_NOT_APPLICABLE"}),
@@ -882,11 +916,31 @@ class OrchestratorConsumerTests(unittest.TestCase):
         self.write_assumption(scenario)
         scenario.admit()
         scenario.assess()
+        scenario.prepare_plan()
         scenario.approve()
         self.assertEqual(scenario.plan_hash, "9" * 64)
         self.assertEqual(scenario.profile_revision_id, "rev-1")
         self.assertEqual(scenario.admission_id, "admission-1")
         self.assertEqual(scenario.campaign, "campaign-1")
+        posts = [call[1] for call in scenario.api.calls if call[0] == "POST"]
+        self.assertEqual(posts.count("/intake/requests/intake-1/assess"), 1)
+        for path in (
+            "/intake/requests/intake-1/assess",
+            "/agentic/requests/intake-1/environment/recompile",
+            "/agentic/requests/intake-1/environment/review",
+            "/agentic/requests/intake-1/plan",
+            "/lead/requests/lead-1/freeze",
+            "/intake/requests/intake-1/approve",
+        ):
+            self.assertIn(path, posts)
+        self.assertLess(posts.index("/agentic/requests/intake-1/environment/recompile"),
+                        posts.index("/agentic/requests/intake-1/environment/review"))
+        self.assertLess(posts.index("/agentic/requests/intake-1/environment/review"),
+                        posts.index("/agentic/requests/intake-1/plan"))
+        self.assertLess(posts.index("/agentic/requests/intake-1/plan"),
+                        posts.index("/lead/requests/lead-1/freeze"))
+        self.assertLess(posts.index("/lead/requests/lead-1/freeze"),
+                        posts.index("/intake/requests/intake-1/approve"))
         approve_call = next(
             call for call in scenario.api.calls
             if call[0] == "POST" and call[1] == "/intake/requests/intake-1/approve"
@@ -894,12 +948,32 @@ class OrchestratorConsumerTests(unittest.TestCase):
         self.assertEqual(approve_call[2]["subscription_admission_id"], "admission-1")
         self.assertNotIn("authorized_micros", approve_call[2])
         self.assertEqual(approve_call[2]["expected_plan_hash"], "9" * 64)
-        negative = next(
-            call for call in scenario.api.calls
-            if call[0] == "POST_STATUS" and call[1] == "/intake/requests/intake-1/approve"
+
+    def test_plan_sequence_fails_closed_without_a_validated_workgraph(self):
+        scenario = self.scenario()
+        scenario.intake = "intake-1"
+        scenario.lead_request_id = "lead-1"
+        scenario.environment_plan = {
+            "status": "CORE_VALIDATED", "planId": "env-plan-1",
+            "planRevision": 1, "planSha256": "a" * 64,
+        }
+        scenario.api = FakeApi(
+            post_routes={
+                "/agentic/requests/intake-1/environment/review": {
+                    "status": "FROZEN", "specSha256": "b" * 64,
+                },
+                "/agentic/requests/intake-1/plan": {
+                    "validated": {"units": []}, "participantPlan": None,
+                },
+            }
         )
-        self.assertGreater(negative[2]["authorized_micros"], 0)
-        self.assertEqual(negative[2]["subscription_admission_id"], "admission-1")
+        with self.assertRaises(real_recovery.ScenarioError) as raised:
+            scenario.environment_review()
+            scenario.plan_workgraph()
+            scenario.freeze_lead_plan()
+        self.assertIn("validated participant WorkGraph", str(raised.exception))
+        posts = [call[1] for call in scenario.api.calls if call[0] == "POST"]
+        self.assertNotIn("/lead/requests/lead-1/freeze", posts)
 
     def test_admit_refuses_without_a_current_owner_assumption(self):
         scenario = self.scenario()
@@ -1165,6 +1239,18 @@ class OrchestratorConsumerTests(unittest.TestCase):
         self.assertNotIn("pip", flake)
         self.assertNotIn("python3Packages", flake)
 
+    def test_environment_binding_must_match_every_check(self):
+        spec = {"environment_plan_id": "env-plan-1", "environment_spec_sha256": "b" * 64}
+        env = {"planId": "env-plan-1", "specSha256": "b" * 64}
+        checks = [
+            {"id": "status", "environment_plan_id": "env-plan-1", "environment_spec_sha256": "b" * 64},
+            {"id": "version", "environment_plan_id": "env-plan-1", "environment_spec_sha256": "b" * 64},
+        ]
+        self.assertEqual(real_recovery.environment_binding_problems(spec, checks, env), [])
+        bad = [dict(checks[0], environment_spec_sha256="c" * 64), checks[1]]
+        self.assertTrue(real_recovery.environment_binding_problems(spec, bad, env))
+        self.assertTrue(real_recovery.environment_binding_problems(spec, checks, {}))
+
     def test_objective_and_checks_keep_the_exact_status_and_version_contract(self):
         self.assertIn("status() must return exactly", real_recovery.OBJECTIVE)
         self.assertIn("version() must return", real_recovery.OBJECTIVE)
@@ -1385,6 +1471,9 @@ class OrchestratorConsumerTests(unittest.TestCase):
             def assess(self):
                 pass
 
+            def prepare_plan(self):
+                pass
+
             def approve(self):
                 pass
 
@@ -1457,6 +1546,7 @@ class OrchestratorConsumerTests(unittest.TestCase):
         scenario.prepare = lambda: None
         scenario.assess = lambda: None
         scenario.admit = lambda: None
+        scenario.prepare_plan = lambda: None
         scenario.approve = lambda: None
         scenario.verify_contract = lambda: None
         scenario.watch_gen1 = lambda: {"observed_at": "2026-11-18T00:00:00Z"}

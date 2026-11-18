@@ -152,9 +152,18 @@ the admission.
    admission and makes no provider call. Core remains the validator of the
    window and of the exact V2 profile/canonical route. The admission id is
    request-scoped and is never reused.
-3. Run `POST /intake/requests/{id}/assess`, require `AWAITING_APPROVAL` and the
-   frozen `plan_hash`/profile identity.
-4. Approve with the exact plan hash, profile revision/hash and
+3. Run `POST /intake/requests/{id}/assess` **once**. The real assessment records
+   the Lead proposal and leaves `PLAN_READY`; this is not an approval and it is
+   never re-posted. Complete the operator sequence with the existing endpoints:
+   `POST /agentic/requests/{id}/environment/recompile` (committed flake, no
+   model) → `POST /agentic/requests/{id}/environment/review` with the returned
+   `planSha256`/`planRevision` (Lead environment review, funded) →
+   `POST /agentic/requests/{id}/plan` (one Planner WorkGraph call) →
+   `POST /lead/requests/{lead_request_id}/freeze` (Lead plan/ActionSpec freeze,
+   no second Lead assessment). Fail closed if any step, the environment
+   `specSha256`, the participant WorkGraph or the environment binding on every
+   check is missing.
+4. Approve with the **frozen** plan hash, profile revision/hash and
    `subscription_admission_id` — no `authorized_micros` on the production path.
    Before that real approval, probe the same request with a positive
    `authorized_micros`; Core must refuse it with
