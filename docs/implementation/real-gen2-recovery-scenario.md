@@ -157,7 +157,8 @@ the admission.
    never re-posted. Complete the operator sequence with the existing endpoints:
    `POST /agentic/requests/{id}/environment/recompile` (committed flake, no
    model) → `POST /agentic/requests/{id}/environment/review` with the returned
-   `planSha256`/`planRevision` (Lead environment review, funded) →
+   `planSha256`/`planRevision` (a **separate funded Lead review reservation**
+   from the assessment; never counted as a second assessment) →
    `POST /agentic/requests/{id}/plan` (one Planner WorkGraph call) →
    `POST /lead/requests/{lead_request_id}/freeze` (Lead plan/ActionSpec freeze,
    no second Lead assessment). Fail closed if any step, the environment

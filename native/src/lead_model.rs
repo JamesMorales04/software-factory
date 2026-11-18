@@ -147,12 +147,14 @@ next step; for informational or audit without change, use exactly {no_action:?}.
 {checks_instruction} A change request must carry \
 a real estimated or unknown effort estimate. For status=estimated, unit must be \"person-hours\", \
 0 <= minPersonHours <= maxPersonHours, maxPersonHours >= 1, assumptions must be non-empty, and \
-unknownReason must be empty. Objective: {objective}. Project: {project_id}. Action: \
+unknownReason must be empty. Objective: {objective}\nProject: {project_id}. Action: \
 {action_id}. Request: {request_id}. Allowed evidence refs: [\"repository-files\"]. Outer allowed paths (choose the smallest needed subset): \
 {paths:?}. Outer capabilities (choose the smallest needed subset): {capabilities:?}. Route: {route:?}. ActionSpec: {spec}. Model output is \
 advisory; Core validates and freezes it. Hard constraints: schemaRevision=1; echo projectId, actionId \
 and requestId exactly; evidenceRefs must be [\"repository-files\"]; proposal.projectId, actionId, \
-baseRevision, projectConfigHash and objective must match the provided context exactly; proposal.class \
+baseRevision, projectConfigHash and objective must match the provided context exactly. Copy \
+proposal.objective byte-for-byte from the frozen Objective, including its final punctuation and any \
+trailing period: do not append, trim, normalize, paraphrase or reformat it. proposal.class \
 must be one of {classes:?}; proposal.qualityProfile must be {quality:?}; riskClass must be \"R0\"; \
 {environment_instruction} The verifier executes checks in the frozen project environment, not a \
 global language image. Do not assume cargo, rustc, python3, node, npm or any other executable exists \
@@ -439,6 +441,31 @@ mod tests {
             greenfield: false,
         };
         assessment_prompt(&request).unwrap()
+    }
+
+    #[test]
+    fn prompt_requires_byte_for_byte_objective_copying() {
+        let prompt = assessment_prompt_for_test();
+        assert!(
+            prompt.contains("Copy proposal.objective byte-for-byte"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("including its final punctuation"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("do not append, trim, normalize, paraphrase or reformat"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("Objective: Review the repository without changing it.\nProject:"),
+            "the prompt must not append a second period to the objective"
+        );
+        assert!(
+            !prompt.contains("Review the repository without changing it.."),
+            "{prompt}"
+        );
     }
 
     #[test]

@@ -6705,6 +6705,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn freeze_forbids_a_proposal_objective_with_an_extra_period() {
+        for (label, extra_period, frozen_expected) in
+            [("mismatch", true, false), ("exact", false, true)]
+        {
+            let (path, db, _) = fixture().await;
+            let action_id = action(&db).await;
+            let (request, _) = db
+                .create_lead_request(
+                    "project",
+                    &action_id,
+                    "grant",
+                    "Implement the feature.",
+                    &config_hash(),
+                    &format!("objective-{label}-request"),
+                )
+                .await
+                .unwrap();
+            db.begin_lead_assessment(&request.id).await.unwrap();
+            let mut value = assessment();
+            value.action_id = action_id.clone();
+            value.request_id = request.id.clone();
+            if let Some(proposal) = value.proposal.as_mut() {
+                proposal.action_id = action_id.clone();
+                proposal.objective = if extra_period {
+                    format!("{}.", request.objective)
+                } else {
+                    request.objective.clone()
+                };
+            }
+            let input = AssessmentInput {
+                project_id: "project".into(),
+                action_id: action_id.clone(),
+                request_id: request.id.clone(),
+                objective: request.objective.clone(),
+                allowed_evidence_refs: std::collections::BTreeSet::from([
+                    "repository-files".to_string()
+                ]),
+            };
+            db.record_lead_assessment(
+                &request.id,
+                "MODEL",
+                &value,
+                &input,
+                &format!("objective-{label}-assessment"),
+            )
+            .await
+            .unwrap();
+            let proposal = value.proposal.clone().unwrap();
+            db.record_lead_proposal(
+                &request.id,
+                &proposal,
+                &format!("objective-{label}-proposal"),
+            )
+            .await
+            .unwrap();
+            let result = db
+                .freeze_lead_plan_to_ready(&request.id, &format!("objective-{label}-freeze"))
+                .await;
+            if frozen_expected {
+                let (plan, ready) = result.unwrap();
+                assert!(!plan.plan_hash.is_empty());
+                assert_eq!(ready.state, LeadRequestState::Ready);
+            } else {
+                assert!(matches!(result, Err(Error::Forbidden(_))));
+                let frozen: i64 = sqlx::query_scalar::query_scalar(
+                    "SELECT COUNT(*) FROM frozen_lead_plans WHERE request_id=?1",
+                )
+                .bind(&request.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+                assert_eq!(frozen, 0);
+                let current = db.lead_request(&request.id).await.unwrap();
+                assert_eq!(current.state, LeadRequestState::Planned);
+                assert!(current.campaign_id.is_none());
+            }
+            db.close().await;
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[tokio::test]
     async fn campaign_cancellation_fences_open_work_and_is_idempotent() {
         let (path, db, _) = fixture().await;
         let action_id = action(&db).await;
