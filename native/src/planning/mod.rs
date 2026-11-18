@@ -16,6 +16,7 @@ pub mod docs;
 pub mod dod;
 pub mod environment;
 pub mod findings;
+pub mod helper_exceptions;
 pub mod license_policy;
 pub mod prompts;
 pub mod route;
