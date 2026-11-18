@@ -1317,7 +1317,7 @@ class Scenario:
         The independent verifier does not rely on this helper.
         """
         rows = self._db_rows(
-            "SELECT attempt_id,generation,check_id,outcome,candidate_sha256,receipt_id,received_at,"
+            "SELECT attempt_id,generation,check_id,outcome,candidate_sha256,receipt_id,created_at,"
             "command_sha256,session_record_id,sequence,call_id,work_item_id "
             "FROM execution_check_receipts WHERE attempt_id=?1 AND generation=?2 ORDER BY rowid",
             (self.attempt, generation),
@@ -1648,9 +1648,9 @@ class Scenario:
         }
         critical = {
             "model_call_reservations": (
-                "SELECT role,state,provider,model,created_at_ms FROM model_call_reservations "
-                "WHERE created_at_ms>=?1 ORDER BY created_at_ms",
-                (self.started_ms - 5_000,),
+                "SELECT role,state,provider,model,created_at FROM model_call_reservations "
+                "WHERE created_at>=?1 ORDER BY created_at",
+                (self.started_at,),
             ),
             "agentic_assessments": (
                 "SELECT count(*) FROM agentic_assessments WHERE request_id=?1",
@@ -1676,14 +1676,15 @@ class Scenario:
             result["provider_sessions"] = int(
                 self._db_rows(
                     "SELECT count(*) FROM provider_sessions WHERE attempt_id IS NOT NULL "
-                    "AND generation>=1"
+                    "AND generation>=1",
+                    (),
                 )[0][0]
             )
         except Exception as error:  # noqa: BLE001
             result["db_errors"]["provider_sessions"] = f"{type(error).__name__}: {error}"
         try:
             result["execution_check_receipts"] = int(
-                self._db_rows("SELECT count(*) FROM execution_check_receipts")[0][0]
+                self._db_rows("SELECT count(*) FROM execution_check_receipts", ())[0][0]
             )
         except Exception as error:  # noqa: BLE001
             result["db_errors"]["execution_check_receipts"] = f"{type(error).__name__}: {error}"
@@ -1797,8 +1798,8 @@ class Scenario:
             "model_call_reservations": (
                 "SELECT reservation_id,role,provider,model,state,input_tokens,output_tokens,"
                 "total_tokens,cost_micros,usage_known,created_at,updated_at "
-                "FROM model_call_reservations WHERE created_at_ms>=?1 ORDER BY created_at_ms",
-                (self.started_ms - 5_000,),
+                "FROM model_call_reservations WHERE created_at>=?1 ORDER BY created_at",
+                (self.started_at,),
             ),
             "provider_sessions": (
                 "SELECT session_record_id,attempt_id,generation,state,provider,model,"
@@ -1806,8 +1807,8 @@ class Scenario:
                 (),
             ),
             "execution_check_receipts": (
-                "SELECT receipt_id,attempt_id,generation,check_id,suite,outcome,received_at "
-                "FROM execution_check_receipts ORDER BY received_at DESC LIMIT 100",
+                "SELECT receipt_id,attempt_id,generation,work_item_id,suite,outcome,created_at "
+                "FROM execution_check_receipts ORDER BY created_at DESC LIMIT 100",
                 (),
             ),
             "subscription_scope_admissions": (

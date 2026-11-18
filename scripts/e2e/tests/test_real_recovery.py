@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -615,6 +616,98 @@ class FailurePathTests(unittest.TestCase):
         code, calls = self.main_with_failure("MODEL_CALL_SETTLED")
         self.assertEqual(code, 1)
         self.assertEqual(calls, ["assess", "capture", "cleanup"])
+
+
+class RealSchemaFailureTests(unittest.TestCase):
+    """Execute the reconciliation/capture SQL against the real migrations."""
+
+    project = "sfe2e-recovery-schema"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = HERE.parents[3]
+        self.db_dir = Path(self.tmp.name) / self.project
+        self.db_dir.mkdir()
+        self.db_path = self.db_dir / "factory.sqlite"
+        connection = sqlite3.connect(self.db_path)
+        for migration in sorted((self.root / "migrations").glob("*.sql")):
+            connection.executescript(migration.read_text(encoding="utf-8"))
+        connection.commit()
+        connection.close()
+        token = Path(self.tmp.name) / "operator.token"
+        token.write_text("token", encoding="utf-8")
+        self.args = argparse.Namespace(
+            root=str(self.root),
+            core_api="http://127.0.0.1:1",
+            operator_token_file=str(token),
+            project_id="proj",
+            profile_id="profile-1",
+            authorization="owner-ref",
+            evidence_dir=str(Path(self.tmp.name) / "evidence"),
+            compose_project=self.project,
+            git_dir=str(self.root),
+            core_database=str(self.db_path),
+            authorized_micros=0,
+            assumption_file="",
+            provider="opencode-go",
+            model="deepseek-v4.1-flash",
+        )
+
+    def scenario(self, state="ASSESSING"):
+        scenario = real_recovery.Scenario(self.args)
+        scenario.intake = "intake-1"
+        scenario.started_at = "2026-11-18T14:28:00Z"
+        scenario.api = FakeApi(
+            get_routes={"/intake/requests/intake-1": {"state": state}}
+        )
+        return scenario
+
+    def seed_call(self, state):
+        connection = sqlite3.connect(self.db_path)
+        connection.execute(
+            "INSERT INTO model_call_reservations (reservation_id,role,principal_id,project_id,"
+            "objective_id,scope_id,provider,model,purpose,request_sha256,max_input_tokens,"
+            "max_output_tokens,max_total_tokens,max_cost_micros,state,expires_at_ms,created_at,updated_at) "
+            "VALUES ('r1','LEAD','p','proj','obj','scope','opencode-go','deepseek-v4.1-flash','assess',?,1,1,1,1,?,9999999999999,'2026-11-18T14:29:00Z','2026-11-18T14:29:00Z')",
+            ("a" * 64, state),
+        )
+        connection.commit()
+        connection.close()
+
+    def test_real_schema_is_captured_and_reserved_is_unknown(self):
+        self.seed_call("RESERVED")
+        scenario = self.scenario()
+        facts = scenario._failure_db_rows()
+        self.assertEqual(facts["critical_error"], "")
+        self.assertEqual(facts["db_errors"], {})
+        self.assertEqual(facts["calls"][0][1], "RESERVED")
+        result = scenario.reconcile_failure(settle_timeout=0)
+        self.assertTrue(result["db_captured"])
+        self.assertEqual(result["outcome"], "MODEL_CALL_OUTCOME_UNKNOWN")
+        snapshot = scenario.capture_failure_db()
+        self.assertEqual(snapshot["model_call_reservations"]["rows"][0][4], "RESERVED")
+        self.assertNotIn("state", snapshot["model_call_reservations"])
+
+    def test_real_schema_terminal_settled_is_safe_after_capture(self):
+        self.seed_call("SETTLED")
+        scenario = self.scenario(state="AWAITING_APPROVAL")
+        result = scenario.reconcile_failure(settle_timeout=0)
+        self.assertTrue(result["db_captured"])
+        self.assertEqual(result["outcome"], "MODEL_CALL_SETTLED")
+        scenario.capture_failure(TimeoutError("timed out"))
+        self.assertTrue(real_recovery._safe_to_cleanup(scenario))
+
+    def test_real_schema_empty_captured_database_is_not_unknown(self):
+        scenario = self.scenario(state="AWAITING_APPROVAL")
+        result = scenario.reconcile_failure(settle_timeout=0)
+        self.assertTrue(result["db_captured"])
+        self.assertEqual(result["outcome"], "NO_MODEL_CALL_CAPTURED")
+        self.assertTrue(real_recovery._safe_to_cleanup(self.tmp_after_capture(scenario)))
+
+    def tmp_after_capture(self, scenario):
+        scenario.capture_failure(TimeoutError("timed out"))
+        return scenario
 
 
 class OrchestratorConsumerTests(unittest.TestCase):
