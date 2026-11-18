@@ -2676,5 +2676,150 @@ class CheckExecutionTests(unittest.TestCase):
             self.assertEqual(result["stderrTail"], "")
 
 
+class ApprovedHelperIdentityTests(unittest.TestCase):
+    """Offline proof for the exact approved deriver-less helper catalog."""
+
+    FIXTURE = HERE / "fixtures" / "deriverless-closure-inventory.json"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.inventory = json.loads(cls.FIXTURE.read_text(encoding="utf-8"))
+        cls.pin = cls.inventory["identity"]["nixpkgsPin"]
+        cls.deriverless = [
+            entry for entry in cls.inventory["entries"] if entry.get("deriverLess")
+        ]
+        cls.all_paths = {entry["path"] for entry in cls.deriverless}
+        cls.legacy = set(cls.inventory["allowedToday"])
+        cls.new_paths = cls.all_paths - cls.legacy
+
+    def _manifest(self) -> list[dict]:
+        entries = self.inventory["entries"]
+        references: dict[str, list[str]] = {entry["path"]: [] for entry in entries}
+        for entry in entries:
+            for referrer in entry.get("referrers") or []:
+                if referrer in references:
+                    references[referrer].append(entry["path"])
+        return [
+            {
+                "path": entry["path"],
+                "narHash": entry["narHash"],
+                "narSize": entry["narSize"],
+                "deriver": entry["deriver"],
+                "references": references[entry["path"]],
+            }
+            for entry in entries
+        ]
+
+    @staticmethod
+    def _regular(_path: str) -> bool:
+        return True
+
+    def test_catalog_is_exact_and_pin_scoped(self) -> None:
+        identities = cli.APPROVED_HELPER_IDENTITIES[self.pin]
+        self.assertEqual(len(identities), 14)
+        self.assertEqual(len(self.new_paths), 12)
+        self.assertEqual(set(identities), self.all_paths)
+        for path, identity in identities.items():
+            self.assertTrue(path.startswith("/nix/store/"))
+            self.assertTrue(path.endswith(".sh"))
+            self.assertTrue(identity["narHash"].startswith("sha256-"))
+            self.assertEqual(len(identity["referrerSetSha256"]), 64)
+            self.assertIsInstance(identity["legacy"], bool)
+
+    def test_entire_exact_closure_is_approved_offline(self) -> None:
+        manifest = self._manifest()
+        self.assertEqual(len(manifest), 73)
+        approved, rejected = cli._classify_deriverless_helpers(
+            self.pin, manifest, is_regular_file=self._regular
+        )
+        self.assertEqual(rejected, [])
+        self.assertEqual(set(approved), self.all_paths)
+        self.assertEqual(len(approved), 14)
+        self.assertEqual(len(set(approved) & self.new_paths), 12)
+
+    def test_unknown_deriverless_helper_is_rejected(self) -> None:
+        manifest = self._manifest()
+        manifest.append(
+            {
+                "path": "/nix/store/" + "a" * 32 + "-evil.sh",
+                "narHash": "sha256-" + "A" * 43 + "=",
+                "narSize": 10,
+                "deriver": "",
+                "references": ["/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux"],
+            }
+        )
+        approved, rejected = cli._classify_deriverless_helpers(
+            self.pin, manifest, is_regular_file=self._regular
+        )
+        self.assertEqual(len(approved), 14)
+        self.assertEqual([row["storePath"] for row in rejected], ["/nix/store/" + "a" * 32 + "-evil.sh"])
+
+    def test_nar_hash_mismatch_is_rejected(self) -> None:
+        manifest = self._manifest()
+        target = next(entry for entry in manifest if entry["path"] in self.new_paths)
+        target["narHash"] = "sha256-" + "B" * 43 + "="
+        approved, rejected = cli._classify_deriverless_helpers(
+            self.pin, manifest, is_regular_file=self._regular
+        )
+        self.assertEqual(len(approved), 13)
+        self.assertEqual([row["storePath"] for row in rejected], [target["path"]])
+
+    def test_referrer_set_mismatch_is_rejected(self) -> None:
+        manifest = self._manifest()
+        target = next(entry for entry in manifest if entry["path"] in self.new_paths)
+        for entry in manifest:
+            entry["references"] = [
+                reference for reference in entry.get("references", []) if reference != target["path"]
+            ]
+        approved, rejected = cli._classify_deriverless_helpers(
+            self.pin, manifest, is_regular_file=self._regular
+        )
+        self.assertEqual(len(approved), 13)
+        self.assertEqual([row["storePath"] for row in rejected], [target["path"]])
+
+    def test_non_regular_store_entry_is_rejected(self) -> None:
+        manifest = self._manifest()
+        approved, rejected = cli._classify_deriverless_helpers(
+            self.pin, manifest, is_regular_file=lambda _path: False
+        )
+        self.assertEqual(set(approved), self.legacy)
+        self.assertEqual(len(rejected), 12)
+        self.assertEqual({row["storePath"] for row in rejected}, self.new_paths)
+
+    def test_symlink_store_entry_is_rejected(self) -> None:
+        manifest = self._manifest()
+        with mock.patch("environment_builder.cli.os.path.islink", return_value=True):
+            approved, rejected = cli._classify_deriverless_helpers(
+                self.pin, manifest, is_regular_file=self._regular
+            )
+        self.assertEqual(set(approved), self.legacy)
+        self.assertEqual(len(rejected), 12)
+
+    def test_pin_change_keeps_only_legacy_paths(self) -> None:
+        manifest = self._manifest()
+        approved, rejected = cli._classify_deriverless_helpers(
+            "github:NixOS/nixpkgs/" + "0" * 40,
+            manifest,
+            is_regular_file=self._regular,
+        )
+        self.assertEqual(set(approved), self.legacy)
+        self.assertEqual(len(rejected), 12)
+
+    def test_suffix_or_pattern_is_never_accepted(self) -> None:
+        manifest = self._manifest()
+        target = next(entry for entry in manifest if entry["path"] in self.new_paths)
+        manifest.append(
+            {
+                **target,
+                "path": target["path"] + ".bak",
+            }
+        )
+        approved, rejected = cli._classify_deriverless_helpers(
+            self.pin, manifest, is_regular_file=self._regular
+        )
+        self.assertEqual(len(approved), 14)
+        self.assertEqual([row["storePath"] for row in rejected], [target["path"] + ".bak"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -64,6 +64,7 @@ from .policy import (
 from .receipt import build_receipt, observe_attestation
 from .sbom import build_sbom, license_inventory_copy, sbom_sha256, sbom_text
 from .util import (
+    canonical_json,
     last_nonempty_line,
     now_rfc3339,
     read_json,
@@ -913,15 +914,106 @@ REVIEWED_SUBSTRATE_IDENTITIES: dict[
         ): {"name": "nix", "version": "2.28.3", "license": "LGPL-2.1-only"},
     }
 }
-# Exact reviewed deriver-less helper identities. Devenv materialises strip.sh
-# without a deriver; any other deriver-less path fails closed.
-REVIEWED_DERIVERLESS_HELPERS: frozenset[str] = frozenset(
-    {
-        "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
-        # Stdenv's generated move-docs helper: exact deriver-less path observed
-        # in the reviewed builder SBOM for the pinned nixpkgs revision.
-        "/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh",
-    }
+# Exact approved deriver-less helper identities, scoped to one nixpkgs pin.
+# Each non-legacy identity binds the full store path, NAR hash and the
+# sorted referrer-set hash observed in the reviewed inventory. Legacy
+# entries keep their existing path-only acceptance. No suffix, pattern or
+# plan-provided identity is accepted.
+APPROVED_HELPER_IDENTITIES: dict[str, dict[str, dict[str, Any]]] = {
+    "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d": {
+        "/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh": {
+            "name": "move-docs.sh",
+            "narHash": "sha256-LFXKr+/5UKMCEYyEpyotSs23Xr0Vwhzlv6YGyO/dqzI=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": True,
+        },
+        "/nix/store/cickvswrvann041nqxb0rxilc46svw1n-prune-libtool-files.sh": {
+            "name": "prune-libtool-files.sh",
+            "narHash": "sha256-0DC4P4/oI7F2AJ/9K6MUMNP818Ol4i+fvpJt3D2HyJs=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/cmzya9irvxzlkh7lfy6i82gbp0saxqj3-multiple-outputs.sh": {
+            "name": "multiple-outputs.sh",
+            "narHash": "sha256-9xd9l6/GeN1DX0xqIZtdJltbBaUBOAJAuFIlvdduqRc=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/fyaryjvghbkpfnsyw97hb3lyb37s1pd6-move-lib64.sh": {
+            "name": "move-lib64.sh",
+            "narHash": "sha256-SDQRJiS2AfWlONR8W8dEGuNPeLET7IuPLOm5vQBh2C0=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/h9lc1dpi14z7is86ffhl3ld569138595-audit-tmpdir.sh": {
+            "name": "audit-tmpdir.sh",
+            "narHash": "sha256-tMYdNz2xetDsQK1FEy3126+UqdkB8cXN4l/Zgbv3tm0=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/hxv896faph0rqxjq2ycxpcrbnngc95sz-patch-shebangs.sh": {
+            "name": "patch-shebangs.sh",
+            "narHash": "sha256-TRd6N2KO74qqyBQxi1ihprZTMcgR6eAw5Z+HxpwF9Tc=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/jjhw2phnaip4kg0qjas3x3fsaifi8y0w-no-broken-symlinks.sh": {
+            "name": "no-broken-symlinks.sh",
+            "narHash": "sha256-/t5eWNc5nQI9BbgQQFRVf4dy5Ph0lNq7fK24H8Pmjxc=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/kd4xwxjpjxi71jkm6ka0np72if9rm3y0-move-sbin.sh": {
+            "name": "move-sbin.sh",
+            "narHash": "sha256-exQDue2oXLDKVrh7CiPpj7WjA5qhZfskrLzpYkAFiy0=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/m54bmrhj6fqz8nds5zcj97w9s9bckc9v-compress-man-pages.sh": {
+            "name": "compress-man-pages.sh",
+            "narHash": "sha256-nvkpux1XBRA6JnXeEphB25xVbHKTz1bkBF3/K7HGbU0=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/pag6l61paj1dc9sv15l7bm5c17xn5kyk-move-systemd-user-units.sh": {
+            "name": "move-systemd-user-units.sh",
+            "narHash": "sha256-ApvZCwlSSuSA6bGuBQGi+EIncpLHju2Uhro27Mb8wMA=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh": {
+            "name": "strip.sh",
+            "narHash": "sha256-/kocrQCaIGEh7zh26MuHLTtmIp5yJylHriY/yVFhPk4=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": True,
+        },
+        "/nix/store/wgrbkkaldkrlrni33ccvm3b6vbxzb656-make-symlinks-relative.sh": {
+            "name": "make-symlinks-relative.sh",
+            "narHash": "sha256-M5wxSjy928eIoBBePFKFPVHxbvVNJaOSHGej8zueD0A=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/xyff06pkhki3qy1ls77w10s0v79c9il0-reproducible-builds.sh": {
+            "name": "reproducible-builds.sh",
+            "narHash": "sha256-9TquSNTf3+sENOwMmBFmniGPTzbIX9Sn2PFfuJ4i0UA=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/z7k98578dfzi6l3hsvbivzm7hfqlk0zc-set-source-date-epoch-to-latest.sh": {
+            "name": "set-source-date-epoch-to-latest.sh",
+            "narHash": "sha256-O6Gjn5FQzTLFmOLmXU5J4i6ei4gvLK7fo6vA+C0lmn0=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+    },
+}
+# Legacy path-only identities stay accepted exactly as before, independent of
+# the pin. New identities never fall back to path-only acceptance.
+LEGACY_HELPER_PATHS: frozenset[str] = frozenset(
+    path
+    for identities in APPROVED_HELPER_IDENTITIES.values()
+    for path, identity in identities.items()
+    if identity.get("legacy") is True
 )
 STORE_NAME_VERSION = re.compile(r"^([A-Za-z0-9_+.-]+?)-(\d.*)$")
 
@@ -1141,6 +1233,133 @@ def _validate_closure_licenses_reporting_all(
         ) from error
 
 
+MAX_HELPER_MESSAGE_CHARS = 900
+
+
+def _helper_referrer_set_sha256(manifest: list[dict[str, Any]], path: str) -> str:
+    referrers = sorted(
+        str(entry.get("path", ""))
+        for entry in manifest
+        if isinstance(entry, dict) and path in (entry.get("references") or [])
+    )
+    return sha256_text(canonical_json(referrers))
+
+
+def _helper_candidate(
+    manifest: list[dict[str, Any]],
+    entry: dict[str, Any],
+    *,
+    is_regular_file: Any = os.path.isfile,
+) -> dict[str, Any]:
+    path = str(entry.get("path", ""))
+    return {
+        "storePath": path,
+        "narHash": str(entry.get("narHash", "")),
+        "narSize": int(entry.get("narSize", 0) or 0),
+        "referrerSetSha256": _helper_referrer_set_sha256(manifest, path),
+        "regularFile": bool(is_regular_file(path)) and not os.path.islink(path),
+    }
+
+
+def _classify_deriverless_helpers(
+    pin: str,
+    manifest: list[dict[str, Any]],
+    *,
+    exclude: set[str] | None = None,
+    is_regular_file: Any = os.path.isfile,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Split deriver-less paths into approved identities and rejected facts.
+
+    The approved catalog is exact: pin, store path, NAR hash and the sorted
+    referrer-set hash. Legacy entries keep their existing path-only acceptance.
+    Nothing from the plan or workspace can add an identity.
+    """
+
+    approved: list[str] = []
+    rejected: list[dict[str, Any]] = []
+    identities = APPROVED_HELPER_IDENTITIES.get(pin, {})
+    for entry in manifest:
+        if not isinstance(entry, dict):
+            continue
+        path = str(entry.get("path", ""))
+        if path in (exclude or set()):
+            continue
+        deriver_value = entry.get("deriver")
+        deriver = str(deriver_value).strip() if deriver_value is not None else ""
+        if deriver:
+            continue
+        if path in LEGACY_HELPER_PATHS:
+            approved.append(path)
+            continue
+        candidate = _helper_candidate(manifest, entry, is_regular_file=is_regular_file)
+        identity = identities.get(path)
+        if identity is not None and (
+            candidate["narHash"] == identity.get("narHash")
+            and candidate["referrerSetSha256"] == identity.get("referrerSetSha256")
+            and candidate["regularFile"] is True
+        ):
+            approved.append(path)
+            continue
+        rejected.append(candidate)
+    return approved, rejected
+
+
+def _deriverless_helper_failure(
+    candidates: list[dict[str, Any]], log: BuildLog
+) -> str:
+    """Exhaustive facts through the existing broker capture channel.
+
+    The payload is written to the same ``closure-license-inventory.json`` file
+    the broker already reads from the cache volume before cleanup, so the
+    evidence is retained by an existing mechanism instead of a new one. The
+    cache volume is disposable; what survives is the broker log line carrying
+    the bounded JSON. The blocker message only carries whole entries that fit
+    its contract and states the truncation explicitly.
+    """
+
+    ordered = sorted(candidates, key=lambda candidate: str(candidate["storePath"]))
+    payload: dict[str, Any] = {
+        "schemaVersion": 1,
+        "source": "builder-deriver-less-helpers",
+        "total": len(ordered),
+        "sha256": sha256_text(canonical_json(ordered)),
+        "candidates": ordered,
+    }
+    rendered = json.dumps(payload, indent=2, sort_keys=True)
+    capture_complete = len(rendered.encode("utf-8")) <= CLOSURE_LICENSE_CAPTURE_BYTES
+    payload["captureComplete"] = capture_complete
+    payload["captureReason"] = (
+        ""
+        if capture_complete
+        else "deriver-less helper facts exceed the 60 KiB broker capture bound"
+    )
+    path = log.path.parent / CLOSURE_LICENSE_INVENTORY_FILE
+    write_json(path, payload)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    prefix = (
+        "deriver-less closure paths are not in the exact approved identity catalog; "
+        f"total={payload['total']} "
+        f"sha256={payload['sha256']} captured={CLOSURE_LICENSE_INVENTORY_FILE} "
+        f"captureComplete={'true' if capture_complete else 'false'} "
+    )
+    shown: list[dict[str, Any]] = []
+    for candidate in ordered:
+        attempt = shown + [candidate]
+        body = json.dumps(attempt, sort_keys=True, separators=(",", ":"))
+        if len(prefix) + len(body) + len(" truncated=true") > MAX_HELPER_MESSAGE_CHARS:
+            break
+        shown = attempt
+    truncated = len(shown) < len(ordered)
+    return (
+        prefix
+        + json.dumps(shown, sort_keys=True, separators=(",", ":"))
+        + f" truncated={'true' if truncated else 'false'}"
+    )
+
+
 def _closure_license_entries(
     plan: dict[str, Any],
     manifest: list[dict[str, Any]],
@@ -1154,6 +1373,7 @@ def _closure_license_entries(
     if not pin.startswith(NIXPKGS_PREFIX):
         fail("ENVIRONMENT_PIN_MISSING", "the plan has no pinned nixpkgs for closure verification")
     substrate_entries: list[dict[str, Any]] = []
+    substrate_paths: set[str] = set()
     paths: set[str] = set()
     for entry in manifest:
         if not isinstance(entry, dict):
@@ -1166,16 +1386,20 @@ def _closure_license_entries(
         substrate = _reviewed_substrate_identity(pin, path, deriver)
         if substrate is not None:
             substrate_entries.append(substrate)
+            substrate_paths.add(path)
             continue
-        if not deriver:
-            if path in REVIEWED_DERIVERLESS_HELPERS:
-                continue
-            fail(
-                "ENVIRONMENT_LICENSE_UNKNOWN",
-                f"deriver-less closure path is not a reviewed helper: {path}",
-            )
-        if path:
+        if path and deriver:
             paths.add(path)
+    _approved_helpers, helper_candidates = _classify_deriverless_helpers(
+        pin,
+        manifest,
+        exclude=(exclude or set()) | substrate_paths,
+    )
+    if helper_candidates:
+        fail(
+            "ENVIRONMENT_LICENSE_UNKNOWN",
+            _deriverless_helper_failure(helper_candidates, log),
+        )
     ordered_paths = sorted(paths)
     if not ordered_paths:
         return validate_closure_licenses(substrate_entries)

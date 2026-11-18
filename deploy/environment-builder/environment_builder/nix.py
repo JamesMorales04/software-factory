@@ -698,6 +698,10 @@ def closure_manifest(root: str | list[str]) -> list[dict[str, Any]]:
                 "narHash": str(info.get("narHash", "")),
                 "narSize": int(info.get("narSize", 0) or 0),
                 "deriver": str(info.get("deriver") or ""),
+                # Referrers are derived from this closure graph. They are the
+                # positive provenance fact behind a deriver-less helper: a
+                # generated stdenv script is referenced by the stdenv output.
+                "references": sorted(str(reference) for reference in info.get("references") or []),
             }
         )
     return manifest
