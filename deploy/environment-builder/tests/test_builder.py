@@ -372,21 +372,51 @@ class PolicyTests(unittest.TestCase):
         finally:
             log.close()
 
-    def _deriverless_manifest(self, count: int) -> list[dict]:
+    # Exact deriver-less identities observed in the Run8 closure inventory
+    # (sha256 6a355fcc…97c50): 14 paths, of which move-docs.sh and strip.sh are
+    # the two legacy reviewed helpers and the other twelve are unauthorized.
+    REAL_DERIVERLESS_HELPERS = [
+        ("/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh", "sha256-LFXKr+/5UKMCEYyEpyotSs23Xr0Vwhzlv6YGyO/dqzI=", 816),
+        ("/nix/store/cickvswrvann041nqxb0rxilc46svw1n-prune-libtool-files.sh", "sha256-0DC4P4/oI7F2AJ/9K6MUMNP818Ol4i+fvpJt3D2HyJs=", 1072),
+        ("/nix/store/cmzya9irvxzlkh7lfy6i82gbp0saxqj3-multiple-outputs.sh", "sha256-9xd9l6/GeN1DX0xqIZtdJltbBaUBOAJAuFIlvdduqRc=", 8432),
+        ("/nix/store/fyaryjvghbkpfnsyw97hb3lyb37s1pd6-move-lib64.sh", "sha256-SDQRJiS2AfWlONR8W8dEGuNPeLET7IuPLOm5vQBh2C0=", 904),
+        ("/nix/store/h9lc1dpi14z7is86ffhl3ld569138595-audit-tmpdir.sh", "sha256-tMYdNz2xetDsQK1FEy3126+UqdkB8cXN4l/Zgbv3tm0=", 1520),
+        ("/nix/store/hxv896faph0rqxjq2ycxpcrbnngc95sz-patch-shebangs.sh", "sha256-TRd6N2KO74qqyBQxi1ihprZTMcgR6eAw5Z+HxpwF9Tc=", 5248),
+        ("/nix/store/jjhw2phnaip4kg0qjas3x3fsaifi8y0w-no-broken-symlinks.sh", "sha256-/t5eWNc5nQI9BbgQQFRVf4dy5Ph0lNq7fK24H8Pmjxc=", 3104),
+        ("/nix/store/kd4xwxjpjxi71jkm6ka0np72if9rm3y0-move-sbin.sh", "sha256-exQDue2oXLDKVrh7CiPpj7WjA5qhZfskrLzpYkAFiy0=", 664),
+        ("/nix/store/m54bmrhj6fqz8nds5zcj97w9s9bckc9v-compress-man-pages.sh", "sha256-nvkpux1XBRA6JnXeEphB25xVbHKTz1bkBF3/K7HGbU0=", 1088),
+        ("/nix/store/pag6l61paj1dc9sv15l7bm5c17xn5kyk-move-systemd-user-units.sh", "sha256-ApvZCwlSSuSA6bGuBQGi+EIncpLHju2Uhro27Mb8wMA=", 880),
+        ("/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh", "sha256-/kocrQCaIGEh7zh26MuHLTtmIp5yJylHriY/yVFhPk4=", 4616),
+        ("/nix/store/wgrbkkaldkrlrni33ccvm3b6vbxzb656-make-symlinks-relative.sh", "sha256-M5wxSjy928eIoBBePFKFPVHxbvVNJaOSHGej8zueD0A=", 1280),
+        ("/nix/store/xyff06pkhki3qy1ls77w10s0v79c9il0-reproducible-builds.sh", "sha256-9TquSNTf3+sENOwMmBFmniGPTzbIX9Sn2PFfuJ4i0UA=", 608),
+        ("/nix/store/z7k98578dfzi6l3hsvbivzm7hfqlk0zc-set-source-date-epoch-to-latest.sh", "sha256-O6Gjn5FQzTLFmOLmXU5J4i6ei4gvLK7fo6vA+C0lmn0=", 1696),
+    ]
+    LEGACY_DERIVERLESS_HELPERS = {
+        "/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh",
+        "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
+    }
+
+    def _real_deriverless_manifest(self) -> list[dict]:
         return [
             {
-                "path": "/nix/store/" + f"{index:032x}" + f"-helper-{index}.sh",
+                "path": path,
                 "deriver": "",
-                "narHash": f"sha256-nar-{index}",
-                "narSize": index,
+                "narHash": nar_hash,
+                "narSize": nar_size,
                 "references": [],
             }
-            for index in range(count)
+            for path, nar_hash, nar_size in self.REAL_DERIVERLESS_HELPERS
         ]
 
-    def test_deriverless_helpers_report_exhaustive_facts_and_fail(self) -> None:
+    def test_real_inventory_reports_the_twelve_unauthorized_helpers(self) -> None:
         pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
-        manifest = self._deriverless_manifest(14)
+        manifest = self._real_deriverless_manifest()
+        expected = {
+            path for path, _, _ in self.REAL_DERIVERLESS_HELPERS
+        } - self.LEGACY_DERIVERLESS_HELPERS
+        self.assertEqual(len(self.REAL_DERIVERLESS_HELPERS), 14)
+        self.assertEqual(len(expected), 12)
+
         workspace = Path(tempfile.mkdtemp())
         log = BuildLog(workspace / "closure.log")
         try:
@@ -397,14 +427,21 @@ class PolicyTests(unittest.TestCase):
                     )
             message = raised.exception.message
             self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
-            self.assertIn("total=14", message)
-            self.assertIn("captured=deriver-less-helpers.json", message)
+            self.assertIn("total=12", message)
+            self.assertIn("captured=closure-license-inventory.json", message)
             self.assertIn("truncated=true", message)
             self.assertLessEqual(len(message), 1_000)
 
-            captured = json.loads((workspace / "deriver-less-helpers.json").read_text())
-            self.assertEqual(captured["total"], 14)
-            self.assertEqual(len(captured["candidates"]), 14)
+            captured = json.loads(
+                (workspace / "closure-license-inventory.json").read_text()
+            )
+            self.assertEqual(captured["source"], "builder-deriver-less-helpers")
+            self.assertEqual(captured["total"], 12)
+            self.assertTrue(captured["captureComplete"])
+            self.assertEqual(captured["captureReason"], "")
+            reported = {candidate["storePath"] for candidate in captured["candidates"]}
+            self.assertEqual(reported, expected)
+            self.assertFalse(reported & self.LEGACY_DERIVERLESS_HELPERS)
             self.assertEqual(
                 captured["sha256"],
                 cli.sha256_text(cli.canonical_json(captured["candidates"])),
@@ -419,8 +456,19 @@ class PolicyTests(unittest.TestCase):
 
     def test_plan_supplied_exception_fields_never_authorize(self) -> None:
         pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
-        manifest = self._deriverless_manifest(1)
-        entry = manifest[0]
+        path, nar_hash, nar_size = next(
+            row
+            for row in self.REAL_DERIVERLESS_HELPERS
+            if row[0] not in self.LEGACY_DERIVERLESS_HELPERS
+        )
+        entry = {
+            "path": path,
+            "deriver": "",
+            "narHash": nar_hash,
+            "narSize": nar_size,
+            "references": [],
+        }
+        manifest = [entry]
         crafted_plan = {
             "nix": {"nixpkgs": pin},
             "planSha256": "a" * 64,

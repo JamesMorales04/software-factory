@@ -1157,24 +1157,43 @@ def _helper_referrer_set_sha256(manifest: list[dict[str, Any]], path: str) -> st
 def _deriverless_helper_failure(
     candidates: list[dict[str, Any]], log: BuildLog
 ) -> str:
-    """Exhaustive facts, with an explicit indicator when the message truncates.
+    """Exhaustive facts through the existing broker capture channel.
 
-    The full list is written beside the build log so no identity is lost; the
-    blocker message carries only complete entries that fit its contract.
+    The payload is written to the same ``closure-license-inventory.json`` file
+    the broker already reads from the cache volume before cleanup, so the
+    evidence is retained by an existing mechanism instead of a new one. The
+    cache volume is disposable; what survives is the broker log line carrying
+    the bounded JSON. The blocker message only carries whole entries that fit
+    its contract and states the truncation explicitly.
     """
 
     ordered = sorted(candidates, key=lambda candidate: str(candidate["storePath"]))
-    payload = {
+    payload: dict[str, Any] = {
         "schemaVersion": 1,
+        "source": "builder-deriver-less-helpers",
         "total": len(ordered),
         "sha256": sha256_text(canonical_json(ordered)),
         "candidates": ordered,
     }
-    write_json(log.path.parent / "deriver-less-helpers.json", payload)
+    rendered = json.dumps(payload, indent=2, sort_keys=True)
+    capture_complete = len(rendered.encode("utf-8")) <= CLOSURE_LICENSE_CAPTURE_BYTES
+    payload["captureComplete"] = capture_complete
+    payload["captureReason"] = (
+        ""
+        if capture_complete
+        else "deriver-less helper facts exceed the 60 KiB broker capture bound"
+    )
+    path = log.path.parent / CLOSURE_LICENSE_INVENTORY_FILE
+    write_json(path, payload)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
     prefix = (
         "deriver-less closure paths have no licence-bearing derivation and need an "
         f"exact Owner rule; total={payload['total']} "
-        f"sha256={payload['sha256']} captured=deriver-less-helpers.json "
+        f"sha256={payload['sha256']} captured={CLOSURE_LICENSE_INVENTORY_FILE} "
+        f"captureComplete={'true' if capture_complete else 'false'} "
     )
     shown: list[dict[str, Any]] = []
     for candidate in ordered:

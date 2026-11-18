@@ -26,14 +26,16 @@ outside it with the Owner.
 2. **Core may apply a rule only for a cryptographically verified Owner
    resolution, and no such resolution exists today.** Decisions are resolved
    behind the operator token and their `resolved_by` derives from
-   `operator_principal`, which does not attest the Owner. The authority needed
+   `operator_principal`, which returns `operator` or `device:<id>` and does not
+   attest the Owner. The authority needed
    for activation is absent, so activation is blocked; no new authentication is
    designed here.
 3. **The builder stays untrusted, observational and fail-closed.** It reports
    closure facts (`path`, `narHash`, `narSize`, `deriver`, `referrerSetSha256`,
-   `regularFile`) exhaustively, with explicit truncation when the message bound
-   is reached, and it applies no exception at all. A plan cannot legalise a path
-   by carrying exception-looking fields.
+   `regularFile`) exhaustively through the existing pre-cleanup capture channel,
+   with explicit truncation when the message bound is reached, and it applies no
+   exception at all. A plan cannot legalise a path by carrying
+   exception-looking fields.
 4. **The Lead may recommend** inside the approved candidate set through the
    existing bounded environment-review record. Its dictum is evidence, never
    authority, and no additional paid call is required for exact-identity facts.

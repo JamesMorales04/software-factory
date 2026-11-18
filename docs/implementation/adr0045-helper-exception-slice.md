@@ -17,11 +17,18 @@ licence failure exhaustive, provenance-bearing and fail-closed.
 2. **Exhaustive diagnosis, still fail-closed.** Every deriver-less path that is
    not a legacy reviewed helper is reported with `storePath`, `narHash`,
    `narSize`, `referrerSetSha256` and `regularFile`.
-   - The complete set is written to `deriver-less-helpers.json` beside the build
-     log, with `total` and a canonical `sha256`, so no identity is lost.
+   - The complete set is written to the **existing broker capture file**
+     `closure-license-inventory.json` in the run directory, with `total`,
+     canonical `sha256`, `captureComplete`/`captureReason` under the same 60 KiB
+     accounting used by the licence inventory. The broker reads that file from
+     the cache volume before cleanup (`native/src/bin/runtime_broker.rs:5941-5967`)
+     and retains the bounded JSON in its log line; the cache volume itself is
+     disposable, so this is **not** a durable file claim.
    - The blocker message carries only **whole** entries that fit the existing
-     1 000-character contract and always states `total`, `sha256`, the capture
-     file and `truncated=true|false`. Truncation is explicit, never silent.
+     message contract (`errors.py:47` truncates at 1 000 characters; the helper
+     budget is 900) and always states `total`, `sha256`, the capture file,
+     `captureComplete` and `truncated=true|false`. Truncation is explicit, never
+     silent.
    - No cap on the number of candidates; the message bound comes from the real
      contract, not from an invented constant.
 3. **No legalisation by plan contents.** A plan that supplies
@@ -34,20 +41,22 @@ licence failure exhaustive, provenance-bearing and fail-closed.
 ## Authority gap (why activation is absent)
 
 `agentic_owner_decisions` is created and resolved behind
-`authorized(&headers, &app.operator_token)` (`native/src/bin/core.rs:18323`,
+`authorized(&headers, &app.operator_token)` (`native/src/bin/core.rs:18323` and
 `:18360`). The resolution principal comes from `operator_principal(...)`
-(`core.rs:18363`), which yields `operator-token` or `device:<id>`; the database
-accepts any non-empty actor and stores it verbatim (`agentic_charter.rs:454-492`).
-`resolved_by` therefore derives from `operator_principal`, and that function does
-**not** attest the Owner: there is no cryptographic proof of an Owner
-resolution, so the authority needed to activate a rule is **absent**. Designing
-that proof is a separate protected decision and out of this slice's scope.
+(`core.rs:18094-18098`), which returns exactly `operator` or `device:<id>`; the
+database accepts any non-empty actor and stores it verbatim
+(`native/src/db/agentic_charter.rs:454-492`). `resolved_by` therefore derives
+from `operator_principal`, and that function does **not** attest the Owner:
+there is no cryptographic proof of an Owner resolution, so the authority needed
+to activate a rule is **absent**. Designing that proof is a separate protected
+decision and out of this slice's scope.
 
 ## Acceptance
 
-- Builder suite (canonical dev container): exhaustive-facts test with all 14
-  deriver-less identities, explicit truncation indicator, capture file with
-  `total`/`sha256`, crafted-plan rejection, and the existing 12/14 split covered
-  by the message and capture assertions.
+- Builder suite (canonical dev container): exhaustive-facts test built from the
+  **real 14 identities** of the Run8 inventory (`6a355fcc…97c50`), of which the
+  two legacy helpers are accepted and exactly **12** are reported; explicit
+  truncation indicator, capture payload with `total`/`sha256`/`captureComplete`,
+  coverage equality on the 12 paths, and crafted-plan rejection.
 - No Rust change, so no Cargo evidence is claimed.
 - No runtime image build before the candidate SHA is frozen.
