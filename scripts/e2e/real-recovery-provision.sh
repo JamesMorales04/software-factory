@@ -315,7 +315,10 @@ print("DEST_CHECK_OK one opencode-go row, enabled/default, ciphertext present, n
 PY
 
 LEAD_FIXTURE=$(compose config | awk '/FACTORY_LEAD_FIXTURE_ASSESSOR:/ {print $2; exit}')
-[[ "$LEAD_FIXTURE" == "\"0\"" || "$LEAD_FIXTURE" == "0" ]] || fail "FACTORY_LEAD_FIXTURE_ASSESSOR must be 0 for the real route"
+# Compose may render the YAML scalar as `0`, `'0'` or `"0"`; normalize the
+# quoting, then require the exact real-route value.
+LEAD_FIXTURE=$(printf '%s' "$LEAD_FIXTURE" | tr -d "'\"")
+[[ "$LEAD_FIXTURE" == "0" ]] || fail "FACTORY_LEAD_FIXTURE_ASSESSOR must be 0 for the real route"
 
 echo "disposable stack ready: project=$PROJECT operator_token=$OPERATOR_TOKEN"
 echo "source volumes unchanged. Remove the disposable copy with:"

@@ -45,7 +45,7 @@ if command == "image":
     sys.exit(0)
 if command == "compose":
     if "config" in args:
-        print("FACTORY_LEAD_FIXTURE_ASSESSOR: 0")
+        print("FACTORY_LEAD_FIXTURE_ASSESSOR: " + os.environ.get("FAKE_LEAD_FIXTURE_VALUE", "'0'"))
     sys.exit(0)
 if command == "ps":
     service = ""
@@ -166,6 +166,14 @@ class ProvisionSequenceTests(unittest.TestCase):
         self.assertIn("environment-builder.digest is missing", result.stderr)
         lines = self.lines()
         self.assertFalse(any("up -d core" in line for line in lines))
+
+    def test_lead_fixture_accepts_canonical_yaml_quoting(self):
+        for value in ("'0'", '"0"', "0"):
+            result = self.run_script({"FAKE_LEAD_FIXTURE_VALUE": value})
+            self.assertEqual(result.returncode, 0, f"{value}: {result.stderr}")
+        rejected = self.run_script({"FAKE_LEAD_FIXTURE_VALUE": "'1'"})
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("FACTORY_LEAD_FIXTURE_ASSESSOR must be 0", rejected.stderr)
 
     def test_unmigrated_database_aborts_before_the_stack_starts(self):
         result = self.run_script({"FAKE_DB_NOT_MIGRATED": "1"})
