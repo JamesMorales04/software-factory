@@ -544,7 +544,7 @@ class FailurePathTests(unittest.TestCase):
             scenario = self.scenario
             scenario.api = api
             scenario.intake = "intake-1"
-            scenario.environment_plan = {"planSha256": "a" * 64, "planRevision": 1}
+            scenario.environment_plan = {"planSha256": "a" * 64, "planRevision": 1, "plan": {"resources": {"timeoutSecs": 60}, "network": {"fetchAllowlist": []}}}
             with self.assertRaises(urllib.error.HTTPError):
                 scenario.environment_review()
         self.assertEqual(urlopen.call_count, 1)
@@ -1066,7 +1066,12 @@ class OrchestratorConsumerTests(unittest.TestCase):
             "planRevision": 1,
             "planSha256": "a" * 64,
             "specSha256": None,
-            "plan": {"plan_id": "env-plan-1", "revision": 1},
+            "plan": {
+                "plan_id": "env-plan-1",
+                "revision": 1,
+                "resources": {"timeoutSecs": 60},
+                "network": {"fetchAllowlist": []},
+            },
         }
         reviewed = {
             "status": "FROZEN",
@@ -1204,6 +1209,10 @@ class OrchestratorConsumerTests(unittest.TestCase):
         scenario.environment_plan = {
             "status": "CORE_VALIDATED", "planId": "env-plan-1",
             "planRevision": 1, "planSha256": "a" * 64,
+            "plan": {
+                "resources": {"timeoutSecs": 60},
+                "network": {"fetchAllowlist": []},
+            },
         }
         scenario.api = FakeApi(
             post_routes={
@@ -2014,15 +2023,23 @@ class TransportDiagnosticsTests(unittest.TestCase):
 class CompositeStageDeadlineTests(unittest.TestCase):
     def test_review_deadline_derives_from_the_plan_budget(self) -> None:
         scenario = object.__new__(real_recovery.Scenario)
-        scenario.environment_plan = {"resources": {"timeoutSecs": 1800}}
+        scenario.environment_plan = {
+            "plan": {
+                "resources": {"timeoutSecs": 1800},
+                "network": {"fetchAllowlist": [f"host-{index}" for index in range(7)]},
+            }
+        }
         deadline, derivation = scenario._environment_review_deadline()
-        self.assertEqual(deadline, 1800.0 + 300 + 60)
-        self.assertEqual(derivation["planResourceTimeoutSecs"], 1800)
+        self.assertEqual(deadline, 300.0 + 2 * 1800 + 60)
+        self.assertEqual(derivation["phases"], 2)
+        self.assertEqual(derivation["fetchAllowlistEntries"], 7)
         self.assertIn("composite stage", derivation["reason"])
 
-    def test_review_deadline_without_a_plan_budget_keeps_the_model_bound(self) -> None:
+    def test_review_deadline_refuses_a_projection_without_fields(self) -> None:
         scenario = object.__new__(real_recovery.Scenario)
         scenario.environment_plan = {}
-        deadline, derivation = scenario._environment_review_deadline()
-        self.assertEqual(deadline, 300.0 + 60)
-        self.assertEqual(derivation["planResourceTimeoutSecs"], 0)
+        with self.assertRaises(real_recovery.ScenarioError):
+            scenario._environment_review_deadline()
+        scenario.environment_plan = {"plan": {"resources": {}, "network": {"fetchAllowlist": []}}}
+        with self.assertRaises(real_recovery.ScenarioError):
+            scenario._environment_review_deadline()

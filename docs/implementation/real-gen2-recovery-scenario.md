@@ -278,3 +278,25 @@ the admission.
   from the contract.
 - Gate/Campaign/restart persistence incomplete (recorded as `OK_SCOPED`, not
   accepted), or the caller-claimed amount/owner disagrees with Core.
+
+## Composite environment review stage (transport bound and timeout handling)
+
+`POST /agentic/requests/{id}/environment/review` is not a model-only call. The
+projection nests the plan under `environment_plan["plan"]`; one model review
+(300 s) may run one fetch phase and one build phase inside the plan's own
+`resources.timeoutSecs`. The harness derives the client bound as
+`300 + phases * planTimeout + 60`, where `phases = 2` when
+`plan.network.fetchAllowlist` is non-empty (Run9: 300 + 2*1800 + 60 = 3960). A
+projection without those fields is a hard error: there is no silent fallback, and
+model-call timeouts (360/300) are unchanged for every other stage.
+
+On a transport timeout, including `URLError` wrapping a timeout, the harness does
+**not** re-POST. It captures bounded redacted Core/runtime tails and then polls the
+durable intake projection. It adopts the stage only on an exact terminal
+projection: `status = FROZEN`, the same `planSha256` and `planRevision`, a spec
+sha and a nested plan revision; adoption continues with the Planner and freeze
+without a second POST. `BLOCKED` is accepted only when Core reports it
+authoritatively. An unreadable or still-unfrozen projection is
+`ENV_JOB_UNKNOWN`: the stack is retained (`cleanup-held`) instead of `down -v`,
+with the environment-specific condition recorded. No model or run caps are
+introduced and no policy is invented.

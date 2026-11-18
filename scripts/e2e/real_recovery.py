@@ -160,7 +160,11 @@ class Verdict:
 
 
 class ScenarioError(RuntimeError):
-    pass
+    """A scenario precondition or contract violation; never a PASS."""
+
+
+class EnvironmentJobUnknown(ScenarioError):
+    """The composite environment stage has no terminal projection."""
 
 
 class ScenarioInvalid(ScenarioError):
@@ -1075,36 +1079,114 @@ class Scenario:
     ENVIRONMENT_TRANSPORT_MARGIN_SECS = 60
 
     def _environment_review_deadline(self) -> tuple[float, dict[str, Any]]:
-        """Derive the composite stage deadline from the plan's own budget.
+        """Derive the composite stage bound from the projected plan itself.
 
-        Review is not a model-only call: Core may run the model review (bounded
-        by the profile model timeout) inside the plan's declared resource budget.
-        The transport bound is therefore plan ``resources.timeoutSecs`` plus the
-        model timeout plus a documented margin, never an invented constant.
+        The real projection nests the plan under ``environment_plan["plan"]``.
+        Review may run one fetch phase and one build phase inside the plan's own
+        ``resources.timeoutSecs``, each bounded by the documented model timeout,
+        plus a transport margin. Missing fields are a hard error: an invented
+        fallback would silently shrink or extend the bound.
         """
 
-        resources = (self.environment_plan or {}).get("resources") or {}
+        plan = (self.environment_plan or {}).get("plan")
+        if not isinstance(plan, dict):
+            raise ScenarioError(
+                "environment plan projection has no plan object; refusing to guess a review bound"
+            )
+        resources = plan.get("resources")
+        if not isinstance(resources, dict):
+            raise ScenarioError("environment plan has no resources; refusing to guess a review bound")
         try:
             plan_budget = int(resources.get("timeoutSecs") or 0)
         except (TypeError, ValueError):
-            plan_budget = 0
+            raise ScenarioError("environment plan resources.timeoutSecs is not an integer") from None
         if plan_budget <= 0:
-            plan_budget = 0
+            raise ScenarioError("environment plan resources.timeoutSecs is not positive")
+        network = plan.get("network") or {}
+        allowlist = network.get("fetchAllowlist") if isinstance(network, dict) else None
+        if not isinstance(allowlist, list):
+            raise ScenarioError("environment plan has no fetch allowlist; cannot derive phases")
+        phases = 2 if allowlist else 1
         deadline = float(
-            plan_budget
-            + self.ENVIRONMENT_MODEL_TIMEOUT_SECS
+            self.ENVIRONMENT_MODEL_TIMEOUT_SECS
+            + phases * plan_budget
             + self.ENVIRONMENT_TRANSPORT_MARGIN_SECS
         )
         return deadline, {
             "planResourceTimeoutSecs": plan_budget,
+            "phases": phases,
+            "fetchAllowlistEntries": len(allowlist),
             "modelRequestTimeoutSecs": self.ENVIRONMENT_MODEL_TIMEOUT_SECS,
             "transportMarginSecs": self.ENVIRONMENT_TRANSPORT_MARGIN_SECS,
             "transportDeadlineSecs": deadline,
             "reason": (
-                "review is a composite stage: model review plus the plan's declared "
-                "resource budget plus a documented transport margin"
+                "review is a composite stage: one model review bound plus one budget "
+                "per fetch/build phase from the projected plan plus a transport margin"
             ),
         }
+
+    def _reconcile_environment_review(
+        self, plan_sha256: str, plan_revision: int, observations: int = 10, pause: float = 15.0
+    ) -> dict[str, Any]:
+        """Observe the composite stage after a transport timeout; never re-POST.
+
+        Terminal success is only an exact projection: the same plan sha and
+        revision, status FROZEN, a spec sha and a nested plan revision. A
+        non-terminal or unreadable projection raises ``EnvironmentJobUnknown`` so
+        the stack is preserved instead of deleted.
+        """
+
+        seen: list[dict[str, Any]] = []
+        previous = self.api.timeout
+        self.api.timeout = 20.0
+        try:
+            for index in range(observations):
+                try:
+                    projection = self.api.get(f"/intake/requests/{self.intake}") or {}
+                except Exception as error:  # noqa: BLE001 - keep the observation
+                    seen.append({"attempt": index, "state": "UNREADABLE", "error": type(error).__name__})
+                    time.sleep(pause)
+                    continue
+                environment = projection.get("environment") or {}
+                nested = environment.get("plan") or {}
+                status = str(environment.get("status") or "")
+                seen.append(
+                    {
+                        "attempt": index,
+                        "status": status,
+                        "planStatus": nested.get("status"),
+                        "planSha256": nested.get("planSha256"),
+                        "planRevision": nested.get("planRevision"),
+                        "specSha256": environment.get("specSha256"),
+                    }
+                )
+                if (
+                    status == "FROZEN"
+                    and str(nested.get("planSha256") or "") == plan_sha256
+                    and int(nested.get("planRevision") or 0) == plan_revision
+                    and _is_sha256(str(environment.get("specSha256") or ""))
+                ):
+                    self.write(
+                        "environment-review-reconciled.json",
+                        {"observations": seen, "adopted": True},
+                    )
+                    return {
+                        "status": "FROZEN",
+                        "planSha256": plan_sha256,
+                        "planRevision": plan_revision,
+                        "specSha256": environment.get("specSha256"),
+                        "reconciled": True,
+                    }
+                if status == "BLOCKED":
+                    self.write("environment-review-reconciled.json", {"observations": seen, "adopted": False})
+                    raise ScenarioError("environment review was authoritatively blocked")
+                time.sleep(pause)
+        finally:
+            self.api.timeout = previous
+        self.write("environment-review-reconciled.json", {"observations": seen, "adopted": False})
+        raise EnvironmentJobUnknown(
+            "environment review did not reach a terminal projection after a transport timeout"
+        )
 
     def environment_review(self) -> None:
         """Review and freeze the compiled environment; the Lead review is funded."""
@@ -1121,6 +1203,14 @@ class Scenario:
                     "planSha256": str(plan.get("planSha256") or ""),
                     "planRevision": int(plan.get("planRevision") or 0),
                 },
+            )
+        except (TimeoutError, urllib.error.URLError) as error:
+            if isinstance(error, urllib.error.URLError) and not isinstance(
+                getattr(error, "reason", None), TimeoutError
+            ):
+                raise
+            response = self._reconcile_environment_review(
+                str(plan.get("planSha256") or ""), int(plan.get("planRevision") or 0)
             )
         finally:
             self.api.timeout = previous
@@ -2169,7 +2259,10 @@ class Scenario:
         failed_error = getattr(self.api, "last_error", None)
         failed_error_request = getattr(self.api, "last_error_request", None)
         review_path = f"/agentic/requests/{self.intake}/environment/review"
-        is_timeout = isinstance(error, TimeoutError)
+        is_timeout = isinstance(error, TimeoutError) or (
+            isinstance(error, urllib.error.URLError)
+            and isinstance(getattr(error, "reason", None), TimeoutError)
+        ) or isinstance(error, EnvironmentJobUnknown)
         # Only the composite environment stage can own a background job; a model
         # timeout on another stage keeps the existing model-only reconciliation.
         env_stage_timeout = is_timeout and failed_request[1] == review_path
