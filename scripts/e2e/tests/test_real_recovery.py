@@ -663,14 +663,14 @@ class RealSchemaFailureTests(unittest.TestCase):
         )
         return scenario
 
-    def seed_call(self, state):
+    def seed_call(self, state, created_at="2026-11-18T14:29:00Z"):
         connection = sqlite3.connect(self.db_path)
         connection.execute(
             "INSERT INTO model_call_reservations (reservation_id,role,principal_id,project_id,"
             "objective_id,scope_id,provider,model,purpose,request_sha256,max_input_tokens,"
             "max_output_tokens,max_total_tokens,max_cost_micros,state,expires_at_ms,created_at,updated_at) "
-            "VALUES ('r1','LEAD','p','proj','obj','scope','opencode-go','deepseek-v4.1-flash','assess',?,1,1,1,1,?,9999999999999,'2026-11-18T14:29:00Z','2026-11-18T14:29:00Z')",
-            ("a" * 64, state),
+            "VALUES ('r1','LEAD','p','proj','obj','scope','opencode-go','deepseek-v4.1-flash','assess',?,1,1,1,1,?,9999999999999,?,?)",
+            ("a" * 64, state, created_at, created_at),
         )
         connection.commit()
         connection.close()
@@ -688,6 +688,28 @@ class RealSchemaFailureTests(unittest.TestCase):
         snapshot = scenario.capture_failure_db()
         self.assertEqual(snapshot["model_call_reservations"]["rows"][0][4], "RESERVED")
         self.assertNotIn("state", snapshot["model_call_reservations"])
+
+    def test_same_second_fractional_timestamp_is_still_captured(self):
+        self.seed_call("RESERVED", created_at="2026-11-18T14:29:13.500000000+00:00")
+        connection = sqlite3.connect(self.db_path)
+        connection.execute(
+            "INSERT INTO model_call_reservations (reservation_id,role,principal_id,project_id,"
+            "objective_id,scope_id,provider,model,purpose,request_sha256,max_input_tokens,"
+            "max_output_tokens,max_total_tokens,max_cost_micros,state,expires_at_ms,created_at,updated_at) "
+            "VALUES ('r2','LEAD','p','another-project','obj','scope','opencode-go','deepseek-v4.1-flash','assess',?,1,1,1,1,'RESERVED',9999999999999,'2026-11-18T14:29:13.500000000+00:00','2026-11-18T14:29:13.500000000+00:00')",
+            ("b" * 64,),
+        )
+        connection.commit()
+        connection.close()
+        scenario = self.scenario(state="FAILED")
+        scenario.started_at = "2026-11-18T14:29:13Z"
+        result = scenario.reconcile_failure(settle_timeout=0)
+        self.assertTrue(result["db_captured"])
+        self.assertEqual(len(result["model_calls"]), 1)
+        self.assertEqual(result["model_calls"][0]["state"], "RESERVED")
+        self.assertEqual(result["outcome"], "MODEL_CALL_OUTCOME_UNKNOWN")
+        scenario.capture_failure(TimeoutError("timed out"))
+        self.assertFalse(real_recovery._safe_to_cleanup(scenario))
 
     def test_real_schema_terminal_settled_is_safe_after_capture(self):
         self.seed_call("SETTLED")
