@@ -17,11 +17,15 @@ licence failure exhaustive, provenance-bearing and fail-closed.
 2. **Exhaustive diagnosis, still fail-closed.** Every deriver-less path that is
    not a legacy reviewed helper is reported with `storePath`, `narHash`,
    `narSize`, `referrerSetSha256` and `regularFile`.
+   - Evidence status: the broker capture is **code-verified, NOT_CAPTURED at
+     runtime** in this slice — the builder side writes the file, but no broker run
+     was executed to observe the read. Nothing here claims runtime capture.
    - The complete set is written to the **existing broker capture file**
      `closure-license-inventory.json` in the run directory, with `total`,
      canonical `sha256`, `captureComplete`/`captureReason` under the same 60 KiB
      accounting used by the licence inventory. The broker reads that file from
-     the cache volume before cleanup (`native/src/bin/runtime_broker.rs:5941-5967`)
+     the cache volume before cleanup (`read_environment_output` with
+     `"closure-license-inventory.json"`, `runtime_broker.rs:5939`)
      and retains the bounded JSON in its log line; the cache volume itself is
      disposable, so this is **not** a durable file claim.
    - The blocker message carries only **whole** entries that fit the existing
@@ -40,12 +44,14 @@ licence failure exhaustive, provenance-bearing and fail-closed.
 
 ## Authority gap (why activation is absent)
 
-`agentic_owner_decisions` is created and resolved behind
-`authorized(&headers, &app.operator_token)` (`native/src/bin/core.rs:18323` and
-`:18360`). The resolution principal comes from `operator_principal(...)`
-(`core.rs:18094-18098`), which returns exactly `operator` or `device:<id>`; the
-database accepts any non-empty actor and stores it verbatim
-(`native/src/db/agentic_charter.rs:454-492`). `resolved_by` therefore derives
+`agentic_owner_decisions` is created by `create_agentic_owner_decision`
+(`native/src/bin/core.rs:18323`) and resolved by `resolve_agentic_owner_decision`
+(`core.rs:18360`); both gate on `authorized(&headers, &app.operator_token)`. The
+resolution principal comes from `operator_principal`
+(`core.rs:18094`), which returns exactly `operator` or `device:<id>`; the database
+entrypoint `resolve_agentic_owner_decision`
+(`native/src/db/agentic_charter.rs:447`) accepts any non-empty actor and stores it
+verbatim. `resolved_by` therefore derives
 from `operator_principal`, and that function does **not** attest the Owner:
 there is no cryptographic proof of an Owner resolution, so the authority needed
 to activate a rule is **absent**. Designing that proof is a separate protected

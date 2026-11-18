@@ -396,16 +396,37 @@ class PolicyTests(unittest.TestCase):
         "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
     }
 
+    # Real referrers observed for all fourteen helpers in the same inventory.
+    STDENV = "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux"
+    NIX_SHELL_ENV = "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+
     def _real_deriverless_manifest(self) -> list[dict]:
+        helpers = [path for path, _, _ in self.REAL_DERIVERLESS_HELPERS]
         return [
             {
-                "path": path,
-                "deriver": "",
-                "narHash": nar_hash,
-                "narSize": nar_size,
-                "references": [],
-            }
-            for path, nar_hash, nar_size in self.REAL_DERIVERLESS_HELPERS
+                "path": self.STDENV,
+                "deriver": "/nix/store/nsvrknrqxdf2lxcfbqkr0p05897ww5lx-stdenv-linux.drv",
+                "narHash": "sha256-7uyA5WT1X+9o1QV/Dqs7GsmWtellurWH5ipGyZK8Szk=",
+                "narSize": 1,
+                "references": helpers,
+            },
+            {
+                "path": self.NIX_SHELL_ENV,
+                "deriver": "/nix/store/gkp675qsx7wg4rij541kzmi49skfzsnv-nix-shell-env.drv",
+                "narHash": "sha256-lH0a8hOLzQfqRQDAP8xrNxGxwVW7EcjXyDOakbb+MCw=",
+                "narSize": 1,
+                "references": helpers,
+            },
+            *[
+                {
+                    "path": path,
+                    "deriver": "",
+                    "narHash": nar_hash,
+                    "narSize": nar_size,
+                    "references": [],
+                }
+                for path, nar_hash, nar_size in self.REAL_DERIVERLESS_HELPERS
+            ],
         ]
 
     def test_real_inventory_reports_the_twelve_unauthorized_helpers(self) -> None:
@@ -446,10 +467,15 @@ class PolicyTests(unittest.TestCase):
                 captured["sha256"],
                 cli.sha256_text(cli.canonical_json(captured["candidates"])),
             )
+            expected_referrers_sha256 = cli.sha256_text(
+                cli.canonical_json(sorted([self.STDENV, self.NIX_SHELL_ENV]))
+            )
             for candidate in captured["candidates"]:
                 self.assertTrue(candidate["storePath"].startswith("/nix/store/"))
                 self.assertTrue(candidate["narHash"].startswith("sha256-"))
-                self.assertIn("referrerSetSha256", candidate)
+                self.assertEqual(
+                    candidate["referrerSetSha256"], expected_referrers_sha256
+                )
                 self.assertIn("regularFile", candidate)
         finally:
             log.close()

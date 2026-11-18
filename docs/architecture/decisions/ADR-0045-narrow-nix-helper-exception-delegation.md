@@ -26,8 +26,8 @@ outside it with the Owner.
 2. **Core may apply a rule only for a cryptographically verified Owner
    resolution, and no such resolution exists today.** Decisions are resolved
    behind the operator token and their `resolved_by` derives from
-   `operator_principal`, which returns `operator` or `device:<id>` and does not
-   attest the Owner. The authority needed
+   `operator_principal` (`core.rs:18094`), which returns `operator` or
+   `device:<id>` and does not attest the Owner. The authority needed
    for activation is absent, so activation is blocked; no new authentication is
    designed here.
 3. **The builder stays untrusted, observational and fail-closed.** It reports
