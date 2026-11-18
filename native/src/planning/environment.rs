@@ -4992,10 +4992,11 @@ mod tests {
         assert!(plan.nix.nixpkgs.ends_with(pin));
         assert!(plan.files.iter().any(|file| file.path == "flake.nix"));
         assert!(plan.files.iter().any(|file| file.path == "flake.lock"));
-        assert!(plan
-            .files
-            .iter()
-            .all(|file| file.origin == EnvironmentFileOrigin::Project));
+        assert!(
+            plan.files
+                .iter()
+                .all(|file| file.origin == EnvironmentFileOrigin::Project)
+        );
         let flake = plan
             .files
             .iter()
