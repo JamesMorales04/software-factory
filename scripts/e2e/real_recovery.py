@@ -1665,8 +1665,10 @@ def main(argv: list[str] | None = None) -> int:
     _require(args.core_database, "--core-database", errors)
     if args.authorized_micros < 0:
         errors.append("--authorized-micros must not be negative")
-    if args.compose_project == "software-factory" or not any(
-        token in args.compose_project for token in ("recovery", "uat")
+    project = str(args.compose_project or "")
+    if project and (
+        project == "software-factory"
+        or not any(token in project for token in ("recovery", "uat"))
     ):
         errors.append("--compose-project must be a disposable *recovery*/*uat* project")
     if errors:
