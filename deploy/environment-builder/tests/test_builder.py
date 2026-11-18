@@ -372,6 +372,85 @@ class PolicyTests(unittest.TestCase):
         finally:
             log.close()
 
+    def _deriverless_manifest(self, count: int) -> list[dict]:
+        return [
+            {
+                "path": "/nix/store/" + f"{index:032x}" + f"-helper-{index}.sh",
+                "deriver": "",
+                "narHash": f"sha256-nar-{index}",
+                "narSize": index,
+                "references": [],
+            }
+            for index in range(count)
+        ]
+
+    def test_deriverless_helpers_report_exhaustive_facts_and_fail(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        manifest = self._deriverless_manifest(14)
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "closure.log")
+        try:
+            with mock.patch("environment_builder.cli.nix_eval_json", return_value=[]):
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(
+                        {"nix": {"nixpkgs": pin}}, manifest, {}, 30, log
+                    )
+            message = raised.exception.message
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+            self.assertIn("total=14", message)
+            self.assertIn("captured=deriver-less-helpers.json", message)
+            self.assertIn("truncated=true", message)
+            self.assertLessEqual(len(message), 1_000)
+
+            captured = json.loads((workspace / "deriver-less-helpers.json").read_text())
+            self.assertEqual(captured["total"], 14)
+            self.assertEqual(len(captured["candidates"]), 14)
+            self.assertEqual(
+                captured["sha256"],
+                cli.sha256_text(cli.canonical_json(captured["candidates"])),
+            )
+            for candidate in captured["candidates"]:
+                self.assertTrue(candidate["storePath"].startswith("/nix/store/"))
+                self.assertTrue(candidate["narHash"].startswith("sha256-"))
+                self.assertIn("referrerSetSha256", candidate)
+                self.assertIn("regularFile", candidate)
+        finally:
+            log.close()
+
+    def test_plan_supplied_exception_fields_never_authorize(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        manifest = self._deriverless_manifest(1)
+        entry = manifest[0]
+        crafted_plan = {
+            "nix": {"nixpkgs": pin},
+            "planSha256": "a" * 64,
+            "licenseInventory": {
+                "helperExceptions": [
+                    {
+                        "storePath": entry["path"],
+                        "narHash": entry["narHash"],
+                        "name": "helper-0.sh",
+                        "referrerSetSha256": cli.sha256_text(cli.canonical_json([])),
+                        "regularFile": True,
+                        "ruleSha256": "b" * 64,
+                        "planSha256": "a" * 64,
+                    }
+                ],
+                "sbomSha256": "c" * 64,
+            },
+        }
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "closure.log")
+        try:
+            with mock.patch("environment_builder.cli.nix_eval_json", return_value=[]):
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(crafted_plan, manifest, {}, 30, log)
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+            self.assertIn("total=1", raised.exception.message)
+            self.assertIn(entry["path"], raised.exception.message)
+        finally:
+            log.close()
+
     def test_committed_environment_uses_the_devenv_package_profile(self) -> None:
         workspace = Path(tempfile.mkdtemp())
         (workspace / ".devenv").mkdir()

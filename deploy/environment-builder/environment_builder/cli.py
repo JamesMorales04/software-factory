@@ -64,6 +64,7 @@ from .policy import (
 from .receipt import build_receipt, observe_attestation
 from .sbom import build_sbom, license_inventory_copy, sbom_sha256, sbom_text
 from .util import (
+    canonical_json,
     last_nonempty_line,
     now_rfc3339,
     read_json,
@@ -1141,6 +1142,55 @@ def _validate_closure_licenses_reporting_all(
         ) from error
 
 
+MAX_HELPER_MESSAGE_CHARS = 900
+
+
+def _helper_referrer_set_sha256(manifest: list[dict[str, Any]], path: str) -> str:
+    referrers = sorted(
+        str(entry.get("path", ""))
+        for entry in manifest
+        if isinstance(entry, dict) and path in (entry.get("references") or [])
+    )
+    return sha256_text(canonical_json(referrers))
+
+
+def _deriverless_helper_failure(
+    candidates: list[dict[str, Any]], log: BuildLog
+) -> str:
+    """Exhaustive facts, with an explicit indicator when the message truncates.
+
+    The full list is written beside the build log so no identity is lost; the
+    blocker message carries only complete entries that fit its contract.
+    """
+
+    ordered = sorted(candidates, key=lambda candidate: str(candidate["storePath"]))
+    payload = {
+        "schemaVersion": 1,
+        "total": len(ordered),
+        "sha256": sha256_text(canonical_json(ordered)),
+        "candidates": ordered,
+    }
+    write_json(log.path.parent / "deriver-less-helpers.json", payload)
+    prefix = (
+        "deriver-less closure paths have no licence-bearing derivation and need an "
+        f"exact Owner rule; total={payload['total']} "
+        f"sha256={payload['sha256']} captured=deriver-less-helpers.json "
+    )
+    shown: list[dict[str, Any]] = []
+    for candidate in ordered:
+        attempt = shown + [candidate]
+        body = json.dumps(attempt, sort_keys=True, separators=(",", ":"))
+        if len(prefix) + len(body) + len(" truncated=true") > MAX_HELPER_MESSAGE_CHARS:
+            break
+        shown = attempt
+    truncated = len(shown) < len(ordered)
+    return (
+        prefix
+        + json.dumps(shown, sort_keys=True, separators=(",", ":"))
+        + f" truncated={'true' if truncated else 'false'}"
+    )
+
+
 def _closure_license_entries(
     plan: dict[str, Any],
     manifest: list[dict[str, Any]],
@@ -1154,6 +1204,7 @@ def _closure_license_entries(
     if not pin.startswith(NIXPKGS_PREFIX):
         fail("ENVIRONMENT_PIN_MISSING", "the plan has no pinned nixpkgs for closure verification")
     substrate_entries: list[dict[str, Any]] = []
+    helper_candidates: list[dict[str, Any]] = []
     paths: set[str] = set()
     for entry in manifest:
         if not isinstance(entry, dict):
@@ -1170,12 +1221,23 @@ def _closure_license_entries(
         if not deriver:
             if path in REVIEWED_DERIVERLESS_HELPERS:
                 continue
-            fail(
-                "ENVIRONMENT_LICENSE_UNKNOWN",
-                f"deriver-less closure path is not a reviewed helper: {path}",
+            helper_candidates.append(
+                {
+                    "storePath": path,
+                    "narHash": str(entry.get("narHash", "")),
+                    "narSize": int(entry.get("narSize", 0) or 0),
+                    "referrerSetSha256": _helper_referrer_set_sha256(manifest, path),
+                    "regularFile": os.path.isfile(path),
+                }
             )
+            continue
         if path:
             paths.add(path)
+    if helper_candidates:
+        fail(
+            "ENVIRONMENT_LICENSE_UNKNOWN",
+            _deriverless_helper_failure(helper_candidates, log),
+        )
     ordered_paths = sorted(paths)
     if not ordered_paths:
         return validate_closure_licenses(substrate_entries)
