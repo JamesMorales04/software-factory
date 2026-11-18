@@ -138,3 +138,32 @@ only removes the need to feed an accepted list back into the builder.
 `native/src/planning/{mod,environment}.rs`, `native/src/bin/core.rs`,
 `native/src/lead_model.rs` (typed decision), `deploy/environment-builder/**`
 (frozen-list consumption + tests), `docs/**`, parity JSON.
+
+## Broker receipt (implemented primitives, not yet wired)
+
+`planning::helper_facts` implements the authenticated envelope and both ends:
+
+- derivation context `factory.environment.helper-facts.v1`; the MAC key is
+  HMAC(bearer, context), so the shared environment bearer is never used raw;
+- envelope bound to `operationId`, `nonce`, `pin`, `planSha256`, `runtimeId`,
+  the observed `stdenv`/`shellWrapper` (each anchored by `.drv` + `narHash`) and
+  the observations;
+- `sign` (broker) and `verify` (Core) with constant-time HMAC verification;
+- durable replay identity `helper-facts:<nonce>` for
+  `environment_build_receipts.id` (primary key), so a replayed receipt fails the
+  insert instead of relying on an arbitrary freshness window;
+- negative tests: tampered observations, another operation/pin/plan/runtime,
+  wrong context, another bearer, forged/malformed signature, replayed nonce.
+
+### Service placement (no new topology)
+
+The observer is **broker-owned**: it reuses the broker's existing execution of
+the pinned builder image/rootfs with the store mounted read-only, no workspace,
+no network and a fixed argv, and only reads `nix path-info` bytes. It adds no
+process, container, privilege, host mount or credential; the builder never holds
+the bearer and never signs. The builder's self-report is not signed and is not
+used for membership.
+
+Still not wired: the broker call site that builds and signs the envelope and the
+Core call site that verifies it before `helper_exceptions::authorize`. Nothing
+accepts an exception plan from untrusted JSON.
