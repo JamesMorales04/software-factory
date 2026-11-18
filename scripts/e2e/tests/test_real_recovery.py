@@ -711,9 +711,22 @@ class RealSchemaFailureTests(unittest.TestCase):
         connection.execute("DELETE FROM model_call_reservations")
         connection.commit()
         connection.close()
-        self.seed_purpose("lead_assessment", "RESERVED")
+        for bad_state in ("RESERVED", "UNKNOWN", "AMBIGUOUS"):
+            connection = sqlite3.connect(self.db_path)
+            connection.execute("DELETE FROM model_call_reservations")
+            connection.commit()
+            connection.close()
+            self.seed_purpose("lead_assessment", bad_state)
+            self.seed_purpose("lead_environment_review", "SETTLED")
+            self.seed_purpose("agentic_planner", "SETTLED")
+            with self.assertRaises(real_recovery.ScenarioError):
+                scenario.verify_model_purposes()
+        connection = sqlite3.connect(self.db_path)
+        connection.execute("DELETE FROM model_call_reservations")
+        connection.commit()
+        connection.close()
+        self.seed_purpose("lead_assessment", "SETTLED")
         self.seed_purpose("lead_environment_review", "SETTLED")
-        self.seed_purpose("agentic_planner", "SETTLED")
         with self.assertRaises(real_recovery.ScenarioError):
             scenario.verify_model_purposes()
         connection = sqlite3.connect(self.db_path)
@@ -1002,6 +1015,10 @@ class OrchestratorConsumerTests(unittest.TestCase):
                         posts.index("/lead/requests/lead-1/freeze"))
         self.assertLess(posts.index("/lead/requests/lead-1/freeze"),
                         posts.index("/intake/requests/intake-1/approve"))
+        before = json.loads((Path(self.args.evidence_dir) / "model-purposes-before-freeze.json").read_text())
+        after = json.loads((Path(self.args.evidence_dir) / "model-purposes-after-freeze.json").read_text())
+        self.assertEqual(before["states"], after["states"])
+        self.assertEqual(before["expected"]["lead_assessment"], {"count": 1, "state": "SETTLED"})
         approve_call = next(
             call for call in scenario.api.calls
             if call[0] == "POST" and call[1] == "/intake/requests/intake-1/approve"
@@ -1317,11 +1334,15 @@ class OrchestratorConsumerTests(unittest.TestCase):
         self.assertEqual(snapshot["states"]["agentic_planner"], ["SETTLED"])
         self.assertTrue((Path(self.args.evidence_dir) / "model-purposes.json").exists())
 
-    def test_missing_or_duplicate_model_purpose_fails_closed(self):
+    def test_missing_duplicate_or_non_settled_model_purpose_fails_closed(self):
         for rows in (
             [("lead_assessment", "SETTLED"), ("lead_environment_review", "SETTLED")],
             [("lead_assessment", "SETTLED"), ("lead_assessment", "SETTLED"),
              ("lead_environment_review", "SETTLED"), ("agentic_planner", "SETTLED")],
+            [("lead_assessment", "UNKNOWN"), ("lead_environment_review", "SETTLED"),
+             ("agentic_planner", "SETTLED")],
+            [("lead_assessment", "SETTLED"), ("lead_environment_review", "AMBIGUOUS"),
+             ("agentic_planner", "SETTLED")],
         ):
             scenario = self.scenario()
             scenario.args.project_id = "proj"
