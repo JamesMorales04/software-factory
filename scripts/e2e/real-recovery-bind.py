@@ -28,6 +28,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,14 @@ class Api:
     def __init__(self, base: str, token: str) -> None:
         self.base = base.rstrip("/")
         self.token = token
+        # Origin is a web origin: scheme + host + port, never the /core-api
+        # path prefix. Core rejects a path-bearing Origin with 403.
+        parts = urllib.parse.urlsplit(self.base)
+        self.origin = (
+            f"{parts.scheme}://{parts.netloc}"
+            if parts.scheme and parts.netloc
+            else self.base
+        )
 
     def _request(
         self,
@@ -71,7 +80,7 @@ class Api:
                 "Authorization": f"Bearer {self.token}",
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "Origin": self.base,
+                "Origin": self.origin,
             },
         )
         try:

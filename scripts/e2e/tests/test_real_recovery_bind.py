@@ -278,6 +278,10 @@ class GrantTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_the_api_origin_has_no_api_path(self):
+        api = binding.Api("http://127.0.0.1:8901/core-api", "x" * 32)
+        self.assertEqual(api.origin, "http://127.0.0.1:8901")
+
     def test_the_required_configuration_is_recognized(self):
         self.assertTrue(
             binding.config_is_bound({
