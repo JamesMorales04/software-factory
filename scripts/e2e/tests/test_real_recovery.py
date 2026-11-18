@@ -528,25 +528,28 @@ class FailurePathTests(unittest.TestCase):
         import io
         import urllib.error
 
-        class RaisingApi(FakeApi):
-            def post(self, path, payload):
-                self.calls.append(("POST", path, payload))
-                raise urllib.error.HTTPError(
-                    path, 422, "Unprocessable Entity",
-                    {"content-type": "application/json"},
-                    io.BytesIO(b'{"error":"unknown field plan_sha256"}'),
-                )
-
-        scenario = self.scenario
-        scenario.intake = "intake-1"
-        scenario.environment_plan = {
-            "planSha256": "a" * 64, "planRevision": 1,
-        }
-        scenario.api = RaisingApi()
-        with self.assertRaises(urllib.error.HTTPError):
-            scenario.environment_review()
-        posts = [call for call in scenario.api.calls if call[0] == "POST"]
-        self.assertEqual(len(posts), 1)
+        message = (
+            "Failed to deserialize the JSON body into the target type: "
+            "plan_sha256: unknown field `plan_sha256`, expected `planSha256`"
+        )
+        error = urllib.error.HTTPError(
+            "http://127.0.0.1:8901/core-api/agentic/requests/intake-1/environment/review",
+            422,
+            "Unprocessable Entity",
+            {"content-type": "application/json"},
+            io.BytesIO(("{\"error\":\"" + message + "\"}").encode("utf-8")),
+        )
+        with mock.patch("urllib.request.urlopen", side_effect=error) as urlopen:
+            api = real_recovery.Api("http://127.0.0.1:8901/core-api", "token")
+            scenario = self.scenario
+            scenario.api = api
+            scenario.intake = "intake-1"
+            scenario.environment_plan = {"planSha256": "a" * 64, "planRevision": 1}
+            with self.assertRaises(urllib.error.HTTPError):
+                scenario.environment_review()
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(api.last_error[0], 422)
+        self.assertIn("unknown field `plan_sha256`", api.last_error[1])
 
     def test_staged_assess_403_without_durable_facts_fails(self):
         scenario = self.scenario
