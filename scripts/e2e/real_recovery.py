@@ -26,6 +26,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -608,6 +609,13 @@ def plan_document() -> dict[str, Any]:
 
 class Api:
     def __init__(self, base: str, token: str) -> None:
+        parts = urlsplit(base)
+        if not parts.scheme or not parts.netloc:
+            raise ScenarioError("core API URL must be absolute")
+        # Core checks `Origin` against the scheme and authority; the API base
+        # may legitimately carry a path such as `/core-api`, which must not be
+        # copied into the Origin header.
+        self.origin = f"{parts.scheme}://{parts.netloc}"
         self.base = base.rstrip("/")
         self.token = token
 
@@ -621,7 +629,7 @@ class Api:
                 "Authorization": f"Bearer {self.token}",
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "Origin": self.base,
+                "Origin": self.origin,
             },
         )
         with urllib.request.urlopen(request, timeout=60) as response:
@@ -647,7 +655,7 @@ class Api:
                 "Authorization": f"Bearer {self.token}",
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "Origin": self.base,
+                "Origin": self.origin,
             },
         )
         try:
