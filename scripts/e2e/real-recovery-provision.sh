@@ -62,12 +62,12 @@ DATA_VOLUME="${PROJECT}_factory-data"
 CONFIG_VOLUME="${PROJECT}_factory-config-core"
 OPERATOR_TOKEN="$RUN_ROOT/operator.token"
 
+mkdir -p "$RUN_ROOT"
+chmod 700 "$RUN_ROOT"
+
 TMP=$(mktemp -d "$RUN_ROOT/tmp.XXXXXX")
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
-
-mkdir -p "$RUN_ROOT"
-chmod 700 "$RUN_ROOT"
 
 readonly INSERT_COLUMNS="provider,kind,model,base_url,auth_mode,credential_ciphertext,credential_nonce,credential_fingerprint,enabled,is_default,max_turns,max_input_tokens,max_output_tokens,max_cost_micros,input_micros_per_million,output_micros_per_million,revision,updated_at"
 
