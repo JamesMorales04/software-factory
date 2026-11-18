@@ -340,6 +340,8 @@ class FakeApi:
             {"error": "direct provider authorization refused"},
         )
         self.calls = []
+        self.last_request = ("", "")
+        self.timeout = 360.0
 
     def get(self, path):
         self.calls.append(("GET", path))
@@ -427,6 +429,157 @@ def action_record():
         },
         "spec_sha256": "f" * 64,
     }
+
+
+class TimeoutApi(FakeApi):
+    def post(self, path, payload):
+        self.calls.append(("POST", path, payload))
+        raise TimeoutError("timed out")
+
+
+class FailurePathTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        token = Path(self.tmp.name) / "operator.token"
+        token.write_text("token", encoding="utf-8")
+        self.args = argparse.Namespace(
+            root=self.tmp.name,
+            core_api="http://127.0.0.1:8901/core-api",
+            operator_token_file=str(token),
+            project_id="project-1",
+            profile_id="profile-1",
+            authorization="owner-ref",
+            evidence_dir=str(Path(self.tmp.name) / "evidence"),
+            compose_project="sfe2e-recovery",
+            git_dir=str(Path(self.tmp.name) / "git"),
+            core_database="",
+            authorized_micros=0,
+            assumption_file="",
+            provider="opencode-go",
+            model="deepseek-v4.1-flash",
+        )
+        self.scenario = real_recovery.Scenario(self.args)
+        self.scenario.intake = "intake-1"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_assess_timeout_is_not_retried(self):
+        api = TimeoutApi()
+        self.scenario.api = api
+        with self.assertRaises(TimeoutError):
+            self.scenario.assess()
+        posts = [call for call in api.calls if call[1].endswith("/assess")]
+        self.assertEqual(len(posts), 1)
+
+    def test_a_slow_assessment_is_not_killed_by_the_legacy_sixty_second_deadline(self):
+        class SlowTimeoutApi(TimeoutApi):
+            def post(self, path, payload):
+                self.calls.append(("POST", path, payload))
+                # A fake clock represents a 120 s model turn; no wall sleep.
+                if path.endswith("/assess"):
+                    raise TimeoutError("fake-clock 120s")
+                return {}
+
+        api = SlowTimeoutApi()
+        self.scenario.api = api
+        with self.assertRaises(TimeoutError) as raised:
+            self.scenario.assess()
+        self.assertIn("fake-clock 120s", str(raised.exception))
+        self.assertEqual(len([call for call in api.calls if call[1].endswith("/assess")]), 1)
+
+    def test_unknown_model_call_blocks_cleanup(self):
+        self.scenario.api = FakeApi(
+            get_routes={"/intake/requests/intake-1": {"state": "ASSESSING"}}
+        )
+        self.scenario._db_rows = lambda sql, params: [("LEAD", "RESERVED", "opencode-go", "deepseek-v4.1-flash", 1)]
+        self.scenario.reconcile_failure = lambda settle_timeout=0: {
+            "outcome": "MODEL_CALL_OUTCOME_UNKNOWN",
+            "intake_state": "ASSESSING",
+            "assessment_present": False,
+            "provider_sessions": 0,
+            "execution_check_receipts": 0,
+            "model_calls": [],
+        }
+        payload = self.scenario.capture_failure(TimeoutError("timed out"))
+        self.assertEqual(payload["reconciliation"]["outcome"], "MODEL_CALL_OUTCOME_UNKNOWN")
+        self.assertFalse(real_recovery._safe_to_cleanup(self.scenario))
+        self.assertTrue((Path(self.args.evidence_dir) / "cleanup-held.json").exists())
+
+    def test_terminal_outcome_allows_cleanup_after_capture(self):
+        self.scenario.reconcile_failure = lambda settle_timeout=0: {
+            "outcome": "MODEL_CALL_SETTLED",
+            "intake_state": "AWAITING_APPROVAL",
+            "assessment_present": True,
+            "provider_sessions": 0,
+            "execution_check_receipts": 0,
+            "model_calls": [],
+        }
+        self.scenario.capture_failure(TimeoutError("timed out"))
+        self.assertTrue(real_recovery._safe_to_cleanup(self.scenario))
+
+    def main_with_failure(self, outcome):
+        calls = []
+
+        class FakeFailureScenario:
+            def __init__(self, args):
+                self.evidence = Path(args.evidence_dir)
+                self.evidence.mkdir(parents=True, exist_ok=True)
+                self.project = "sfe2e-recovery"
+
+            def prepare(self):
+                pass
+
+            def admit(self):
+                pass
+
+            def assess(self):
+                calls.append("assess")
+                raise TimeoutError("timed out")
+
+            def write(self, name, payload):
+                (self.evidence / name).write_text(json.dumps(payload), encoding="utf-8")
+
+            def capture_failure(self, error, stage=""):
+                calls.append("capture")
+                self.write("failure.json", {"reconciliation": {"outcome": outcome}})
+
+            def cleanup(self):
+                calls.append("cleanup")
+
+        args = [
+            "--execute",
+            "--core-api", "http://127.0.0.1:8901/core-api",
+            "--operator-token-file", str(Path(self.tmp.name) / "operator.token"),
+            "--project-id", "project-1",
+            "--profile-id", "profile-1",
+            "--authorization", "owner-ref",
+            "--evidence-dir", str(Path(self.tmp.name) / "evidence"),
+            "--compose-project", "sfe2e-recovery",
+            "--git-dir", str(Path(self.tmp.name) / "git"),
+            "--core-database", str(Path(self.tmp.name) / "sfe2e-recovery" / "factory.sqlite"),
+            "--assumption-file", str(Path(self.tmp.name) / "assumption.json"),
+            "--authorized-micros", "0",
+        ]
+        with mock.patch.object(real_recovery, "Scenario", FakeFailureScenario):
+            code = real_recovery.main(args)
+        return code, calls
+
+    def test_main_captures_before_cleanup_and_holds_on_unknown(self):
+        code, calls = self.main_with_failure("MODEL_CALL_OUTCOME_UNKNOWN")
+        self.assertEqual(code, 1)
+        self.assertEqual(calls, ["assess", "capture"])
+        held = json.loads(
+            (Path(self.tmp.name) / "evidence" / "cleanup-held.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(held["status"], "STACK_RETAINED_FOR_RECONCILIATION")
+        self.assertIn("down -v", held["cleanup_command"])
+        self.assertIn("model_call_reservations", held["condition"])
+
+    def test_main_cleans_up_only_after_terminal_capture(self):
+        code, calls = self.main_with_failure("MODEL_CALL_SETTLED")
+        self.assertEqual(code, 1)
+        self.assertEqual(calls, ["assess", "capture", "cleanup"])
 
 
 class OrchestratorConsumerTests(unittest.TestCase):

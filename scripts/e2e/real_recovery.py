@@ -618,12 +618,14 @@ class Api:
         self.origin = f"{parts.scheme}://{parts.netloc}"
         self.base = base.rstrip("/")
         self.token = token
+        self.last_request: tuple[str, str] = ("", "")
         # The bounded Lead assessment runs a real model call synchronously
         # (profile modelRequestTimeoutSecs=300), so the HTTP client must not
         # abort before Core's own timeout.
         self.timeout = timeout
 
     def _request(self, method: str, path: str, payload: Any | None = None) -> Any:
+        self.last_request = (method, path)
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             self.base + path,
@@ -728,6 +730,9 @@ class Scenario:
         self.assumption: dict[str, Any] = {}
         self.assumption_sha256 = ""
         self.admission_record: dict[str, Any] = {}
+        self.lead_request_id = ""
+        self.started_at = utc()
+        self.started_ms = int(time.time() * 1000)
         self.evidence.mkdir(parents=True, exist_ok=True)
         os.chmod(self.evidence, 0o700)
 
@@ -772,6 +777,7 @@ class Scenario:
         created = self.api.post("/intake/requests", intake)
         self.intake = created["id"]
         self.action = created["actionId"]
+        self.lead_request_id = str(created.get("leadRequestId") or "")
         self.write("intake.json", created)
         self.log(f"intake={self.intake} action={self.action}")
 
@@ -1318,6 +1324,25 @@ class Scenario:
         )
         return [CheckReceipt(*row) for row in rows]
 
+    def _db_rows_with_columns(
+        self, sql: str, params: tuple[Any, ...]
+    ) -> tuple[list[str], list[tuple[Any, ...]]]:
+        import sqlite3
+
+        database = self.args.core_database
+        if not database:
+            raise ScenarioError("--core-database is required for durable inspection")
+        path = Path(database).resolve()
+        if path.name != "factory.sqlite" or self.project not in str(path):
+            raise ScenarioError("--core-database must be the disposable UAT project's own factory.sqlite")
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            cursor = connection.execute(sql, params)
+            columns = [description[0] for description in cursor.description or []]
+            return columns, list(cursor)
+        finally:
+            connection.close()
+
     def _db_rows(self, sql: str, params: tuple[Any, ...]) -> list[tuple[Any, ...]]:
         import sqlite3
 
@@ -1605,6 +1630,195 @@ class Scenario:
         if problems:
             raise ScenarioError("admission binding invalid: " + ", ".join(problems))
 
+    def _failure_db_rows(self) -> tuple[list[tuple[Any, ...]], int, int]:
+        """Read durable model-call/assessment state without touching prompts."""
+
+        calls: list[tuple[Any, ...]] = []
+        assessments = 0
+        lead_assessments = 0
+        try:
+            calls = self._db_rows(
+                "SELECT role,state,provider,model,created_at_ms FROM model_call_reservations "
+                "WHERE created_at_ms>=?1 ORDER BY created_at_ms",
+                (self.started_ms - 5_000,),
+            )
+        except Exception:  # noqa: BLE001 - evidence degrades to NOT_CAPTURED
+            pass
+        try:
+            assessments = int(
+                self._db_rows(
+                    "SELECT count(*) FROM agentic_assessments WHERE request_id=?1", (self.intake,)
+                )[0][0]
+            )
+        except Exception:  # noqa: BLE001
+            assessments = -1
+        try:
+            lead_assessments = int(
+                self._db_rows(
+                    "SELECT count(*) FROM lead_assessments WHERE request_id=?1",
+                    (self.lead_request_id or self.intake,),
+                )[0][0]
+            )
+        except Exception:  # noqa: BLE001
+            lead_assessments = -1
+        return calls, assessments, lead_assessments
+
+    def reconcile_failure(self, settle_timeout: float = 180.0) -> dict[str, Any]:
+        """Classify the model-call outcome; never infer success from a timeout."""
+
+        deadline = time.monotonic() + settle_timeout
+        projection: dict[str, Any] = {}
+        calls: list[tuple[Any, ...]] = []
+        assessments = -1
+        lead_assessments = -1
+        sessions = -1
+        receipts = -1
+        original_timeout = self.api.timeout
+        self.api.timeout = 10.0
+        try:
+          while True:
+            try:
+                projection = self.api.get(f"/intake/requests/{self.intake}") or {}
+            except Exception:  # noqa: BLE001 - Core may be shutting down
+                projection = {}
+            calls, assessments, lead_assessments = self._failure_db_rows()
+            try:
+                sessions = int(
+                    self._db_rows(
+                        "SELECT count(*) FROM provider_sessions WHERE attempt_id IS NOT NULL "
+                        "AND generation>=1"
+                    )[0][0]
+                )
+                receipts = int(
+                    self._db_rows("SELECT count(*) FROM execution_check_receipts")[0][0]
+                )
+            except Exception:  # noqa: BLE001
+                sessions = -1
+                receipts = -1
+            states = {str(row[1]) for row in calls}
+            settled = "SETTLED" in states or assessments > 0 or lead_assessments > 0
+            unresolved = bool(states & {"RESERVED", "AMBIGUOUS", "UNKNOWN"})
+            intake_state = str(projection.get("state") or "")
+            terminal = (
+                settled
+                or (states and not unresolved)
+                or intake_state in {"FAILED", "BLOCKED", "CANCELLED", "WITHDRAWN", "AWAITING_APPROVAL", "EXECUTING", "COMPLETED"}
+            )
+            if terminal or time.monotonic() >= deadline:
+                break
+            time.sleep(5)
+        finally:
+            self.api.timeout = original_timeout
+        states = [str(row[1]) for row in calls]
+        if any(state in {"RESERVED", "AMBIGUOUS", "UNKNOWN"} for state in states):
+            outcome = "MODEL_CALL_OUTCOME_UNKNOWN"
+        elif any(state == "SETTLED" for state in states) or assessments > 0 or lead_assessments > 0:
+            outcome = "MODEL_CALL_SETTLED"
+        elif states and all(state == "RELEASED" for state in states):
+            outcome = "NO_MODEL_CALL_SETTLED"
+        else:
+            outcome = "NO_MODEL_CALL_CAPTURED"
+        return {
+            "outcome": outcome,
+            "intake_state": str(projection.get("state") or ""),
+            "assessment_present": assessments > 0 or lead_assessments > 0,
+            "agentic_assessments": assessments,
+            "lead_assessments": lead_assessments,
+            "provider_sessions": sessions,
+            "execution_check_receipts": receipts,
+            "model_calls": [
+                {"role": row[0], "state": row[1], "provider": row[2], "model": row[3]}
+                for row in calls
+            ],
+            "settle_timeout_secs": settle_timeout,
+            "reconciled_at": utc(),
+        }
+
+    def capture_failure_db(self) -> dict[str, Any]:
+        """Sanitized read-only snapshot of the disposable Core database.
+
+        No prompts, submission bodies, ciphertext, command bodies or raw errors
+        are copied; this is evidence of state, not a database backup for reuse.
+        """
+
+        queries = {
+            "intake_requests": (
+                "SELECT id,project_id,action_id,lead_request_id,campaign_id,"
+                "profile_revision_id,profile_hash,created_at,updated_at "
+                "FROM intake_requests WHERE id=?1",
+                (self.intake,),
+            ),
+            "lead_requests": (
+                "SELECT id,state,created_at,updated_at FROM lead_requests WHERE id=?1",
+                (self.lead_request_id or self.intake,),
+            ),
+            "model_call_reservations": (
+                "SELECT reservation_id,role,provider,model,state,input_tokens,output_tokens,"
+                "total_tokens,cost_micros,usage_known,created_at,updated_at "
+                "FROM model_call_reservations WHERE created_at_ms>=?1 ORDER BY created_at_ms",
+                (self.started_ms - 5_000,),
+            ),
+            "provider_sessions": (
+                "SELECT session_record_id,attempt_id,generation,state,provider,model,"
+                "cleanup_receipt,updated_at FROM provider_sessions ORDER BY updated_at DESC LIMIT 50",
+                (),
+            ),
+            "execution_check_receipts": (
+                "SELECT receipt_id,attempt_id,generation,check_id,suite,outcome,received_at "
+                "FROM execution_check_receipts ORDER BY received_at DESC LIMIT 100",
+                (),
+            ),
+            "subscription_scope_admissions": (
+                "SELECT admission_id,intake_request_id,state,campaign_id,expires_at_ms "
+                "FROM subscription_scope_admissions WHERE intake_request_id=?1",
+                (self.intake,),
+            ),
+        }
+        snapshot: dict[str, Any] = {}
+        for name, (sql, params) in queries.items():
+            try:
+                columns, rows = self._db_rows_with_columns(sql, params)
+                snapshot[name] = {"columns": columns, "rows": [list(row) for row in rows]}
+            except Exception as error:  # noqa: BLE001 - record, never fabricate
+                snapshot[name] = {"state": "NOT_CAPTURED", "error": type(error).__name__}
+        return snapshot
+
+    def capture_failure(self, error: BaseException, stage: str = "") -> dict[str, Any]:
+        """Preserve causal state before any cleanup; never claim a PASS."""
+
+        # Only wait for a Core reconciliation when a model call could exist.
+        settle = 0.0 if (stage == "scenario_invalid" or not self.intake or not self.admission_id) else 180.0
+        reconciliation = self.reconcile_failure(settle_timeout=settle)
+        try:
+            self.write(
+                "failure-intake.json",
+                self.api.get(f"/intake/requests/{self.intake}") or {},
+            )
+        except Exception:  # noqa: BLE001 - capture is best-effort
+            pass
+        try:
+            self.write("failure-db.json", self.capture_failure_db())
+        except Exception:  # noqa: BLE001 - capture is best-effort
+            pass
+        payload = {
+            "status": "NOT_TESTED",
+            "stage": stage,
+            "error": f"{type(error).__name__}: {error}",
+            "at": utc(),
+            "started_at": self.started_at,
+            "intake": self.intake,
+            "campaign": self.campaign,
+            "attempt": self.attempt,
+            "admission_id": self.admission_id,
+            "last_request": list(self.api.last_request),
+            "transport_timeout_secs": self.api.timeout,
+            "reconciliation": reconciliation,
+        }
+        self.write("failure.json", payload)
+        self.write("error.json", {"error": payload["error"], "at": payload["at"], "stage": stage})
+        self.log(f"failure outcome={reconciliation['outcome']} stage={stage}")
+        return payload
+
     def _gate_detail(self, candidate_id: str) -> dict[str, Any]:
         if not candidate_id:
             return {}
@@ -1636,6 +1850,45 @@ class Scenario:
     def cleanup(self) -> None:
         result = _podman_compose(self.project, self.root, self.git_dir, ["down", "-v", "--remove-orphans"])
         self.write("cleanup.json", {"exit": result.returncode, "at": utc()})
+
+
+def _safe_to_cleanup(scenario: "Scenario") -> bool:
+    """Cleanup only after a captured, terminal reconciliation.
+
+    A client timeout with a RESERVED/AMBIGUOUS/UNKNOWN model call is not
+    terminal. The stack and database stay for the owner to reconcile; deleting
+    them would destroy the only evidence of a possible provider call.
+    """
+
+    path = scenario.evidence / "failure.json"
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    outcome = str((payload.get("reconciliation") or {}).get("outcome") or "")
+    if outcome == "MODEL_CALL_OUTCOME_UNKNOWN":
+        scenario.write(
+            "cleanup-held.json",
+            {
+                "status": "STACK_RETAINED_FOR_RECONCILIATION",
+                "reason": "model-call outcome unknown; stack and database preserved for owner reconciliation",
+                "outcome": outcome,
+                "owner_action": (
+                    "Reconcile the durable intake/lead/model-call rows to a terminal state and capture "
+                    "the evidence before removing the disposable project."
+                ),
+                "condition": "model_call_reservations has no RESERVED/AMBIGUOUS/UNKNOWN row",
+                "cleanup_command": (
+                    f"podman compose -p {scenario.project} -f compose.yaml "
+                    "-f compose.real-provider-uat.yaml down -v --remove-orphans"
+                ),
+                "at": utc(),
+            },
+        )
+        return False
+    return True
 
 
 def run_scenario(scenario: "Scenario") -> tuple[Verdict, Observation]:
@@ -1724,14 +1977,34 @@ def main(argv: list[str] | None = None) -> int:
         if verdict.status == "OK_SCOPED":
             return 3
         return 2
-    except ScenarioInvalid:
+    except ScenarioInvalid as error:
+        try:
+            scenario.capture_failure(error, stage="scenario_invalid")
+        except Exception:  # noqa: BLE001
+            pass
+        if not _safe_to_cleanup(scenario):
+            return 2
         try:
             scenario.cleanup()
         except Exception:  # noqa: BLE001
             pass
         return 2
     except Exception as error:  # noqa: BLE001 - capture then fail closed
-        scenario.write("error.json", {"error": f"{type(error).__name__}: {error}", "at": utc()})
+        captured = False
+        try:
+            scenario.capture_failure(error)
+            captured = True
+        except Exception as capture_error:  # noqa: BLE001 - still fail closed
+            scenario.write(
+                "error.json",
+                {
+                    "error": f"{type(error).__name__}: {error}",
+                    "capture_error": f"{type(capture_error).__name__}: {capture_error}",
+                    "at": utc(),
+                },
+            )
+        if not captured or not _safe_to_cleanup(scenario):
+            return 1
         try:
             scenario.cleanup()
         except Exception:  # noqa: BLE001
