@@ -294,7 +294,9 @@ On a transport timeout, including `URLError` wrapping a timeout, the harness doe
 **not** re-POST. It captures bounded redacted Core/runtime tails and then polls the
 durable intake projection. It adopts the stage only on an exact terminal
 projection: `status = FROZEN`, the same `planSha256` and `planRevision`, a spec
-sha and a nested plan revision; adoption continues with the Planner and freeze
+the same `planId`, the nested `plan.revision` and the outer `planRevision`, and a
+spec sha. Adoption copies the **full projection** (`planId`, spec, reviews and
+plan) and continues with the Planner and freeze
 without a second POST. `BLOCKED` is accepted only when Core reports it
 authoritatively. An unreadable or still-unfrozen projection is
 `ENV_JOB_UNKNOWN`: the stack is retained (`cleanup-held`) instead of `down -v`,

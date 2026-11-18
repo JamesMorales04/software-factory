@@ -1966,6 +1966,136 @@ class CliTests(unittest.TestCase):
             self.assertEqual(real_recovery.main(["--plan"]), 0)
 
 
+
+class EnvironmentReviewCompositeTests(unittest.TestCase):
+    """The composite stage must adopt a real projection and hold on doubt."""
+
+    def _scenario(self, projection: dict | None):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        scenario = object.__new__(real_recovery.Scenario)
+        scenario.intake = "intake-1"
+        scenario.project = "factory-e2e-recovery-run9-fixture"
+        scenario.evidence = Path(tempfile.mkdtemp())
+        scenario.environment = None
+        scenario.campaign = None
+        scenario.attempt = None
+        scenario.admission_id = "admission-1"
+        scenario.started_at = "2026-11-18T00:00:00Z"
+        scenario.environment_review_deadline = 3960.0
+        scenario.environment_plan = {
+            "planId": "env-plan-1",
+            "planRevision": 2,
+            "planSha256": "a" * 64,
+            "plan": {
+                "resources": {"timeoutSecs": 1800},
+                "network": {"fetchAllowlist": [f"host-{index}" for index in range(7)]},
+            },
+        }
+        scenario.write = lambda name, payload: (scenario.evidence / name).write_text(
+            json.dumps(payload)
+        )
+        scenario.log = lambda *_: None
+
+        class _Api:
+            def __init__(self) -> None:
+                self.timeout = 360.0
+                self.posts: list[str] = []
+                self.gets = 0
+
+            def post(self, path, payload):
+                self.posts.append(path)
+                raise TimeoutError("timed out")
+
+            def get(self, path):
+                self.gets += 1
+                if projection is None:
+                    raise TimeoutError("timed out")
+                return projection
+
+        scenario.api = _Api()
+        return scenario
+
+    @staticmethod
+    def _frozen(plan_id="env-plan-1", revision=2, sha="a" * 64, spec="b" * 64) -> dict:
+        return {
+            "environment": {
+                "status": "FROZEN",
+                "planId": plan_id,
+                "planRevision": revision,
+                "specSha256": spec,
+                "plan": {"planId": plan_id, "planSha256": sha, "revision": revision},
+                "reviews": [{"reviewId": "review-1"}],
+            }
+        }
+
+    def test_environment_review_adopts_a_late_frozen_projection_once(self) -> None:
+        scenario = self._scenario(self._frozen())
+        scenario.environment_review()
+        self.assertEqual(scenario.api.posts, ["/agentic/requests/intake-1/environment/review"])
+        adopted = scenario.environment
+        self.assertTrue(adopted["reconciled"])
+        self.assertEqual(adopted["status"], "FROZEN")
+        self.assertEqual(adopted["planId"], "env-plan-1")
+        self.assertEqual(adopted["plan"]["planId"], "env-plan-1")
+        self.assertEqual(adopted["specSha256"], "b" * 64)
+        self.assertTrue(adopted["reviews"])
+        reconciled = json.loads((scenario.evidence / "environment-review-reconciled.json").read_text())
+        self.assertTrue(reconciled["adopted"])
+        self.assertEqual(reconciled["planId"], "env-plan-1")
+
+    def test_a_non_terminal_projection_raises_a_typed_unknown(self) -> None:
+        scenario = self._scenario({"environment": {"status": "CORE_VALIDATED", "planRevision": 2}})
+        scenario._reconcile_pause = 0
+        with mock.patch("time.sleep"):
+            with self.assertRaises(real_recovery.EnvironmentJobUnknown) as raised:
+                scenario.environment_review()
+        error = raised.exception
+        self.assertEqual(error.origin, ("POST", "/agentic/requests/intake-1/environment/review"))
+        self.assertEqual(error.actual_timeout, 3960.0)
+
+    def test_capture_failure_reports_the_actual_deadline_and_holds(self) -> None:
+        import json
+
+        scenario = self._scenario(None)
+        error = real_recovery.EnvironmentJobUnknown(
+            "not terminal",
+            origin=("POST", "/agentic/requests/intake-1/environment/review"),
+            actual_timeout=3960.0,
+        )
+        scenario.reconcile_failure = lambda settle_timeout=0: {
+            "outcome": "MODEL_CALL_SETTLED",
+            "db_captured": True,
+        }
+        scenario._capture_runtime_diagnostics = lambda: {"at": "x", "services": {}}
+        scenario.capture_failure_db = lambda: {}
+        payload = scenario.capture_failure(error)
+        self.assertEqual(payload["reconciliation"]["outcome"], "ENV_JOB_UNKNOWN")
+        self.assertEqual(payload["transport_deadline_secs"], 3960.0)
+        self.assertNotEqual(payload["transport_deadline_secs"], scenario.api.timeout)
+        written = json.loads((scenario.evidence / "failure.json").read_text())
+        self.assertEqual(written["reconciliation"]["outcome"], "ENV_JOB_UNKNOWN")
+        self.assertFalse(real_recovery._safe_to_cleanup(scenario))
+        held = json.loads((scenario.evidence / "cleanup-held.json").read_text())
+        self.assertIn("environment", held["reason"])
+
+    def test_environment_binding_reads_the_camel_case_serializer(self) -> None:
+        environment = {"planId": "env-1", "specSha256": "b" * 64}
+        spec = {"environmentPlanId": "env-1", "environmentSpecSha256": "b" * 64}
+        checks = [{"id": "c1", "environmentPlanId": "env-1", "environmentSpecSha256": "b" * 64}]
+        self.assertEqual(real_recovery.environment_binding_problems(spec, checks, environment), [])
+        stale = {"environmentPlanId": "other", "environmentSpecSha256": "b" * 64}
+        problems = real_recovery.environment_binding_problems(
+            stale, checks, environment
+        )
+        self.assertIn("ActionSpec environmentPlanId", problems)
+        legacy = {"environment_plan_id": "env-1", "environment_spec_sha256": "b" * 64}
+        self.assertEqual(
+            real_recovery.environment_binding_problems(legacy, checks, environment), []
+        )
+
 if __name__ == "__main__":
     unittest.main()
 

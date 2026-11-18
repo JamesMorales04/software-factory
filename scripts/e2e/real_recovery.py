@@ -164,7 +164,16 @@ class ScenarioError(RuntimeError):
 
 
 class EnvironmentJobUnknown(ScenarioError):
-    """The composite environment stage has no terminal projection."""
+    """The composite environment stage has no terminal projection.
+
+    Carries the origin request and the deadline that was actually applied, so a
+    later failure capture cannot mistake the reconciliation GET for the stage.
+    """
+
+    def __init__(self, message: str, *, origin: tuple[str, str], actual_timeout: float) -> None:
+        super().__init__(message)
+        self.origin = origin
+        self.actual_timeout = actual_timeout
 
 
 class ScenarioInvalid(ScenarioError):
@@ -588,16 +597,25 @@ def environment_binding_problems(
         return ["environment review has no frozen spec"]
     plan_id = str(environment.get("planId") or "")
     problems = []
-    if str(spec.get("environment_plan_id") or "") != plan_id:
-        problems.append("ActionSpec environment_plan_id")
-    if str(spec.get("environment_spec_sha256") or "") != spec_sha:
-        problems.append("ActionSpec environment_spec_sha256")
+    if _plan_binding(spec, "environmentPlanId", "environment_plan_id") != plan_id:
+        problems.append("ActionSpec environmentPlanId")
+    if _plan_binding(spec, "environmentSpecSha256", "environment_spec_sha256") != spec_sha:
+        problems.append("ActionSpec environmentSpecSha256")
     for check in checks:
-        if str(check.get("environment_plan_id") or "") != plan_id:
-            problems.append(f"check {check.get('id')!r} environment_plan_id")
-        if str(check.get("environment_spec_sha256") or "") != spec_sha:
-            problems.append(f"check {check.get('id')!r} environment_spec_sha256")
+        if _plan_binding(check, "environmentPlanId", "environment_plan_id") != plan_id:
+            problems.append(f"check {check.get('id')!r} environmentPlanId")
+        if _plan_binding(check, "environmentSpecSha256", "environment_spec_sha256") != spec_sha:
+            problems.append(f"check {check.get('id')!r} environmentSpecSha256")
     return problems
+
+
+def _plan_binding(entry: dict[str, Any], camel: str, legacy: str) -> str:
+    """Read the serializer's real camelCase field, accepting the legacy key only
+    when the current serializer does not emit it."""
+
+    if camel in entry:
+        return str(entry.get(camel) or "")
+    return str(entry.get(legacy) or "")
 
 
 def contract_mismatch(approved_checks: list[dict[str, Any]]) -> str:
@@ -702,7 +720,7 @@ class Api:
                 return json.loads(body) if body else None
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
-            self.last_error = (error.code, detail[:1_000])
+            self.last_error = (error.code, _redact_text(detail, 1_000))
             self.last_error_request = (method, path)
             raise
 
@@ -737,7 +755,7 @@ class Api:
                 return response.status, (json.loads(body) if body else None)
         except urllib.error.HTTPError as error:
             body = error.read().decode("utf-8")
-            self.last_error = (error.code, body[:1_000])
+            self.last_error = (error.code, _redact_text(body, 1_000))
             self.last_error_request = ("POST", path)
             try:
                 payload = json.loads(body) if body else None
@@ -1126,14 +1144,20 @@ class Scenario:
         }
 
     def _reconcile_environment_review(
-        self, plan_sha256: str, plan_revision: int, observations: int = 10, pause: float = 15.0
+        self,
+        plan_id: str,
+        plan_sha256: str,
+        plan_revision: int,
+        origin: tuple[str, str],
+        actual_timeout: float,
+        observations: int = 10,
+        pause: float = 15.0,
     ) -> dict[str, Any]:
         """Observe the composite stage after a transport timeout; never re-POST.
 
-        Terminal success is only an exact projection: the same plan sha and
-        revision, status FROZEN, a spec sha and a nested plan revision. A
-        non-terminal or unreadable projection raises ``EnvironmentJobUnknown`` so
-        the stack is preserved instead of deleted.
+        Adoption is a full copy of the projection, not a synthesized object, and
+        it requires the exact frozen identity: status FROZEN, the same planId,
+        the nested plan revision and the outer planRevision, and a spec sha.
         """
 
         seen: list[dict[str, Any]] = []
@@ -1154,29 +1178,29 @@ class Scenario:
                     {
                         "attempt": index,
                         "status": status,
-                        "planStatus": nested.get("status"),
-                        "planSha256": nested.get("planSha256"),
-                        "planRevision": nested.get("planRevision"),
+                        "planId": nested.get("planId"),
+                        "nestedRevision": nested.get("revision"),
+                        "planRevision": environment.get("planRevision"),
                         "specSha256": environment.get("specSha256"),
+                        "reviewCount": len(environment.get("reviews") or []),
                     }
                 )
                 if (
                     status == "FROZEN"
+                    and str(nested.get("planId") or "") == plan_id
                     and str(nested.get("planSha256") or "") == plan_sha256
-                    and int(nested.get("planRevision") or 0) == plan_revision
+                    and int(nested.get("revision") or 0) == plan_revision
+                    and int(environment.get("planRevision") or 0) == plan_revision
                     and _is_sha256(str(environment.get("specSha256") or ""))
                 ):
                     self.write(
                         "environment-review-reconciled.json",
-                        {"observations": seen, "adopted": True},
+                        {"observations": seen, "adopted": True, "planId": plan_id},
                     )
-                    return {
-                        "status": "FROZEN",
-                        "planSha256": plan_sha256,
-                        "planRevision": plan_revision,
-                        "specSha256": environment.get("specSha256"),
-                        "reconciled": True,
-                    }
+                    # Full projection copy: the normal path consumes the same object.
+                    adopted = dict(environment)
+                    adopted["reconciled"] = True
+                    return adopted
                 if status == "BLOCKED":
                     self.write("environment-review-reconciled.json", {"observations": seen, "adopted": False})
                     raise ScenarioError("environment review was authoritatively blocked")
@@ -1185,7 +1209,9 @@ class Scenario:
             self.api.timeout = previous
         self.write("environment-review-reconciled.json", {"observations": seen, "adopted": False})
         raise EnvironmentJobUnknown(
-            "environment review did not reach a terminal projection after a transport timeout"
+            "environment review did not reach a terminal projection after a transport timeout",
+            origin=origin,
+            actual_timeout=actual_timeout,
         )
 
     def environment_review(self) -> None:
@@ -1193,6 +1219,7 @@ class Scenario:
 
         plan = self.environment_plan
         deadline, derivation = self._environment_review_deadline()
+        self.environment_review_deadline = deadline
         self.write("environment-review-deadline.json", derivation)
         previous = self.api.timeout
         self.api.timeout = deadline
@@ -1210,7 +1237,11 @@ class Scenario:
             ):
                 raise
             response = self._reconcile_environment_review(
-                str(plan.get("planSha256") or ""), int(plan.get("planRevision") or 0)
+                str(plan.get("planId") or ""),
+                str(plan.get("planSha256") or ""),
+                int(plan.get("planRevision") or 0),
+                origin=("POST", f"/agentic/requests/{self.intake}/environment/review"),
+                actual_timeout=deadline,
             )
         finally:
             self.api.timeout = previous
@@ -2265,7 +2296,9 @@ class Scenario:
         ) or isinstance(error, EnvironmentJobUnknown)
         # Only the composite environment stage can own a background job; a model
         # timeout on another stage keeps the existing model-only reconciliation.
-        env_stage_timeout = is_timeout and failed_request[1] == review_path
+        env_stage_timeout = isinstance(error, EnvironmentJobUnknown) or (
+            is_timeout and failed_request[1] == review_path
+        )
         diagnostics = self._capture_runtime_diagnostics() if env_stage_timeout else None
         env_job = self._environment_job_fact() if env_stage_timeout else None
         reconciliation = self.reconcile_failure(settle_timeout=settle)
@@ -2309,6 +2342,9 @@ class Scenario:
             "last_error_request": failed_error_request,
             "diagnostics": diagnostics,
             "transport_timeout_secs": self.api.timeout,
+            "transport_deadline_secs": getattr(
+                self, "environment_review_deadline", None
+            ),
             "reconciliation": reconciliation,
         }
         self.write("failure.json", payload)
