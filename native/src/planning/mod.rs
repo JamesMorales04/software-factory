@@ -100,6 +100,18 @@ impl PlanningSignals {
     }
 }
 
+/// Explicit deterministic threshold for the `large` planning signal.
+///
+/// `ProjectConfig.allowed_paths` is a write scope, not a changed-file count, so
+/// it must not be treated as `changed_files` for sizing. Multi-unit work still
+/// floors the lane through the model's `expected_units`/`cross_module`.
+pub const LARGE_OBJECTIVE_CHARS: usize = 500;
+
+/// True when the bounded objective alone justifies the `large` signal.
+pub fn objective_is_large(objective: &str) -> bool {
+    objective.chars().count() > LARGE_OBJECTIVE_CHARS
+}
+
 /// Deterministic lane floor. A model may raise this floor but never lower it.
 pub fn deterministic_lane(signals: &PlanningSignals) -> Result<PlanningLane, String> {
     signals.validate()?;

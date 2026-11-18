@@ -45,17 +45,6 @@ fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadErro
     }
     let checks_are_frozen = !request.action_spec.checks.is_empty();
     let timeout_secs = request.grant.max_timeout_secs;
-    let description: String = request.objective.chars().take(500).collect();
-    let unit = serde_json::json!({
-        "id": "unit-1",
-        "kind": "implementation",
-        "description": description,
-        "dependsOn": [],
-        "allowedPaths": request.project.allowed_paths,
-        "capabilities": request.project.capabilities,
-        "acceptanceCriteria": acceptance_criteria,
-        "negativeCases": negative_cases,
-    });
     let example = serde_json::json!({
         "schemaRevision": 1,
         "projectId": request.project.project_id,
@@ -77,7 +66,7 @@ fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadErro
         "validationNeeds": ["Run the frozen ActionSpec checks."],
         "assumptions": [],
         "uncertainty": [],
-        "suggestedNextAction": "Freeze the plan and dispatch unit-1.",
+        "suggestedNextAction": "Freeze the plan and let the Planner decompose the objective.",
         "proposal": {
             "projectId": request.project.project_id,
             "actionId": request.action.id,
@@ -94,7 +83,7 @@ fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadErro
             "budget": {"timeoutSecs": timeout_secs},
             "route": request.grant.route,
             "maxParallel": 1,
-            "workUnits": [unit]
+            "workUnits": []
         }
     });
     let non_change_example = serde_json::json!({
@@ -169,9 +158,9 @@ must be one of {classes:?}; proposal.qualityProfile must be {quality:?}; riskCla
 global language image. Do not assume cargo, rustc, python3, node, npm or any other executable exists \
 unless the environment proposal or committed conventions provide it. \
 budget.timeoutSecs={timeout_secs}; route must be {route:?}; maxParallel=1; \
-for a change intent, `proposal` is required and workUnits must contain exactly one implementation \
-unit with id \"unit-1\"; its allowedPaths and capabilities must be subsets of the outer lists shown \
-and should reflect the plan reasoning; check ids must be unique. For informational or audit, omit \
+for a change intent, `proposal` is required and workUnits must be an EMPTY array: the bounded \
+Core Planner owns decomposition, so do not invent implementation units, ids or per-unit paths. \
+Check ids must be unique. For informational or audit, omit \
 `proposal` entirely.\n\nJSON Schema:\n{schema}\n\nValid CHANGE-intent example shape (with proposal):\n{example}\n\nValid non-change (informational or audit) example shape WITHOUT proposal:\n{non_change_example}",
         checks_instruction = checks_instruction,
         environment_instruction = environment_instruction,
@@ -453,11 +442,16 @@ mod tests {
     }
 
     #[test]
-    fn prompt_does_not_require_unit_one_for_a_non_change_intent() {
+    fn prompt_does_not_require_a_lead_work_unit() {
         let prompt = assessment_prompt_for_test();
         assert!(
-            !prompt.contains("maxParallel=1; workUnits must contain exactly one"),
-            "the unconditional WorkUnit rule is still present"
+            !prompt.contains("workUnits must contain exactly one implementation unit"),
+            "the Lead is still required to author a WorkUnit"
+        );
+        assert!(!prompt.contains("dispatch unit-1"), "{prompt}");
+        assert!(
+            prompt.contains("workUnits must be an EMPTY array"),
+            "{prompt}"
         );
         assert!(
             prompt.contains("for a change intent, `proposal` is required"),
@@ -486,6 +480,11 @@ mod tests {
         let change: serde_json::Value = serde_json::from_str(change).unwrap();
         let non_change: serde_json::Value = serde_json::from_str(non_change).unwrap();
         assert!(change.get("proposal").is_some());
+        assert_eq!(
+            change["proposal"]["workUnits"],
+            serde_json::json!([]),
+            "the change example must not author executable units"
+        );
         assert!(non_change.get("proposal").is_none());
         let input = AssessmentInput {
             project_id: "project-1".into(),

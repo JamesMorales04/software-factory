@@ -770,18 +770,34 @@ fn assignment(role: &str, specialization: &str, count: u32, read_only: bool) -> 
     }
 }
 
+/// The WorkGraph units are the only permitted source of executable
+/// decomposition. A required route without at least one validated unit is a
+/// typed planning state, never a synthetic `unit-1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ParticipantPlanError {
+    #[error("a validated WorkGraph is required before compiling participant assignments")]
+    WorkGraphNotPlanned,
+}
+
 pub fn participant_plan(
     route: ChangeRoute,
     assurance: Assurance,
     work_units: u32,
     stack: &StackProfile,
-) -> ParticipantPlan {
+) -> Result<ParticipantPlan, ParticipantPlanError> {
     let specialization = stack
         .languages
         .first()
         .cloned()
         .unwrap_or_else(|| "cross-cutting".into());
-    let units = work_units.max(1);
+    let units = if route == ChangeRoute::NoAgent {
+        1
+    } else {
+        if work_units == 0 {
+            return Err(ParticipantPlanError::WorkGraphNotPlanned);
+        }
+        work_units
+    };
     let lane = lane_for_route(route);
     let reviewer_plan = lane.map(|lane| {
         crate::planning::ReviewerPlan::for_lane(lane, assurance >= Assurance::Elevated)
@@ -866,7 +882,7 @@ pub fn participant_plan(
             "{reviewers} independent reviewer receipts are required for assurance {assurance:?}."
         ));
     }
-    ParticipantPlan {
+    Ok(ParticipantPlan {
         route,
         assurance,
         assignments,
@@ -876,7 +892,7 @@ pub fn participant_plan(
         reviewer_count: reviewers,
         reviewer_roles,
         reviewer_assignments: Vec::new(),
-    }
+    })
 }
 
 /// Planning lane for an executable route. `NoAgent` has no reviewer plan.
@@ -901,9 +917,9 @@ pub fn participant_plan_for_graph(
     provider: &str,
     model: &str,
     provider_mode: &str,
-) -> ParticipantPlan {
+) -> Result<ParticipantPlan, ParticipantPlanError> {
     let units = u32::try_from(graph.units.len()).unwrap_or(u32::MAX);
-    let mut plan = participant_plan(route, assurance, units, stack);
+    let mut plan = participant_plan(route, assurance, units, stack)?;
     plan.unit_assignments = graph
         .units
         .iter()
@@ -920,7 +936,7 @@ pub fn participant_plan_for_graph(
         "{} independent unit(s) are bound to their own implementer specialization; path conflicts were rejected by WorkGraph validation.",
         plan.unit_assignments.len()
     ));
-    plan
+    Ok(plan)
 }
 
 fn unit_specialization(unit: &PlannedWorkUnit, stack: &StackProfile) -> String {
@@ -1574,7 +1590,8 @@ mod tests {
             languages: vec!["rust".into()],
             ..StackProfile::default()
         };
-        let direct = participant_plan(ChangeRoute::Direct, Assurance::None, 1, &stack);
+        let direct = participant_plan(ChangeRoute::Direct, Assurance::None, 1, &stack)
+            .expect("validated unit");
         assert_eq!(direct.assignments.len(), 3);
         assert!(direct.assignments.iter().any(|a| a.role == "Implementer"));
         assert!(
@@ -1584,10 +1601,46 @@ mod tests {
                 .filter(|a| a.role == "Reviewer")
                 .all(|a| a.read_only)
         );
-        let formal = participant_plan(ChangeRoute::FormalSpec, Assurance::Elevated, 3, &stack);
+        let formal = participant_plan(ChangeRoute::FormalSpec, Assurance::Elevated, 3, &stack)
+            .expect("validated units");
         assert!(formal.assignments.iter().any(|a| a.role == "Planner"));
         assert!(formal.assignments.iter().any(|a| a.role == "Spec Manager"));
         assert!(formal.assignments.iter().any(|a| a.count == 3));
+    }
+
+    #[test]
+    fn participant_plan_requires_validated_units_for_executable_routes() {
+        let stack = StackProfile::default();
+        assert_eq!(
+            participant_plan(ChangeRoute::Delegated, Assurance::None, 0, &stack),
+            Err(ParticipantPlanError::WorkGraphNotPlanned)
+        );
+        assert_eq!(
+            participant_plan(ChangeRoute::FormalSpec, Assurance::Elevated, 0, &stack),
+            Err(ParticipantPlanError::WorkGraphNotPlanned)
+        );
+        assert!(
+            participant_plan(ChangeRoute::NoAgent, Assurance::None, 0, &stack).is_ok(),
+            "a non-change intent has no executable units and needs no WorkGraph"
+        );
+    }
+
+    #[test]
+    fn participant_plan_does_not_synthesize_a_single_unit() {
+        let stack = StackProfile::default();
+        let plan = participant_plan(ChangeRoute::Delegated, Assurance::None, 3, &stack)
+            .expect("validated units");
+        let implementer = plan
+            .assignments
+            .iter()
+            .find(|assignment| assignment.role == "Implementer")
+            .expect("implementer assignment");
+        assert_eq!(implementer.count, 3);
+        assert!(
+            plan.reasons
+                .iter()
+                .any(|reason| reason.contains("3 independent"))
+        );
     }
 
     fn unit(id: &str, depends_on: &[&str], paths: &[&str]) -> PlannedWorkUnit {
@@ -1735,7 +1788,8 @@ mod tests {
             "opencode",
             "deepseek-v4.1-flash",
             "build",
-        );
+        )
+        .expect("validated work graph units");
         assert_eq!(plan.reviewer_count, 6);
         assert_eq!(plan.reviewer_roles.len(), 6);
         assert_eq!(plan.unit_assignments.len(), 2);

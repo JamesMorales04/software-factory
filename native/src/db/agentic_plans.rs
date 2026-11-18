@@ -280,6 +280,18 @@ impl Database {
         self.agentic_work_graph(input.request_id).await
     }
 
+    /// Test-support only: remove the seeded WorkGraph row so the P1a
+    /// `WORK_GRAPH_NOT_PLANNED` projection can be exercised through a real API.
+    /// The row is a fixture; no production path uses this method.
+    #[cfg(feature = "test-support")]
+    pub async fn delete_seeded_work_graph(&self, request_id: &str) -> Result<(), Error> {
+        sqlx::query::query("DELETE FROM agentic_work_graphs WHERE request_id=?1")
+            .bind(request_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn agentic_work_graph(
         &self,
         request_id: &str,

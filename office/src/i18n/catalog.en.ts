@@ -706,6 +706,12 @@ export const en = {
     "{sessions} sessions · {parallel} parallel · {wallClock}s wall clock · {repairCycles} repair cycles",
   "request.plan.checksValue": "{acceptance} acceptance · {negative} negative",
   "request.plan.noWorkUnits": "No work units recorded.",
+  "request.plan.workGraphUnits": "WorkGraph units",
+  "request.plan.unitStatus": "Status",
+  "request.plan.workGraphNotPlanned": "WORK_GRAPH_NOT_PLANNED",
+  "request.plan.plannerPendingTitle": "Planner pending.",
+  "request.plan.plannerPendingDescription":
+    "The Lead coordinates and no longer authors executable units. Core is waiting for a validated Planner WorkGraph, so no unit, Campaign or start exists yet.",
 
   "request.trace.title": "Workflow trace",
   "request.trace.description":
@@ -3602,6 +3608,8 @@ export const en = {
   "director.stack.evidence": "Evidence: {values}",
   "director.agents.title": "Compiled participants",
   "director.agents.count": "{count} assignment(s)",
+  "director.table.agents": "Participant assignments table",
+  "director.table.specs": "Specifications table",
   "director.agents.role": "Role",
   "director.agents.specialization": "Specialization",
   "director.agents.countLabel": "Count",
@@ -4025,7 +4033,13 @@ export const en = {
   "director.participants.reviewers": "Independent reviewers",
   "director.participants.independentReceiptsLabel": "Independent receipts",
   "director.participants.requiredRoles": "Required reviewer roles",
-  "director.participants.unassigned": "Not assigned",
+  "director.participants.workGraphNotPlannedTitle": "Planner pending.",
+  "director.participants.workGraphNotPlanned":
+    "There is no validated Planner WorkGraph, so participants, units and Campaign start stay blocked until Core plans and validates it.",
+
+  "director.participants.plannerPendingTitle": "Planner plan pending.",
+  "director.participants.plannerPending":
+    "A validated WorkGraph exists but Core could not compile the participant plan yet. The causal problem is shown below; no unit or Campaign start is invented.",  "director.participants.unassigned": "Not assigned",
   "director.participants.noRoles":
     "No reviewer roles are recorded for this route.",
   "director.participants.independentReceipts":

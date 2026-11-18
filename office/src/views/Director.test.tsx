@@ -8,7 +8,11 @@ import {
   CoreApiError,
 } from "../coreApi";
 import { I18nProvider } from "../i18n";
-import { Director } from "./Director";
+import {
+  Director,
+  reviewerAssignmentsMatch,
+  withParticipantFallback,
+} from "./Director";
 
 const mocks = vi.hoisted(() => ({
   listAgenticPortfolio: vi.fn(),
@@ -545,6 +549,17 @@ describe("Director", () => {
     expect((compile as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/executable ActionSpec is missing/)).toBeDefined();
     expect(screen.queryByRole("button", { name: "Run assessment" })).toBeNull();
+  });
+
+  it("makes horizontal table regions keyboard focusable", async () => {
+    renderDirector();
+    await screen.findAllByText("Implement the ICS exporter");
+    const wraps = Array.from(document.querySelectorAll(".director-table-wrap"));
+    expect(wraps.length).toBeGreaterThan(0);
+    for (const wrap of wraps) {
+      expect(wrap.getAttribute("tabindex")).toBe("0");
+      expect(wrap.getAttribute("role")).toBe("region");
+    }
   });
 
   it("shows required reviewer roles, assigned principals and independent receipts", async () => {
@@ -1965,5 +1980,54 @@ describe("Director", () => {
         name: "Add an ICS export endpoint",
       }),
     ).toBeNull();
+  });
+});
+
+describe("participant work-graph state", () => {
+  it("normalizes a missing plan without inventing units", () => {
+    const missing = {
+      ...detail,
+      participants: null,
+      participantState: "WORK_GRAPH_NOT_PLANNED" as const,
+    };
+    const normalized = withParticipantFallback(missing);
+    expect(normalized.participants?.assignments).toEqual([]);
+    expect(normalized.participants?.unitAssignments).toEqual([]);
+    expect(normalized.participants?.reviewerCount).toBe(0);
+    expect(normalized.participantState).toBe("WORK_GRAPH_NOT_PLANNED");
+    expect(reviewerAssignmentsMatch(missing)).toBe(true);
+  });
+
+  it("shows the causal problem when a validated WorkGraph has no participant plan yet", async () => {
+    mocks.getAgenticRequest.mockResolvedValue({
+      ...detail,
+      participants: null,
+      participantState: "PLANNED_PENDING",
+      participantProblem: {
+        code: "PROFILE_NOT_EXECUTABLE",
+        message: "the frozen execution profile is not executable",
+      },
+    });
+    renderDirector();
+    await screen.findByRole("heading", { name: "Add an ICS export endpoint" });
+    expect(await screen.findByText("Planner plan pending.")).toBeDefined();
+    expect(screen.getByText("PROFILE_NOT_EXECUTABLE")).toBeDefined();
+    expect(
+      screen.getByText(/the frozen execution profile is not executable/),
+    ).toBeDefined();
+  });
+
+  it("shows the typed Planner-pending callout when no validated WorkGraph exists", async () => {
+    mocks.getAgenticRequest.mockResolvedValue({
+      ...detail,
+      participants: null,
+      participantState: "WORK_GRAPH_NOT_PLANNED",
+    });
+    renderDirector();
+    await screen.findByRole("heading", { name: "Add an ICS export endpoint" });
+    expect(await screen.findByText("Planner pending.")).toBeDefined();
+    expect(
+      screen.getAllByText("WORK_GRAPH_NOT_PLANNED").length,
+    ).toBeGreaterThan(0);
   });
 });

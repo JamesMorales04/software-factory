@@ -733,6 +733,131 @@ impl Database {
         ))
     }
 
+    /// Test-support only: create an isolated request bound to a historical V1
+    /// delegation so the P1a seed route can prove it fails closed. Rows are
+    /// copied from a seeded request; the immutable source rows are untouched.
+    #[cfg(feature = "test-support")]
+    pub async fn seed_legacy_v1_request_for_test(
+        &self,
+        template_request_id: &str,
+    ) -> Result<String, Error> {
+        let request_id = "legacy-v1-request";
+        let lead_id = "legacy-v1-lead";
+        let action_id = "legacy-v1-action";
+        let delegation_id = "legacy-v1-delegation";
+        let now = Utc::now().to_rfc3339();
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let (project_id,): (String,) =
+            sqlx::query_as::query_as("SELECT project_id FROM intake_requests WHERE id=?1")
+                .bind(template_request_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .ok_or(Error::NotFound)?;
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO standing_delegations
+             (id,principal_id,audit_id,project_id,revision,content_hash,content_json,created_at)
+             VALUES (?1,'owner','fixture',?2,1,?3,'{}',?4)",
+        )
+        .bind(delegation_id)
+        .bind(&project_id)
+        .bind(sha256_hex(delegation_id.as_bytes()))
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO actions
+             (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+             SELECT ?1,project_id,objective,provider,model,risk,status,objective_sha256,created_at
+             FROM actions WHERE id=(SELECT action_id FROM intake_requests WHERE id=?2)",
+        )
+        .bind(action_id)
+        .bind(template_request_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO lead_requests
+             (id,project_id,action_id,delegation_id,objective,request_hash,
+              project_config_hash,state,created_at,updated_at)
+             SELECT ?1,project_id,?2,?3,objective,request_hash,project_config_hash,state,
+                    created_at,updated_at
+             FROM lead_requests WHERE id=(SELECT lead_request_id FROM intake_requests WHERE id=?4)",
+        )
+        .bind(lead_id)
+        .bind(action_id)
+        .bind(delegation_id)
+        .bind(template_request_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO intake_requests
+             (id,project_id,objective,mode,profile_id,profile_revision_id,profile_revision,
+              profile_hash,profile_name,action_id,delegation_id,lead_request_id,campaign_id,
+              submission_json,submission_hash,idempotency_key,created_at,updated_at)
+             SELECT ?1,project_id,objective,mode,profile_id,profile_revision_id,profile_revision,
+                    profile_hash,profile_name,?2,?3,?4,campaign_id,submission_json,submission_hash,
+                    'legacy-v1-idempotency',created_at,updated_at
+             FROM intake_requests WHERE id=?5",
+        )
+        .bind(request_id)
+        .bind(action_id)
+        .bind(delegation_id)
+        .bind(lead_id)
+        .bind(template_request_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(request_id.into())
+    }
+
+    /// Test-support only: persist a fixture assessment and its empty-units
+    /// proposal for an already seeded request without changing its real
+    /// lifecycle state. No production path calls this method.
+    #[cfg(feature = "test-support")]
+    pub async fn seed_lead_assessment_and_proposal(
+        &self,
+        request_id: &str,
+        assessment: &LeadAssessment,
+        proposal: &LeadPlanProposal,
+    ) -> Result<(), Error> {
+        let assessment_json = serde_json::to_string(assessment)
+            .map_err(|_| Error::Invalid("fixture assessment encoding"))?;
+        let proposal_json = serde_json::to_string(proposal)
+            .map_err(|_| Error::Invalid("fixture proposal encoding"))?;
+        let schema_sha256 = crate::model_output::lead_assessment_schema_sha256();
+        let now = Utc::now().to_rfc3339();
+        let assessment_id = Uuid::new_v4().to_string();
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query::query(
+            "INSERT INTO lead_assessments
+             (id,request_id,mechanism,assessment_json,schema_sha256,created_at)
+             VALUES (?1,?2,'FIXTURE',?3,?4,?5)",
+        )
+        .bind(&assessment_id)
+        .bind(request_id)
+        .bind(&assessment_json)
+        .bind(&schema_sha256)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "INSERT INTO lead_proposals
+             (id,request_id,assessment_id,proposal_json,proposal_hash,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(request_id)
+        .bind(&assessment_id)
+        .bind(&proposal_json)
+        .bind(sha256_hex(proposal_json.as_bytes()))
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
     pub async fn begin_lead_assessment(&self, id: &str) -> Result<LeadRequestRecord, Error> {
         self.transition_lead_request(id, LeadRequestState::Submitted, LeadRequestState::Assessing)
             .await
@@ -1956,9 +2081,11 @@ async fn start_lead_campaign_in_tx(
             "project configuration or base changed after the Lead request".into(),
         ));
     }
-    if proposal.work_units.is_empty() {
-        return Err(Error::Forbidden("WorkGraph is empty".into()));
-    }
+    // The validated Planner WorkGraph owns executable decomposition. A Lead
+    // proposal with an empty WorkUnits array starts only from that graph; the
+    // Lead units remain readable solely for legacy frozen plans without one.
+    let graph = load_start_work_graph(connection, &request.id).await?;
+    let units = start_work_units(proposal, graph.as_ref())?;
     if proposal.risk_class != crate::lead::RiskClass::R0 {
         return Err(Error::Forbidden(
             "explicit start is limited to a deterministically eligible R0 plan".into(),
@@ -2002,6 +2129,12 @@ async fn start_lead_campaign_in_tx(
         }
     }
     proposal.validate_v2(grant, &config.binding(), &action, Utc::now())?;
+    // The Lead proposal may carry no units; validate the resolved WorkGraph
+    // count before any per-unit ActionSpec or run/attempt is created. Legacy
+    // proposals without a graph keep their previously frozen budget path.
+    if graph.is_some() {
+        proposal.validate_resolved_units(units.len())?;
+    }
     if proposal.objective != request.objective {
         return Err(Error::Forbidden(
             "proposal objective differs from the original Lead request".into(),
@@ -2063,7 +2196,7 @@ async fn start_lead_campaign_in_tx(
             "frozen plan does not match the ActionSpec checks".into(),
         ));
     }
-    for unit in &proposal.work_units {
+    for unit in &units {
         if unit
             .allowed_paths
             .iter()
@@ -2074,8 +2207,8 @@ async fn start_lead_campaign_in_tx(
             ));
         }
     }
-    let mut specs = Vec::with_capacity(proposal.work_units.len());
-    for unit in &proposal.work_units {
+    let mut specs = Vec::with_capacity(units.len());
+    for unit in &units {
         specs.push(unit_action_spec(
             proposal,
             &config,
@@ -2326,7 +2459,7 @@ async fn start_lead_campaign_in_tx(
     }
     let mut first_run = None;
     let mut first_attempt = None;
-    for (index, (unit, spec)) in proposal.work_units.iter().zip(specs.iter()).enumerate() {
+    for (index, (unit, spec)) in units.iter().zip(specs.iter()).enumerate() {
         let spec_json =
             serde_json::to_string(spec).map_err(|_| Error::Invalid("unit ActionSpec encoding"))?;
         let spec_sha256 = sha256_hex(spec_json.as_bytes());
@@ -3338,6 +3471,56 @@ pub(super) async fn load_frozen_plan_by_id(
         delegation_hash: row.try_get("delegation_hash")?,
         created_at: row.try_get("created_at")?,
     })
+}
+
+/// Core-normalized executable units for an explicit start.
+///
+/// A validated Planner WorkGraph wins whenever it exists; otherwise a legacy
+/// frozen proposal may still supply its own units. An empty proposal without a
+/// graph is the typed `WORK_GRAPH_NOT_PLANNED` state, never a synthetic unit.
+fn start_work_units(
+    proposal: &LeadPlanProposal,
+    graph: Option<&crate::agentic::ValidatedWorkGraph>,
+) -> Result<Vec<crate::lead::LeadWorkUnit>, Error> {
+    if let Some(graph) = graph.filter(|graph| !graph.units.is_empty()) {
+        return Ok(graph
+            .units
+            .iter()
+            .map(|unit| crate::lead::LeadWorkUnit {
+                id: unit.id.clone(),
+                kind: crate::lead::WorkUnitKind::Implementation,
+                description: unit.objective.clone(),
+                depends_on: unit.depends_on.clone(),
+                allowed_paths: unit.paths.clone(),
+                capabilities: Vec::new(),
+                acceptance_criteria: Vec::new(),
+                negative_cases: Vec::new(),
+            })
+            .collect());
+    }
+    if proposal.work_units.is_empty() {
+        return Err(Error::IntakeConflict {
+            code: "WORK_GRAPH_NOT_PLANNED",
+            message:
+                "explicit start requires a validated Planner WorkGraph; the Lead no longer authors executable units"
+                    .into(),
+        });
+    }
+    Ok(proposal.work_units.clone())
+}
+
+async fn load_start_work_graph(
+    connection: &mut SqliteConnection,
+    request_id: &str,
+) -> Result<Option<crate::agentic::ValidatedWorkGraph>, Error> {
+    let row: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT graph_json FROM agentic_work_graphs WHERE request_id=?1")
+            .bind(request_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    Ok(row.and_then(|(graph_json,)| {
+        serde_json::from_str::<crate::agentic::ValidatedWorkGraph>(&graph_json).ok()
+    }))
 }
 
 fn unit_action_spec(
@@ -9963,5 +10146,45 @@ mod tests {
         }
         db.close().await;
         let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn start_units_are_resolved_from_the_validated_work_graph() {
+        let mut proposal = assessment().proposal.expect("proposal");
+        proposal.work_units.clear();
+        let graph = crate::agentic::ValidatedWorkGraph {
+            units: vec![crate::agentic::PlannedWorkUnit {
+                id: "graph-unit".into(),
+                title: "Graph unit".into(),
+                objective: "Do the bounded work.".into(),
+                depends_on: Vec::new(),
+                paths: vec!["src".into()],
+                acceptance: vec!["observable".into()],
+            }],
+            assumptions: Vec::new(),
+            risks: Vec::new(),
+            topological_order: vec!["graph-unit".into()],
+            graph_sha256: "a".repeat(64),
+        };
+
+        let units = start_work_units(&proposal, Some(&graph)).expect("graph units");
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].id, "graph-unit");
+        assert_eq!(units[0].allowed_paths, vec!["src".to_string()]);
+        assert!(units[0].acceptance_criteria.is_empty());
+
+        let error = start_work_units(&proposal, None).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::IntakeConflict {
+                code: "WORK_GRAPH_NOT_PLANNED",
+                ..
+            }
+        ));
+
+        // A validated graph wins over legacy Lead units.
+        let mut legacy = proposal.clone();
+        legacy.work_units = assessment().proposal.expect("proposal").work_units;
+        let resolved = start_work_units(&legacy, Some(&graph)).expect("graph units");
+        assert_eq!(resolved[0].id, "graph-unit");
     }
 }

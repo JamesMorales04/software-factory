@@ -1368,7 +1368,8 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route(
             "/test-support/wave12/trace-fault/{id}",
             post(wave12_support::arm_trace_failure),
-        );
+        )
+        .route("/test-support/p1a/seed", post(p1a_seed));
 
     let api = api
         .with_state(Arc::clone(&app))
@@ -1756,7 +1757,8 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/test-support/wave12/trace-fault/{id}",
             post(wave12_support::arm_trace_failure),
-        );
+        )
+        .route("/test-support/p1a/seed", post(p1a_seed));
 
     api.with_state(app)
 }
@@ -10123,11 +10125,15 @@ async fn assess_lead_request(
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(1)
-            .clamp(1, 8)
+            .clamp(0, 8)
     } else {
         1
     };
-    if requested_units > 1 {
+    if requested_units == 0 {
+        // Deterministic test support for the P1a empty-Lead-units contract:
+        // the Planner WorkGraph is the only executable decomposition.
+        proposal.work_units.clear();
+    } else if requested_units > 1 {
         let fanin = env::var("FACTORY_LEAD_FIXTURE_MODE").ok().as_deref() == Some("fanin");
         proposal.budget.max_attempts = 1;
         proposal.max_sessions = (1 + requested_units) as u32;
@@ -10888,6 +10894,8 @@ async fn intake_request_value(
             "ready": readiness.ready(),
         });
         value["environment"] = environment_projection_for_request(app, record).await?;
+        value["participantPlan"] = json!(readiness.participant_plan);
+        value["specifications"] = json!(work_graph_specifications(app, record).await?);
         value["startReady"] = json!(
             readiness.ready()
                 && record.campaign_id.is_none()
@@ -11227,6 +11235,7 @@ struct AgenticPortfolioEntry {
     request_kind: factory_native::agentic::RequestKind,
     work_units: usize,
     participant_count: u32,
+    participant_state: &'static str,
     stack_languages: Vec<String>,
     director_id: String,
     operation_manager_id: String,
@@ -11317,32 +11326,32 @@ async fn agentic_triage_context(
             serde_json::from_str::<factory_native::lead::LeadPlanProposal>(&record.proposal_json)
                 .ok()
         });
-    let work_units = proposal
-        .as_ref()
-        .map(|proposal| proposal.work_units.len())
-        .unwrap_or(0);
     let risk = proposal
         .as_ref()
         .map(|proposal| proposal.risk_class)
         .unwrap_or(factory_native::lead::RiskClass::R0);
-    let fallback_paths = app
-        .db
-        .project_config(&record.project_id)
-        .await
-        .map(|config| config.allowed_paths)
-        .unwrap_or_default();
-    let paths: Vec<String> = proposal
+    // File scope for planning comes from the validated Planner WorkGraph.
+    // `ProjectConfig.allowed_paths` is an authorization scope, never a
+    // changed-file signal, so it must not leak into planning size.
+    let graph = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph_record) => serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
+            &graph_record.graph_json,
+        )
+        .ok(),
+        Err(_) => None,
+    };
+    let paths: Vec<String> = graph
         .as_ref()
-        .map(|proposal| {
-            proposal
-                .work_units
+        .map(|graph| {
+            graph
+                .units
                 .iter()
-                .flat_map(|unit| unit.allowed_paths.iter().cloned())
+                .flat_map(|unit| unit.paths.iter().cloned())
                 .collect::<std::collections::BTreeSet<_>>()
                 .into_iter()
                 .collect()
         })
-        .unwrap_or(fallback_paths);
+        .unwrap_or_default();
     let semantic = app
         .db
         .agentic_assessment(&record.id)
@@ -11371,6 +11380,16 @@ async fn agentic_triage_context(
         || semantic
             .as_ref()
             .is_some_and(|(_, model)| model.request_kind == agentic::RequestKind::Audit);
+    // The Lead no longer authors executable units: sizing comes from the
+    // semantic assessment and Core's deterministic signals, never from the
+    // Lead's WorkUnit count.
+    let expected_work_units = semantic
+        .as_ref()
+        .and_then(|(_, model)| model.expected_work_units);
+    let cross_module = semantic
+        .as_ref()
+        .is_some_and(|(_, model)| model.cross_module);
+    let changed_files = u32::try_from(paths.len()).unwrap_or(u32::MAX);
     let deterministic_signals = agentic::TriageSignals {
         objective: record.objective.clone(),
         files: paths,
@@ -11381,14 +11400,10 @@ async fn agentic_triage_context(
             _ => "high",
         }
         .into(),
-        expected_work_units: if work_units > 0 {
-            Some(u32::try_from(work_units).unwrap_or(u32::MAX))
-        } else {
-            None
-        },
+        expected_work_units,
         ambiguous: proposal.is_none() && !explicit_informational && !explicit_audit,
         architecture_uncertainty: proposal.is_none() && !explicit_informational && !explicit_audit,
-        cross_module: work_units > 1,
+        cross_module,
         public_contract: false,
         data_or_schema: false,
         security_boundary: false,
@@ -11404,16 +11419,19 @@ async fn agentic_triage_context(
     let planning_signals = factory_native::planning::PlanningSignals {
         objective: record.objective.clone(),
         greenfield: deterministic_stack.languages.is_empty(),
-        large: work_units > 1 || record.objective.chars().count() > 500,
+        // Deterministic only: scope paths are not changed files, so the
+        // explicit threshold is the bounded objective length. Multi-unit work
+        // still floors the lane through expected_units/cross_module.
+        large: factory_native::planning::objective_is_large(&record.objective),
         missing_docs,
         missing_stack: deterministic_stack.languages.is_empty(),
         architecture_uncertainty: deterministic_signals.architecture_uncertainty,
         public_contract: false,
         data_or_schema: false,
         security_boundary: false,
-        cross_module: work_units > 1,
-        changed_files: u32::try_from(deterministic_signals.files.len()).unwrap_or(u32::MAX),
-        expected_units: u32::try_from(work_units).unwrap_or(u32::MAX),
+        cross_module,
+        changed_files,
+        expected_units: expected_work_units.unwrap_or(0),
         explicit_repair: false,
     };
     let planning_lane = factory_native::planning::route::route_for(
@@ -11466,30 +11484,123 @@ async fn agentic_triage_context(
     })
 }
 
+/// Truthful participant compilation state. A validated graph with a failed
+/// participant plan is `PLANNED_PENDING`, never `WORK_GRAPH_NOT_PLANNED`.
+#[cfg(test)]
+fn participant_projection_state(
+    plan_present: bool,
+    graph_present: bool,
+    route: factory_native::agentic::ChangeRoute,
+) -> &'static str {
+    if plan_present {
+        "PLANNED"
+    } else if graph_present {
+        "PLANNED_PENDING"
+    } else if route == factory_native::agentic::ChangeRoute::NoAgent {
+        "NOT_REQUIRED"
+    } else {
+        "WORK_GRAPH_NOT_PLANNED"
+    }
+}
+
+/// Executable specifications come from the validated Planner WorkGraph, never
+/// from the Lead proposal. A request without a graph has no executable units.
+fn work_graph_specification_values(
+    graph: &factory_native::agentic::ValidatedWorkGraph,
+    tasks: &[factory_native::db::LeadTaskRecord],
+) -> Vec<serde_json::Value> {
+    graph
+        .units
+        .iter()
+        .map(|unit| {
+            let status = tasks
+                .iter()
+                .find(|task| task.unit_id == unit.id)
+                .map(|task| task.status.clone())
+                .unwrap_or_else(|| "PLANNED".into());
+            serde_json::json!({
+                "id": unit.id,
+                "description": unit.objective,
+                "kind": "implementation",
+                "allowedPaths": unit.paths,
+                "capabilities": [],
+                "dependsOn": unit.depends_on,
+                "status": status,
+            })
+        })
+        .collect()
+}
+
+async fn work_graph_specifications(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<Vec<serde_json::Value>, Error> {
+    let graph = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph_record) => serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
+            &graph_record.graph_json,
+        )
+        .ok(),
+        Err(_) => None,
+    };
+    let Some(graph) = graph else {
+        return Ok(Vec::new());
+    };
+    let tasks = match record.campaign_id.as_deref() {
+        Some(campaign_id) => app.db.campaign_tasks(campaign_id).await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    Ok(work_graph_specification_values(&graph, &tasks))
+}
+
 async fn agentic_projection_for_request(
     app: &App,
     record: &factory_native::db::IntakeRequestRecord,
 ) -> Result<serde_json::Value, Error> {
-    use factory_native::agentic;
     let lead = app.db.lead_request(&record.lead_request_id).await?;
     let context = agentic_triage_context(app, record).await?;
-    let participant_from_graph = match app.db.agentic_work_graph(&record.id).await {
-        Ok(graph_record) => {
-            match serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
-                &graph_record.graph_json,
-            ) {
-                Ok(graph) => deterministic_participant_plan(app, record, &context, &graph)
-                    .await
-                    .ok(),
-                Err(_) => None,
-            }
-        }
+    let graph = match app.db.agentic_work_graph(&record.id).await {
+        Ok(graph_record) => serde_json::from_str::<factory_native::agentic::ValidatedWorkGraph>(
+            &graph_record.graph_json,
+        )
+        .ok(),
         Err(_) => None,
     };
-    let proposal = context.proposal.as_ref();
-    let work_units = proposal
-        .map(|proposal| proposal.work_units.len())
-        .unwrap_or(0);
+    // `PLANNED` requires the persisted participant plan, the same record the
+    // intake planning projection reads. When a graph exists without that row,
+    // the projection is consistently PLANNED_PENDING; the causal compilation
+    // failure is preserved when one is observable.
+    let participant_record = app.db.agentic_participant_plan(&record.id).await.ok();
+    let effective_lane =
+        effective_planning_lane_for_request(app, &record.id, context.planning_lane).await?;
+    let reviewer_plan =
+        factory_native::planning::route::required_reviewers(effective_lane, context.assurance());
+    let participant_source = participant_record
+        .as_ref()
+        .map(|record| ParticipantPlanSource {
+            reviewer_count: record.reviewer_count,
+            graph_sha256: record.graph_sha256.as_deref(),
+            plan_json: &record.plan_json,
+        });
+    let graph_sha = graph.as_ref().map(|graph| graph.graph_sha256.as_str());
+    let readiness = assess_participant_plan(
+        context.triage.route,
+        context.assurance(),
+        &reviewer_plan,
+        participant_source,
+        graph_sha,
+    );
+    let participants = if readiness.ready {
+        participant_record.as_ref().and_then(|record| {
+            serde_json::from_str::<factory_native::agentic::ParticipantPlan>(&record.plan_json).ok()
+        })
+    } else {
+        None
+    };
+    let participant_problem = if graph_sha.is_none() || readiness.work_graph_state == "PLANNED" {
+        None
+    } else {
+        participant_problem_from_readiness(&readiness)
+    };
     let plan = app.db.frozen_lead_plan(&record.lead_request_id).await.ok();
     let prerequisites = lead_planning_prerequisites(app, record).await?;
     let tasks = if let Some(campaign_id) = &record.campaign_id {
@@ -11497,18 +11608,23 @@ async fn agentic_projection_for_request(
     } else {
         Vec::new()
     };
-    let assurance = context.assurance();
     let stack = context.stack.clone();
     let triage = context.triage;
     let semantic = context.semantic;
-    let participants = participant_from_graph.unwrap_or_else(|| {
-        agentic::participant_plan(
-            triage.route,
-            assurance,
-            u32::try_from(work_units.max(1)).unwrap_or(u32::MAX),
-            &stack,
-        )
-    });
+    // No validated WorkGraph means no executable decomposition. A graph with a
+    // failed participant compilation is PLANNED_PENDING with its causal
+    // problem preserved, never a false WORK_GRAPH_NOT_PLANNED.
+    let participant_state = readiness.work_graph_state;
+    let (required_reviewer_count, participant_roles, participant_assignments) = participants
+        .as_ref()
+        .map(|plan| {
+            (
+                plan.reviewer_count,
+                plan.reviewer_roles.clone(),
+                plan.reviewer_assignments.clone(),
+            )
+        })
+        .unwrap_or_else(|| (0, Vec::new(), Vec::new()));
     let reviewer_receipts = match record.campaign_id.as_deref() {
         Some(campaign_id) => match app.db.latest_candidate_for_campaign(campaign_id).await {
             Ok(candidate) => app
@@ -11549,29 +11665,10 @@ async fn agentic_projection_for_request(
     };
     let workflow = app.db.workflow_run_for_request(&record.id).await?;
     let findings = app.db.finding_dispositions(&record.id).await?;
-    let specifications = proposal
-        .map(|proposal| {
-            proposal
-                .work_units
-                .iter()
-                .map(|unit| {
-                    let status = tasks
-                        .iter()
-                        .find(|task| task.unit_id == unit.id)
-                        .map(|task| task.status.clone())
-                        .unwrap_or_else(|| "PLANNED".into());
-                    serde_json::json!({
-                        "id": unit.id,
-                        "description": unit.description,
-                        "kind": format!("{:?}", unit.kind),
-                        "allowedPaths": unit.allowed_paths,
-                        "capabilities": unit.capabilities,
-                        "dependsOn": unit.depends_on,
-                        "status": status,
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
+    // Executable specifications come from the validated Planner WorkGraph.
+    let specifications = graph
+        .as_ref()
+        .map(|graph| work_graph_specification_values(graph, &tasks))
         .unwrap_or_default();
     Ok(serde_json::json!({
         "request": {
@@ -11597,7 +11694,7 @@ async fn agentic_projection_for_request(
         "leadPlanReady": prerequisites.lead_plan_ready,
         "actionSpecReady": prerequisites.action_spec_ready,
         "triage": triage,
-        "planningLane": planning_lane_code(context.planning_lane),
+        "planningLane": planning_lane_code(effective_lane),
         "planning": {
             "artifacts": planning_artifacts,
             "review": plan_review,
@@ -11607,10 +11704,15 @@ async fn agentic_projection_for_request(
         "findings": findings,
         "stack": stack,
         "participants": participants,
+        "participantState": participant_state,
+        "participantProblem": participant_problem.as_ref().map(|failure| json!({
+            "code": failure.code,
+            "message": failure.message,
+        })),
         "reviewerEvidence": {
-            "requiredReviewerCount": participants.reviewer_count,
-            "requiredRoles": participants.reviewer_roles,
-            "assignedPrincipals": participants.reviewer_assignments,
+            "requiredReviewerCount": required_reviewer_count,
+            "requiredRoles": participant_roles,
+            "assignedPrincipals": participant_assignments,
             "independentReviewerCount": independent_reviewer_count,
             "receipts": reviewer_receipt_view,
         },
@@ -14479,13 +14581,6 @@ JSON Schema:
         "existingProposal": context.proposal.as_ref().map(|proposal| serde_json::json!({
             "class": proposal.class,
             "riskClass": proposal.risk_class,
-            "workUnits": proposal.work_units.iter().map(|unit| serde_json::json!({
-                "id": unit.id,
-                "description": unit.description,
-                "dependsOn": unit.depends_on,
-                "allowedPaths": unit.allowed_paths,
-                "capabilities": unit.capabilities,
-            })).collect::<Vec<_>>(),
             "acceptanceCriteria": proposal.acceptance_criteria,
             "negativeCases": proposal.negative_cases,
             "assumptions": proposal.assumptions,
@@ -14915,6 +15010,9 @@ struct ParticipantPlanReadiness {
     unexpected_roles: Vec<factory_native::planning::ReviewerRole>,
     missing_assignments: Vec<factory_native::planning::ReviewerRole>,
     graph_stale: bool,
+    /// Truthful decomposition state: `PLANNED`, `PLANNED_PENDING`,
+    /// `WORK_GRAPH_NOT_PLANNED` or `NOT_REQUIRED`.
+    work_graph_state: &'static str,
     problems: Vec<String>,
 }
 
@@ -14994,6 +15092,32 @@ fn readiness_problem(problems: &mut Vec<String>, message: impl Into<String>) {
 /// lane and assurance require. A missing assignment, a stale WorkGraph binding
 /// or any extra role fails closed: the Gate must never infer reviewer authority
 /// from an incomplete plan.
+fn participant_problem_from_readiness(
+    readiness: &ParticipantPlanReadiness,
+) -> Option<ParticipantPlanFailure> {
+    let code = if readiness.graph_stale {
+        "PARTICIPANT_PLAN_STALE"
+    } else if readiness
+        .problems
+        .iter()
+        .any(|problem| problem.contains("not recorded"))
+    {
+        "PARTICIPANT_PLAN_NOT_RECORDED"
+    } else if readiness
+        .problems
+        .iter()
+        .any(|problem| problem.contains("not decodable"))
+    {
+        "PARTICIPANT_PLAN_UNREADABLE"
+    } else {
+        "PARTICIPANT_PLAN_INVALID"
+    };
+    Some(ParticipantPlanFailure {
+        code,
+        message: readiness.problems.join("; "),
+    })
+}
+
 fn assess_participant_plan(
     route: factory_native::agentic::ChangeRoute,
     assurance: factory_native::agentic::Assurance,
@@ -15017,13 +15141,31 @@ fn assess_participant_plan(
         unexpected_roles: Vec::new(),
         missing_assignments: Vec::new(),
         graph_stale: false,
+        work_graph_state: if required {
+            "WORK_GRAPH_NOT_PLANNED"
+        } else {
+            "NOT_REQUIRED"
+        },
         problems: Vec::new(),
     };
     if !required {
         readiness.ready = true;
         return readiness;
     }
+    if work_graph_sha256.is_none() {
+        readiness.work_graph_state = "WORK_GRAPH_NOT_PLANNED";
+        readiness.missing_roles = required_roles.clone();
+        readiness.missing_assignments = required_roles.clone();
+        readiness_problem(
+            &mut readiness.problems,
+            "WORK_GRAPH_NOT_PLANNED: the request has no validated Planner WorkGraph",
+        );
+        return readiness;
+    }
     if let Err(error) = reviewer_plan.validate() {
+        if work_graph_sha256.is_some() {
+            readiness.work_graph_state = "PLANNED_PENDING";
+        }
         readiness_problem(
             &mut readiness.problems,
             format!("the frozen reviewer plan is invalid: {error}"),
@@ -15035,11 +15177,20 @@ fn assess_participant_plan(
         .copied()
         .collect::<BTreeSet<ReviewerRole>>();
     let Some(source) = source else {
+        readiness.work_graph_state = if work_graph_sha256.is_some() {
+            "PLANNED_PENDING"
+        } else {
+            "WORK_GRAPH_NOT_PLANNED"
+        };
         readiness.missing_roles = required_roles.clone();
         readiness.missing_assignments = required_roles.clone();
         readiness_problem(
             &mut readiness.problems,
-            "the participant plan is not recorded",
+            if work_graph_sha256.is_some() {
+                "the participant plan is not recorded"
+            } else {
+                "WORK_GRAPH_NOT_PLANNED: the request has no validated Planner WorkGraph"
+            },
         );
         return readiness;
     };
@@ -15048,6 +15199,7 @@ fn assess_participant_plan(
         match serde_json::from_str::<factory_native::agentic::ParticipantPlan>(source.plan_json) {
             Ok(plan) => plan,
             Err(_) => {
+                readiness.work_graph_state = "PLANNED_PENDING";
                 readiness_problem(
                     &mut readiness.problems,
                     "the stored participant plan is not decodable",
@@ -15190,6 +15342,12 @@ fn assess_participant_plan(
         && readiness.missing_roles.is_empty()
         && readiness.unexpected_roles.is_empty()
         && readiness.missing_assignments.is_empty();
+    // A decodable record that is stale or inconsistent is not a complete plan.
+    readiness.work_graph_state = if readiness.ready {
+        "PLANNED"
+    } else {
+        "PLANNED_PENDING"
+    };
     readiness
 }
 
@@ -15209,6 +15367,19 @@ async fn latest_planning_revision(app: &App, request_id: &str) -> Result<u32, Er
         .chain(artifact_revision)
         .max()
         .unwrap_or(1))
+}
+
+async fn effective_planning_lane_for_request(
+    app: &App,
+    request_id: &str,
+    fallback: factory_native::planning::PlanningLane,
+) -> Result<factory_native::planning::PlanningLane, Error> {
+    let frozen = match app.db.latest_planning_artifact(request_id, "PLAN").await {
+        Ok(artifact) => frozen_planning_lane(&artifact),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(error),
+    };
+    Ok(effective_planning_lane(frozen, fallback))
 }
 
 async fn planning_readiness(
@@ -16683,10 +16854,14 @@ async fn deterministic_participant_plan(
         code: "PROFILE_NOT_EXECUTABLE",
         message: "the frozen execution profile has no executable v2 content".into(),
     })?;
-    let reviewer_plan = factory_native::planning::route::required_reviewers(
-        context.planning_lane,
-        context.assurance(),
-    );
+    let lane = effective_planning_lane_for_request(app, &record.id, context.planning_lane)
+        .await
+        .map_err(|_| ParticipantPlanFailure {
+            code: "PLANNING_LANE_UNAVAILABLE",
+            message: "the effective planning lane is unavailable".into(),
+        })?;
+    let reviewer_plan =
+        factory_native::planning::route::required_reviewers(lane, context.assurance());
     let reviewer_assignments = app
         .reviewer_identities
         .assignments_for_plan(
@@ -16706,7 +16881,11 @@ async fn deterministic_participant_plan(
         &content.roles.implementer.provider,
         &content.roles.implementer.model,
         "",
-    );
+    )
+    .map_err(|_| ParticipantPlanFailure {
+        code: "WORK_GRAPH_NOT_PLANNED",
+        message: "a validated Planner WorkGraph is required before participant compilation".into(),
+    })?;
     plan.reviewer_count = u32::try_from(reviewer_assignments.len()).unwrap_or(u32::MAX);
     plan.reviewer_roles = reviewer_plan.required.clone();
     plan.reviewer_assignments = reviewer_assignments;
@@ -18464,12 +18643,6 @@ async fn assess_agentic_request(
         "existingProposal": proposal.as_ref().map(|proposal| serde_json::json!({
             "class": format!("{:?}", proposal.class),
             "riskClass": proposal.risk_class,
-            "workUnits": proposal.work_units.iter().map(|unit| serde_json::json!({
-                "id": unit.id,
-                "description": unit.description,
-                "allowedPaths": unit.allowed_paths,
-                "capabilities": unit.capabilities,
-            })).collect::<Vec<_>>(),
             "assumptions": proposal.assumptions,
             "risks": proposal.risks,
         })),
@@ -18588,6 +18761,127 @@ async fn assess_agentic_request(
     .into_response()
 }
 
+#[cfg(feature = "test-support")]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct P1aSeedInput {
+    request_id: String,
+    #[serde(default)]
+    drop_graph: bool,
+    #[serde(default)]
+    persist_participant: bool,
+}
+
+/// Test-support: give an already seeded request a valid Lead proposal with an
+/// empty `workUnits` array, optionally dropping its WorkGraph and persisting
+/// the compiled participant plan. Production builds do not expose this route.
+#[cfg(feature = "test-support")]
+async fn p1a_seed(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<P1aSeedInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&input.request_id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let lead = match app.db.lead_request(&record.lead_request_id).await {
+        Ok(lead) => lead,
+        Err(error) => return api_error(error),
+    };
+    let proposal_exists = app.db.lead_proposal(&lead.id).await.is_ok();
+    if !proposal_exists {
+        // No synthetic authorization: the seeded request must already have a
+        // current V2 delegation, project config and frozen ActionSpec. The
+        // legacy wave12 fixture is intentionally rejected rather than bypassed.
+        let grant = match app.db.standing_delegation_v2(&lead.delegation_id).await {
+            Ok(grant) => grant,
+            Err(error) => return api_error(error),
+        };
+        let config = match app.db.project_config(&record.project_id).await {
+            Ok(config) => config,
+            Err(error) => return api_error(error),
+        };
+        let action_spec = match app.db.action(&record.action_id).await {
+            Ok(action) => action.spec,
+            Err(error) => return api_error(error),
+        };
+        let binding = factory_native::lead::ActionBinding {
+            id: record.action_id.clone(),
+            project_id: record.project_id.clone(),
+            status: factory_native::lead::ActionStatus::Pending,
+        };
+        let (assessment, mut proposal) = match factory_native::lead::fixture_lead_assessment(
+            &lead.id,
+            &config,
+            &binding,
+            &action_spec,
+            &record.objective,
+            &grant,
+            chrono::Utc::now(),
+        ) {
+            Ok(value) => value,
+            Err(error) => return api_error(error.into()),
+        };
+        proposal.work_units.clear();
+        if let Err(error) = app
+            .db
+            .seed_lead_assessment_and_proposal(&lead.id, &assessment, &proposal)
+            .await
+        {
+            return api_error(error);
+        }
+    }
+    if input.drop_graph
+        && let Err(error) = app.db.delete_seeded_work_graph(&record.id).await
+    {
+        return api_error(error);
+    }
+    let mut participant = json!(null);
+    if input.persist_participant {
+        let context = match agentic_triage_context(&app, &record).await {
+            Ok(context) => context,
+            Err(error) => return api_error(error),
+        };
+        let graph =
+            match app.db.agentic_work_graph(&record.id).await {
+                Ok(graph_record) => serde_json::from_str::<
+                    factory_native::agentic::ValidatedWorkGraph,
+                >(&graph_record.graph_json)
+                .ok(),
+                Err(_) => None,
+            };
+        if let Some(graph) = graph {
+            match deterministic_participant_plan(&app, &record, &context, &graph).await {
+                Ok(plan) => {
+                    if let Err(error) = app
+                        .db
+                        .save_agentic_participant_plan(&record.id, Some(&graph.graph_sha256), &plan)
+                        .await
+                    {
+                        return api_error(error);
+                    }
+                    participant = json!({"persisted": true, "reviewerCount": plan.reviewer_count});
+                }
+                Err(failure) => {
+                    participant = json!({"persisted": false, "code": failure.code, "message": failure.message});
+                }
+            }
+        }
+    }
+    Json(json!({
+        "requestId": record.id,
+        "proposal": if proposal_exists { "existing" } else { "empty-work-units" },
+        "dropGraph": input.drop_graph,
+        "participant": participant,
+        "authority": "test-support fixture; no paid inference and no model authority",
+    }))
+    .into_response()
+}
+
 async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -18602,50 +18896,69 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             Ok(lead) => lead,
             Err(_) => continue,
         };
-        let proposal = app
+        let stack = agentic_stack_for_project(&app, &record.project_id).await;
+        let context = match agentic_triage_context(&app, &record).await {
+            Ok(context) => context,
+            Err(_) => continue,
+        };
+        // The portfolio reports persisted, validated units; an unplanned
+        // request stays at zero instead of a synthesized unit.
+        let participant_record = app.db.agentic_participant_plan(&record.id).await.ok();
+        let graph_sha = app
             .db
-            .lead_proposal(&record.lead_request_id)
+            .agentic_work_graph(&record.id)
             .await
             .ok()
-            .and_then(|record| {
-                serde_json::from_str::<factory_native::lead::LeadPlanProposal>(
-                    &record.proposal_json,
-                )
-                .ok()
-            });
-        let work_units = proposal.as_ref().map(|p| p.work_units.len()).unwrap_or(0);
-        let risk = proposal
-            .as_ref()
-            .map(|p| p.risk_class)
-            .unwrap_or(factory_native::lead::RiskClass::R0);
-        let stack = agentic_stack_for_project(&app, &record.project_id).await;
-        let signals = factory_native::agentic::TriageSignals {
-            objective: record.objective.clone(),
-            files: Vec::new(),
-            domains: Vec::new(),
-            risk: "low".into(),
-            expected_work_units: if work_units > 0 {
-                Some(u32::try_from(work_units).unwrap_or(u32::MAX))
-            } else {
-                None
-            },
-            ambiguous: proposal.is_none(),
-            architecture_uncertainty: false,
-            cross_module: work_units > 1,
-            public_contract: false,
-            data_or_schema: false,
-            security_boundary: false,
-            explicit_informational: false,
-            explicit_audit: false,
-            explicit_repair: false,
+            .map(|graph| graph.graph_sha256);
+        let assurance = context.assurance();
+        let lane = match effective_planning_lane_for_request(
+            &app,
+            &record.id,
+            context.planning_lane,
+        )
+        .await
+        {
+            Ok(lane) => lane,
+            Err(error) => return api_error(error),
         };
-        let triage = factory_native::agentic::triage(&signals);
-        let participants = factory_native::agentic::participant_plan(
-            triage.route,
-            triage.assurance.max(assurance_for_risk(risk)),
-            u32::try_from(work_units.max(1)).unwrap_or(u32::MAX),
-            &stack,
+        let reviewer_plan = factory_native::planning::route::required_reviewers(lane, assurance);
+        let participant_source = participant_record
+            .as_ref()
+            .map(|record| ParticipantPlanSource {
+                reviewer_count: record.reviewer_count,
+                graph_sha256: record.graph_sha256.as_deref(),
+                plan_json: &record.plan_json,
+            });
+        let readiness = assess_participant_plan(
+            context.triage.route,
+            assurance,
+            &reviewer_plan,
+            participant_source,
+            graph_sha.as_deref(),
         );
+        let participant_state = readiness.work_graph_state;
+        let work_units = if readiness.ready {
+            participant_record
+                .as_ref()
+                .map(|record| usize::try_from(record.work_units).unwrap_or(usize::MAX))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let participant_count = if readiness.ready {
+            participant_record
+                .as_ref()
+                .and_then(|record| {
+                    serde_json::from_str::<factory_native::agentic::ParticipantPlan>(
+                        &record.plan_json,
+                    )
+                    .ok()
+                })
+                .map(|plan| plan.assignments.iter().map(|a| a.count).sum())
+                .unwrap_or(0)
+        } else {
+            0
+        };
         let state = app
             .db
             .lead_request_projection(&record.lead_request_id)
@@ -18660,11 +18973,12 @@ async fn agentic_portfolio(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             objective: record.objective,
             mode: format!("{:?}", record.mode),
             state,
-            route: triage.route,
-            assurance: triage.assurance.max(assurance_for_risk(risk)),
-            request_kind: triage.request_kind,
+            route: context.triage.route,
+            assurance,
+            request_kind: context.triage.request_kind,
             work_units,
-            participant_count: participants.assignments.iter().map(|a| a.count).sum(),
+            participant_count,
+            participant_state,
             stack_languages: stack.languages,
             director_id: operation
                 .as_ref()
@@ -21749,7 +22063,8 @@ mod tests {
             Assurance::Elevated,
             1,
             &StackProfile::default(),
-        );
+        )
+        .expect("validated unit");
         plan.reviewer_count = 6;
         plan.reviewer_roles = reviewer_plan.required.clone();
         plan.reviewer_assignments = assignments.clone();
@@ -21798,6 +22113,75 @@ mod tests {
             readiness
                 .missing_assignments
                 .contains(&ReviewerRole::Operability)
+        );
+        assert_eq!(readiness.work_graph_state, "PLANNED");
+    }
+
+    #[test]
+    fn participant_readiness_reports_the_typed_work_graph_state() {
+        let reviewer_plan = factory_native::planning::route::required_reviewers(
+            factory_native::planning::PlanningLane::FormalSpec,
+            factory_native::agentic::Assurance::Elevated,
+        );
+        let missing = assess_participant_plan(
+            factory_native::agentic::ChangeRoute::FormalSpec,
+            factory_native::agentic::Assurance::Elevated,
+            &reviewer_plan,
+            None,
+            None,
+        );
+        assert_eq!(missing.work_graph_state, "WORK_GRAPH_NOT_PLANNED");
+        assert!(!missing.ready);
+        assert!(
+            missing
+                .problems
+                .iter()
+                .any(|problem| { problem.contains("WORK_GRAPH_NOT_PLANNED") })
+        );
+
+        let pending = assess_participant_plan(
+            factory_native::agentic::ChangeRoute::FormalSpec,
+            factory_native::agentic::Assurance::Elevated,
+            &reviewer_plan,
+            None,
+            Some("graph-sha"),
+        );
+        assert_eq!(pending.work_graph_state, "PLANNED_PENDING");
+        assert!(!pending.ready);
+
+        let direct_plan = factory_native::planning::route::required_reviewers(
+            factory_native::planning::PlanningLane::Direct,
+            factory_native::agentic::Assurance::None,
+        );
+        let non_change = assess_participant_plan(
+            factory_native::agentic::ChangeRoute::NoAgent,
+            factory_native::agentic::Assurance::None,
+            &direct_plan,
+            None,
+            None,
+        );
+        assert_eq!(non_change.work_graph_state, "NOT_REQUIRED");
+        assert!(non_change.ready);
+    }
+
+    #[test]
+    fn participant_state_distinguishes_pending_from_a_missing_graph() {
+        use factory_native::agentic::ChangeRoute;
+        assert_eq!(
+            participant_projection_state(true, true, ChangeRoute::FormalSpec),
+            "PLANNED"
+        );
+        assert_eq!(
+            participant_projection_state(false, true, ChangeRoute::FormalSpec),
+            "PLANNED_PENDING"
+        );
+        assert_eq!(
+            participant_projection_state(false, false, ChangeRoute::FormalSpec),
+            "WORK_GRAPH_NOT_PLANNED"
+        );
+        assert_eq!(
+            participant_projection_state(false, false, ChangeRoute::NoAgent),
+            "NOT_REQUIRED"
         );
     }
 
@@ -27649,7 +28033,8 @@ mod tests {
                     &content.roles.implementer.provider,
                     &content.roles.implementer.model,
                     "",
-                );
+                )
+                .expect("validated work graph units");
                 participant_plan.reviewer_count =
                     u32::try_from(assignments.len()).unwrap_or(u32::MAX);
                 participant_plan.reviewer_roles = seeded_reviewers.required.clone();
@@ -37176,5 +37561,358 @@ mod tests {
                 "{method} {uri} must require the operator credential"
             );
         }
+    }
+    #[tokio::test]
+    async fn p1a_seed_creates_v2_proposal_and_projection_states() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-p1a-seed-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let repository = std::path::PathBuf::from("/tmp/factory-wp10-browser-repository");
+        std::fs::create_dir_all(&repository).unwrap();
+        std::fs::write(repository.join("README.md"), "# fixture\n").unwrap();
+        std::fs::write(repository.join("AGENTS.md"), "# fixture\n").unwrap();
+        std::fs::write(
+            repository.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let app = test_app_with_master_key_and_options(
+            &path,
+            None,
+            false,
+            Some(std::path::PathBuf::from("/tmp")),
+        )
+        .await;
+        let router = build_router(app.clone());
+        app.db.seed_wave12_fixtures("owner").await.unwrap();
+
+        async fn call(
+            router: axum::Router,
+            method: &str,
+            uri: &str,
+            body: Option<&str>,
+        ) -> (StatusCode, serde_json::Value) {
+            let request = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("authorization", "Bearer operator-token")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.unwrap_or("{}").to_string()))
+                .unwrap();
+            let response = router.oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1_000_000)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+            )
+        }
+
+        let mut seed_responses = std::collections::BTreeMap::new();
+        for (request_id, body) in [
+            (
+                "44444444-4444-4444-8444-444444444444",
+                r#"{"requestId":"44444444-4444-4444-8444-444444444444"}"#,
+            ),
+            (
+                "33333333-3333-4333-8333-333333333333",
+                r#"{"requestId":"33333333-3333-4333-8333-333333333333","dropGraph":true}"#,
+            ),
+            (
+                "11111111-1111-4111-8111-111111111111",
+                r#"{"requestId":"11111111-1111-4111-8111-111111111111","persistParticipant":true}"#,
+            ),
+        ] {
+            let (status, response) =
+                call(router.clone(), "POST", "/test-support/p1a/seed", Some(body)).await;
+            assert_eq!(status, StatusCode::OK, "{request_id}: {response}");
+            seed_responses.insert(request_id, response);
+        }
+        assert_eq!(
+            seed_responses["11111111-1111-4111-8111-111111111111"]["participant"]["persisted"],
+            true
+        );
+
+        let (status, proposal) = call(
+            router.clone(),
+            "GET",
+            "/intake/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            proposal["proposal"]["workUnits"].as_array().map(Vec::len),
+            Some(0)
+        );
+
+        let (status, pending) = call(
+            router.clone(),
+            "GET",
+            "/agentic/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(pending["participantState"], "PLANNED_PENDING");
+        assert_eq!(
+            pending["participantProblem"]["code"],
+            "PARTICIPANT_PLAN_NOT_RECORDED"
+        );
+        assert!(
+            pending["specifications"]
+                .as_array()
+                .is_some_and(|units| !units.is_empty())
+        );
+        let (status, pending_intake) = call(
+            router.clone(),
+            "GET",
+            "/intake/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            pending_intake["planning"]["participantPlan"]["workGraphState"],
+            "PLANNED_PENDING"
+        );
+
+        let (status, missing) = call(
+            router.clone(),
+            "GET",
+            "/agentic/requests/33333333-3333-4333-8333-333333333333",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(missing["participantState"], "WORK_GRAPH_NOT_PLANNED");
+        assert_eq!(missing["specifications"].as_array().map(Vec::len), Some(0));
+
+        let (status, planned) = call(
+            router.clone(),
+            "GET",
+            "/agentic/requests/11111111-1111-4111-8111-111111111111",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(planned["participantState"], "PLANNED");
+        assert_eq!(planned["planningLane"], "FORMAL_SPEC");
+        assert_eq!(planned["triage"]["route"], "DIRECT");
+        assert!(
+            planned["specifications"]
+                .as_array()
+                .is_some_and(|units| !units.is_empty())
+        );
+        let (status, planned_intake) = call(
+            router.clone(),
+            "GET",
+            "/intake/requests/11111111-1111-4111-8111-111111111111",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            planned_intake["planning"]["participantPlan"]["workGraphState"],
+            "PLANNED"
+        );
+        assert_eq!(planned_intake["planning"]["lane"], "FORMAL_SPEC");
+
+        let (status, planned_portfolio) =
+            call(router.clone(), "GET", "/agentic/portfolio", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let planned_entry = planned_portfolio
+            .as_array()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry["id"] == "11111111-1111-4111-8111-111111111111")
+            })
+            .expect("planned portfolio entry");
+        assert_eq!(planned_entry["participantState"], "PLANNED");
+        assert_eq!(planned_entry["route"], "DIRECT");
+
+        // Persisted plan followed by graph removal must not remain PLANNED.
+        let (status, response) = call(
+            router.clone(),
+            "POST",
+            "/test-support/p1a/seed",
+            Some(r#"{"requestId":"11111111-1111-4111-8111-111111111111","dropGraph":true}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{response}");
+        let (status, dropped) = call(
+            router.clone(),
+            "GET",
+            "/agentic/requests/11111111-1111-4111-8111-111111111111",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(dropped["participantState"], "WORK_GRAPH_NOT_PLANNED");
+        let (status, dropped_intake) = call(
+            router.clone(),
+            "GET",
+            "/intake/requests/11111111-1111-4111-8111-111111111111",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            dropped_intake["planning"]["participantPlan"]["workGraphState"],
+            "WORK_GRAPH_NOT_PLANNED"
+        );
+        let (status, portfolio) = call(router.clone(), "GET", "/agentic/portfolio", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let entry = portfolio
+            .as_array()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry["id"] == "11111111-1111-4111-8111-111111111111")
+            })
+            .expect("portfolio entry");
+        assert_eq!(entry["participantState"], "WORK_GRAPH_NOT_PLANNED");
+
+        // Stale participant plan: graph exists but the stored digest differs.
+        let (status, _) = call(
+            router.clone(),
+            "POST",
+            "/test-support/p1a/seed",
+            Some(
+                r#"{"requestId":"44444444-4444-4444-8444-444444444444","persistParticipant":true}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        app.db
+            .mutate_participant_plan_for_test("44444444-4444-4444-8444-444444444444", "NO_AGENT")
+            .await
+            .unwrap();
+        let (status, mismatched) = call(
+            router.clone(),
+            "GET",
+            "/agentic/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(mismatched["participantState"], "PLANNED_PENDING");
+        let (status, mismatched_intake) = call(
+            router.clone(),
+            "GET",
+            "/intake/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            mismatched_intake["planning"]["participantPlan"]["workGraphState"],
+            "PLANNED_PENDING"
+        );
+        app.db
+            .set_participant_plan_graph_sha_for_test(
+                "44444444-4444-4444-8444-444444444444",
+                &"0".repeat(64),
+            )
+            .await
+            .unwrap();
+        let (status, stale) = call(
+            router.clone(),
+            "GET",
+            "/agentic/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(stale["participantState"], "PLANNED_PENDING");
+        assert_eq!(
+            stale["participantProblem"]["code"],
+            "PARTICIPANT_PLAN_STALE"
+        );
+        let (status, stale_intake) = call(
+            router.clone(),
+            "GET",
+            "/intake/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            stale_intake["planning"]["participantPlan"]["workGraphState"],
+            "PLANNED_PENDING"
+        );
+
+        // Undecodable stored plan: still pending, never PLANNED.
+        app.db
+            .corrupt_participant_plan_json_for_test("44444444-4444-4444-8444-444444444444")
+            .await
+            .unwrap();
+        let (status, unreadable) = call(
+            router.clone(),
+            "GET",
+            "/agentic/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(unreadable["participantState"], "PLANNED_PENDING");
+        let (status, unreadable_intake) = call(
+            router.clone(),
+            "GET",
+            "/intake/requests/44444444-4444-4444-8444-444444444444",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            unreadable_intake["planning"]["participantPlan"]["workGraphState"],
+            "PLANNED_PENDING"
+        );
+
+        // Absent request: the test-only route fails closed and writes nothing.
+        let (status, _) = call(
+            router.clone(),
+            "POST",
+            "/test-support/p1a/seed",
+            Some(r#"{"requestId":"00000000-0000-4000-8000-000000000000"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Legacy V1 delegation: the seed route must not synthesize or bypass
+        // authorization, and must not write a proposal.
+        let legacy_request = app
+            .db
+            .seed_legacy_v1_request_for_test("55555555-5555-4555-8555-555555555555")
+            .await
+            .unwrap();
+        let (status, response) = call(
+            router.clone(),
+            "POST",
+            "/test-support/p1a/seed",
+            Some(&format!(r#"{{"requestId":"{legacy_request}"}}"#)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{response}");
+        assert!(app.db.lead_proposal("legacy-v1-lead").await.is_err());
+
+        // No operator credential: the route fails closed before any write.
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/test-support/p1a/seed")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"requestId":"11111111-1111-4111-8111-111111111111"}"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            router.oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
     }
 }
