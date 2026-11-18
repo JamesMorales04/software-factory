@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Synthetic tests for the real generation-2 recovery scenario.
+
+No Core, provider, container or paid inference is contacted. Run:
+python3 -m unittest scripts/e2e/tests/test_real_recovery.py
+"""
+
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve()
+sys.path.insert(0, str(HERE.parents[1]))
+import real_recovery  # noqa: E402
+
+
+def observation(**overrides):
+    defaults = dict(
+        attempt_id="attempt-1",
+        campaign_id="campaign-1",
+        claimed_generation_two=True,
+        claimed_at="2026-11-18T00:00:00Z",
+        generation_two_session_state="COMPLETED",
+        generation_two_session_error="",
+        generation_one_receipts=[
+            real_recovery.CheckReceipt("attempt-1", 1, real_recovery.STATUS, "PASS", "a" * 64, "rec-1", "2026-11-17T23:59:00Z")
+        ],
+        generation_two_receipts=[
+            real_recovery.CheckReceipt("attempt-1", 2, real_recovery.VERSION, "PASS", "b" * 64, "rec-2", "2026-11-18T00:01:00Z")
+        ],
+        pre_intervention_version_outcome="",
+        candidates_after_claim=[
+            {"id": "cand-1", "attempt_id": "attempt-1", "created_at": "2026-11-18T00:02:00Z"}
+        ],
+        allocation_conflict=False,
+        gen2_provider="opencode-go",
+        gen2_model="deepseek-v4.1-flash",
+        gen2_provider_mode="build",
+        candidate_sha="a" * 40,
+        candidate_tree="b" * 40,
+        candidate_base="c" * 40,
+    )
+    defaults.update(overrides)
+    return real_recovery.Observation(**defaults)
+
+
+class RecoveryOracleTests(unittest.TestCase):
+    def test_ok_requires_p1_status_pending_version_and_candidate(self):
+        verdict = real_recovery.classify_recovery(observation(gate_outcome="ACCEPTED", campaign_status="AUTHORIZED"))
+        self.assertEqual(verdict.status, "ACCEPTED", verdict.reason)
+
+    def test_scoped_ok_without_gate(self):
+        verdict = real_recovery.classify_recovery(observation())
+        self.assertEqual(verdict.status, "OK_SCOPED", verdict.reason)
+
+    def test_claim_alone_is_not_ok(self):
+        # No P1 receipt, no P3 receipt, no candidate: a claim is never a pass.
+        verdict = real_recovery.classify_recovery(
+            observation(
+                generation_one_receipts=[],
+                generation_two_receipts=[],
+                candidates_after_claim=[],
+            )
+        )
+        self.assertEqual(verdict.status, "NOT_TESTED", verdict.reason)
+        self.assertNotEqual(verdict.status, "OK")
+
+    def test_already_done_is_inconclusive_not_ok(self):
+        verdict = real_recovery.classify_recovery(
+            observation(
+                generation_one_receipts=[
+                    real_recovery.CheckReceipt("attempt-1", 1, real_recovery.STATUS, "PASS", "a" * 64, "rec-1", "2026-11-17T23:59:00Z"),
+                    real_recovery.CheckReceipt("attempt-1", 1, real_recovery.VERSION, "PASS", "b" * 64, "rec-2", "2026-11-17T23:59:30Z"),
+                ]
+            )
+        )
+        self.assertEqual(verdict.status, "NOT_TESTED", verdict.reason)
+
+    def test_dangerous_late_effect_is_not_tested(self):
+        verdict = real_recovery.classify_recovery(observation(late_effect_risk="DANGEROUS"))
+        self.assertEqual(verdict.status, "NOT_TESTED", verdict.reason)
+
+    def test_late_effect_classifier_distinguishes_legit_and_dangerous(self):
+        kill, claim = "2026-11-18T00:00:00Z", "2026-11-18T00:01:00Z"
+        legit = [{"kind": "provider.session_terminal", "recorded_at": "2026-11-18T00:00:10Z"}]
+        dangerous = [{"kind": "provider.tool_event", "detail": "decision=RESULT", "recorded_at": "2026-11-18T00:00:20Z"}]
+        self.assertEqual(real_recovery.classify_late_effects(legit, kill, claim)[0], "NONE")
+        self.assertEqual(real_recovery.classify_late_effects(dangerous, kill, claim)[0], "DANGEROUS")
+
+    def test_barrier_failures_are_not_guaranteed(self):
+        snapshot = {
+            "status_pass": True, "version_pass_absent": True, "attempt_status": "LEASED",
+            "active_turns": 0, "gen1_quiescent": True, "quiescence_backend_confirmed": True,
+            "p2_check_absent": True, "p2_artifacts_absent": True, "candidate_count": 0,
+            "lease_state": "LIVE",
+        }
+        self.assertEqual(real_recovery.barrier_failures(snapshot), [])
+        snapshot["active_turns"] = 1
+        self.assertIn("active_turns=1", real_recovery.barrier_failures(snapshot))
+        snapshot["active_turns"] = 0
+        snapshot["p2_check_absent"] = False
+        self.assertIn("the P2 check is already present", real_recovery.barrier_failures(snapshot))
+
+    def test_allocation_conflict_is_fail(self):
+        verdict = real_recovery.classify_recovery(observation(allocation_conflict=True))
+        self.assertEqual(verdict.status, "FAIL", verdict.reason)
+
+    def test_gen2_failed_is_fail(self):
+        verdict = real_recovery.classify_recovery(
+            observation(generation_two_session_state="FAILED", generation_two_session_error="IMPLEMENTER_PROGRESS_Diagnose")
+        )
+        self.assertEqual(verdict.status, "FAIL", verdict.reason)
+
+    def test_missing_gen2_version_receipt_is_fail(self):
+        verdict = real_recovery.classify_recovery(observation(generation_two_receipts=[]))
+        self.assertEqual(verdict.status, "FAIL", verdict.reason)
+        self.assertIn("P3", verdict.reason)
+
+    def test_precondition_pending_from_failed_receipt(self):
+        observation_with_fail = observation(
+            generation_one_receipts=[
+                real_recovery.CheckReceipt("attempt-1", 1, real_recovery.STATUS, "PASS", "a" * 64, "rec-1", "2026-11-17T23:59:00Z"),
+                real_recovery.CheckReceipt("attempt-1", 1, real_recovery.VERSION, "FAIL", "c" * 64, "rec-2", "2026-11-17T23:59:10Z"),
+            ]
+        )
+        state, reason = real_recovery.classify_p2_precondition(observation_with_fail)
+        self.assertEqual(state, "PENDING", reason)
+
+
+class ContractTests(unittest.TestCase):
+    def test_exact_contract_has_no_mismatch(self):
+        checks = [real_recovery.CHECKS[real_recovery.STATUS], real_recovery.CHECKS[real_recovery.VERSION]]
+        self.assertEqual(real_recovery.contract_mismatch(checks), "")
+
+    def test_marker_only_check_is_rejected(self):
+        checks = [
+            {
+                "id": real_recovery.STATUS,
+                "command": ["grep", "-q", "provider candidate", "src/provider.txt"],
+                "expectExit": 0,
+            }
+        ]
+        mismatch = real_recovery.contract_mismatch(checks)
+        self.assertIn("differs from the exact contract", mismatch)
+
+    def test_plan_commands_are_exact(self):
+        plan = real_recovery.plan_document()
+        self.assertEqual([c["id"] for c in plan["checks"]], [real_recovery.STATUS, real_recovery.VERSION])
+        for check in plan["checks"]:
+            self.assertNotIn("grep", check["command"])
+            self.assertIn("assert app.", " ".join(check["command"]))
+
+
+class CliTests(unittest.TestCase):
+    def test_dry_run_rejects_zero_micros(self):
+        code = real_recovery.main(
+            [
+                "--dry-run",
+                "--core-api", "http://127.0.0.1:8899/core-api",
+                "--operator-token-file", "/tmp/opencode/operator.token",
+                "--project-id", "project-1",
+                "--authorization", "owner-ref",
+                "--evidence-dir", "/tmp/opencode/evidence",
+                "--compose-project", "sfe2e-recovery",
+                "--git-dir", "/tmp/opencode/git",
+                "--authorized-micros", "0",
+            ]
+        )
+        self.assertEqual(code, 2)
+
+    def test_plan_is_available_without_inputs(self):
+        import contextlib
+        import io
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(real_recovery.main(["--plan"]), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

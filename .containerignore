@@ -11,3 +11,8 @@ native/tests
 *.sqlite
 *.sqlite-*
 .env
+
+*.db
+master.key
+*.token
+evidence/
