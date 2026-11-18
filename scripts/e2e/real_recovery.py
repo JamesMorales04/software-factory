@@ -1055,10 +1055,12 @@ class Scenario:
         self.environment_review()
         self.plan_workgraph()
         before_freeze = self.model_purposes()
+        self.write("model-purposes-before-freeze.json", self.purpose_evidence(before_freeze))
         self.freeze_lead_plan()
         after_freeze = self.model_purposes()
+        self.write("model-purposes-after-freeze.json", self.purpose_evidence(after_freeze))
         if after_freeze != before_freeze:
-            raise ScenarioError("lead freeze created a model reservation")
+            raise ScenarioError("lead freeze changed the model reservation pattern")
         self.verify_model_purposes()
 
     def approve(self) -> None:
@@ -1825,6 +1827,15 @@ class Scenario:
             states.setdefault(key, []).append(str(state))
         return {"purposes": purposes, "states": states}
 
+    def purpose_evidence(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        expected = ("lead_assessment", "lead_environment_review", "agentic_planner")
+        return {
+            "purposes": snapshot["purposes"],
+            "states": snapshot["states"],
+            "expected": {purpose: {"count": 1, "state": "SETTLED"} for purpose in expected},
+            "captured_utc": utc(),
+        }
+
     def verify_model_purposes(self) -> dict[str, Any]:
         """Exactly one settled reservation per required purpose; no ambiguity."""
 
@@ -1840,12 +1851,7 @@ class Scenario:
                 problems.append(f"{purpose} states={states.get(purpose)!r}")
         if purposes.get("lead_assessment", 0) > 1:
             problems.append("second lead_assessment")
-        evidence = {
-            "purposes": purposes,
-            "states": states,
-            "expected": {purpose: {"count": 1, "state": "SETTLED"} for purpose in expected},
-            "captured_utc": utc(),
-        }
+        evidence = self.purpose_evidence(snapshot)
         self.write("model-purposes.json", evidence)
         if problems:
             raise ScenarioError("model purpose contract invalid: " + ", ".join(problems))
