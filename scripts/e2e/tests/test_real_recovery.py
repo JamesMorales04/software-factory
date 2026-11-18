@@ -689,7 +689,7 @@ class RealSchemaFailureTests(unittest.TestCase):
         self.assertTrue(result["db_captured"])
         self.assertEqual(result["outcome"], "MODEL_CALL_OUTCOME_UNKNOWN")
         snapshot = scenario.capture_failure_db()
-        self.assertEqual(snapshot["model_call_reservations"]["rows"][0][4], "RESERVED")
+        self.assertEqual(snapshot["model_call_reservations"]["rows"][0][5], "RESERVED")
         self.assertNotIn("state", snapshot["model_call_reservations"])
 
     def test_same_second_fractional_timestamp_is_still_captured(self):
@@ -913,6 +913,11 @@ class OrchestratorConsumerTests(unittest.TestCase):
             post_status_response=(409, {"code": "MONETARY_AUTHORIZATION_NOT_APPLICABLE"}),
         )
         scenario.prepare()
+        scenario._db_rows = lambda sql, params: (
+            [("lead_assessment", "SETTLED"), ("lead_environment_review", "SETTLED"),
+             ("agentic_planner", "SETTLED")]
+            if "purpose,state" in sql else []
+        )
         self.write_assumption(scenario)
         scenario.admit()
         scenario.assess()
@@ -1238,6 +1243,34 @@ class OrchestratorConsumerTests(unittest.TestCase):
         self.assertIn("python312", flake)
         self.assertNotIn("pip", flake)
         self.assertNotIn("python3Packages", flake)
+
+    def test_model_purposes_require_exactly_one_each(self):
+        scenario = self.scenario()
+        scenario.args.project_id = "proj"
+        scenario._db_rows = lambda sql, params: [
+            ("lead_assessment", "SETTLED"),
+            ("lead_environment_review", "SETTLED"),
+            ("agentic_planner", "SETTLED"),
+        ] if "purpose,state" in sql else []
+        purposes = scenario.verify_model_purposes()
+        self.assertEqual(purposes, {
+            "lead_assessment": 1,
+            "lead_environment_review": 1,
+            "agentic_planner": 1,
+        })
+        self.assertTrue((Path(self.args.evidence_dir) / "model-purposes.json").exists())
+
+    def test_missing_or_duplicate_model_purpose_fails_closed(self):
+        for rows in (
+            [("lead_assessment", "SETTLED"), ("lead_environment_review", "SETTLED")],
+            [("lead_assessment", "SETTLED"), ("lead_assessment", "SETTLED"),
+             ("lead_environment_review", "SETTLED"), ("agentic_planner", "SETTLED")],
+        ):
+            scenario = self.scenario()
+            scenario.args.project_id = "proj"
+            scenario._db_rows = lambda sql, params, rows=rows: rows if "purpose,state" in sql else []
+            with self.assertRaises(real_recovery.ScenarioError):
+                scenario.verify_model_purposes()
 
     def test_environment_binding_must_match_every_check(self):
         spec = {"environment_plan_id": "env-plan-1", "environment_spec_sha256": "b" * 64}
