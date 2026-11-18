@@ -333,9 +333,13 @@ class ApiOriginTests(unittest.TestCase):
 class FakeApi:
     """Records calls and serves canonical Core JSON shapes."""
 
-    def __init__(self, get_routes=None, post_routes=None, post_status_response=None):
+    def __init__(
+        self, get_routes=None, post_routes=None, post_status_response=None,
+        post_status_routes=None,
+    ):
         self.get_routes = dict(get_routes or {})
         self.post_routes = dict(post_routes or {})
+        self.post_status_routes = dict(post_status_routes or {})
         self.post_status_response = post_status_response or (
             403,
             {"error": "direct provider authorization refused"},
@@ -360,7 +364,7 @@ class FakeApi:
 
     def post_status(self, path, payload):
         self.calls.append(("POST_STATUS", path, payload))
-        return self.post_status_response
+        return self.post_status_routes.get(path, self.post_status_response)
 
 
 AUTHORIZATION_RECORD = {
@@ -437,6 +441,12 @@ class TimeoutApi(FakeApi):
         self.calls.append(("POST", path, payload))
         raise TimeoutError("timed out")
 
+    def post_status(self, path, payload):
+        self.calls.append(("POST_STATUS", path, payload))
+        if path.endswith("/assess"):
+            raise TimeoutError("timed out")
+        return self.post_status_response
+
 
 class FailurePathTests(unittest.TestCase):
     def setUp(self):
@@ -472,6 +482,76 @@ class FailurePathTests(unittest.TestCase):
             self.scenario.assess()
         posts = [call for call in api.calls if call[1].endswith("/assess")]
         self.assertEqual(len(posts), 1)
+
+    def test_staged_assess_403_continues_without_second_post(self):
+        scenario = self.scenario
+        scenario.intake = "intake-1"
+        scenario.profile_revision_id = "rev-1"
+        scenario.profile_hash = "8" * 64
+        scenario.api = FakeApi(
+            get_routes={
+                "/intake/requests/intake-1": {
+                    "state": "PLAN_READY",
+                    "proposal": {"objective": real_recovery.OBJECTIVE},
+                    "assessment": {"intent": "change"},
+                    "authorization": {"reason": "PLAN_NOT_READY"},
+                }
+            },
+            post_status_routes={
+                "/intake/requests/intake-1/assess": (
+                    403,
+                    {"code": "PLAN_NOT_READY", "error": "staged"},
+                )
+            },
+        )
+        scenario._db_rows = lambda sql, params: [("SETTLED",)]
+        scenario.assess()
+        assess_calls = [
+            call for call in scenario.api.calls
+            if call[1] == "/intake/requests/intake-1/assess"
+        ]
+        self.assertEqual(len(assess_calls), 1)
+        self.assertEqual(scenario.assessment_projection["state"], "PLAN_READY")
+
+    def test_staged_assess_403_without_durable_facts_fails(self):
+        scenario = self.scenario
+        scenario.intake = "intake-1"
+        scenario.api = FakeApi(
+            get_routes={
+                "/intake/requests/intake-1": {
+                    "state": "ASSESSING", "proposal": None,
+                    "assessment": None, "authorization": {"reason": None},
+                }
+            },
+            post_status_routes={
+                "/intake/requests/intake-1/assess": (403, {"code": "OTHER"})
+            },
+        )
+        with self.assertRaises(real_recovery.ScenarioError):
+            scenario.assess()
+
+    def test_failure_model_call_mapping_is_exact(self):
+        scenario = self.scenario
+        scenario._failure_db_rows = lambda: {
+            "calls": [("LEAD", "SETTLED", "lead_assessment", "opencode-go", "deepseek-v4.1-flash", "t")],
+            "agentic_assessments": 0,
+            "lead_assessments": 1,
+            "provider_sessions": 0,
+            "execution_check_receipts": 0,
+            "db_errors": {},
+            "critical_error": "",
+        }
+        scenario.api = FakeApi(get_routes={"/intake/requests/intake-1": {"state": "PLAN_READY"}})
+        scenario.reconcile_failure(settle_timeout=0)
+        # Read the written failure via capture_failure's reconciliation path.
+        payload = scenario.capture_failure(TimeoutError("timed out"))
+        self.assertEqual(payload["reconciliation"]["model_calls"][0], {
+            "role": "LEAD",
+            "state": "SETTLED",
+            "purpose": "lead_assessment",
+            "provider": "opencode-go",
+            "model": "deepseek-v4.1-flash",
+        })
 
     def test_missing_database_is_unknown_and_blocks_cleanup(self):
         self.scenario.api = FakeApi(
@@ -512,10 +592,14 @@ class FailurePathTests(unittest.TestCase):
         class SlowTimeoutApi(TimeoutApi):
             def post(self, path, payload):
                 self.calls.append(("POST", path, payload))
+                return {}
+
+            def post_status(self, path, payload):
+                self.calls.append(("POST_STATUS", path, payload))
                 # A fake clock represents a 120 s model turn; no wall sleep.
                 if path.endswith("/assess"):
                     raise TimeoutError("fake-clock 120s")
-                return {}
+                return self.post_status_response
 
         api = SlowTimeoutApi()
         self.scenario.api = api
@@ -672,7 +756,7 @@ class RealSchemaFailureTests(unittest.TestCase):
             "INSERT INTO model_call_reservations (reservation_id,role,principal_id,project_id,"
             "objective_id,scope_id,provider,model,purpose,request_sha256,max_input_tokens,"
             "max_output_tokens,max_total_tokens,max_cost_micros,state,expires_at_ms,created_at,updated_at) "
-            "VALUES ('r1','LEAD','p','proj','obj','scope','opencode-go','deepseek-v4.1-flash','assess',?,1,1,1,1,?,9999999999999,?,?)",
+            "VALUES ('r1','LEAD','p','proj','obj','scope','opencode-go','deepseek-v4.1-flash','lead_assessment',?,1,1,1,1,?,9999999999999,?,?)",
             ("a" * 64, state, created_at, created_at),
         )
         connection.commit()
@@ -758,7 +842,11 @@ class RealSchemaFailureTests(unittest.TestCase):
         self.assertTrue(result["db_captured"])
         self.assertEqual(result["outcome"], "MODEL_CALL_OUTCOME_UNKNOWN")
         snapshot = scenario.capture_failure_db()
-        self.assertEqual(snapshot["model_call_reservations"]["rows"][0][5], "RESERVED")
+        row = snapshot["model_call_reservations"]["rows"][0]
+        self.assertEqual(row[2], "lead_assessment")
+        self.assertEqual(row[3], "opencode-go")
+        self.assertEqual(row[4], "deepseek-v4.1-flash")
+        self.assertEqual(row[5], "RESERVED")
         self.assertNotIn("state", snapshot["model_call_reservations"])
 
     def test_same_second_fractional_timestamp_is_still_captured(self):
@@ -971,7 +1059,7 @@ class OrchestratorConsumerTests(unittest.TestCase):
                     "leadRequestId": "lead-1",
                     "profile": {"revisionId": "rev-1", "contentHash": "8" * 64},
                 },
-                "/intake/requests/intake-1/assess": assess_projection,
+
                 "/intake/requests/intake-1/subscription-admission": admission,
                 "/agentic/requests/intake-1/environment/recompile": recompiled,
                 "/agentic/requests/intake-1/environment/review": reviewed,
@@ -980,6 +1068,9 @@ class OrchestratorConsumerTests(unittest.TestCase):
                 "/intake/requests/intake-1/approve": approval,
             },
             post_status_response=(409, {"code": "MONETARY_AUTHORIZATION_NOT_APPLICABLE"}),
+            post_status_routes={
+                "/intake/requests/intake-1/assess": (200, assess_projection),
+            },
         )
         scenario.prepare()
         scenario._db_rows = lambda sql, params: (
@@ -996,7 +1087,7 @@ class OrchestratorConsumerTests(unittest.TestCase):
         self.assertEqual(scenario.profile_revision_id, "rev-1")
         self.assertEqual(scenario.admission_id, "admission-1")
         self.assertEqual(scenario.campaign, "campaign-1")
-        posts = [call[1] for call in scenario.api.calls if call[0] == "POST"]
+        posts = [call[1] for call in scenario.api.calls if call[0] in {"POST", "POST_STATUS"}]
         self.assertEqual(posts.count("/intake/requests/intake-1/assess"), 1)
         for path in (
             "/intake/requests/intake-1/assess",
