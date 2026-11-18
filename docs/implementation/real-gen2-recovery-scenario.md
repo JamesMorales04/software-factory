@@ -302,3 +302,15 @@ authoritatively. An unreadable or still-unfrozen projection is
 `ENV_JOB_UNKNOWN`: the stack is retained (`cleanup-held`) instead of `down -v`,
 with the environment-specific condition recorded. No model or run caps are
 introduced and no policy is invented.
+
+### Cleanup hold metadata
+
+`cleanup-held.json` states the outcome-specific condition and owner action. For
+`ENV_JOB_UNKNOWN` the condition is the environment projection reaching a terminal
+state for the same `planId` and `planRevision` with a frozen spec, plus a terminal
+builder receipt and broker operation; model-call reservations never prove the
+environment job finished. For `MODEL_CALL_OUTCOME_UNKNOWN` the condition remains
+the model reservation check. `failure.json` reports the effective
+`transport_timeout_secs` (the composite bound when one was derived) together with
+`transport_timeout_kind` (`composite_review` or `client_default`),
+`transport_deadline_secs` and the typed `error_origin`.

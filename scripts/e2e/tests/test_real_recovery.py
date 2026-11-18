@@ -2075,11 +2075,21 @@ class EnvironmentReviewCompositeTests(unittest.TestCase):
         self.assertEqual(payload["reconciliation"]["outcome"], "ENV_JOB_UNKNOWN")
         self.assertEqual(payload["transport_deadline_secs"], 3960.0)
         self.assertNotEqual(payload["transport_deadline_secs"], scenario.api.timeout)
+        self.assertEqual(payload["transport_timeout_secs"], 3960.0)
+        self.assertEqual(payload["transport_timeout_kind"], "composite_review")
+        self.assertEqual(
+            payload["error_origin"], ["POST", "/agentic/requests/intake-1/environment/review"]
+        )
         written = json.loads((scenario.evidence / "failure.json").read_text())
         self.assertEqual(written["reconciliation"]["outcome"], "ENV_JOB_UNKNOWN")
         self.assertFalse(real_recovery._safe_to_cleanup(scenario))
         held = json.loads((scenario.evidence / "cleanup-held.json").read_text())
         self.assertIn("environment", held["reason"])
+        self.assertIn("planId", held["condition"])
+        self.assertIn("builder receipt", held["condition"])
+        self.assertIn("broker operation", held["condition"])
+        self.assertIn("Reconcile the environment plan/spec", held["owner_action"])
+        self.assertNotIn("model_call_reservations", held["condition"])
 
     def test_environment_binding_reads_the_camel_case_serializer(self) -> None:
         environment = {"planId": "env-1", "specSha256": "b" * 64}

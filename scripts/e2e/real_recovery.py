@@ -2341,10 +2341,18 @@ class Scenario:
             "last_error": failed_error,
             "last_error_request": failed_error_request,
             "diagnostics": diagnostics,
-            "transport_timeout_secs": self.api.timeout,
+            "transport_timeout_secs": (
+                getattr(self, "environment_review_deadline", None) or self.api.timeout
+            ),
+            "transport_timeout_kind": (
+                "composite_review"
+                if getattr(self, "environment_review_deadline", None)
+                else "client_default"
+            ),
             "transport_deadline_secs": getattr(
                 self, "environment_review_deadline", None
             ),
+            "error_origin": list(getattr(error, "origin", ()) or ()),
             "reconciliation": reconciliation,
         }
         self.write("failure.json", payload)
@@ -2402,22 +2410,39 @@ def _safe_to_cleanup(scenario: "Scenario") -> bool:
         return False
     outcome = str((payload.get("reconciliation") or {}).get("outcome") or "")
     if outcome in {"MODEL_CALL_OUTCOME_UNKNOWN", "ENV_JOB_UNKNOWN"}:
+        environment_job = outcome == "ENV_JOB_UNKNOWN"
+        if environment_job:
+            reason = (
+                "environment job state unknown after a transport timeout; "
+                "stack and database preserved for owner reconciliation"
+            )
+            condition = (
+                "the environment projection reaches a terminal state for the same planId and "
+                "planRevision with a frozen spec, and the builder receipt and the broker "
+                "operation are terminal; model-call reservations do not prove the job finished"
+            )
+            owner_action = (
+                "Reconcile the environment plan/spec, its builder receipt and the broker "
+                "operation to a terminal state, then capture the evidence before removing "
+                "the disposable project."
+            )
+        else:
+            reason = (
+                "model-call outcome unknown; stack and database preserved for owner reconciliation"
+            )
+            condition = "model_call_reservations has no RESERVED/AMBIGUOUS/UNKNOWN row"
+            owner_action = (
+                "Reconcile the durable intake/lead/model-call rows to a terminal state and "
+                "capture the evidence before removing the disposable project."
+            )
         scenario.write(
             "cleanup-held.json",
             {
                 "status": "STACK_RETAINED_FOR_RECONCILIATION",
-                "reason": (
-                    "model-call outcome unknown"
-                    if outcome == "MODEL_CALL_OUTCOME_UNKNOWN"
-                    else "environment job state unknown after a transport timeout"
-                )
-                + "; stack and database preserved for owner reconciliation",
+                "reason": reason,
                 "outcome": outcome,
-                "owner_action": (
-                    "Reconcile the durable intake/lead/model-call rows to a terminal state and capture "
-                    "the evidence before removing the disposable project."
-                ),
-                "condition": "model_call_reservations has no RESERVED/AMBIGUOUS/UNKNOWN row",
+                "condition": condition,
+                "owner_action": owner_action,
                 "cleanup_command": (
                     f"podman compose -p {scenario.project} -f compose.yaml "
                     "-f compose.real-provider-uat.yaml down -v --remove-orphans"
