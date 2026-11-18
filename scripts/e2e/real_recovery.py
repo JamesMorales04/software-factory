@@ -608,7 +608,7 @@ def plan_document() -> dict[str, Any]:
 
 
 class Api:
-    def __init__(self, base: str, token: str) -> None:
+    def __init__(self, base: str, token: str, timeout: float = 360.0) -> None:
         parts = urlsplit(base)
         if not parts.scheme or not parts.netloc:
             raise ScenarioError("core API URL must be absolute")
@@ -618,6 +618,10 @@ class Api:
         self.origin = f"{parts.scheme}://{parts.netloc}"
         self.base = base.rstrip("/")
         self.token = token
+        # The bounded Lead assessment runs a real model call synchronously
+        # (profile modelRequestTimeoutSecs=300), so the HTTP client must not
+        # abort before Core's own timeout.
+        self.timeout = timeout
 
     def _request(self, method: str, path: str, payload: Any | None = None) -> Any:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -632,7 +636,7 @@ class Api:
                 "Origin": self.origin,
             },
         )
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
             body = response.read().decode("utf-8")
             return json.loads(body) if body else None
 

@@ -314,6 +314,16 @@ class ApiOriginTests(unittest.TestCase):
         self.assertEqual(request.get_header("Origin"), "http://127.0.0.1:8901")
         self.assertEqual(request.full_url, "http://127.0.0.1:8901/core-api/projects")
 
+    def test_model_calls_wait_past_the_old_sixty_second_client_timeout(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            response = mock.MagicMock()
+            response.read.return_value = b"{}"
+            response.status = 200
+            urlopen.return_value.__enter__.return_value = response
+            api = real_recovery.Api("http://127.0.0.1:8901/core-api", "token")
+            api.post("/intake/requests/intake-1/assess", {})
+        self.assertGreaterEqual(urlopen.call_args.kwargs.get("timeout", 0), 300)
+
     def test_relative_base_is_refused(self):
         with self.assertRaises(real_recovery.ScenarioError):
             real_recovery.Api("/core-api", "token")
