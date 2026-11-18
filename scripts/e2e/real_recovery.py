@@ -1630,105 +1630,147 @@ class Scenario:
         if problems:
             raise ScenarioError("admission binding invalid: " + ", ".join(problems))
 
-    def _failure_db_rows(self) -> tuple[list[tuple[Any, ...]], int, int]:
-        """Read durable model-call/assessment state without touching prompts."""
+    def _failure_db_rows(self) -> dict[str, Any]:
+        """Read durable model-call/assessment state without touching prompts.
 
-        calls: list[tuple[Any, ...]] = []
-        assessments = 0
-        lead_assessments = 0
-        try:
-            calls = self._db_rows(
+        A failed critical query is explicit evidence of NOT_CAPTURED; it is
+        never treated as "no model call".
+        """
+
+        result: dict[str, Any] = {
+            "calls": [],
+            "agentic_assessments": None,
+            "lead_assessments": None,
+            "provider_sessions": None,
+            "execution_check_receipts": None,
+            "db_errors": {},
+            "critical_error": "",
+        }
+        critical = {
+            "model_call_reservations": (
                 "SELECT role,state,provider,model,created_at_ms FROM model_call_reservations "
                 "WHERE created_at_ms>=?1 ORDER BY created_at_ms",
                 (self.started_ms - 5_000,),
-            )
-        except Exception:  # noqa: BLE001 - evidence degrades to NOT_CAPTURED
-            pass
+            ),
+            "agentic_assessments": (
+                "SELECT count(*) FROM agentic_assessments WHERE request_id=?1",
+                (self.intake,),
+            ),
+            "lead_assessments": (
+                "SELECT count(*) FROM lead_assessments WHERE request_id=?1",
+                (self.lead_request_id or self.intake,),
+            ),
+        }
+        for name, (sql, params) in critical.items():
+            try:
+                rows = self._db_rows(sql, params)
+                if name == "model_call_reservations":
+                    result["calls"] = rows
+                else:
+                    result[name] = int(rows[0][0])
+            except Exception as error:  # noqa: BLE001
+                result["db_errors"][name] = f"{type(error).__name__}: {error}"
+                if not result["critical_error"]:
+                    result["critical_error"] = name
         try:
-            assessments = int(
+            result["provider_sessions"] = int(
                 self._db_rows(
-                    "SELECT count(*) FROM agentic_assessments WHERE request_id=?1", (self.intake,)
+                    "SELECT count(*) FROM provider_sessions WHERE attempt_id IS NOT NULL "
+                    "AND generation>=1"
                 )[0][0]
             )
-        except Exception:  # noqa: BLE001
-            assessments = -1
+        except Exception as error:  # noqa: BLE001
+            result["db_errors"]["provider_sessions"] = f"{type(error).__name__}: {error}"
         try:
-            lead_assessments = int(
-                self._db_rows(
-                    "SELECT count(*) FROM lead_assessments WHERE request_id=?1",
-                    (self.lead_request_id or self.intake,),
-                )[0][0]
+            result["execution_check_receipts"] = int(
+                self._db_rows("SELECT count(*) FROM execution_check_receipts")[0][0]
             )
-        except Exception:  # noqa: BLE001
-            lead_assessments = -1
-        return calls, assessments, lead_assessments
+        except Exception as error:  # noqa: BLE001
+            result["db_errors"]["execution_check_receipts"] = f"{type(error).__name__}: {error}"
+        return result
 
     def reconcile_failure(self, settle_timeout: float = 180.0) -> dict[str, Any]:
         """Classify the model-call outcome; never infer success from a timeout."""
 
         deadline = time.monotonic() + settle_timeout
         projection: dict[str, Any] = {}
-        calls: list[tuple[Any, ...]] = []
-        assessments = -1
-        lead_assessments = -1
-        sessions = -1
-        receipts = -1
+        facts: dict[str, Any] = {
+            "calls": [],
+            "agentic_assessments": None,
+            "lead_assessments": None,
+            "provider_sessions": None,
+            "execution_check_receipts": None,
+            "db_errors": {},
+            "critical_error": "",
+        }
         original_timeout = self.api.timeout
         self.api.timeout = 10.0
         try:
-          while True:
-            try:
-                projection = self.api.get(f"/intake/requests/{self.intake}") or {}
-            except Exception:  # noqa: BLE001 - Core may be shutting down
-                projection = {}
-            calls, assessments, lead_assessments = self._failure_db_rows()
-            try:
-                sessions = int(
-                    self._db_rows(
-                        "SELECT count(*) FROM provider_sessions WHERE attempt_id IS NOT NULL "
-                        "AND generation>=1"
-                    )[0][0]
+            while True:
+                try:
+                    projection = self.api.get(f"/intake/requests/{self.intake}") or {}
+                except Exception:  # noqa: BLE001 - Core may be shutting down
+                    projection = {}
+                facts = self._failure_db_rows()
+                if facts["critical_error"]:
+                    # Without the critical durable state a cleanup decision is
+                    # impossible; do not wait or guess.
+                    break
+                states = {str(row[1]) for row in facts["calls"]}
+                settled = (
+                    "SETTLED" in states
+                    or (facts["agentic_assessments"] or 0) > 0
+                    or (facts["lead_assessments"] or 0) > 0
                 )
-                receipts = int(
-                    self._db_rows("SELECT count(*) FROM execution_check_receipts")[0][0]
+                unresolved = bool(states & {"RESERVED", "AMBIGUOUS", "UNKNOWN"})
+                intake_state = str(projection.get("state") or "")
+                terminal = (
+                    settled
+                    or (states and not unresolved)
+                    or intake_state
+                    in {
+                        "FAILED",
+                        "BLOCKED",
+                        "CANCELLED",
+                        "WITHDRAWN",
+                        "AWAITING_APPROVAL",
+                        "EXECUTING",
+                        "COMPLETED",
+                    }
                 )
-            except Exception:  # noqa: BLE001
-                sessions = -1
-                receipts = -1
-            states = {str(row[1]) for row in calls}
-            settled = "SETTLED" in states or assessments > 0 or lead_assessments > 0
-            unresolved = bool(states & {"RESERVED", "AMBIGUOUS", "UNKNOWN"})
-            intake_state = str(projection.get("state") or "")
-            terminal = (
-                settled
-                or (states and not unresolved)
-                or intake_state in {"FAILED", "BLOCKED", "CANCELLED", "WITHDRAWN", "AWAITING_APPROVAL", "EXECUTING", "COMPLETED"}
-            )
-            if terminal or time.monotonic() >= deadline:
-                break
-            time.sleep(5)
+                if terminal or time.monotonic() >= deadline:
+                    break
+                time.sleep(5)
         finally:
             self.api.timeout = original_timeout
-        states = [str(row[1]) for row in calls]
-        if any(state in {"RESERVED", "AMBIGUOUS", "UNKNOWN"} for state in states):
+        states = [str(row[1]) for row in facts["calls"]]
+        intake_state = str(projection.get("state") or "")
+        if facts["critical_error"]:
             outcome = "MODEL_CALL_OUTCOME_UNKNOWN"
-        elif any(state == "SETTLED" for state in states) or assessments > 0 or lead_assessments > 0:
+        elif any(state in {"RESERVED", "AMBIGUOUS", "UNKNOWN"} for state in states):
+            outcome = "MODEL_CALL_OUTCOME_UNKNOWN"
+        elif any(state == "SETTLED" for state in states) or (facts["agentic_assessments"] or 0) > 0 or (facts["lead_assessments"] or 0) > 0:
             outcome = "MODEL_CALL_SETTLED"
         elif states and all(state == "RELEASED" for state in states):
             outcome = "NO_MODEL_CALL_SETTLED"
+        elif intake_state in {"SUBMITTED", "ASSESSING"}:
+            outcome = "MODEL_CALL_OUTCOME_UNKNOWN"
         else:
             outcome = "NO_MODEL_CALL_CAPTURED"
         return {
             "outcome": outcome,
-            "intake_state": str(projection.get("state") or ""),
-            "assessment_present": assessments > 0 or lead_assessments > 0,
-            "agentic_assessments": assessments,
-            "lead_assessments": lead_assessments,
-            "provider_sessions": sessions,
-            "execution_check_receipts": receipts,
+            "db_captured": not bool(facts["critical_error"]),
+            "critical_error": facts["critical_error"],
+            "db_errors": facts["db_errors"],
+            "intake_state": intake_state,
+            "assessment_present": (facts["agentic_assessments"] or 0) > 0 or (facts["lead_assessments"] or 0) > 0,
+            "agentic_assessments": facts["agentic_assessments"],
+            "lead_assessments": facts["lead_assessments"],
+            "provider_sessions": facts["provider_sessions"],
+            "execution_check_receipts": facts["execution_check_receipts"],
             "model_calls": [
                 {"role": row[0], "state": row[1], "provider": row[2], "model": row[3]}
-                for row in calls
+                for row in facts["calls"]
             ],
             "settle_timeout_secs": settle_timeout,
             "reconciled_at": utc(),

@@ -472,6 +472,41 @@ class FailurePathTests(unittest.TestCase):
         posts = [call for call in api.calls if call[1].endswith("/assess")]
         self.assertEqual(len(posts), 1)
 
+    def test_missing_database_is_unknown_and_blocks_cleanup(self):
+        self.scenario.api = FakeApi(
+            get_routes={"/intake/requests/intake-1": {"state": "ASSESSING"}}
+        )
+        self.scenario.admission_id = ""  # fast reconciliation, no active model wait
+        result = self.scenario.reconcile_failure(settle_timeout=0)
+        self.assertEqual(result["outcome"], "MODEL_CALL_OUTCOME_UNKNOWN")
+        self.assertFalse(result["db_captured"])
+        self.assertIn("model_call_reservations", result["critical_error"])
+        payload = self.scenario.capture_failure(TimeoutError("timed out"))
+        self.assertEqual(payload["reconciliation"]["outcome"], "MODEL_CALL_OUTCOME_UNKNOWN")
+        self.assertFalse(real_recovery._safe_to_cleanup(self.scenario))
+
+    def test_active_assessment_without_durable_rows_is_unknown(self):
+        self.scenario.api = FakeApi(
+            get_routes={"/intake/requests/intake-1": {"state": "ASSESSING"}}
+        )
+        self.scenario._db_rows = lambda sql, params: [] if "model_call_reservations" in sql else [(0,)]
+        result = self.scenario.reconcile_failure(settle_timeout=0)
+        self.assertEqual(result["outcome"], "MODEL_CALL_OUTCOME_UNKNOWN")
+        self.assertTrue(result["db_captured"])
+
+    def test_approve_timeout_stops_after_one_post(self):
+        api = TimeoutApi()
+        api.post_status_response = (409, {"code": "MONETARY_AUTHORIZATION_NOT_APPLICABLE"})
+        self.scenario.api = api
+        self.scenario.plan_hash = "9" * 64
+        self.scenario.profile_revision_id = "rev-1"
+        self.scenario.profile_hash = "8" * 64
+        self.scenario.admission_id = "admission-1"
+        with self.assertRaises(TimeoutError):
+            self.scenario.approve()
+        approve_posts = [call for call in api.calls if call[0] == "POST" and call[1].endswith("/approve")]
+        self.assertEqual(len(approve_posts), 1)
+
     def test_a_slow_assessment_is_not_killed_by_the_legacy_sixty_second_deadline(self):
         class SlowTimeoutApi(TimeoutApi):
             def post(self, path, payload):
