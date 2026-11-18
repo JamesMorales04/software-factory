@@ -703,11 +703,12 @@ class Api:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 body = response.read().decode("utf-8")
                 return response.status, (json.loads(body) if body else None)
         except urllib.error.HTTPError as error:
             body = error.read().decode("utf-8")
+            self.last_error = (error.code, body[:1_000])
             try:
                 payload = json.loads(body) if body else None
             except json.JSONDecodeError:
