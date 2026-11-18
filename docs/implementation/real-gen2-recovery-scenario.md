@@ -86,11 +86,21 @@ after review). It is development/UAT tooling, not the product install path.
 ## 4. Scenario flow
 
 Driver: `scripts/e2e/real_recovery.py` (`--plan`, `--dry-run`, `--execute`).
+Required run inputs include `--project-id`, `--profile-id`, `--core-api`,
+`--operator-token-file`, `--core-database`, `--compose-project`, `--git-dir`
+and `--authorization`; the assumption file is required only immediately before
+the admission.
 
-1. Create the execution profile and the Lead intake (`REVIEW_PLAN`; an explicit
-   positive `authorized_micros` only for the test-support billable-envelope
-   path). The project and its Owner-granted execution policy are pre-run binding
-   preconditions.
+1. Consume the pre-run binding: project, Git fixture, V2 execution profile and
+   its execution-policy grant are created once by the operator lane through the
+   existing Core API. The scenario requires `--profile-id`, reads
+   `GET /execution-profiles/{id}`, requires `executable=true` and the canonical
+   BALANCED roles/operations/progress/disabled-auto-start from the shared
+   `real_recovery_profile.profile_mismatches` helper, records
+   `revisionId`/`contentHash`, and never creates or marks a profile default.
+   Then it posts the Lead intake (`REVIEW_PLAN`; an explicit positive
+   `authorized_micros` only for the test-support billable-envelope path). It
+   never creates the grant.
 2. Record the request-scoped subscription admission **before any model call**.
    The metadata is read from a 0600 non-secret file supplied from the Owner's
    current answer, using only the existing `OwnerBillingAssumption` fields:
