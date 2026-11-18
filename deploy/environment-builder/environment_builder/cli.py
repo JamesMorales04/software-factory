@@ -1304,6 +1304,44 @@ def _classify_deriverless_helpers(
     return approved, rejected
 
 
+def _approved_identity_deriver_conflicts(
+    pin: str,
+    manifest: list[dict[str, Any]],
+    *,
+    exclude: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Reject an approved new identity that arrives with a non-empty deriver.
+
+    A package path that happens to equal an approved helper path must not fall
+    through to package/license classification as if it were a different
+    identity. Legacy entries keep their previous path-only treatment.
+    """
+
+    conflicts: list[dict[str, Any]] = []
+    identities = APPROVED_HELPER_IDENTITIES.get(pin, {})
+    for entry in manifest:
+        if not isinstance(entry, dict):
+            continue
+        path = str(entry.get("path", ""))
+        if path in (exclude or set()):
+            continue
+        identity = identities.get(path)
+        if identity is None or identity.get("legacy") is True:
+            continue
+        deriver_value = entry.get("deriver")
+        deriver = str(deriver_value).strip() if deriver_value is not None else ""
+        if not deriver:
+            continue
+        conflicts.append(
+            {
+                "storePath": path,
+                "deriver": deriver,
+                "narHash": str(entry.get("narHash", "")),
+            }
+        )
+    return conflicts
+
+
 def _deriverless_helper_failure(
     candidates: list[dict[str, Any]], log: BuildLog
 ) -> str:
@@ -1372,6 +1410,17 @@ def _closure_license_entries(
     pin = str(plan.get("nix", {}).get("nixpkgs", ""))
     if not pin.startswith(NIXPKGS_PREFIX):
         fail("ENVIRONMENT_PIN_MISSING", "the plan has no pinned nixpkgs for closure verification")
+    deriver_conflicts = _approved_identity_deriver_conflicts(
+        pin, manifest, exclude=exclude
+    )
+    if deriver_conflicts:
+        first = deriver_conflicts[0]
+        fail(
+            "ENVIRONMENT_LICENSE_UNKNOWN",
+            "an approved helper identity arrived with a non-empty deriver: "
+            f"{first['storePath']} ({first['deriver']}); "
+            f"total={len(deriver_conflicts)}",
+        )
     substrate_entries: list[dict[str, Any]] = []
     substrate_paths: set[str] = set()
     paths: set[str] = set()

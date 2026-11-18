@@ -23,6 +23,10 @@ Identity source: `deriverless-closure-inventory.json` sha256
 - A new identity is accepted only with exact **path**, **NAR hash**,
   **referrer-set hash** (reviewed referrers `stdenv-linux` and
   `nix-shell-env`), a **regular file** and an **empty deriver**.
+- A new approved path that arrives with a **non-empty deriver** is rejected
+  explicitly before package/license evaluation; it must not be treated as a
+  different package identity. Legacy paths and non-approved packages keep their
+  previous treatment.
 - The 2 legacy paths keep their previous path-only acceptance and are derived
   from the same table (`legacy: true`).
 - No suffix, pattern, name-only or plan/workspace-provided identity is

@@ -2805,6 +2805,31 @@ class ApprovedHelperIdentityTests(unittest.TestCase):
         self.assertEqual(set(approved), self.legacy)
         self.assertEqual(len(rejected), 12)
 
+    def test_approved_identity_with_deriver_fails_before_package_evaluation(self) -> None:
+        manifest = self._manifest()
+        target = next(entry for entry in manifest if entry["path"] in self.new_paths)
+        target["deriver"] = "/nix/store/" + "c" * 32 + "-fake.drv"
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            with mock.patch("environment_builder.cli.nix_eval_json") as evaluate:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(
+                        {"nix": {"nixpkgs": self.pin}},
+                        manifest,
+                        {},
+                        30,
+                        log,
+                    )
+            self.assertEqual(
+                raised.exception.code,
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+            )
+            self.assertIn("non-empty deriver", raised.exception.message)
+            evaluate.assert_not_called()
+        finally:
+            log.close()
+
     def test_suffix_or_pattern_is_never_accepted(self) -> None:
         manifest = self._manifest()
         target = next(entry for entry in manifest if entry["path"] in self.new_paths)
