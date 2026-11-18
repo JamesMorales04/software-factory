@@ -524,6 +524,30 @@ class FailurePathTests(unittest.TestCase):
         self.assertEqual(len(assess_calls), 1)
         self.assertEqual(scenario.assessment_projection["state"], "PLAN_READY")
 
+    def test_environment_review_422_is_not_retried(self):
+        import io
+        import urllib.error
+
+        class RaisingApi(FakeApi):
+            def post(self, path, payload):
+                self.calls.append(("POST", path, payload))
+                raise urllib.error.HTTPError(
+                    path, 422, "Unprocessable Entity",
+                    {"content-type": "application/json"},
+                    io.BytesIO(b'{"error":"unknown field plan_sha256"}'),
+                )
+
+        scenario = self.scenario
+        scenario.intake = "intake-1"
+        scenario.environment_plan = {
+            "planSha256": "a" * 64, "planRevision": 1,
+        }
+        scenario.api = RaisingApi()
+        with self.assertRaises(urllib.error.HTTPError):
+            scenario.environment_review()
+        posts = [call for call in scenario.api.calls if call[0] == "POST"]
+        self.assertEqual(len(posts), 1)
+
     def test_staged_assess_403_without_durable_facts_fails(self):
         scenario = self.scenario
         scenario.intake = "intake-1"
@@ -1003,6 +1027,7 @@ class OrchestratorConsumerTests(unittest.TestCase):
 
     def test_assess_admit_and_approve_use_the_production_shapes(self):
         scenario = self.scenario()
+        scenario.args.authorized_micros = 0
         assess_projection = {
             "id": "intake-1",
             "state": "PLAN_READY",
@@ -1121,6 +1146,46 @@ class OrchestratorConsumerTests(unittest.TestCase):
         after = json.loads((Path(self.args.evidence_dir) / "model-purposes-after-freeze.json").read_text())
         self.assertEqual(before["states"], after["states"])
         self.assertEqual(before["expected"]["lead_assessment"], {"count": 1, "state": "SETTLED"})
+        review_call = next(
+            call for call in scenario.api.calls
+            if call[0] == "POST" and call[1] == "/agentic/requests/intake-1/environment/review"
+        )
+        self.assertEqual(set(review_call[2]), {"planSha256", "planRevision"})
+        intake_call = next(
+            call for call in scenario.api.calls
+            if call[0] == "POST" and call[1] == "/intake/requests"
+        )
+        self.assertEqual(
+            set(intake_call[2]),
+            {"project_id", "objective", "execution_profile_id", "mode",
+             "idempotency_key", "environment_constraints"},
+        )
+        admission_call = next(
+            call for call in scenario.api.calls
+            if call[0] == "POST"
+            and call[1] == "/intake/requests/intake-1/subscription-admission"
+        )
+        self.assertEqual(
+            set(admission_call[2]),
+            {"assumption_id", "confirmed_by", "confirmed_at_ms", "valid_until_ms",
+             "extra_usage_disabled", "statement", "test_profile_id", "idempotency_key"},
+        )
+        recompile_call = next(
+            call for call in scenario.api.calls
+            if call[0] == "POST"
+            and call[1] == "/agentic/requests/intake-1/environment/recompile"
+        )
+        self.assertEqual(set(recompile_call[2]), {"rationale"})
+        plan_call = next(
+            call for call in scenario.api.calls
+            if call[0] == "POST" and call[1] == "/agentic/requests/intake-1/plan"
+        )
+        self.assertEqual(plan_call[2], {})
+        freeze_call = next(
+            call for call in scenario.api.calls
+            if call[0] == "POST" and call[1] == "/lead/requests/lead-1/freeze"
+        )
+        self.assertEqual(freeze_call[2], {})
         approve_call = next(
             call for call in scenario.api.calls
             if call[0] == "POST" and call[1] == "/intake/requests/intake-1/approve"

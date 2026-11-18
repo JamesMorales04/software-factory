@@ -1050,8 +1050,8 @@ class Scenario:
         response = self.api.post(
             f"/agentic/requests/{self.intake}/environment/review",
             {
-                "plan_sha256": str(plan.get("planSha256") or ""),
-                "plan_revision": int(plan.get("planRevision") or 0),
+                "planSha256": str(plan.get("planSha256") or ""),
+                "planRevision": int(plan.get("planRevision") or 0),
             },
         )
         if not isinstance(response, dict):

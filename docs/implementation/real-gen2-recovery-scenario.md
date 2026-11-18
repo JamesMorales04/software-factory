@@ -124,6 +124,25 @@ fixture/base provenance, never a relabel of the previous base.
 - The operator verifies the committed environment canonically in the pinned Nix
   builder container before Run3 (flake check/devShell provides `python3`).
 
+### 3.2 POST payload contract audit
+
+The harness sends the exact serde shape of each handler (verified against the
+structs, not SQL column names):
+
+| Endpoint | Core struct | Wire fields |
+| --- | --- | --- |
+| `POST /intake/requests` | `NewIntakeRequest` (`core.rs:395`) | snake_case: `project_id`, `objective`, `execution_profile_id`, `mode`, `idempotency_key`, `environment_constraints` |
+| `POST /intake/requests/{id}/subscription-admission` | `IntakeSubscriptionAdmissionRequest` (`core.rs:496`) | snake_case: `assumption_id`, `confirmed_by`, `confirmed_at_ms`, `valid_until_ms`, `extra_usage_disabled`, `statement`, `test_profile_id`, `idempotency_key` |
+| `POST /intake/requests/{id}/approve` | `ApproveIntakeRequest` (`core.rs:470`) | snake_case: `expected_plan_hash`, `expected_profile_revision_id`, `expected_profile_hash`, `rationale`, `idempotency_key`, `subscription_admission_id` |
+| `POST /campaigns/{id}/authorize` (negative) | `AuthorizeCampaign` (`core.rs:293`) | snake_case request fields |
+| `POST /agentic/requests/{id}/environment/recompile` | `RecompileInput` (`core.rs:16081`) | `rationale` |
+| `POST /agentic/requests/{id}/environment/review` | `EnvironmentPlanReviewInput` (`core.rs:16041`, camelCase) | **`planSha256`, `planRevision`** |
+| `POST /agentic/requests/{id}/plan` | handler has no JSON body | `{}` |
+| `POST /lead/requests/{id}/freeze` | handler has no JSON body | `{}` |
+
+A 422 deserialization response is a harness defect and is never retried; the
+consumer tests assert the exact request keys and the single POST.
+
 ## 4. Scenario flow
 
 Driver: `scripts/e2e/real_recovery.py` (`--plan`, `--dry-run`, `--execute`).
