@@ -68,9 +68,9 @@ CHECKS = {
 OBJECTIVE = (
     "Implement src/app.py with two functions. status() must return exactly "
     "{'service': 'factory-e2e', 'status': 'ok'} and version() must return "
-    "exactly {'version': '1.0'}. Both frozen checks must pass. Commit only the "
-    "required source change. Use only the Python 3.12 standard library; do not "
-    "add third-party dependencies. The project is MIT-licensed."
+    "exactly {'version': '1.0'}. Both frozen checks must pass. Use only the "
+    "Python 3.12 standard library; do not add third-party dependencies. The "
+    "project is MIT-licensed. Commit only the required source change."
 )
 ALLOWED_PATHS = ["src"]
 # The UAT fixture commits a real flake.nix/flake.lock, so the environment
@@ -573,6 +573,28 @@ def authorization_problems(
     return problems
 
 
+def environment_binding_problems(
+    spec: dict[str, Any], checks: list[dict[str, Any]], environment: dict[str, Any]
+) -> list[str]:
+    """Every frozen check must execute in the exact frozen environment."""
+
+    spec_sha = str(environment.get("specSha256") or "")
+    if not spec_sha:
+        return ["environment review has no frozen spec"]
+    plan_id = str(environment.get("planId") or "")
+    problems = []
+    if str(spec.get("environment_plan_id") or "") != plan_id:
+        problems.append("ActionSpec environment_plan_id")
+    if str(spec.get("environment_spec_sha256") or "") != spec_sha:
+        problems.append("ActionSpec environment_spec_sha256")
+    for check in checks:
+        if str(check.get("environment_plan_id") or "") != plan_id:
+            problems.append(f"check {check.get('id')!r} environment_plan_id")
+        if str(check.get("environment_spec_sha256") or "") != spec_sha:
+            problems.append(f"check {check.get('id')!r} environment_spec_sha256")
+    return problems
+
+
 def contract_mismatch(approved_checks: list[dict[str, Any]]) -> str:
     """Return a causal mismatch string when the approved ActionSpec differs.
 
@@ -742,6 +764,9 @@ class Scenario:
         self.lead_request_id = ""
         self.started_at = utc()
         self.started_ms = int(time.time() * 1000)
+        self.assessment_projection: dict[str, Any] = {}
+        self.environment_plan: dict[str, Any] = {}
+        self.environment: dict[str, Any] = {}
         self.evidence.mkdir(parents=True, exist_ok=True)
         os.chmod(self.evidence, 0o700)
 
@@ -935,22 +960,101 @@ class Scenario:
         self.log(f"admission={self.admission_id}")
 
     def assess(self, timeout: int = 1800) -> None:
-        """Run the bounded Lead assessment and freeze the exact plan hash."""
+        """Run the single Lead assessment; the plan is frozen in a later step."""
 
         projection = self.api.post(f"/intake/requests/{self.intake}/assess", {})
-        if str(projection.get("state") or "") != "AWAITING_APPROVAL":
-            raise ScenarioError(f"assessment state is {projection.get('state')!r}")
+        state = str(projection.get("state") or "")
+        if state not in {"PLAN_READY", "AWAITING_APPROVAL"}:
+            raise ScenarioError(f"assessment state is {state!r}")
         plan = projection.get("plan") or {}
         self.plan_hash = str(plan.get("plan_hash") or "")
-        if not _is_sha256(self.plan_hash):
-            raise ScenarioError("assessment did not freeze a SHA-256 plan hash")
         profile = projection.get("profile") or {}
         self.profile_revision_id = str(profile.get("revisionId") or "")
         self.profile_hash = str(profile.get("contentHash") or "")
         if not self.profile_revision_id or not _is_sha256(self.profile_hash):
             raise ScenarioError("assessment did not expose the frozen profile identity")
+        self.assessment_projection = projection
         self.write("assessment.json", projection)
-        self.log(f"plan_hash={self.plan_hash}")
+        self.log(f"assessment_state={state} plan_hash={self.plan_hash or 'pending'}")
+
+    def environment_recompile(self) -> None:
+        """Compile the committed environment; no model call."""
+
+        response = self.api.post(
+            f"/agentic/requests/{self.intake}/environment/recompile",
+            {"rationale": "The committed UAT flake must be compiled before plan approval."},
+        )
+        if not isinstance(response, dict):
+            raise ScenarioError("environment recompile returned no projection")
+        status = str(response.get("status") or "")
+        plan_id = str(response.get("planId") or "")
+        revision = response.get("planRevision")
+        plan_sha = str(response.get("planSha256") or "")
+        if status not in {"CORE_VALIDATED", "LEAD_APPROVED", "FROZEN"}:
+            raise ScenarioError(f"environment recompile status is {status!r}")
+        if not plan_id or not isinstance(revision, int) or revision <= 0 or not _is_sha256(plan_sha):
+            raise ScenarioError("environment recompile did not expose plan identity")
+        self.environment_plan = response
+        self.write("environment-recompile.json", response)
+        self.log(f"environment_plan={plan_id} revision={revision} status={status}")
+
+    def environment_review(self) -> None:
+        """Review and freeze the compiled environment; the Lead review is funded."""
+
+        plan = self.environment_plan
+        response = self.api.post(
+            f"/agentic/requests/{self.intake}/environment/review",
+            {
+                "plan_sha256": str(plan.get("planSha256") or ""),
+                "plan_revision": int(plan.get("planRevision") or 0),
+            },
+        )
+        if not isinstance(response, dict):
+            raise ScenarioError("environment review returned no projection")
+        status = str(response.get("status") or "")
+        spec_sha = str(response.get("specSha256") or "")
+        if status != "FROZEN" or not _is_sha256(spec_sha):
+            raise ScenarioError(f"environment review did not freeze a spec: {status!r}")
+        self.environment = response
+        self.write("environment-review.json", response)
+        self.log(f"environment_review={status} spec={spec_sha}")
+
+    def plan_workgraph(self) -> None:
+        """Run the Planner once and require a recorded participant WorkGraph."""
+
+        response = self.api.post(f"/agentic/requests/{self.intake}/plan", {})
+        if not isinstance(response, dict):
+            raise ScenarioError("planner returned no plan projection")
+        validated = response.get("validated") or {}
+        units = validated.get("units") or []
+        participant = response.get("participantPlan")
+        if not units or not isinstance(participant, dict):
+            raise ScenarioError("planner did not record a validated participant WorkGraph")
+        self.write("planner.json", response)
+        self.log("planner_workgraph=PRESENT")
+
+    def freeze_lead_plan(self) -> None:
+        """Freeze Lead plan/ActionSpec with the committed environment; no Lead call."""
+
+        response = self.api.post(f"/lead/requests/{self.lead_request_id}/freeze", {})
+        plan = response.get("plan") or {}
+        plan_hash = str(plan.get("plan_hash") or "")
+        if not _is_sha256(plan_hash):
+            raise ScenarioError("lead freeze did not expose a SHA-256 plan hash")
+        self.plan_hash = plan_hash
+        self.write("lead-freeze.json", response)
+        self.log(f"lead_plan_frozen={plan_hash}")
+
+    def prepare_plan(self) -> None:
+        """Environment compile/review -> Planner -> Lead freeze, then approve."""
+
+        if self.plan_hash and (self.assessment_projection.get("environment") or {}).get("status") == "FROZEN":
+            self.log("plan_environment=ALREADY_FROZEN")
+            return
+        self.environment_recompile()
+        self.environment_review()
+        self.plan_workgraph()
+        self.freeze_lead_plan()
 
     def approve(self) -> None:
         # Negative production probe: a monetary claim on the subscription path
@@ -1021,6 +1125,9 @@ class Scenario:
             )
         if sorted(spec.get("allowed_paths") or []) != sorted(ALLOWED_PATHS):
             raise ScenarioError(f"approved ActionSpec allowed_paths differ: {spec.get('allowed_paths')!r}")
+        env_problems = environment_binding_problems(spec, checks, self.environment or {})
+        if self.environment and env_problems:
+            raise ScenarioError("environment binding invalid: " + ", ".join(env_problems))
 
         record = self.api.get(f"/campaigns/{self.campaign}/authorization")
         if not isinstance(record, dict):
@@ -1950,6 +2057,7 @@ def run_scenario(scenario: "Scenario") -> tuple[Verdict, Observation]:
     scenario.prepare()
     scenario.admit()
     scenario.assess()
+    scenario.prepare_plan()
     scenario.approve()
     scenario.verify_contract()
     snapshot = scenario.watch_gen1()
