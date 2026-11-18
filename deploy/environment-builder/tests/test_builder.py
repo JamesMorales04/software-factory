@@ -502,6 +502,31 @@ class PolicyTests(unittest.TestCase):
         finally:
             log.close()
 
+    def test_move_docs_helper_without_deriver_is_not_a_package(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            with mock.patch(
+                "environment_builder.cli.nix_eval_json", return_value=[]
+            ) as evaluate:
+                entries = cli._closure_license_entries(
+                    {"nix": {"nixpkgs": pin}},
+                    [
+                        {
+                            "path": "/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh",
+                            "deriver": None,
+                        }
+                    ],
+                    {},
+                    30,
+                    log,
+                )
+            self.assertEqual(entries, [])
+            evaluate.assert_not_called()
+        finally:
+            log.close()
+
     def test_unreviewed_deriverless_closure_path_fails_closed(self) -> None:
         pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
         workspace = Path(tempfile.mkdtemp())
