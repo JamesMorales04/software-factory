@@ -1812,35 +1812,44 @@ class Scenario:
             result["db_errors"]["execution_check_receipts"] = f"{type(error).__name__}: {error}"
         return result
 
-    def model_purposes(self) -> dict[str, int]:
+    def model_purposes(self) -> dict[str, Any]:
         rows = self._db_rows(
             "SELECT purpose,state FROM model_call_reservations WHERE project_id=?1",
             (self.args.project_id,),
         )
         purposes: dict[str, int] = {}
-        for purpose, _state in rows:
-            purposes[str(purpose)] = purposes.get(str(purpose), 0) + 1
-        return purposes
+        states: dict[str, list[str]] = {}
+        for purpose, state in rows:
+            key = str(purpose)
+            purposes[key] = purposes.get(key, 0) + 1
+            states.setdefault(key, []).append(str(state))
+        return {"purposes": purposes, "states": states}
 
-    def verify_model_purposes(self) -> dict[str, int]:
-        """The real sequence owns exactly one reservation per required purpose."""
+    def verify_model_purposes(self) -> dict[str, Any]:
+        """Exactly one settled reservation per required purpose; no ambiguity."""
 
-        purposes = self.model_purposes()
+        snapshot = self.model_purposes()
+        purposes = snapshot["purposes"]
+        states = snapshot["states"]
         expected = ("lead_assessment", "lead_environment_review", "agentic_planner")
-        problems = [
-            f"{purpose}={purposes.get(purpose, 0)}" for purpose in expected
-            if purposes.get(purpose, 0) != 1
-        ]
+        problems = []
+        for purpose in expected:
+            if purposes.get(purpose, 0) != 1:
+                problems.append(f"{purpose}={purposes.get(purpose, 0)}")
+            elif states.get(purpose) != ["SETTLED"]:
+                problems.append(f"{purpose} states={states.get(purpose)!r}")
         if purposes.get("lead_assessment", 0) > 1:
             problems.append("second lead_assessment")
-        self.write("model-purposes.json", {
+        evidence = {
             "purposes": purposes,
-            "expected": {purpose: 1 for purpose in expected},
+            "states": states,
+            "expected": {purpose: {"count": 1, "state": "SETTLED"} for purpose in expected},
             "captured_utc": utc(),
-        })
+        }
+        self.write("model-purposes.json", evidence)
         if problems:
             raise ScenarioError("model purpose contract invalid: " + ", ".join(problems))
-        return purposes
+        return evidence
 
     def reconcile_failure(self, settle_timeout: float = 180.0) -> dict[str, Any]:
         """Classify the model-call outcome; never infer success from a timeout."""

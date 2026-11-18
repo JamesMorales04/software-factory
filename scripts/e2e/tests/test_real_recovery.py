@@ -678,6 +678,62 @@ class RealSchemaFailureTests(unittest.TestCase):
         connection.commit()
         connection.close()
 
+    def seed_purpose(self, purpose, state):
+        connection = sqlite3.connect(self.db_path)
+        columns = (
+            "reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,"
+            "model,purpose,request_sha256,max_input_tokens,max_output_tokens,max_total_tokens,"
+            "max_cost_micros,state,expires_at_ms,created_at,updated_at"
+        )
+        import hashlib
+
+        request_sha = hashlib.sha256(f"{purpose}:{state}".encode("utf-8")).hexdigest()
+        connection.execute(
+            f"INSERT INTO model_call_reservations ({columns}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                f"r-{purpose}-{state}", "LEAD", "p", "proj", purpose, "scope", "opencode-go",
+                "deepseek-v4.1-flash", purpose, request_sha, 1, 1, 1, 1, state, 9999999999999,
+                "2026-11-18T14:29:13.500000000+00:00", "2026-11-18T14:29:13.500000000+00:00",
+            ),
+        )
+        connection.commit()
+        connection.close()
+
+    def test_real_schema_purpose_states_are_exact(self):
+        scenario = self.scenario()
+        for purpose in ("lead_assessment", "lead_environment_review", "agentic_planner"):
+            self.seed_purpose(purpose, "SETTLED")
+        evidence = scenario.verify_model_purposes()
+        self.assertEqual(evidence["purposes"], {
+            "lead_assessment": 1, "lead_environment_review": 1, "agentic_planner": 1,
+        })
+        connection = sqlite3.connect(self.db_path)
+        connection.execute("DELETE FROM model_call_reservations")
+        connection.commit()
+        connection.close()
+        self.seed_purpose("lead_assessment", "RESERVED")
+        self.seed_purpose("lead_environment_review", "SETTLED")
+        self.seed_purpose("agentic_planner", "SETTLED")
+        with self.assertRaises(real_recovery.ScenarioError):
+            scenario.verify_model_purposes()
+        connection = sqlite3.connect(self.db_path)
+        connection.execute("DELETE FROM model_call_reservations")
+        connection.execute(
+            "INSERT INTO model_call_reservations (reservation_id,role,principal_id,project_id,"
+            "objective_id,scope_id,provider,model,purpose,request_sha256,max_input_tokens,"
+            "max_output_tokens,max_total_tokens,max_cost_micros,state,expires_at_ms,created_at,updated_at) "
+            "VALUES ('dup','LEAD','p','proj','dup-purpose','scope','opencode-go','deepseek-v4.1-flash',"
+            "'lead_assessment',?,1,1,1,1,'SETTLED',9999999999999,'2026-11-18T14:29:13.500000000+00:00','2026-11-18T14:29:13.500000000+00:00')",
+            ("b" * 64,),
+        )
+        connection.commit()
+        connection.close()
+        self.seed_purpose("lead_assessment", "SETTLED")
+        self.seed_purpose("lead_environment_review", "SETTLED")
+        self.seed_purpose("agentic_planner", "SETTLED")
+        with self.assertRaises(real_recovery.ScenarioError):
+            scenario.verify_model_purposes()
+
     def test_real_schema_is_captured_and_reserved_is_unknown(self):
         self.seed_call("RESERVED")
         scenario = self.scenario()
@@ -1252,12 +1308,13 @@ class OrchestratorConsumerTests(unittest.TestCase):
             ("lead_environment_review", "SETTLED"),
             ("agentic_planner", "SETTLED"),
         ] if "purpose,state" in sql else []
-        purposes = scenario.verify_model_purposes()
-        self.assertEqual(purposes, {
+        snapshot = scenario.verify_model_purposes()
+        self.assertEqual(snapshot["purposes"], {
             "lead_assessment": 1,
             "lead_environment_review": 1,
             "agentic_planner": 1,
         })
+        self.assertEqual(snapshot["states"]["agentic_planner"], ["SETTLED"])
         self.assertTrue((Path(self.args.evidence_dir) / "model-purposes.json").exists())
 
     def test_missing_or_duplicate_model_purpose_fails_closed(self):
