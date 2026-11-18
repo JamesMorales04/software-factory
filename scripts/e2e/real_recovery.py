@@ -348,6 +348,29 @@ def quiescence_confirmed(
     )
 
 
+def confirmed_by_matches(recorded_by: str, file_by: str) -> bool:
+    """Accept only the identity forms Core actually records.
+
+    Core stores `format!("{principal_id}:{confirmed_by}")`. The accepted forms
+    are the exact unauthenticated value, `operator-token:<file>` and
+    `device:<non-empty id>:<file>`. Anything else is a mismatch; the value is
+    never trimmed or synthesized here.
+    """
+
+    if not file_by:
+        return False
+    if recorded_by == file_by:
+        return True
+    if recorded_by == f"operator-token:{file_by}":
+        return True
+    prefix = "device:"
+    suffix = f":{file_by}"
+    if recorded_by.startswith(prefix) and recorded_by.endswith(suffix):
+        device_id = recorded_by[len(prefix) : -len(suffix)]
+        return bool(device_id) and ":" not in device_id
+    return False
+
+
 def _is_after(value: str, reference) -> bool:
     parsed = _parse_iso(str(value or ""))
     return parsed is not None and reference is not None and parsed > reference
@@ -866,7 +889,12 @@ class Scenario:
             problems.append("assumptionId")
         if str(recorded.get("extraUsage") or "") != "DISABLED":
             problems.append("extraUsage")
-        if str(recorded.get("confirmedBy") or "") != str(assumption["confirmedBy"]):
+        recorded_by = str(recorded.get("confirmedBy") or "")
+        file_by = str(assumption["confirmedBy"])
+        # This driver authenticates with the operator token, so the exact
+        # Core-recorded identity is `operator-token:<file>`. A future device
+        # session must pass its real `device:<id>`; no generic suffix matches.
+        if not confirmed_by_matches(recorded_by, file_by):
             problems.append("confirmedBy")
         if not _is_sha256(str(record.get("receiptSha256") or "")):
             problems.append("receiptSha256")

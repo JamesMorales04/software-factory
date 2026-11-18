@@ -159,6 +159,15 @@ class RecoveryOracleTests(unittest.TestCase):
         verdict = real_recovery.classify_recovery(observation(generation_one_receipts=[broken]))
         self.assertEqual(verdict.status, "NOT_TESTED", verdict.reason)
 
+    def test_confirmed_by_accepts_only_core_identity_forms(self):
+        base = "Owner confirms Extra Usage OFF"
+        self.assertTrue(real_recovery.confirmed_by_matches(base, base))
+        self.assertTrue(real_recovery.confirmed_by_matches(f"operator-token:{base}", base))
+        self.assertTrue(real_recovery.confirmed_by_matches(f"device:dev-1:{base}", base))
+        self.assertFalse(real_recovery.confirmed_by_matches(f"other:{base}", base))
+        self.assertFalse(real_recovery.confirmed_by_matches(f"operator-token:other:{base}", base))
+        self.assertFalse(real_recovery.confirmed_by_matches(f"device:{base}", base))
+
     def test_quiescence_requires_settled_work_not_just_a_live_lease(self):
         sessions = [{"state": "ACTIVE", "turn_id": "turn-1"}]
         settled = [
@@ -466,7 +475,7 @@ class OrchestratorConsumerTests(unittest.TestCase):
             "assumption": {
                 "extraUsage": "DISABLED",
                 "assumptionId": "owner-assumption-1",
-                "confirmedBy": "Product Owner (test fixture text)",
+                "confirmedBy": "operator-token:Product Owner (test fixture text)",
             },
             "receiptSha256": "6" * 64,
             "expiresAtMs": 9_999_999_999_999,
@@ -579,7 +588,7 @@ class OrchestratorConsumerTests(unittest.TestCase):
                     "assumption": {
                         "extraUsage": "DISABLED",
                         "assumptionId": "owner-assumption-1",
-                        "confirmedBy": "Product Owner (test fixture text)",
+                        "confirmedBy": "operator-token:Product Owner (test fixture text)",
                     },
                     "receiptSha256": "6" * 64,
                     "expiresAtMs": 9_999_999_999_999,
@@ -608,6 +617,39 @@ class OrchestratorConsumerTests(unittest.TestCase):
             scenario.admit()
         self.assertIn("unknown fields", str(raised.exception))
         self.assertEqual(scenario.api.calls, [])
+
+    def test_admission_with_a_foreign_principal_prefix_is_rejected(self):
+        scenario = self.scenario()
+        base = {
+            "admissionId": "admission-1",
+            "intakeRequestId": "intake-1",
+            "state": "ACTIVE",
+            "provider": "opencode-go",
+            "model": "deepseek-v4.1-flash",
+            "profileRevisionId": "rev-1",
+            "profileHash": "8" * 64,
+            "assumption": {
+                "extraUsage": "DISABLED",
+                "assumptionId": "owner-assumption-1",
+                "confirmedBy": "other:Product Owner (test fixture text)",
+            },
+            "receiptSha256": "6" * 64,
+            "expiresAtMs": 9_999_999_999_999,
+            "routes": [
+                {"role": "IMPLEMENTER", "provider": "opencode-go",
+                 "model": "deepseek-v4.1-flash", "transport": "OPENCODE_GO_SUBSCRIPTION"}
+            ],
+        }
+        scenario.api = FakeApi(
+            post_routes={"/intake/requests/intake-1/subscription-admission": base}
+        )
+        scenario.intake = "intake-1"
+        scenario.profile_revision_id = "rev-1"
+        scenario.profile_hash = "8" * 64
+        self.write_assumption(scenario)
+        with self.assertRaises(real_recovery.ScenarioError) as raised:
+            scenario.admit()
+        self.assertIn("confirmedBy", str(raised.exception))
 
     def test_admission_without_disabled_extra_usage_or_exact_route_fails(self):
         scenario = self.scenario()
