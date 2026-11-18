@@ -1120,6 +1120,44 @@ class OrchestratorConsumerTests(unittest.TestCase):
         with self.assertRaises(real_recovery.ScenarioError):
             scenario.verify_contract()
 
+    def test_prepare_sends_legitimate_python_toolchain_constraints(self):
+        scenario = self.scenario()
+        scenario.api = FakeApi(
+            get_routes={"/execution-profiles/profile-1": profile_fixture()},
+            post_routes={
+                "/intake/requests": {
+                    "id": "intake-1",
+                    "actionId": "act-1",
+                    "leadRequestId": "lead-1",
+                    "profile": {"revisionId": "rev-1", "contentHash": "8" * 64},
+                }
+            },
+        )
+        scenario.prepare()
+        call = next(c for c in scenario.api.calls if c[0] == "POST" and c[1] == "/intake/requests")
+        constraints = call[2]["environment_constraints"]
+        self.assertEqual(
+            constraints["nixpkgs"],
+            "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+        )
+        self.assertEqual(constraints["toolchains"], [{
+            "id": "python",
+            "version": "3.12.7",
+            "source": "https://www.python.org/downloads/release/python-3127/",
+            "evidence": ["https://www.python.org/downloads/release/python-3127/"],
+        }])
+        self.assertNotIn("packages", constraints)
+
+    def test_objective_and_checks_keep_the_exact_status_and_version_contract(self):
+        self.assertIn("status() must return exactly", real_recovery.OBJECTIVE)
+        self.assertIn("version() must return", real_recovery.OBJECTIVE)
+        self.assertIn("Python 3.12 standard library", real_recovery.OBJECTIVE)
+        self.assertIn("MIT-licensed", real_recovery.OBJECTIVE)
+        self.assertEqual(real_recovery.CHECKS[real_recovery.STATUS]["id"], "status")
+        self.assertEqual(real_recovery.CHECKS[real_recovery.VERSION]["id"], "version")
+        self.assertIn("assert app.status() ==", real_recovery.CHECKS[real_recovery.STATUS]["command"][2])
+        self.assertIn("assert app.version() ==", real_recovery.CHECKS[real_recovery.VERSION]["command"][2])
+
     def test_prepare_requires_the_bound_canonical_profile(self):
         variants = [
             profile_fixture(executable=False),
