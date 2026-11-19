@@ -83,10 +83,19 @@ because only the broker-owned fixed query produces the envelope.
 `VerifiedIdentityFacts` is a type-state value: its field is private and only
 the MAC/binding verifier (or a feature-gated fixture) constructs it.
 `BoundIdentityFacts` is the only value the durable consumer accepts, and its
-`BUILD_RECEIPT` binding is produced only by a constructor that checks a
-successful `EnvironmentBuildReceipt` whose `storePath` equals the signed
+`BUILD_RECEIPT` binding is produced only by a constructor that validates the
+build receipt for the exact `EnvironmentSpec`, requires the same signed
+`specSha256`, and checks that the receipt `storePath` equals the signed
 `observedRoot`. A structurally plausible forged envelope cannot be persisted
 just by calling the DB layer.
+
+This type-state is an in-process consistency guarantee, not caller
+authentication and not build-receipt provenance: it assumes the caller already
+holds a `VerifiedIdentityFacts` obtained through the authenticated broker
+channel, and it treats the configured builder's receipt as the build record it
+must match. `SPEC_CACHE_OBSERVATION` remains spec-cache observation only; it
+does not prove which attempt wrote the root and is never elevated to a
+same-operation claim.
 
 ## Ordering, persistence and atomicity
 
