@@ -10,6 +10,7 @@
 //! shape, the instance binding, the mandate and the current policy; it does not
 //! invent a semantic proof of commercial permission.
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use super::license_policy::{
@@ -156,23 +157,10 @@ fn is_sha256(value: &str) -> bool {
     let Some(rest) = value.strip_prefix("sha256-") else {
         return false;
     };
-    base64_decoded_len(rest) == Some(32)
-}
-
-fn base64_decoded_len(value: &str) -> Option<usize> {
-    let bytes = value.as_bytes();
-    if bytes.is_empty() || bytes.len() % 4 != 0 {
-        return None;
+    match base64::engine::general_purpose::STANDARD.decode(rest) {
+        Ok(decoded) => decoded.len() == 32,
+        Err(_) => false,
     }
-    let mut padding = 0usize;
-    for (index, byte) in bytes.iter().enumerate() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' => {}
-            b'=' if index >= bytes.len().saturating_sub(2) => padding += 1,
-            _ => return None,
-        }
-    }
-    Some(bytes.len() / 4 * 3 - padding)
 }
 
 fn exact_store_path(value: &str) -> bool {
@@ -425,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn any_eligible_identity_with_bound_evidence_is_classified() {
+    fn a_bound_identity_yields_an_advisory_dictum() {
         for (path, deriver) in CASES {
             let dictum = classify_with_evidence(
                 &mandate(),
@@ -521,6 +509,31 @@ mod tests {
             ),
             Err(ClassificationRefusal::InvalidDigest)
         );
+    }
+
+    #[test]
+    fn malformed_base64_is_invalid() {
+        let (path, deriver) = CASES[0];
+        for digest in [
+            // '=' in the middle, followed by a letter
+            format!("sha256-{}=A", "A".repeat(42)),
+            // non-canonical padding bits: 'AB==' decodes to one byte with set pad bits
+            "sha256-AB==".to_string(),
+            // correct length but wrong content length (44 chars does not imply 32 bytes)
+            format!("sha256-{}", "A".repeat(44)),
+        ] {
+            let mut evidence = bundle(path, deriver, Some("MIT"), Some(false));
+            evidence.licence_text_digest = digest.clone();
+            evidence.sources[1].digest = digest;
+            assert_eq!(
+                classify_with_evidence(
+                    &mandate(),
+                    Some(&evidence),
+                    LeadClassificationDecision::Accept
+                ),
+                Err(ClassificationRefusal::InvalidDigest)
+            );
+        }
     }
 
     #[test]
