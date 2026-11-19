@@ -10,6 +10,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::lead_classification::is_sha256;
+
 /// Separate HMAC context; identity facts are not helper facts.
 pub const IDENTITY_FACTS_CONTEXT: &str = "factory.environment.identity-facts.v1";
 /// Documented technical bound. It must comfortably exceed a real closure (73 in
@@ -38,13 +40,20 @@ pub enum OperationRoot {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct IdentityQuestion {
     pub store_path: String,
+    #[serde(default)]
+    pub deriver: Option<String>,
+    pub nar_hash: String,
+    pub outputs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct IdentityFact {
     pub store_path: String,
-    pub deriver: String,
+    /// `None` is the explicit representation of a Nix path with no derivation;
+    /// it is never omitted and never invented.
+    #[serde(default)]
+    pub deriver: Option<String>,
     pub nar_hash: String,
     pub outputs: Vec<String>,
 }
@@ -52,6 +61,8 @@ pub struct IdentityFact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct IdentityFactsManifest {
+    /// The root the broker actually observed, echoed and signed.
+    pub observed_root: String,
     pub facts: Vec<IdentityFact>,
     pub fact_count: usize,
     pub closure_manifest_sha256: String,
@@ -119,7 +130,9 @@ fn is_store_path(value: &str) -> bool {
 
 /// Canonical digest over the manifest facts, in the order they are listed.
 pub fn closure_manifest_sha256(facts: &[IdentityFact]) -> String {
-    let canonical = serde_json::to_vec(facts).unwrap_or_default();
+    // Serialization of a plain struct of strings cannot fail; if it ever does we
+    // must not silently hash an empty buffer.
+    let canonical = serde_json::to_vec(facts).expect("identity facts serialise");
     let digest = Sha256::digest(&canonical);
     digest
         .iter()
@@ -148,13 +161,38 @@ pub fn validate_manifest(
     if manifest.fact_count != manifest.facts.len() {
         return Err(IdentityFactsRefusal::CountMismatch);
     }
+    if challenge.questions.len() > 64
+        || challenge
+            .questions
+            .iter()
+            .map(|question| question.store_path.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != challenge.questions.len()
+    {
+        return Err(IdentityFactsRefusal::QuestionMismatch);
+    }
+    if !is_store_path(&manifest.observed_root) {
+        return Err(IdentityFactsRefusal::IncompleteFact);
+    }
     let mut seen = std::collections::BTreeSet::new();
     for fact in &manifest.facts {
+        let deriver_ok = match &fact.deriver {
+            Some(deriver) => deriver.ends_with(".drv"),
+            // A deriver-less path is explicit and still needs its outputs.
+            None => true,
+        };
         if !is_store_path(&fact.store_path)
-            || !fact.deriver.ends_with(".drv")
-            || fact.nar_hash.trim().is_empty()
+            || !deriver_ok
+            || !is_sha256(&fact.nar_hash)
             || fact.outputs.is_empty()
             || fact.outputs.iter().any(|output| !is_store_path(output))
+            || fact.outputs.len()
+                != fact
+                    .outputs
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
         {
             return Err(IdentityFactsRefusal::IncompleteFact);
         }
@@ -166,18 +204,34 @@ pub fn validate_manifest(
         return Err(IdentityFactsRefusal::DigestMismatch);
     }
     match challenge.mode {
-        IdentityFactsMode::Enumerate => Ok(()),
+        IdentityFactsMode::Enumerate => {
+            if !challenge.questions.is_empty() {
+                return Err(IdentityFactsRefusal::QuestionMismatch);
+            }
+            Ok(())
+        }
         IdentityFactsMode::Questions => {
             if challenge.questions.is_empty() {
                 return Err(IdentityFactsRefusal::QuestionMismatch);
             }
-            let wanted: std::collections::BTreeSet<&str> = challenge
-                .questions
-                .iter()
-                .map(|question| question.store_path.as_str())
-                .collect();
-            if wanted != seen {
+            if challenge.questions.len() != manifest.facts.len() {
                 return Err(IdentityFactsRefusal::QuestionMismatch);
+            }
+            for question in &challenge.questions {
+                let Some(fact) = manifest
+                    .facts
+                    .iter()
+                    .find(|fact| fact.store_path == question.store_path)
+                else {
+                    return Err(IdentityFactsRefusal::QuestionMismatch);
+                };
+                // Compare the complete expectation, not only the path.
+                if fact.deriver != question.deriver
+                    || fact.nar_hash != question.nar_hash
+                    || fact.outputs != question.outputs
+                {
+                    return Err(IdentityFactsRefusal::QuestionMismatch);
+                }
             }
             Ok(())
         }
@@ -193,14 +247,15 @@ mod tests {
         let path = format!("/nix/store/{hash}-pkg-{index}");
         IdentityFact {
             store_path: path.clone(),
-            deriver: format!("/nix/store/{hash}-pkg-{index}.drv"),
-            nar_hash: format!("sha256-{index:0>43}"),
+            deriver: Some(format!("/nix/store/{hash}-pkg-{index}.drv")),
+            nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
             outputs: vec![path],
         }
     }
 
     fn make_manifest(facts: Vec<IdentityFact>) -> IdentityFactsManifest {
         IdentityFactsManifest {
+            observed_root: format!("/nix/store/{}-profile", "a".repeat(32)),
             fact_count: facts.len(),
             closure_manifest_sha256: closure_manifest_sha256(&facts),
             truncated: false,
@@ -222,6 +277,37 @@ mod tests {
             root: OperationRoot::Operation,
             questions,
         }
+    }
+
+    #[test]
+    fn deriver_less_paths_are_explicit_and_accepted() {
+        let mut facts: Vec<IdentityFact> = (0..73).map(fact).collect();
+        for item in facts.iter_mut().take(14) {
+            item.deriver = None;
+        }
+        let manifest = make_manifest(facts);
+        validate_manifest(&challenge(IdentityFactsMode::Enumerate, vec![]), &manifest)
+            .expect("deriver-less paths are explicit and accepted");
+    }
+
+    #[test]
+    fn questions_compare_every_field_not_only_the_path() {
+        let facts = vec![fact(0)];
+        let manifest = make_manifest(facts.clone());
+        let mut question = IdentityQuestion {
+            store_path: facts[0].store_path.clone(),
+            deriver: facts[0].deriver.clone(),
+            nar_hash: facts[0].nar_hash.clone(),
+            outputs: facts[0].outputs.clone(),
+        };
+        question.nar_hash = "sha256-other".into();
+        assert_eq!(
+            validate_manifest(
+                &challenge(IdentityFactsMode::Questions, vec![question]),
+                &manifest
+            ),
+            Err(IdentityFactsRefusal::QuestionMismatch)
+        );
     }
 
     #[test]
@@ -287,6 +373,9 @@ mod tests {
             .iter()
             .map(|item| IdentityQuestion {
                 store_path: item.store_path.clone(),
+                deriver: item.deriver.clone(),
+                nar_hash: item.nar_hash.clone(),
+                outputs: item.outputs.clone(),
             })
             .collect();
         validate_manifest(
@@ -298,9 +387,15 @@ mod tests {
         let wanted = vec![
             IdentityQuestion {
                 store_path: fact(0).store_path,
+                deriver: fact(0).deriver,
+                nar_hash: fact(0).nar_hash,
+                outputs: fact(0).outputs,
             },
             IdentityQuestion {
                 store_path: fact(1).store_path,
+                deriver: fact(1).deriver,
+                nar_hash: fact(1).nar_hash,
+                outputs: fact(1).outputs,
             },
         ];
         assert_eq!(

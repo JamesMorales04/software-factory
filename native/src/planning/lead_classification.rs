@@ -149,7 +149,7 @@ impl std::fmt::Display for ClassificationRefusal {
 
 impl std::error::Error for ClassificationRefusal {}
 
-fn is_sha256(value: &str) -> bool {
+pub(crate) fn is_sha256(value: &str) -> bool {
     let value = value.trim();
     if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return true;
