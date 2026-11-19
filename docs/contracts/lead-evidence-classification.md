@@ -51,3 +51,57 @@ authorized evidence-fetch/egress channel in Core for it. Until such a channel
 exists and is authenticated, evidence collection stays offline and simulated, and
 the classification path is **not activated**. No new service, secret or egress is
 introduced here.
+
+## Owner criterion: commercial use with no payment obligation
+
+The Owner's standing criterion is explicit: a licence may be used without asking
+again when it **requires no payment** and **permits developing a commercial
+product**. This is an interpretation of the current policy, not a new authority
+and not a catalogue change.
+
+The Lead may therefore authorize an identity without an Owner decision only when
+all of the following hold:
+
+1. **Commercial permission is evidenced from the licence itself** — the SPDX
+   identifier plus the licence text obtained from a primary source with a digest.
+   It is never inferred from the Nix `free` flag, from a missing price field, from
+   the absence of a "non-commercial" string, or from a `meta` attribute.
+2. **No payment obligation applies to the intended use** (development of the
+   product), as stated by that licence text and recorded in the evidence scope.
+3. **Applicable obligations are identified and can be met** (notice, attribution,
+   source availability, relinking, patent terms, and similar), and their
+   fulfilment is recorded with the decision.
+4. **The scope is recorded**: the exact identity, the intended use, the licence
+   identifier and the evidence digests.
+5. **The decision is re-evaluated** when the form of use or distribution changes
+   (for example shipping binaries, offering a hosted service, or redistributing a
+   modified work), because the commercial/no-payment conclusion is scoped to the
+   recorded use.
+
+### Mapping to the existing policy
+
+- The licence identifier must evaluate to `Allowed` in the current catalogue and
+  profile for the closure context; the Owner criterion never bypasses that
+  evaluation.
+- `DENIED` remains a refusal: a denied identifier is not rescued by a claim of
+  commercial permission.
+- `UNKNOWN` triggers **investigation** (Librarian evidence), never acceptance and
+  never an Owner escalation by itself. It becomes an escalation only if resolving
+  it requires a policy exception or accepting a reserved risk.
+- The existing `free`/`unfree` flags stay as they are; `unfree` is still refused.
+  No profile, catalogue or SPDX list is modified by this contract.
+
+### Evidence shape
+
+`EvidenceBundle` for this criterion uses a primary `Output` or `Derivation` source
+for the instance plus one or more `UpstreamDocumentation` sources whose
+`reference` is the licence text location and whose `digest` covers that text, plus
+the SPDX identifier carried in the observation. A decision without a primary
+instance source or without a digested licence text is `MissingPrimarySource` /
+`NeedsEvidence`, and the row stays blocked.
+
+## Status
+
+Documentation only: no code, catalogue, profile or activation change. The
+Librarian's automated web retrieval is still not connected, so evidence remains
+offline and simulated until an authenticated channel exists.
