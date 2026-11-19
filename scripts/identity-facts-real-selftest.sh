@@ -17,9 +17,9 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DEV_IMAGE=${FACTORY_IDF_DEV_IMAGE:-localhost/software-factory-dev:local}
 BUILDER_IMAGE=${FACTORY_IDENTITY_FACTS_REAL_IMAGE:-localhost/software-factory-environment-builder:dev}
 SOURCE_DIR=${FACTORY_IDF_SOURCE_DIR:-$ROOT}
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 TARGET_VOLUME=${FACTORY_IDF_TARGET_VOLUME:-factory-idf-selftest-target-$STAMP}
 PODMAN=${FACTORY_PODMAN_BIN:-$(command -v podman)}
-STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 WORK=${FACTORY_IDF_WORK:-/tmp/opencode/identity-facts-selftest-$STAMP}
 KEEP=${KEEP:-0}
 
@@ -89,10 +89,22 @@ fi
 ( cd "$WORK" && sha256sum cargo.json selftest.log dev-image.txt builder-image.txt identity_facts_real identity_facts_real.sha256 source-dir.txt ${FACTORY_IDF_SOURCE_ARCHIVE_SHA256:+source-archive-sha256.txt} > SHA256SUMS )
 echo "selftest_work=$WORK"
 
-# Confirm no disposable volumes remain.
-if "$PODMAN" volume ls --format '{{.Name}}' | grep -q '^factory-idf-selftest-'; then
-  echo "ERROR: disposable volumes remain" >&2
-  "$PODMAN" volume ls --format '{{.Name}}' | grep '^factory-idf-selftest-' >&2
-  exit 1
+# Confirm no disposable volumes remain. The target volume is intentionally
+# retained only under KEEP=1, and is never counted as a test-resource leak.
+if [ "$KEEP" != "1" ]; then
+  "$PODMAN" volume rm --force "$TARGET_VOLUME" >/dev/null 2>&1 || true
 fi
-echo "cleanup=confirmed"
+"$PODMAN" volume ls --format '{{.Name}}' > "$WORK/final-volumes.txt"
+"$PODMAN" ps -a --format '{{.Names}}' > "$WORK/final-containers.txt"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$WORK/cleanup-utc.txt"
+if grep -q '^factory-idf-selftest-' "$WORK/final-volumes.txt"   || grep -q '^factory-idf-' "$WORK/final-containers.txt"; then
+  if [ "$KEEP" = "1" ] && [ "$(cat "$WORK/final-volumes.txt")" = "$TARGET_VOLUME" ]; then
+    echo "cleanup=confirmed_with_retained_target=$TARGET_VOLUME"
+  else
+    echo "ERROR: disposable volumes/containers remain" >&2
+    cat "$WORK/final-volumes.txt" "$WORK/final-containers.txt" >&2
+    exit 1
+  fi
+else
+  echo "cleanup=confirmed"
+fi
