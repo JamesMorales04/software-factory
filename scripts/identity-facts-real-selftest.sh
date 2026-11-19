@@ -23,6 +23,44 @@ PODMAN=${FACTORY_PODMAN_BIN:-$(command -v podman)}
 WORK=${FACTORY_IDF_WORK:-/tmp/opencode/identity-facts-selftest-$STAMP}
 KEEP=${KEEP:-0}
 
+# Evaluate only the resources this harness may own. Unrelated retained
+# volumes/containers never affect the verdict, and the only permitted retained
+# volume is the exact target under KEEP=1.
+evaluate_cleanup() {
+  volumes_file=$1
+  containers_file=$2
+  target=$3
+  keep=$4
+  selftest_volumes=$(grep '^factory-idf-selftest-' "$volumes_file" || true)
+  other_idf_volumes=$(grep '^factory-idf-' "$volumes_file" | grep -v '^factory-idf-selftest-' || true)
+  idf_containers=$(grep '^factory-idf-' "$containers_file" || true)
+  if [ -n "$other_idf_volumes" ] || [ -n "$idf_containers" ]; then
+    echo "ERROR: unexpected factory-idf resources remain" >&2
+    printf '%s\n%s\n' "$other_idf_volumes" "$idf_containers" >&2
+    return 1
+  fi
+  if [ -z "$selftest_volumes" ]; then
+    echo "cleanup=confirmed"
+    return 0
+  fi
+  if [ "$keep" = "1" ] && [ "$selftest_volumes" = "$target" ]; then
+    echo "cleanup=confirmed_with_retained_target=$target"
+    return 0
+  fi
+  echo "ERROR: disposable selftest volumes remain" >&2
+  printf '%s\n' "$selftest_volumes" >&2
+  return 1
+}
+
+if [ "${FACTORY_IDF_CLEANUP_CHECK_ONLY:-0}" = "1" ]; then
+  evaluate_cleanup \
+    "${FACTORY_IDF_CLEANUP_VOLUMES:?volumes fixture is required}" \
+    "${FACTORY_IDF_CLEANUP_CONTAINERS:?containers fixture is required}" \
+    "${FACTORY_IDF_CLEANUP_TARGET:?target name is required}" \
+    "${FACTORY_IDF_CLEANUP_KEEP:-0}"
+  exit $?
+fi
+
 mkdir -p "$WORK"
 chmod 700 "$WORK"
 chmod 700 "$(dirname "$WORK")" 2>/dev/null || true
@@ -97,20 +135,6 @@ fi
 "$PODMAN" volume ls --format '{{.Name}}' > "$WORK/final-volumes.txt"
 "$PODMAN" ps -a --format '{{.Names}}' > "$WORK/final-containers.txt"
 date -u +%Y-%m-%dT%H:%M:%SZ > "$WORK/cleanup-utc.txt"
-SELFTEST_VOLUMES=$(grep '^factory-idf-selftest-' "$WORK/final-volumes.txt" || true)
-OTHER_IDF_VOLUMES=$(grep '^factory-idf-' "$WORK/final-volumes.txt" | grep -v '^factory-idf-selftest-' || true)
-IDF_CONTAINERS=$(grep '^factory-idf-' "$WORK/final-containers.txt" || true)
-if [ -n "$OTHER_IDF_VOLUMES" ] || [ -n "$IDF_CONTAINERS" ]; then
-  echo "ERROR: unexpected factory-idf resources remain" >&2
-  printf '%s\n%s\n' "$OTHER_IDF_VOLUMES" "$IDF_CONTAINERS" >&2
-  exit 1
-fi
-if [ -z "$SELFTEST_VOLUMES" ]; then
-  echo "cleanup=confirmed"
-elif [ "$KEEP" = "1" ] && [ "$SELFTEST_VOLUMES" = "$TARGET_VOLUME" ]; then
-  echo "cleanup=confirmed_with_retained_target=$TARGET_VOLUME"
-else
-  echo "ERROR: disposable selftest volumes remain" >&2
-  printf '%s\n' "$SELFTEST_VOLUMES" >&2
+if ! evaluate_cleanup "$WORK/final-volumes.txt" "$WORK/final-containers.txt" "$TARGET_VOLUME" "$KEEP"; then
   exit 1
 fi
