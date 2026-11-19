@@ -19,18 +19,19 @@ BUILDER_IMAGE=${FACTORY_IDENTITY_FACTS_REAL_IMAGE:-localhost/software-factory-en
 SOURCE_DIR=${FACTORY_IDF_SOURCE_DIR:-$ROOT}
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 TARGET_VOLUME=${FACTORY_IDF_TARGET_VOLUME:-factory-idf-selftest-target-$STAMP}
-PODMAN=${FACTORY_PODMAN_BIN:-$(command -v podman)}
-WORK=${FACTORY_IDF_WORK:-/tmp/opencode/identity-facts-selftest-$STAMP}
 KEEP=${KEEP:-0}
 
 # Evaluate only the resources this harness may own. Unrelated retained
 # volumes/containers never affect the verdict, and the only permitted retained
 # volume is the exact target under KEEP=1.
 evaluate_cleanup() {
-  volumes_file=$1
-  containers_file=$2
-  target=$3
-  keep=$4
+  local volumes_file=$1
+  local containers_file=$2
+  local target=$3
+  local keep=$4
+  local selftest_volumes
+  local other_idf_volumes
+  local idf_containers
   selftest_volumes=$(grep '^factory-idf-selftest-' "$volumes_file" || true)
   other_idf_volumes=$(grep '^factory-idf-' "$volumes_file" | grep -v '^factory-idf-selftest-' || true)
   idf_containers=$(grep '^factory-idf-' "$containers_file" || true)
@@ -60,6 +61,9 @@ if [ "${FACTORY_IDF_CLEANUP_CHECK_ONLY:-0}" = "1" ]; then
     "${FACTORY_IDF_CLEANUP_KEEP:-0}"
   exit $?
 fi
+
+PODMAN=${FACTORY_PODMAN_BIN:-$(command -v podman)}
+WORK=${FACTORY_IDF_WORK:-/tmp/opencode/identity-facts-selftest-$STAMP}
 
 mkdir -p "$WORK"
 chmod 700 "$WORK"
