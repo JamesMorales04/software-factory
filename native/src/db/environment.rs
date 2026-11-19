@@ -1255,7 +1255,7 @@ impl Database {
     ) -> Result<StoredIdentityFactsReceipt, Error> {
         let nonce: Option<(String,)> = sqlx::query_as::query_as(
             "SELECT nonce FROM environment_identity_facts_receipts
-             WHERE plan_sha256=?1 ORDER BY created_at DESC LIMIT 1",
+             WHERE plan_sha256=?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
         )
         .bind(plan_sha256)
         .fetch_optional(&self.pool)

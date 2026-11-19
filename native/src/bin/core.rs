@@ -12876,10 +12876,11 @@ async fn build_environment_before_freeze(
     // exact root equality. Anything else is explicitly a spec-cache observation,
     // so a durable BUILD_RECEIPT can never describe a failed or mismatched build.
     let bound = match &build {
-        Ok(receipt) if receipt.validate_for(spec).is_ok() => {
+        Ok(receipt) => {
             factory_native::planning::identity_facts::BoundIdentityFacts::bind_build_receipt(
                 identity.clone(),
                 receipt,
+                spec,
             )
             .unwrap_or_else(|_| {
                 factory_native::planning::identity_facts::BoundIdentityFacts::spec_cache_observation(
@@ -36224,6 +36225,7 @@ mod tests {
             EmptyRoot,
             MismatchedRoot,
             InvalidReceipt,
+            WrongSpecBinding,
         }
 
         #[cfg(feature = "test-support")]
@@ -36266,6 +36268,7 @@ mod tests {
                                 )
                         }
                         ReceiptDefect::InvalidReceipt => receipt.output_sha256.clear(),
+                        ReceiptDefect::WrongSpecBinding => receipt.spec_sha256 = "d".repeat(64),
                     }
                     Ok(receipt)
                 })
@@ -37567,6 +37570,7 @@ mod tests {
                 ReceiptDefect::EmptyRoot,
                 ReceiptDefect::MismatchedRoot,
                 ReceiptDefect::InvalidReceipt,
+                ReceiptDefect::WrongSpecBinding,
             ] {
                 fixture.app.set_environment_builder(std::sync::Arc::new(
                     ReceiptDefectEnvironmentBuilder {

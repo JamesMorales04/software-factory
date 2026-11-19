@@ -110,8 +110,9 @@ just by calling the DB layer.
    exact equality with `observedRoot`) **before** it can persist
    `BUILD_RECEIPT`; otherwise it persists `SPEC_CACHE_OBSERVATION`. The latter
    is a signed observation of the exact spec-keyed cache and does not prove
-   which attempt wrote the root. Core cannot know a store hash before
-   realisation, so a refused build is never presented as an accepted build.
+   which attempt wrote the root. It is never elevated to a same-operation
+   proof. Core cannot know a store hash before realisation, so a refused build
+   is never presented as an accepted build.
 5. A missing or late envelope is a typed `EvidenceAbsent`: no receipt, an
    explicit blocker and an unchanged build status.
 
@@ -159,6 +160,7 @@ an operator-visible capability exists.
 | Duplicate path, incomplete fact, wrong count or digest | refused |
 | Questions mode with extra, missing, reordered or duplicate question | refused |
 | Wrong pin/plan/runtime/operation or wrong bearer/context | refused |
+| Wrong specSha256, or a build receipt valid for another spec | refused inside the binding constructor |
 | Builder- or model-supplied manifest | refused by construction (broker re-queries) |
 | Replayed or concurrent nonce | refused by the pending-state transaction |
 | Expired, revoked or foreign challenge | refused without deleting state |

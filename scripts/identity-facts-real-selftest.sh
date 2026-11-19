@@ -16,7 +16,8 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DEV_IMAGE=${FACTORY_IDF_DEV_IMAGE:-localhost/software-factory-dev:local}
 BUILDER_IMAGE=${FACTORY_IDENTITY_FACTS_REAL_IMAGE:-localhost/software-factory-environment-builder:dev}
-TARGET_VOLUME=${FACTORY_IDF_TARGET_VOLUME:-factory-idf-selftest-target}
+SOURCE_DIR=${FACTORY_IDF_SOURCE_DIR:-$ROOT}
+TARGET_VOLUME=${FACTORY_IDF_TARGET_VOLUME:-factory-idf-selftest-target-$STAMP}
 PODMAN=${FACTORY_PODMAN_BIN:-$(command -v podman)}
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 WORK=${FACTORY_IDF_WORK:-/tmp/opencode/identity-facts-selftest-$STAMP}
@@ -47,13 +48,13 @@ echo "builder_image=$BUILDER_IMAGE"
 # Compile the real self-test in the container-native development image. The
 # binary is executed on the host because that is where rootless Podman lives.
 "$PODMAN" run --rm --userns=keep-id \
-  -v "$ROOT:/workspaces/software-factory:rw" \
+  -v "$SOURCE_DIR:/workspaces/software-factory:ro" \
   -v "$TARGET_VOLUME:/target" \
   -e CARGO_TARGET_DIR=/target \
   -e CARGO_HOME=/home/factory/.cargo \
   -w /workspaces/software-factory \
   "$DEV_IMAGE" \
-  sh -c 'cargo test -p factory-native --features test-support --test identity_facts_real --no-run --message-format=json' \
+  sh -c 'cargo test --locked -p factory-native --features test-support --test identity_facts_real --no-run --message-format=json' \
   > "$WORK/cargo.json" 2> "$WORK/cargo.stderr"
 BIN=$(jq -r 'select(.reason=="compiler-artifact" and (.target.kind|index("test")) and .target.name=="identity_facts_real") | .executable // empty' "$WORK/cargo.json" | tail -1)
 if [ -z "$BIN" ] || [ "$BIN" = "null" ]; then
@@ -66,6 +67,11 @@ CONTAINER="factory-idf-selftest-copy-$$"
 "$PODMAN" cp "$CONTAINER:$BIN" "$WORK/identity_facts_real"
 "$PODMAN" rm --force "$CONTAINER" >/dev/null
 chmod 0700 "$WORK/identity_facts_real"
+sha256sum "$WORK/identity_facts_real" > "$WORK/identity_facts_real.sha256"
+echo "$SOURCE_DIR" > "$WORK/source-dir.txt"
+if [ -n "${FACTORY_IDF_SOURCE_ARCHIVE_SHA256:-}" ]; then
+  printf '%s\n' "$FACTORY_IDF_SOURCE_ARCHIVE_SHA256" > "$WORK/source-archive-sha256.txt"
+fi
 
 set +e
 FACTORY_IDENTITY_FACTS_REAL_TEST=1 \
@@ -80,7 +86,7 @@ if [ "$SELFTEST_STATUS" -ne 0 ]; then
   echo "selftest failed; work retained at $WORK" >&2
   exit "$SELFTEST_STATUS"
 fi
-( cd "$WORK" && sha256sum cargo.json selftest.log dev-image.txt builder-image.txt identity_facts_real > SHA256SUMS )
+( cd "$WORK" && sha256sum cargo.json selftest.log dev-image.txt builder-image.txt identity_facts_real identity_facts_real.sha256 source-dir.txt ${FACTORY_IDF_SOURCE_ARCHIVE_SHA256:+source-archive-sha256.txt} > SHA256SUMS )
 echo "selftest_work=$WORK"
 
 # Confirm no disposable volumes remain.

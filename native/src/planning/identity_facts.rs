@@ -15,7 +15,7 @@ use ring::hmac;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::environment::{EnvironmentBuildReceipt, EnvironmentBuilderStatus};
+use super::environment::{EnvironmentBuildReceipt, EnvironmentBuilderStatus, EnvironmentSpec};
 use super::lead_classification::is_sha256;
 
 /// Separate HMAC context; identity facts are not helper facts.
@@ -137,6 +137,9 @@ impl IdentityFactsChallenge {
                         .iter()
                         .collect::<std::collections::BTreeSet<_>>()
                         .len()
+                || !question.outputs.contains(&question.store_path)
+                || (question.deriver.is_none()
+                    && question.outputs != vec![question.store_path.clone()])
             {
                 return Err(IdentityFactsError::InvalidChallenge);
             }
@@ -234,9 +237,15 @@ impl BoundIdentityFacts {
     pub fn bind_build_receipt(
         verified: VerifiedIdentityFacts,
         receipt: &EnvironmentBuildReceipt,
+        spec: &EnvironmentSpec,
     ) -> Result<Self, IdentityFactsError> {
-        if receipt.status != EnvironmentBuilderStatus::Succeeded
-            || receipt.store_path.is_empty()
+        receipt
+            .validate_for(spec)
+            .map_err(|error| IdentityFactsError::BuildReceiptInvalid(error.message))?;
+        if receipt.spec_sha256 != verified.0.envelope.challenge.spec_sha256 {
+            return Err(IdentityFactsError::RootBindingMismatch);
+        }
+        if receipt.store_path.is_empty()
             || !is_output_store_path(&receipt.store_path)
             || receipt.store_path != verified.0.envelope.manifest.observed_root
         {
@@ -310,6 +319,7 @@ pub enum IdentityFactsError {
     BindingMismatch,
     SignatureMismatch,
     RootBindingMismatch,
+    BuildReceiptInvalid(String),
     EvidenceAbsent,
     Refused(IdentityFactsRefusal),
 }
@@ -332,6 +342,9 @@ impl std::fmt::Display for IdentityFactsError {
             }
             Self::RootBindingMismatch => formatter
                 .write_str("the identity-facts root does not bind the successful build receipt"),
+            Self::BuildReceiptInvalid(message) => {
+                write!(formatter, "the build receipt is invalid: {message}")
+            }
             Self::EvidenceAbsent => {
                 formatter.write_str("the broker returned no identity-facts evidence")
             }
@@ -890,6 +903,21 @@ mod tests {
         bad_plan.plan_sha256 = "not-a-hash".into();
         assert_eq!(
             bad_plan.validate_shape(),
+            Err(IdentityFactsError::InvalidChallenge)
+        );
+        let mut deriverless_extra = question(0);
+        deriverless_extra.deriver = None;
+        deriverless_extra
+            .outputs
+            .push(format!("/nix/store/{}-extra", "f".repeat(32)));
+        assert_eq!(
+            challenge(IdentityFactsMode::Questions, vec![deriverless_extra]).validate_shape(),
+            Err(IdentityFactsError::InvalidChallenge)
+        );
+        let mut missing_self = question(0);
+        missing_self.outputs = vec![format!("/nix/store/{}-other", "f".repeat(32))];
+        assert_eq!(
+            challenge(IdentityFactsMode::Questions, vec![missing_self]).validate_shape(),
             Err(IdentityFactsError::InvalidChallenge)
         );
     }
