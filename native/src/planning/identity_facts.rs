@@ -15,7 +15,7 @@ use ring::hmac;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::environment::{EnvironmentBuildReceipt, EnvironmentBuilderStatus, EnvironmentSpec};
+use super::environment::{EnvironmentBuildReceipt, EnvironmentSpec};
 use super::lead_classification::is_sha256;
 
 /// Separate HMAC context; identity facts are not helper facts.
