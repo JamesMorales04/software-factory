@@ -97,14 +97,20 @@ fi
 "$PODMAN" volume ls --format '{{.Name}}' > "$WORK/final-volumes.txt"
 "$PODMAN" ps -a --format '{{.Names}}' > "$WORK/final-containers.txt"
 date -u +%Y-%m-%dT%H:%M:%SZ > "$WORK/cleanup-utc.txt"
-if grep -q '^factory-idf-selftest-' "$WORK/final-volumes.txt"   || grep -q '^factory-idf-' "$WORK/final-containers.txt"; then
-  if [ "$KEEP" = "1" ] && [ "$(cat "$WORK/final-volumes.txt")" = "$TARGET_VOLUME" ]; then
-    echo "cleanup=confirmed_with_retained_target=$TARGET_VOLUME"
-  else
-    echo "ERROR: disposable volumes/containers remain" >&2
-    cat "$WORK/final-volumes.txt" "$WORK/final-containers.txt" >&2
-    exit 1
-  fi
-else
+SELFTEST_VOLUMES=$(grep '^factory-idf-selftest-' "$WORK/final-volumes.txt" || true)
+OTHER_IDF_VOLUMES=$(grep '^factory-idf-' "$WORK/final-volumes.txt" | grep -v '^factory-idf-selftest-' || true)
+IDF_CONTAINERS=$(grep '^factory-idf-' "$WORK/final-containers.txt" || true)
+if [ -n "$OTHER_IDF_VOLUMES" ] || [ -n "$IDF_CONTAINERS" ]; then
+  echo "ERROR: unexpected factory-idf resources remain" >&2
+  printf '%s\n%s\n' "$OTHER_IDF_VOLUMES" "$IDF_CONTAINERS" >&2
+  exit 1
+fi
+if [ -z "$SELFTEST_VOLUMES" ]; then
   echo "cleanup=confirmed"
+elif [ "$KEEP" = "1" ] && [ "$SELFTEST_VOLUMES" = "$TARGET_VOLUME" ]; then
+  echo "cleanup=confirmed_with_retained_target=$TARGET_VOLUME"
+else
+  echo "ERROR: disposable selftest volumes remain" >&2
+  printf '%s\n' "$SELFTEST_VOLUMES" >&2
+  exit 1
 fi
