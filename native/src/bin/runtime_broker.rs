@@ -9422,6 +9422,12 @@ exit 0
             nonce: "identity-nonce".into(),
             pin: request.plan.nix.nixpkgs.clone(),
             plan_sha256: request.plan.plan_sha256.clone(),
+            spec_sha256: request
+                .spec
+                .as_ref()
+                .expect("the identity request carries the frozen spec")
+                .spec_sha256
+                .clone(),
             mode: IdentityFactsMode::Enumerate,
             root: OperationRoot::Operation,
             questions: Vec::new(),

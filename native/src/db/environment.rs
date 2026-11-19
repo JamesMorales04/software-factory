@@ -18,8 +18,8 @@ use crate::planning::environment::{
 };
 use crate::planning::environment::{EnvironmentPlanStatus, EnvironmentSpecStatus};
 use crate::planning::identity_facts::{
-    IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION, IdentityFactsChallenge,
-    IdentityFactsRootBinding, VerifiedIdentityFacts, validate_manifest,
+    BoundIdentityFacts, IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION,
+    IdentityFactsChallenge, IdentityFactsRootBinding, validate_manifest,
 };
 
 const MAX_ENVIRONMENT_JSON_BYTES: usize = 4 * 1024 * 1024;
@@ -75,6 +75,7 @@ type CampaignRow = (
     String,
 );
 type IdentityFactsReceiptRow = (
+    String,
     String,
     String,
     String,
@@ -138,6 +139,7 @@ pub struct StoredIdentityFactsReceipt {
     pub operation_id: String,
     pub runtime_id: String,
     pub plan_sha256: String,
+    pub spec_sha256: String,
     pub pin: String,
     pub observed_root: String,
     pub root_binding: IdentityFactsRootBinding,
@@ -1019,14 +1021,16 @@ impl Database {
         }
         sqlx::query::query(
             "INSERT INTO identity_facts_challenges
-             (nonce,operation_id,runtime_id,plan_sha256,pin,mode,root,questions_json,
-              challenge_json,request_id,plan_id,state,created_at,expires_at,consumed_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'PENDING',?12,?13,NULL)",
+             (nonce,operation_id,runtime_id,plan_sha256,spec_sha256,pin,mode,root,
+              questions_json,challenge_json,request_id,plan_id,state,created_at,
+              expires_at,consumed_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'PENDING',?13,?14,NULL)",
         )
         .bind(&challenge.nonce)
         .bind(&challenge.operation_id)
         .bind(&challenge.runtime_id)
         .bind(&challenge.plan_sha256)
+        .bind(&challenge.spec_sha256)
         .bind(&challenge.pin)
         .bind(format!("{:?}", challenge.mode).to_uppercase())
         .bind(format!("{:?}", challenge.root).to_uppercase())
@@ -1049,10 +1053,10 @@ impl Database {
     pub async fn consume_identity_facts(
         &self,
         challenge: &IdentityFactsChallenge,
-        verified: &VerifiedIdentityFacts,
-        root_binding: IdentityFactsRootBinding,
+        bound: &BoundIdentityFacts,
     ) -> Result<StoredIdentityFactsReceipt, Error> {
-        let receipt = verified.receipt();
+        let receipt = bound.receipt();
+        let root_binding = bound.binding();
         challenge
             .validate_shape()
             .map_err(|error| Error::Validation(error.to_string()))?;
@@ -1140,21 +1144,19 @@ impl Database {
         }
         if let Err(error) = sqlx::query::query(
             "INSERT INTO environment_identity_facts_receipts
-             (nonce,operation_id,runtime_id,plan_sha256,pin,observed_root,root_binding,
-              fact_count,closure_manifest_sha256,manifest_json,envelope_json,signature,
-              created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+             (nonce,operation_id,runtime_id,plan_sha256,spec_sha256,pin,observed_root,
+              root_binding,fact_count,closure_manifest_sha256,manifest_json,
+              envelope_json,signature,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
         )
         .bind(&challenge.nonce)
         .bind(&challenge.operation_id)
         .bind(&challenge.runtime_id)
         .bind(&challenge.plan_sha256)
+        .bind(&challenge.spec_sha256)
         .bind(&challenge.pin)
         .bind(&manifest.observed_root)
-        .bind(match root_binding {
-            IdentityFactsRootBinding::BuildReceipt => "BUILD_RECEIPT",
-            IdentityFactsRootBinding::OperationObservation => "OPERATION_OBSERVATION",
-        })
+        .bind(root_binding.as_db_value())
         .bind(i64::try_from(manifest.fact_count).unwrap_or(i64::MAX))
         .bind(&manifest.closure_manifest_sha256)
         .bind(&manifest_json)
@@ -1176,6 +1178,7 @@ impl Database {
             operation_id: challenge.operation_id.clone(),
             runtime_id: challenge.runtime_id.clone(),
             plan_sha256: challenge.plan_sha256.clone(),
+            spec_sha256: challenge.spec_sha256.clone(),
             pin: challenge.pin.clone(),
             observed_root: manifest.observed_root.clone(),
             root_binding,
@@ -1193,9 +1196,9 @@ impl Database {
         nonce: &str,
     ) -> Result<StoredIdentityFactsReceipt, Error> {
         let row: Option<IdentityFactsReceiptRow> = sqlx::query_as::query_as(
-            "SELECT nonce,operation_id,runtime_id,plan_sha256,pin,observed_root,
-                    root_binding,fact_count,closure_manifest_sha256,manifest_json,
-                    envelope_json,signature,created_at
+            "SELECT nonce,operation_id,runtime_id,plan_sha256,spec_sha256,pin,
+                    observed_root,root_binding,fact_count,closure_manifest_sha256,
+                    manifest_json,envelope_json,signature,created_at
              FROM environment_identity_facts_receipts WHERE nonce=?1",
         )
         .bind(nonce)
@@ -1206,6 +1209,7 @@ impl Database {
             operation_id,
             runtime_id,
             plan_sha256,
+            spec_sha256,
             pin,
             observed_root,
             root_binding,
@@ -1224,11 +1228,17 @@ impl Database {
             operation_id,
             runtime_id,
             plan_sha256,
+            spec_sha256,
             pin,
             observed_root,
             root_binding: match root_binding.as_str() {
                 "BUILD_RECEIPT" => IdentityFactsRootBinding::BuildReceipt,
-                _ => IdentityFactsRootBinding::OperationObservation,
+                "SPEC_CACHE_OBSERVATION" => IdentityFactsRootBinding::SpecCacheObservation,
+                _ => {
+                    return Err(Error::Validation(
+                        "stored identity-facts root binding is invalid".into(),
+                    ));
+                }
             },
             fact_count: u32::try_from(fact_count).unwrap_or(u32::MAX),
             closure_manifest_sha256,
@@ -1816,6 +1826,7 @@ mod identity_facts_tests {
             nonce: nonce.into(),
             pin: "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d".into(),
             plan_sha256: "b".repeat(64),
+            spec_sha256: "c".repeat(64),
             mode: IdentityFactsMode::Enumerate,
             root: OperationRoot::Operation,
             questions: Vec::new(),
@@ -1838,17 +1849,18 @@ mod identity_facts_tests {
         db.issue_identity_facts_challenge(&challenge, Some("request-1"), "plan-1", 900)
             .await
             .unwrap();
-        let receipt = fixture_verified_receipt(&challenge, "seed-1");
+        let receipt = BoundIdentityFacts::spec_cache_observation(fixture_verified_receipt(
+            &challenge, "seed-1",
+        ));
         let stored = db
-            .consume_identity_facts(&challenge, &receipt, IdentityFactsRootBinding::BuildReceipt)
+            .consume_identity_facts(&challenge, &receipt)
             .await
             .unwrap();
         assert_eq!(stored.nonce, "nonce-1");
         assert_eq!(stored.fact_count, 1);
         // Replay refuses without deleting the original receipt.
         assert!(matches!(
-            db.consume_identity_facts(&challenge, &receipt, IdentityFactsRootBinding::BuildReceipt)
-                .await,
+            db.consume_identity_facts(&challenge, &receipt).await,
             Err(Error::Conflict(_))
         ));
         let preserved = db.identity_facts_receipt("nonce-1").await.unwrap();
@@ -1865,33 +1877,22 @@ mod identity_facts_tests {
         db.issue_identity_facts_challenge(&challenge, None, "plan-1", 900)
             .await
             .unwrap();
-        let receipt = fixture_verified_receipt(&challenge, "seed-concurrent");
+        let receipt = BoundIdentityFacts::spec_cache_observation(fixture_verified_receipt(
+            &challenge,
+            "seed-concurrent",
+        ));
         let db = std::sync::Arc::new(db);
         let first = {
             let db = std::sync::Arc::clone(&db);
             let challenge = challenge.clone();
             let receipt = receipt.clone();
-            tokio::spawn(async move {
-                db.consume_identity_facts(
-                    &challenge,
-                    &receipt,
-                    IdentityFactsRootBinding::BuildReceipt,
-                )
-                .await
-            })
+            tokio::spawn(async move { db.consume_identity_facts(&challenge, &receipt).await })
         };
         let second = {
             let db = std::sync::Arc::clone(&db);
             let challenge = challenge.clone();
             let receipt = receipt.clone();
-            tokio::spawn(async move {
-                db.consume_identity_facts(
-                    &challenge,
-                    &receipt,
-                    IdentityFactsRootBinding::BuildReceipt,
-                )
-                .await
-            })
+            tokio::spawn(async move { db.consume_identity_facts(&challenge, &receipt).await })
         };
         let results = [first.await.unwrap(), second.await.unwrap()];
         assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
@@ -1913,23 +1914,23 @@ mod identity_facts_tests {
         db.issue_identity_facts_challenge(&foreign, None, "plan-1", 900)
             .await
             .unwrap();
-        let receipt = fixture_verified_receipt(&foreign, "seed-foreign");
+        let receipt = BoundIdentityFacts::spec_cache_observation(fixture_verified_receipt(
+            &foreign,
+            "seed-foreign",
+        ));
         let mut different = foreign.clone();
         different.operation_id = "operation-other".into();
         assert!(matches!(
-            db.consume_identity_facts(&different, &receipt, IdentityFactsRootBinding::BuildReceipt)
-                .await,
+            db.consume_identity_facts(&different, &receipt).await,
             Err(Error::Conflict(_)) | Err(Error::Validation(_))
         ));
         let unknown = challenge("nonce-unknown");
-        let unknown_receipt = fixture_verified_receipt(&unknown, "seed-unknown");
+        let unknown_receipt = BoundIdentityFacts::spec_cache_observation(fixture_verified_receipt(
+            &unknown,
+            "seed-unknown",
+        ));
         assert!(matches!(
-            db.consume_identity_facts(
-                &unknown,
-                &unknown_receipt,
-                IdentityFactsRootBinding::BuildReceipt
-            )
-            .await,
+            db.consume_identity_facts(&unknown, &unknown_receipt).await,
             Err(Error::Conflict(_))
         ));
         sqlx::query::query("UPDATE identity_facts_challenges SET state='REVOKED' WHERE nonce=?1")
@@ -1938,8 +1939,7 @@ mod identity_facts_tests {
             .await
             .unwrap();
         assert!(matches!(
-            db.consume_identity_facts(&foreign, &receipt, IdentityFactsRootBinding::BuildReceipt)
-                .await,
+            db.consume_identity_facts(&foreign, &receipt).await,
             Err(Error::Conflict(_))
         ));
         sqlx::query::query("UPDATE identity_facts_challenges SET state='PENDING' WHERE nonce=?1")
@@ -1957,8 +1957,7 @@ mod identity_facts_tests {
         .await
         .unwrap();
         assert!(matches!(
-            db.consume_identity_facts(&foreign, &receipt, IdentityFactsRootBinding::BuildReceipt)
-                .await,
+            db.consume_identity_facts(&foreign, &receipt).await,
             Err(Error::Conflict(_))
         ));
         assert!(matches!(

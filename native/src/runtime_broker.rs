@@ -491,10 +491,13 @@ impl EnvironmentBrokerRequest {
                 challenge
                     .validate_shape()
                     .map_err(|error| error.to_string())?;
-                if self.spec.is_none() {
+                let Some(spec) = &self.spec else {
                     return Err(
                         "an identity-facts operation requires the frozen environment spec".into(),
                     );
+                };
+                if challenge.spec_sha256 != spec.spec_sha256 {
+                    return Err("the identity-facts challenge binds a different frozen spec".into());
                 }
                 if self.phase != Some(EnvironmentBuildPhase::IdentityFacts) {
                     return Err("an identity-facts operation requires its exact phase".into());
@@ -2191,6 +2194,7 @@ mod tests {
             nonce: "identity-nonce".into(),
             pin: "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d".into(),
             plan_sha256: "b".repeat(64),
+            spec_sha256: "c".repeat(64),
             mode: crate::planning::identity_facts::IdentityFactsMode::Questions,
             root: crate::planning::identity_facts::OperationRoot::Operation,
             questions,

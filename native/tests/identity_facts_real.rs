@@ -19,8 +19,8 @@ use std::process::Command;
 
 use factory_native::db::Database;
 use factory_native::planning::identity_facts::{
-    IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION, IdentityFactsChallenge,
-    IdentityFactsEnvelope, IdentityFactsMode, IdentityFactsReceipt, IdentityFactsRootBinding,
+    BoundIdentityFacts, IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION,
+    IdentityFactsChallenge, IdentityFactsEnvelope, IdentityFactsMode, IdentityFactsReceipt,
     OperationRoot, closure_manifest_sha256, sign,
 };
 use factory_native::runtime_broker::{
@@ -206,6 +206,7 @@ chown -R 10001:10001 /target
         nonce: format!("selftest-nonce-{}", &id[..24]),
         pin: "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d".into(),
         plan_sha256,
+        spec_sha256: sha256_hex(b"selftest-spec"),
         mode: IdentityFactsMode::Enumerate,
         root: OperationRoot::Operation,
         questions: Vec::new(),
@@ -259,24 +260,15 @@ chown -R 10001:10001 /target
     db.issue_identity_facts_challenge(&challenge, Some("selftest"), "selftest-plan", 900)
         .await
         .expect("persist the PENDING challenge");
+    let bound = BoundIdentityFacts::spec_cache_observation(verified.clone());
     let stored = db
-        .consume_identity_facts(
-            &challenge,
-            &verified,
-            IdentityFactsRootBinding::OperationObservation,
-        )
+        .consume_identity_facts(&challenge, &bound)
         .await
         .expect("consume the real receipt");
     assert_eq!(stored.observed_root, root);
     assert_eq!(stored.fact_count, manifest.fact_count as u32);
     assert!(
-        db.consume_identity_facts(
-            &challenge,
-            &verified,
-            IdentityFactsRootBinding::OperationObservation
-        )
-        .await
-        .is_err(),
+        db.consume_identity_facts(&challenge, &bound).await.is_err(),
         "a replayed nonce must be refused"
     );
     let db = std::sync::Arc::new(db);
@@ -300,31 +292,18 @@ chown -R 10001:10001 /target
     let raced_verified = client
         .verify_identity_facts(&raced_receipt, &raced)
         .expect("the raced receipt verifies");
+    let raced_bound = BoundIdentityFacts::spec_cache_observation(raced_verified);
     let first = {
         let db = std::sync::Arc::clone(&db);
         let raced = raced.clone();
-        let raced_verified = raced_verified.clone();
-        tokio::spawn(async move {
-            db.consume_identity_facts(
-                &raced,
-                &raced_verified,
-                IdentityFactsRootBinding::OperationObservation,
-            )
-            .await
-        })
+        let raced_bound = raced_bound.clone();
+        tokio::spawn(async move { db.consume_identity_facts(&raced, &raced_bound).await })
     };
     let second = {
         let db = std::sync::Arc::clone(&db);
         let raced = raced.clone();
-        let raced_verified = raced_verified.clone();
-        tokio::spawn(async move {
-            db.consume_identity_facts(
-                &raced,
-                &raced_verified,
-                IdentityFactsRootBinding::OperationObservation,
-            )
-            .await
-        })
+        let raced_bound = raced_bound.clone();
+        tokio::spawn(async move { db.consume_identity_facts(&raced, &raced_bound).await })
     };
     let results = [first.await.unwrap(), second.await.unwrap()];
     assert_eq!(

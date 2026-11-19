@@ -21,8 +21,8 @@ environment blocked.
 
 ## Challenge (Core-issued)
 
-`IdentityFactsChallenge { operationId, runtimeId, nonce, pin, planSha256, mode,
-root: OperationRoot, questions }` with
+`IdentityFactsChallenge { operationId, runtimeId, nonce, pin, planSha256,
+specSha256, mode, root: OperationRoot, questions }` with
 `OperationRoot { Operation, Plan, Runtime }`.
 
 Core never hashes a root before realisation. It issues an **operation selector**
@@ -32,6 +32,9 @@ operation. Other selectors are typed but not used by the producer.
 
 `runtimeId` is the digest-pinned environment-builder image digest. Core and the
 broker both know it; the broker refuses a challenge bound to another runtime.
+`specSha256` binds the observation to the exact frozen spec whose
+`factory-env-cache-<specSha256[..32]>` volume is read; the broker refuses a
+challenge bound to another spec.
 
 `mode`: `ENUMERATE` discovers the closure of the broker's realised root and
 requires `questions` to be empty; `QUESTIONS` requires 1..=64 complete
@@ -78,9 +81,12 @@ supplied by the builder, a model or an operator is rejected by construction
 because only the broker-owned fixed query produces the envelope.
 
 `VerifiedIdentityFacts` is a type-state value: its field is private and only
-the MAC/binding verifier (or a feature-gated fixture) constructs it. The
-durable consumer accepts only that type, so a structurally plausible forged
-envelope cannot be persisted just by calling the DB layer.
+the MAC/binding verifier (or a feature-gated fixture) constructs it.
+`BoundIdentityFacts` is the only value the durable consumer accepts, and its
+`BUILD_RECEIPT` binding is produced only by a constructor that checks a
+successful `EnvironmentBuildReceipt` whose `storePath` equals the signed
+`observedRoot`. A structurally plausible forged envelope cannot be persisted
+just by calling the DB layer.
 
 ## Ordering, persistence and atomicity
 
@@ -100,12 +106,12 @@ envelope cannot be persisted just by calling the DB layer.
 4. Core persists the receipt **before** applying the builder's licence outcome.
    If the existing licence gate refuses, the identity receipt is preserved and
    the environment remains blocked; it is never converted into an acceptance.
-   The receipt records its root binding: `BUILD_RECEIPT` when a successful build
-   reported the exact `storePath` (Core requires equality with `observedRoot`),
-   or `OPERATION_OBSERVATION` when the build was refused and no successful
-   receipt exists. Core cannot know a store hash before realisation, so the
-   refused case is a signed observation of the operation's exact spec-keyed
-   store, never a claimed accepted build.
+   Core validates the build receipt (`validate_for(spec)`, non-empty root,
+   exact equality with `observedRoot`) **before** it can persist
+   `BUILD_RECEIPT`; otherwise it persists `SPEC_CACHE_OBSERVATION`. The latter
+   is a signed observation of the exact spec-keyed cache and does not prove
+   which attempt wrote the root. Core cannot know a store hash before
+   realisation, so a refused build is never presented as an accepted build.
 5. A missing or late envelope is a typed `EvidenceAbsent`: no receipt, an
    explicit blocker and an unchanged build status.
 

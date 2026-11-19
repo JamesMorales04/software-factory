@@ -15,6 +15,7 @@ use ring::hmac;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::environment::{EnvironmentBuildReceipt, EnvironmentBuilderStatus};
 use super::lead_classification::is_sha256;
 
 /// Separate HMAC context; identity facts are not helper facts.
@@ -89,6 +90,7 @@ pub struct IdentityFactsChallenge {
     pub nonce: String,
     pub pin: String,
     pub plan_sha256: String,
+    pub spec_sha256: String,
     pub mode: IdentityFactsMode,
     pub root: OperationRoot,
     pub questions: Vec<IdentityQuestion>,
@@ -109,13 +111,14 @@ impl IdentityFactsChallenge {
             || !bounded(&self.nonce, 200, false)
             || !bounded(&self.pin, 300, false)
             || !is_sha256(&self.plan_sha256)
+            || !is_sha256(&self.spec_sha256)
             || self.questions.len() > MAX_IDENTITY_QUESTIONS
         {
             return Err(IdentityFactsError::InvalidChallenge);
         }
         let mut paths = std::collections::BTreeSet::new();
         for question in &self.questions {
-            if !is_store_path(&question.store_path)
+            if !is_output_store_path(&question.store_path)
                 || !paths.insert(question.store_path.as_str())
                 || !is_sha256(&question.nar_hash)
                 || question
@@ -124,7 +127,10 @@ impl IdentityFactsChallenge {
                     .is_some_and(|deriver| !is_store_path(deriver) || !deriver.ends_with(".drv"))
                 || question.outputs.is_empty()
                 || question.outputs.len() > MAX_IDENTITY_OUTPUTS
-                || question.outputs.iter().any(|output| !is_store_path(output))
+                || question
+                    .outputs
+                    .iter()
+                    .any(|output| !is_output_store_path(output))
                 || question.outputs.len()
                     != question
                         .outputs
@@ -197,7 +203,69 @@ impl VerifiedIdentityFacts {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum IdentityFactsRootBinding {
     BuildReceipt,
-    OperationObservation,
+    /// Broker observation of the exact spec-keyed cache, used when no
+    /// successful build receipt exists (for example a refused licence gate).
+    /// It proves what the broker observed, not which attempt wrote the root.
+    SpecCacheObservation,
+}
+
+impl IdentityFactsRootBinding {
+    pub const fn as_db_value(self) -> &'static str {
+        match self {
+            Self::BuildReceipt => "BUILD_RECEIPT",
+            Self::SpecCacheObservation => "SPEC_CACHE_OBSERVATION",
+        }
+    }
+}
+
+/// Receipt plus a root binding proved by the producer of this value.
+///
+/// `bind_build_receipt` is the only constructor that can produce
+/// `BUILD_RECEIPT`: it requires a successful build receipt whose exact store
+/// path equals the signed observed root. `spec_cache_observation` is the
+/// explicit weaker binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundIdentityFacts {
+    verified: VerifiedIdentityFacts,
+    binding: IdentityFactsRootBinding,
+}
+
+impl BoundIdentityFacts {
+    pub fn bind_build_receipt(
+        verified: VerifiedIdentityFacts,
+        receipt: &EnvironmentBuildReceipt,
+    ) -> Result<Self, IdentityFactsError> {
+        if receipt.status != EnvironmentBuilderStatus::Succeeded
+            || receipt.store_path.is_empty()
+            || !is_output_store_path(&receipt.store_path)
+            || receipt.store_path != verified.0.envelope.manifest.observed_root
+        {
+            return Err(IdentityFactsError::RootBindingMismatch);
+        }
+        Ok(Self {
+            verified,
+            binding: IdentityFactsRootBinding::BuildReceipt,
+        })
+    }
+
+    pub fn spec_cache_observation(verified: VerifiedIdentityFacts) -> Self {
+        Self {
+            verified,
+            binding: IdentityFactsRootBinding::SpecCacheObservation,
+        }
+    }
+
+    pub fn verified(&self) -> &VerifiedIdentityFacts {
+        &self.verified
+    }
+
+    pub fn binding(&self) -> IdentityFactsRootBinding {
+        self.binding
+    }
+
+    pub fn receipt(&self) -> &IdentityFactsReceipt {
+        self.verified.receipt()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +276,7 @@ pub enum IdentityFactsRefusal {
     CountMismatch,
     DuplicatePath,
     IncompleteFact,
+    RootNotObserved,
     DigestMismatch,
     QuestionMismatch,
 }
@@ -221,6 +290,7 @@ impl std::fmt::Display for IdentityFactsRefusal {
             Self::CountMismatch => "the manifest fact count does not match its facts",
             Self::DuplicatePath => "the manifest repeats a store path",
             Self::IncompleteFact => "a fact is missing its derivation, hash or outputs",
+            Self::RootNotObserved => "the observed root is not part of the closure",
             Self::DigestMismatch => "the closure manifest digest does not match",
             Self::QuestionMismatch => "the manifest does not answer the issued questions",
         })
@@ -239,6 +309,7 @@ pub enum IdentityFactsError {
     ContextMismatch,
     BindingMismatch,
     SignatureMismatch,
+    RootBindingMismatch,
     EvidenceAbsent,
     Refused(IdentityFactsRefusal),
 }
@@ -259,6 +330,8 @@ impl std::fmt::Display for IdentityFactsError {
             Self::SignatureMismatch => {
                 formatter.write_str("the identity-facts signature does not verify")
             }
+            Self::RootBindingMismatch => formatter
+                .write_str("the identity-facts root does not bind the successful build receipt"),
             Self::EvidenceAbsent => {
                 formatter.write_str("the broker returned no identity-facts evidence")
             }
@@ -273,6 +346,10 @@ impl From<IdentityFactsRefusal> for IdentityFactsError {
     fn from(refusal: IdentityFactsRefusal) -> Self {
         Self::Refused(refusal)
     }
+}
+
+fn is_output_store_path(value: &str) -> bool {
+    is_store_path(value) && !value.ends_with(".drv")
 }
 
 fn is_store_path(value: &str) -> bool {
@@ -398,7 +475,7 @@ pub fn validate_manifest(
     if manifest.fact_count != manifest.facts.len() {
         return Err(IdentityFactsRefusal::CountMismatch);
     }
-    if challenge.questions.len() > 64
+    if challenge.questions.len() > MAX_IDENTITY_QUESTIONS
         || challenge
             .questions
             .iter()
@@ -409,7 +486,7 @@ pub fn validate_manifest(
     {
         return Err(IdentityFactsRefusal::QuestionMismatch);
     }
-    if !is_store_path(&manifest.observed_root) {
+    if !is_output_store_path(&manifest.observed_root) {
         return Err(IdentityFactsRefusal::IncompleteFact);
     }
     let mut seen = std::collections::BTreeSet::new();
@@ -419,12 +496,16 @@ pub fn validate_manifest(
             // A deriver-less path is explicit and still needs its outputs.
             None => true,
         };
-        if !is_store_path(&fact.store_path)
+        if !is_output_store_path(&fact.store_path)
             || !deriver_ok
             || !is_sha256(&fact.nar_hash)
             || fact.outputs.is_empty()
             || fact.outputs.len() > MAX_IDENTITY_OUTPUTS
-            || fact.outputs.iter().any(|output| !is_store_path(output))
+            || fact
+                .outputs
+                .iter()
+                .any(|output| !is_output_store_path(output))
+            || !fact.outputs.contains(&fact.store_path)
             || fact.outputs.len()
                 != fact
                     .outputs
@@ -432,6 +513,9 @@ pub fn validate_manifest(
                     .collect::<std::collections::BTreeSet<_>>()
                     .len()
         {
+            return Err(IdentityFactsRefusal::IncompleteFact);
+        }
+        if fact.deriver.is_none() && fact.outputs != vec![fact.store_path.clone()] {
             return Err(IdentityFactsRefusal::IncompleteFact);
         }
         if !seen.insert(fact.store_path.as_str()) {
@@ -445,6 +529,15 @@ pub fn validate_manifest(
         IdentityFactsMode::Enumerate => {
             if !challenge.questions.is_empty() {
                 return Err(IdentityFactsRefusal::QuestionMismatch);
+            }
+            // Discovery starts at the observed root, so the root must be one of
+            // the facts. QUESTIONS answers a subset and is exempt.
+            if !manifest
+                .facts
+                .iter()
+                .any(|fact| fact.store_path == manifest.observed_root)
+            {
+                return Err(IdentityFactsRefusal::RootNotObserved);
             }
             Ok(())
         }
@@ -541,8 +634,12 @@ mod tests {
     }
 
     fn make_manifest(facts: Vec<IdentityFact>) -> IdentityFactsManifest {
+        let observed_root = facts
+            .first()
+            .map(|fact| fact.store_path.clone())
+            .unwrap_or_else(|| format!("/nix/store/{}-profile", "a".repeat(32)));
         IdentityFactsManifest {
-            observed_root: format!("/nix/store/{}-profile", "a".repeat(32)),
+            observed_root,
             fact_count: facts.len(),
             closure_manifest_sha256: closure_manifest_sha256(&facts),
             truncated: false,
@@ -560,6 +657,7 @@ mod tests {
             nonce: "nonce-1".into(),
             pin: "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d".into(),
             plan_sha256: "a".repeat(64),
+            spec_sha256: "c".repeat(64),
             mode,
             root: OperationRoot::Operation,
             questions,
@@ -804,6 +902,45 @@ mod tests {
             nar_hash: item.nar_hash,
             outputs: item.outputs,
         }
+    }
+
+    #[test]
+    fn inconsistent_observed_facts_and_roots_are_refused() {
+        let challenge = challenge(IdentityFactsMode::Enumerate, vec![]);
+        let mut missing_self = make_manifest(vec![fact(0)]);
+        missing_self.facts[0].outputs.clear();
+        missing_self.facts[0]
+            .outputs
+            .push(format!("/nix/store/{}-other", "f".repeat(32)));
+        missing_self.closure_manifest_sha256 = closure_manifest_sha256(&missing_self.facts);
+        assert_eq!(
+            validate_manifest(&challenge, &missing_self),
+            Err(IdentityFactsRefusal::IncompleteFact)
+        );
+        let mut deriverless_extra = make_manifest(vec![fact(0)]);
+        deriverless_extra.facts[0].deriver = None;
+        deriverless_extra.facts[0]
+            .outputs
+            .push(format!("/nix/store/{}-extra", "f".repeat(32)));
+        deriverless_extra.closure_manifest_sha256 =
+            closure_manifest_sha256(&deriverless_extra.facts);
+        assert_eq!(
+            validate_manifest(&challenge, &deriverless_extra),
+            Err(IdentityFactsRefusal::IncompleteFact)
+        );
+        let mut derivation_path = make_manifest(vec![fact(0)]);
+        derivation_path.facts[0].store_path = format!("/nix/store/{}-pkg.drv", "f".repeat(32));
+        derivation_path.closure_manifest_sha256 = closure_manifest_sha256(&derivation_path.facts);
+        assert_eq!(
+            validate_manifest(&challenge, &derivation_path),
+            Err(IdentityFactsRefusal::IncompleteFact)
+        );
+        let mut orphan_root = make_manifest(vec![fact(0)]);
+        orphan_root.observed_root = format!("/nix/store/{}-unobserved", "f".repeat(32));
+        assert_eq!(
+            validate_manifest(&challenge, &orphan_root),
+            Err(IdentityFactsRefusal::RootNotObserved)
+        );
     }
 
     #[test]

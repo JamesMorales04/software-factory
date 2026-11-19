@@ -12769,13 +12769,15 @@ async fn resolve_generated_environment(
 ///
 /// The observation is deterministic: Core owns the operation/nonce/plan/pin
 /// binding and never supplies a store hash, argv or manifest.
-async fn observe_environment_identity_facts(
+async fn prepare_environment_identity_facts(
     app: &App,
     plan: &factory_native::planning::environment::EnvironmentPlan,
     spec: &factory_native::planning::environment::EnvironmentSpec,
-    root_binding: factory_native::planning::identity_facts::IdentityFactsRootBinding,
 ) -> Result<
-    factory_native::planning::identity_facts::VerifiedIdentityFacts,
+    (
+        factory_native::planning::identity_facts::IdentityFactsChallenge,
+        factory_native::planning::identity_facts::VerifiedIdentityFacts,
+    ),
     factory_native::planning::environment::EnvironmentError,
 > {
     use factory_native::planning::identity_facts::{
@@ -12788,6 +12790,7 @@ async fn observe_environment_identity_facts(
         nonce: format!("identity-facts:{marker}"),
         pin: plan.nix.nixpkgs.clone(),
         plan_sha256: plan.plan_sha256.clone(),
+        spec_sha256: spec.spec_sha256.clone(),
         mode: IdentityFactsMode::Enumerate,
         root: OperationRoot::Operation,
         questions: Vec::new(),
@@ -12810,8 +12813,16 @@ async fn observe_environment_identity_facts(
         .environment_builder()
         .identity_facts(&challenge, plan, spec)
         .await?;
+    Ok((challenge, receipt))
+}
+
+async fn consume_environment_identity_facts(
+    app: &App,
+    challenge: &factory_native::planning::identity_facts::IdentityFactsChallenge,
+    bound: &factory_native::planning::identity_facts::BoundIdentityFacts,
+) -> Result<(), factory_native::planning::environment::EnvironmentError> {
     app.db
-        .consume_identity_facts(&challenge, &receipt, root_binding)
+        .consume_identity_facts(challenge, bound)
         .await
         .map_err(|error| {
             factory_native::planning::environment::EnvironmentError::new(
@@ -12819,7 +12830,7 @@ async fn observe_environment_identity_facts(
                 format!("the identity-facts receipt was refused: {error}"),
             )
         })?;
-    Ok(receipt)
+    Ok(())
 }
 
 async fn build_environment_before_freeze(
@@ -12849,12 +12860,7 @@ async fn build_environment_before_freeze(
     // facts from the same spec-keyed realised store first, so a licence refusal
     // keeps its identity receipt and leaves the environment blocked.
     let build = builder.build(spec, plan, workspace).await;
-    let root_binding = if build.is_ok() {
-        factory_native::planning::identity_facts::IdentityFactsRootBinding::BuildReceipt
-    } else {
-        factory_native::planning::identity_facts::IdentityFactsRootBinding::OperationObservation
-    };
-    let identity = observe_environment_identity_facts(app, plan, spec, root_binding)
+    let (challenge, identity) = prepare_environment_identity_facts(app, plan, spec)
         .await
         .map_err(|error| {
             (
@@ -12866,19 +12872,37 @@ async fn build_environment_before_freeze(
             )
                 .into_response()
         })?;
-    if let Ok(receipt) = &build
-        && (receipt.store_path.is_empty()
-            || receipt.store_path != identity.receipt().envelope.manifest.observed_root)
-    {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": "the observed identity root does not match the realised build root",
-                "code": "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
-            })),
-        )
-            .into_response());
-    }
+    // A successful build receipt may only be bound after its own validation and
+    // exact root equality. Anything else is explicitly a spec-cache observation,
+    // so a durable BUILD_RECEIPT can never describe a failed or mismatched build.
+    let bound = match &build {
+        Ok(receipt) if receipt.validate_for(spec).is_ok() => {
+            factory_native::planning::identity_facts::BoundIdentityFacts::bind_build_receipt(
+                identity.clone(),
+                receipt,
+            )
+            .unwrap_or_else(|_| {
+                factory_native::planning::identity_facts::BoundIdentityFacts::spec_cache_observation(
+                    identity.clone(),
+                )
+            })
+        }
+        _ => factory_native::planning::identity_facts::BoundIdentityFacts::spec_cache_observation(
+            identity.clone(),
+        ),
+    };
+    consume_environment_identity_facts(app, &challenge, &bound)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.message,
+                    "code": error.code_str(),
+                })),
+            )
+                .into_response()
+        })?;
     let receipt = build.map_err(|error| {
         (
             StatusCode::CONFLICT,
@@ -12889,6 +12913,18 @@ async fn build_environment_before_freeze(
         )
             .into_response()
     })?;
+    if receipt.store_path.is_empty()
+        || receipt.store_path != bound.receipt().envelope.manifest.observed_root
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the observed identity root does not match the realised build root",
+                "code": "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+            })),
+        )
+            .into_response());
+    }
     receipt.validate_for(spec).map_err(|error| {
         (
             StatusCode::CONFLICT,
@@ -36183,6 +36219,70 @@ mod tests {
         }
 
         #[cfg(feature = "test-support")]
+        #[derive(Clone, Copy, Debug)]
+        enum ReceiptDefect {
+            EmptyRoot,
+            MismatchedRoot,
+            InvalidReceipt,
+        }
+
+        #[cfg(feature = "test-support")]
+        struct ReceiptDefectEnvironmentBuilder {
+            inner: factory_native::planning::environment::SharedEnvironmentBuilder,
+            defect: ReceiptDefect,
+        }
+
+        #[cfg(feature = "test-support")]
+        impl factory_native::planning::environment::EnvironmentBuilder for ReceiptDefectEnvironmentBuilder {
+            fn descriptor(
+                &self,
+            ) -> factory_native::planning::environment::EnvironmentBuilderDescriptor {
+                self.inner.descriptor()
+            }
+
+            fn resolve<'a>(
+                &'a self,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                workspace: Option<&'a std::path::Path>,
+            ) -> factory_native::planning::environment::EnvironmentResolutionFuture<'a>
+            {
+                self.inner.resolve(plan, workspace)
+            }
+
+            fn build<'a>(
+                &'a self,
+                spec: &'a factory_native::planning::environment::EnvironmentSpec,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                workspace: Option<&'a std::path::Path>,
+            ) -> factory_native::planning::environment::EnvironmentBuilderFuture<'a> {
+                Box::pin(async move {
+                    let mut receipt = self.inner.build(spec, plan, workspace).await?;
+                    match self.defect {
+                        ReceiptDefect::EmptyRoot => receipt.store_path.clear(),
+                        ReceiptDefect::MismatchedRoot => {
+                            receipt.store_path =
+                                factory_native::planning::identity_facts::fixture_store_path(
+                                    "different-build-root",
+                                )
+                        }
+                        ReceiptDefect::InvalidReceipt => receipt.output_sha256.clear(),
+                    }
+                    Ok(receipt)
+                })
+            }
+
+            fn identity_facts<'a>(
+                &'a self,
+                challenge: &'a factory_native::planning::identity_facts::IdentityFactsChallenge,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                spec: &'a factory_native::planning::environment::EnvironmentSpec,
+            ) -> factory_native::planning::environment::EnvironmentIdentityFactsFuture<'a>
+            {
+                self.inner.identity_facts(challenge, plan, spec)
+            }
+        }
+
+        #[cfg(feature = "test-support")]
         async fn bind_test_campaign(db_path: &std::path::Path, request_id: &str) {
             use sqlx::connection::Connection as _;
             use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection};
@@ -37455,6 +37555,40 @@ mod tests {
                 stored.runtime_id, plan.builder.digest,
                 "the runtime binding is the exact builder digest"
             );
+            assert_eq!(
+                stored.root_binding,
+                factory_native::planning::identity_facts::IdentityFactsRootBinding::BuildReceipt,
+                "a validated successful build binds the identity root to its exact store path"
+            );
+
+            // A build that reports success but whose receipt is empty, rooted
+            // elsewhere, or otherwise invalid must never persist BUILD_RECEIPT.
+            for defect in [
+                ReceiptDefect::EmptyRoot,
+                ReceiptDefect::MismatchedRoot,
+                ReceiptDefect::InvalidReceipt,
+            ] {
+                fixture.app.set_environment_builder(std::sync::Arc::new(
+                    ReceiptDefectEnvironmentBuilder {
+                        inner: std::sync::Arc::new(FakeEnvironmentBuilder),
+                        defect,
+                    },
+                ));
+                let refused =
+                    build_environment_before_freeze(&fixture.app, &plan, &spec, None).await;
+                assert!(refused.is_err(), "{defect:?} must be refused");
+                let latest = fixture
+                    .app
+                    .db
+                    .latest_identity_facts_receipt(&plan_sha256)
+                    .await
+                    .expect("the refused build still observed its realised environment");
+                assert_eq!(
+                    latest.root_binding,
+                    factory_native::planning::identity_facts::IdentityFactsRootBinding::SpecCacheObservation,
+                    "{defect:?} must not persist BUILD_RECEIPT"
+                );
+            }
 
             // A licence refusal still runs the build call and returns an error,
             // but the identity receipt is already durable and stays there.
@@ -37479,7 +37613,7 @@ mod tests {
             assert_ne!(latest.nonce, stored.nonce);
             assert_eq!(
                 latest.root_binding,
-                factory_native::planning::identity_facts::IdentityFactsRootBinding::OperationObservation,
+                factory_native::planning::identity_facts::IdentityFactsRootBinding::SpecCacheObservation,
                 "a refused build keeps an operation-scoped receipt, never an accepted build binding"
             );
 
