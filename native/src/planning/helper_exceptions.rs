@@ -107,7 +107,9 @@ impl std::fmt::Display for HelperPerimeterError {
             Self::NotRegularFile => "helper candidate is not a regular file",
             Self::WrongClass => "helper candidate is not a generated shell helper",
             Self::UntrustedReferrer => "helper candidate has a referrer outside the trust roots",
-            Self::MissingTrustedReferrer => "helper candidate is not referenced by the trusted stdenv",
+            Self::MissingTrustedReferrer => {
+                "helper candidate is not referenced by the trusted stdenv"
+            }
             Self::TooManyCandidates => "helper candidate count exceeds the evidence bound",
             Self::MissingDecision => "helper candidate has no Lead decision",
             Self::DuplicateDecision => "helper candidate has more than one Lead decision",
@@ -152,9 +154,9 @@ fn is_nar_hash(value: &str) -> bool {
         return false;
     };
     (40..=64).contains(&rest.len())
-        && rest
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/' || byte == b'=')
+        && rest.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/' || byte == b'='
+        })
 }
 
 fn is_sha256_hex(value: &str) -> bool {
@@ -352,8 +354,14 @@ mod tests {
     fn a_new_eligible_helper_is_authorized_without_an_owner_list() {
         let roots = roots();
         let observation = observation();
-        let grants = authorize(&roots, PIN, &[observation.clone()], &[accept(&observation)], "review-1")
-            .expect("eligible helper is authorized");
+        let grants = authorize(
+            &roots,
+            PIN,
+            &[observation.clone()],
+            &[accept(&observation)],
+            "review-1",
+        )
+        .expect("eligible helper is authorized");
         assert_eq!(grants.len(), 1);
         assert_eq!(grants[0].store_path, HELPER);
         assert_eq!(grants[0].trust_roots_sha256, roots.catalog_sha256);
@@ -367,7 +375,13 @@ mod tests {
             .references
             .push("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-fake-devshell".into());
         assert_eq!(
-            authorize(&roots, PIN, &[observation.clone()], &[accept(&observation)], "review-1"),
+            authorize(
+                &roots,
+                PIN,
+                &[observation.clone()],
+                &[accept(&observation)],
+                "review-1"
+            ),
             Err(HelperPerimeterError::UntrustedReferrer)
         );
     }
@@ -378,7 +392,13 @@ mod tests {
         let mut observation = observation();
         observation.references = vec![SHELL.into()];
         assert_eq!(
-            authorize(&roots, PIN, &[observation.clone()], &[accept(&observation)], "review-1"),
+            authorize(
+                &roots,
+                PIN,
+                &[observation.clone()],
+                &[accept(&observation)],
+                "review-1"
+            ),
             Err(HelperPerimeterError::MissingTrustedReferrer)
         );
     }
@@ -411,13 +431,25 @@ mod tests {
         let roots = roots();
         let observation = observation();
         assert_eq!(
-            authorize(&roots, "github:NixOS/nixpkgs/other", &[observation.clone()], &[accept(&observation)], "review-1"),
+            authorize(
+                &roots,
+                "github:NixOS/nixpkgs/other",
+                &[observation.clone()],
+                &[accept(&observation)],
+                "review-1"
+            ),
             Err(HelperPerimeterError::PinMismatch)
         );
         let mut tampered = roots.clone();
         tampered.revision = 2;
         assert_eq!(
-            authorize(&tampered, PIN, &[observation.clone()], &[accept(&observation)], "review-1"),
+            authorize(
+                &tampered,
+                PIN,
+                &[observation.clone()],
+                &[accept(&observation)],
+                "review-1"
+            ),
             Err(HelperPerimeterError::RootsDigestMismatch)
         );
     }
@@ -479,9 +511,8 @@ mod tests {
     #[test]
     fn the_candidate_count_is_bounded_by_evidence() {
         let roots = roots();
-        let observations: Vec<HelperObservation> = (0..=MAX_HELPERS_PER_PLAN)
-            .map(|_| observation())
-            .collect();
+        let observations: Vec<HelperObservation> =
+            (0..=MAX_HELPERS_PER_PLAN).map(|_| observation()).collect();
         assert_eq!(
             authorize(&roots, PIN, &observations, &[], "review-1"),
             Err(HelperPerimeterError::TooManyCandidates)

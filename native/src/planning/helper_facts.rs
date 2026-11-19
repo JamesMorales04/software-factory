@@ -139,15 +139,14 @@ pub fn verify(
     {
         return Err(HelperFactsError::BindingMismatch);
     }
-    if signature.len() != 64
-        || !signature.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
+    if signature.len() != 64 || !signature.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(HelperFactsError::SignatureMismatch);
     }
     let mut tag = [0u8; 32];
     for (index, chunk) in signature.as_bytes().chunks(2).enumerate() {
         let text = std::str::from_utf8(chunk).map_err(|_| HelperFactsError::SignatureMismatch)?;
-        tag[index] = u8::from_str_radix(text, 16).map_err(|_| HelperFactsError::SignatureMismatch)?;
+        tag[index] =
+            u8::from_str_radix(text, 16).map_err(|_| HelperFactsError::SignatureMismatch)?;
     }
     let bytes = canonical_bytes(envelope)?;
     let key = hmac::Key::new(hmac::HMAC_SHA256, &derive_key(bearer));
@@ -233,10 +232,30 @@ mod tests {
         let signature = sign(&envelope, BEARER).unwrap();
         let other_plan = "b".repeat(64);
         for broken in [
-            HelperFactsBinding { operation_id: "op-2", pin: PIN, plan_sha256: &envelope.plan_sha256, runtime_id: "runtime-1" },
-            HelperFactsBinding { operation_id: "op-1", pin: "github:NixOS/nixpkgs/other", plan_sha256: &envelope.plan_sha256, runtime_id: "runtime-1" },
-            HelperFactsBinding { operation_id: "op-1", pin: PIN, plan_sha256: &other_plan, runtime_id: "runtime-1" },
-            HelperFactsBinding { operation_id: "op-1", pin: PIN, plan_sha256: &envelope.plan_sha256, runtime_id: "runtime-2" },
+            HelperFactsBinding {
+                operation_id: "op-2",
+                pin: PIN,
+                plan_sha256: &envelope.plan_sha256,
+                runtime_id: "runtime-1",
+            },
+            HelperFactsBinding {
+                operation_id: "op-1",
+                pin: "github:NixOS/nixpkgs/other",
+                plan_sha256: &envelope.plan_sha256,
+                runtime_id: "runtime-1",
+            },
+            HelperFactsBinding {
+                operation_id: "op-1",
+                pin: PIN,
+                plan_sha256: &other_plan,
+                runtime_id: "runtime-1",
+            },
+            HelperFactsBinding {
+                operation_id: "op-1",
+                pin: PIN,
+                plan_sha256: &envelope.plan_sha256,
+                runtime_id: "runtime-2",
+            },
         ] {
             assert_eq!(
                 verify(&envelope, BEARER, &signature, broken),
@@ -252,12 +271,7 @@ mod tests {
         let mut wrong_context = envelope.clone();
         wrong_context.context = "factory.environment.helper-facts.v2".into();
         assert_eq!(
-            verify(
-                &wrong_context,
-                BEARER,
-                &signature,
-                binding_for(&envelope)
-            ),
+            verify(&wrong_context, BEARER, &signature, binding_for(&envelope)),
             Err(HelperFactsError::ContextMismatch)
         );
         assert_eq!(
@@ -289,7 +303,10 @@ mod tests {
     fn the_context_derived_key_is_not_the_raw_bearer() {
         assert_ne!(derive_key(BEARER).to_vec(), BEARER.to_vec());
         assert_eq!(derive_key(BEARER), derive_key(BEARER));
-        assert_ne!(derive_key(BEARER), derive_key(b"another-bearer-0123456789abcdefghij"));
+        assert_ne!(
+            derive_key(BEARER),
+            derive_key(b"another-bearer-0123456789abcdefghij")
+        );
     }
 
     #[test]

@@ -80,10 +80,10 @@ pub struct EvidenceBundle {
     pub obligations_reviewed: bool,
 }
 
-/// Non-authorizing dictum. It records the Lead's reasoning and the exact binding,
-/// but it is never an approval: no field can be set to turn it into one, and no
-/// caller-supplied handle can mint it. It becomes usable only when Core supplies a
-/// verified actor and an authenticated evidence channel.
+/// Advisory dictum without any authority field. It records the Lead's reasoning
+/// and the exact binding, and no consumer may read it as an approval. A caller
+/// cannot add authority by construction or by deserialisation because no such
+/// field exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ClassificationDictum {
@@ -99,8 +99,6 @@ pub struct ClassificationDictum {
     /// Digest of the canonical bundle, binding class/use/obligations to the same
     /// candidate.
     pub bundle_sha256: String,
-    /// Always false. There is no constructor that sets it to true.
-    pub authorized: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,7 +106,6 @@ pub enum ClassificationRefusal {
     NoMandate,
     OutOfClass,
     MandateRevoked,
-    ActorOutOfScope,
     IncompleteIdentity,
     NoEvidence,
     InvalidDigest,
@@ -131,7 +128,6 @@ impl std::fmt::Display for ClassificationRefusal {
             Self::NoMandate => "no active classification mandate",
             Self::OutOfClass => "the mandate is outside the classification class",
             Self::MandateRevoked => "the classification mandate is revoked",
-            Self::ActorOutOfScope => "the Lead actor or delegation is out of scope",
             Self::IncompleteIdentity => "the observed identity is incomplete",
             Self::NoEvidence => "no evidence bundle was supplied",
             Self::InvalidDigest => "an evidence digest is not a valid sha256 digest",
@@ -161,9 +157,9 @@ fn is_sha256(value: &str) -> bool {
         return false;
     };
     (40..=64).contains(&rest.len())
-        && rest
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/' || byte == b'=')
+        && rest.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/' || byte == b'='
+        })
 }
 
 fn exact_store_path(value: &str) -> bool {
@@ -182,7 +178,10 @@ fn exact_store_path(value: &str) -> bool {
 }
 
 fn identity_complete(observation: &IdentityObservation) -> bool {
-    let pin = observation.pin.strip_prefix("github:NixOS/nixpkgs/").unwrap_or("");
+    let pin = observation
+        .pin
+        .strip_prefix("github:NixOS/nixpkgs/")
+        .unwrap_or("");
     let rev_ok = pin.len() == 40 && pin.bytes().all(|byte| byte.is_ascii_hexdigit());
     rev_ok
         && exact_store_path(&observation.store_path)
@@ -196,10 +195,10 @@ fn evidence_binds_instance(bundle: &EvidenceBundle) -> Result<(), Classification
     for source in &bundle.sources {
         match source.kind {
             EvidenceSourceKind::Derivation if source.reference != observation.deriver => {
-                return Err(ClassificationRefusal::DifferentInstance)
+                return Err(ClassificationRefusal::DifferentInstance);
             }
             EvidenceSourceKind::Output if source.reference != observation.store_path => {
-                return Err(ClassificationRefusal::DifferentInstance)
+                return Err(ClassificationRefusal::DifferentInstance);
             }
             _ => {}
         }
@@ -300,7 +299,7 @@ pub fn classify_with_evidence(
         LeadClassificationDecision::Accept => {}
         LeadClassificationDecision::Reject => return Err(ClassificationRefusal::Rejected),
         LeadClassificationDecision::NeedsEvidence => {
-            return Err(ClassificationRefusal::NeedsEvidence)
+            return Err(ClassificationRefusal::NeedsEvidence);
         }
     }
     let license = observation
@@ -319,7 +318,10 @@ pub fn classify_with_evidence(
     let bundle_sha256 = {
         use sha2::{Digest, Sha256};
         let digest = Sha256::digest(&canonical);
-        digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     };
     Ok(ClassificationDictum {
         pin: observation.pin.clone(),
@@ -332,7 +334,6 @@ pub fn classify_with_evidence(
         obligations_reviewed: bundle.obligations_reviewed,
         mandate_revision: mandate.revision,
         bundle_sha256,
-        authorized: false,
     })
 }
 
@@ -343,12 +344,26 @@ mod tests {
     const PIN: &str = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d";
     const DIGEST: &str = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     const CASES: [(&str, &str); 3] = [
-        ("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a-1", "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-a-1.drv"),
-        ("/nix/store/cccccccccccccccccccccccccccccccc-c-1", "/nix/store/dddddddddddddddddddddddddddddddd-c-1.drv"),
-        ("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-e-1", "/nix/store/ffffffffffffffffffffffffffffffff-e-1.drv"),
+        (
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a-1",
+            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-a-1.drv",
+        ),
+        (
+            "/nix/store/cccccccccccccccccccccccccccccccc-c-1",
+            "/nix/store/dddddddddddddddddddddddddddddddd-c-1.drv",
+        ),
+        (
+            "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-e-1",
+            "/nix/store/ffffffffffffffffffffffffffffffff-e-1.drv",
+        ),
     ];
 
-    fn observation(path: &str, deriver: &str, license: Option<&str>, unfree: Option<bool>) -> IdentityObservation {
+    fn observation(
+        path: &str,
+        deriver: &str,
+        license: Option<&str>,
+        unfree: Option<bool>,
+    ) -> IdentityObservation {
         IdentityObservation {
             pin: PIN.into(),
             store_path: path.into(),
@@ -359,11 +374,20 @@ mod tests {
         }
     }
 
-    fn bundle(path: &str, deriver: &str, license: Option<&str>, unfree: Option<bool>) -> EvidenceBundle {
+    fn bundle(
+        path: &str,
+        deriver: &str,
+        license: Option<&str>,
+        unfree: Option<bool>,
+    ) -> EvidenceBundle {
         EvidenceBundle {
             observation: observation(path, deriver, license, unfree),
             sources: vec![
-                EvidenceSource { kind: EvidenceSourceKind::Output, reference: path.into(), digest: DIGEST.into() },
+                EvidenceSource {
+                    kind: EvidenceSourceKind::Output,
+                    reference: path.into(),
+                    digest: DIGEST.into(),
+                },
                 EvidenceSource {
                     kind: EvidenceSourceKind::UpstreamDocumentation,
                     reference: "https://example.invalid/LICENSE".into(),
@@ -377,16 +401,22 @@ mod tests {
     }
 
     fn mandate() -> ClassificationMandate {
-        ClassificationMandate { scope: CLASS_SCOPE.into(), revision: 4, revoked: false }
+        ClassificationMandate {
+            scope: CLASS_SCOPE.into(),
+            revision: 4,
+            revoked: false,
+        }
     }
 
     #[test]
     fn any_eligible_identity_with_bound_evidence_is_classified() {
         for (path, deriver) in CASES {
-            let dictum = classify_with_evidence(&mandate(), Some(&bundle(path, deriver, Some("MIT"), Some(false))),
+            let dictum = classify_with_evidence(
+                &mandate(),
+                Some(&bundle(path, deriver, Some("MIT"), Some(false))),
                 LeadClassificationDecision::Accept,
-            ).expect("eligible identity");
-            assert!(!dictum.authorized);
+            )
+            .expect("eligible identity");
             assert_eq!(dictum.store_path, path);
             assert_eq!(dictum.deriver, deriver);
             assert_eq!(dictum.mandate_revision, 4);
@@ -401,9 +431,17 @@ mod tests {
             Err(ClassificationRefusal::NoEvidence)
         );
         let mut pin_only = bundle(path, deriver, Some("MIT"), Some(false));
-        pin_only.sources = vec![EvidenceSource { kind: EvidenceSourceKind::Pin, reference: PIN.into(), digest: DIGEST.into() }];
+        pin_only.sources = vec![EvidenceSource {
+            kind: EvidenceSourceKind::Pin,
+            reference: PIN.into(),
+            digest: DIGEST.into(),
+        }];
         assert_eq!(
-            classify_with_evidence(&mandate(), Some(&pin_only), LeadClassificationDecision::Accept),
+            classify_with_evidence(
+                &mandate(),
+                Some(&pin_only),
+                LeadClassificationDecision::Accept
+            ),
             Err(ClassificationRefusal::MissingLicenceText)
         );
     }
@@ -420,7 +458,11 @@ mod tests {
         let mut bad_digest = bundle(path, deriver, Some("MIT"), Some(false));
         bad_digest.sources[0].digest = "not-a-digest".into();
         assert_eq!(
-            classify_with_evidence(&mandate(), Some(&bad_digest), LeadClassificationDecision::Accept),
+            classify_with_evidence(
+                &mandate(),
+                Some(&bad_digest),
+                LeadClassificationDecision::Accept
+            ),
             Err(ClassificationRefusal::InvalidDigest)
         );
     }
@@ -429,12 +471,28 @@ mod tests {
     fn missing_text_use_or_obligations_is_refused() {
         let (path, deriver) = CASES[0];
         for mutated in [
-            { let mut b = bundle(path, deriver, Some("MIT"), Some(false)); b.licence_text_digest = "sha256-ZZZ".into(); b },
-            { let mut b = bundle(path, deriver, Some("MIT"), Some(false)); b.intended_use = "  ".into(); b },
-            { let mut b = bundle(path, deriver, Some("MIT"), Some(false)); b.obligations_reviewed = false; b },
+            {
+                let mut b = bundle(path, deriver, Some("MIT"), Some(false));
+                b.licence_text_digest = "sha256-ZZZ".into();
+                b
+            },
+            {
+                let mut b = bundle(path, deriver, Some("MIT"), Some(false));
+                b.intended_use = "  ".into();
+                b
+            },
+            {
+                let mut b = bundle(path, deriver, Some("MIT"), Some(false));
+                b.obligations_reviewed = false;
+                b
+            },
         ] {
             assert!(matches!(
-                classify_with_evidence(&mandate(), Some(&mutated), LeadClassificationDecision::Accept),
+                classify_with_evidence(
+                    &mandate(),
+                    Some(&mutated),
+                    LeadClassificationDecision::Accept
+                ),
                 Err(ClassificationRefusal::InvalidDigest)
                     | Err(ClassificationRefusal::MissingUse)
                     | Err(ClassificationRefusal::ObligationsNotReviewed)
@@ -446,31 +504,59 @@ mod tests {
     fn policy_and_mandate_refusals_are_preserved() {
         let (path, deriver) = CASES[0];
         let cases = [
-            (bundle(path, deriver, Some("MIT"), Some(true)), ClassificationRefusal::Unfree),
-            (bundle(path, deriver, Some("NOASSERTION"), Some(false)), ClassificationRefusal::LicenseDenied),
-            (bundle(path, deriver, Some("Not-A-Real-Licence"), Some(false)), ClassificationRefusal::LicenseUnknown),
-            (bundle(path, deriver, None, None), ClassificationRefusal::MissingEvidence),
+            (
+                bundle(path, deriver, Some("MIT"), Some(true)),
+                ClassificationRefusal::Unfree,
+            ),
+            (
+                bundle(path, deriver, Some("NOASSERTION"), Some(false)),
+                ClassificationRefusal::LicenseDenied,
+            ),
+            (
+                bundle(path, deriver, Some("Not-A-Real-Licence"), Some(false)),
+                ClassificationRefusal::LicenseUnknown,
+            ),
+            (
+                bundle(path, deriver, None, None),
+                ClassificationRefusal::MissingEvidence,
+            ),
         ];
         for (evidence, refusal) in cases {
             assert_eq!(
-                classify_with_evidence(&mandate(), Some(&evidence), LeadClassificationDecision::Accept),
+                classify_with_evidence(
+                    &mandate(),
+                    Some(&evidence),
+                    LeadClassificationDecision::Accept
+                ),
                 Err(refusal)
             );
         }
         let mut revoked = mandate();
         revoked.revoked = true;
         assert_eq!(
-            classify_with_evidence(&revoked, Some(&bundle(path, deriver, Some("MIT"), Some(false))), LeadClassificationDecision::Accept),
+            classify_with_evidence(
+                &revoked,
+                Some(&bundle(path, deriver, Some("MIT"), Some(false))),
+                LeadClassificationDecision::Accept
+            ),
             Err(ClassificationRefusal::MandateRevoked)
         );
         let mut out_of_class = mandate();
         out_of_class.scope = "some-other-class".into();
         assert_eq!(
-            classify_with_evidence(&out_of_class, Some(&bundle(path, deriver, Some("MIT"), Some(false))), LeadClassificationDecision::Accept),
+            classify_with_evidence(
+                &out_of_class,
+                Some(&bundle(path, deriver, Some("MIT"), Some(false))),
+                LeadClassificationDecision::Accept
+            ),
             Err(ClassificationRefusal::OutOfClass)
         );
         assert_eq!(
-            classify_with_evidence(&mandate(), Some(&bundle(path, deriver, Some("MIT"), Some(false))), LeadClassificationDecision::NeedsEvidence),
+            classify_with_evidence(
+                &mandate(),
+                Some(&bundle(path, deriver, Some("MIT"), Some(false))),
+                LeadClassificationDecision::NeedsEvidence
+            ),
             Err(ClassificationRefusal::NeedsEvidence)
         );
     }
