@@ -105,3 +105,31 @@ instance source or without a digested licence text is `MissingPrimarySource` /
 Documentation only: no code, catalogue, profile or activation change. The
 Librarian's automated web retrieval is still not connected, so evidence remains
 offline and simulated until an authenticated channel exists.
+
+## Non-authorizing dictum, and what is still missing
+
+`classify_with_evidence` no longer emits an approval. It returns a
+`ClassificationDictum` with `authorized: false` that records the licence, the
+digested licence text, the intended use, the obligation review, the mandate
+revision and the canonical bundle digest, all bound to the same candidate. There
+is no constructor, flag or caller-supplied handle that turns it into an approval:
+until Core can verify the Lead actor and receive authenticated evidence, the
+dictum is advisory only.
+
+### Evidence channel: what does not qualify
+
+The existing knowledge channel (`POST` handler at `native/src/bin/core.rs:17810`)
+requires the operator token and triggers `detect_knowledge_gap` from the
+objective's library/skill needs. It is **not** pinned to a derivation, is **not**
+licence evidence, and must not be reused by pretending a gap or an egress exists.
+
+### Next realizable stretch and the primary gap
+
+- Already available: the deterministic classifier, the class mandate shape, the
+  typed evidence validation, and the policy evaluation (all offline and tested).
+- Primary gap for `stdenv-linux` and `update-autotools-gnu-config-scripts-hook`:
+  a digested, primary licence-text source for those exact derivations. Neither has
+  published licence metadata, and no current channel can obtain a primary source.
+- Next step: wire a Core-verified actor handle plus an authenticated evidence
+  channel (no new egress, no new secret invented here). Until then every result
+  stays a non-authorizing dictum and the closure remains fail-closed.

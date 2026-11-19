@@ -50,3 +50,23 @@ outside it with the Owner.
 - A pin change invalidates every rule; a new Owner decision is required.
 - No SBOM or label ever authorizes; only exact identity with an Owner rule.
 - The model cannot grant itself an exception, a lease or a Quality Gate pass.
+
+## Status reconciliation (2026-11-19, scope clarification)
+
+This ADR remains **proposed**. The Owner later clarified the intent twice
+(2026-11-19T16:25:16Z and the subsequent universal + commercial clarification), so
+the following portions of the original proposal are **superseded**:
+
+- the closed, per-pin identity set approved by the Owner as the decision object;
+- the rule that any new identity outside that set escalates to the Owner by
+  default.
+
+What remains valid: fail-closed admission, exact identity binding (pin, store
+path, derivation, narHash), positive provenance, and Core as the only authority.
+
+What is **not activated**: the class-level delegation consumer, the typed
+evidence channel, and any automatic classification. The contract is recorded in
+`docs/contracts/lead-evidence-classification.md`; the deterministic helper module
+returns a **non-authorizing dictum** until a verified Core/broker evidence channel
+and a Core-verified Lead actor exist. No Owner approval is claimed or implied by
+this document.
