@@ -9,6 +9,12 @@
 # refusing a replay.
 #
 # It never starts the product stack, a paid model or a host Nix/Rust install.
+# Offline mode:
+#   FACTORY_IDF_CARGO_HOME_HOST=/home/james/.cargo
+#   FACTORY_IDF_CARGO_HOME=/cargo-home
+#   FACTORY_IDF_CARGO_OFFLINE=1
+#   FACTORY_IDF_COMPILE_NETWORK=none
+# mounts the existing cache read-only and disables the compile network.
 # All Podman resources it creates are named `factory-idf-selftest-*` and are
 # removed on exit unless KEEP=1.
 set -euo pipefail
@@ -17,6 +23,10 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DEV_IMAGE=${FACTORY_IDF_DEV_IMAGE:-localhost/software-factory-dev:local}
 BUILDER_IMAGE=${FACTORY_IDENTITY_FACTS_REAL_IMAGE:-localhost/software-factory-environment-builder:dev}
 SOURCE_DIR=${FACTORY_IDF_SOURCE_DIR:-$ROOT}
+CARGO_HOME_HOST=${FACTORY_IDF_CARGO_HOME_HOST:-}
+CARGO_HOME_CONTAINER=${FACTORY_IDF_CARGO_HOME:-/home/factory/.cargo}
+CARGO_OFFLINE=${FACTORY_IDF_CARGO_OFFLINE:-0}
+COMPILE_NETWORK=${FACTORY_IDF_COMPILE_NETWORK:-default}
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 TARGET_VOLUME=${FACTORY_IDF_TARGET_VOLUME:-factory-idf-selftest-target-$STAMP}
 KEEP=${KEEP:-0}
@@ -89,13 +99,24 @@ echo "builder_image=$BUILDER_IMAGE"
 
 # Compile the real self-test in the container-native development image. The
 # binary is executed on the host because that is where rootless Podman lives.
-"$PODMAN" run --rm --userns=keep-id \
-  -v "$SOURCE_DIR:/workspaces/software-factory:ro" \
-  -v "$TARGET_VOLUME:/target" \
-  -e CARGO_TARGET_DIR=/target \
-  -e CARGO_HOME=/home/factory/.cargo \
-  -w /workspaces/software-factory \
-  "$DEV_IMAGE" \
+# Offline mode mounts an existing read-only Cargo cache and disables the
+# compile container network; no dependency is downloaded silently.
+compile_args=(
+  run --rm --userns=keep-id
+  --network="$COMPILE_NETWORK"
+  -v "$SOURCE_DIR:/workspaces/software-factory:ro"
+  -v "$TARGET_VOLUME:/target"
+  -e CARGO_TARGET_DIR=/target
+  -e "CARGO_HOME=$CARGO_HOME_CONTAINER"
+  -w /workspaces/software-factory
+)
+if [ -n "$CARGO_HOME_HOST" ]; then
+  compile_args+=(-v "$CARGO_HOME_HOST:$CARGO_HOME_CONTAINER:ro")
+fi
+if [ "$CARGO_OFFLINE" = "1" ]; then
+  compile_args+=(-e CARGO_NET_OFFLINE=true)
+fi
+"$PODMAN" "${compile_args[@]}" "$DEV_IMAGE" \
   sh -c 'cargo test --locked -p factory-native --features test-support --test identity_facts_real --no-run --message-format=json' \
   > "$WORK/cargo.json" 2> "$WORK/cargo.stderr"
 BIN=$(jq -r 'select(.reason=="compiler-artifact" and (.target.kind|index("test")) and .target.name=="identity_facts_real") | .executable // empty' "$WORK/cargo.json" | tail -1)

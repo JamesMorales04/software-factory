@@ -94,6 +94,89 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+#[derive(Debug)]
+struct OracleFact {
+    deriver: Option<String>,
+    nar_hash: String,
+    outputs: Vec<String>,
+}
+
+fn independent_closure(
+    runner: &HostPodman,
+    image: &str,
+    cache_volume: &str,
+    store_volume: &str,
+    root: &str,
+) -> std::collections::BTreeMap<String, OracleFact> {
+    let script = r#"set -eu
+root=$1
+nix-store -q --requisites "$root" | while IFS= read -r p; do
+  d=$(nix-store -q --deriver "$p" 2>/dev/null || true)
+  [ "$d" = "unknown-deriver" ] && d=""
+  h=$(nix-store -q --hash "$p")
+  sri=$(nix hash convert --to sri --hash-algo sha256 "$h")
+  printf 'F	%s	%s	%s
+' "$p" "$d" "$sri"
+  if [ -n "$d" ]; then
+    nix-store -q --outputs "$d" | while IFS= read -r o; do printf 'O	%s	%s
+' "$p" "$o"; done
+  else
+    printf 'O	%s	%s
+' "$p" "$p"
+  fi
+done
+"#;
+    let output = runner
+        .output(&[
+            "run",
+            "--rm",
+            "--network=none",
+            "--read-only",
+            "--user=10001:10001",
+            "--cap-drop=all",
+            "--security-opt=no-new-privileges",
+            "--tmpfs=/tmp:rw,noexec,nosuid,size=16m",
+            &format!("--volume={cache_volume}:/cache:ro"),
+            &format!("--volume={store_volume}:/nix:rw"),
+            "--entrypoint=/bin/sh",
+            image,
+            "-c",
+            script,
+            "_",
+            root,
+        ])
+        .expect("independent Nix oracle runs");
+    let text = String::from_utf8_lossy(&output);
+    let mut facts: std::collections::BTreeMap<String, OracleFact> =
+        std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        match fields.as_slice() {
+            ["F", path, deriver, hash] => {
+                facts.insert(
+                    (*path).to_owned(),
+                    OracleFact {
+                        deriver: (!deriver.is_empty()).then(|| (*deriver).to_owned()),
+                        nar_hash: (*hash).to_owned(),
+                        outputs: Vec::new(),
+                    },
+                );
+            }
+            ["O", path, output] => {
+                if let Some(fact) = facts.get_mut(*path) {
+                    fact.outputs.push((*output).to_owned());
+                }
+            }
+            _ => panic!("unexpected oracle line: {line}"),
+        }
+    }
+    for fact in facts.values_mut() {
+        fact.outputs.sort();
+        fact.outputs.dedup();
+    }
+    facts
+}
+
 #[tokio::test]
 #[ignore = "requires real rootless Podman and the pinned environment-builder image"]
 async fn real_identity_facts_producer_core_verifier_and_sqlite_replay() {
@@ -159,6 +242,7 @@ drvs=$(for p in $paths; do d=$(nix-store -q --deriver "$p" 2>/dev/null || true);
 tar -C /nix -cf - $(for p in $paths $drvs; do printf '%s\n' "${{p#/nix/}}"; done) var/nix/db | tar -C /target -xf -
 mkdir -p /target/var/nix/profiles/default/bin
 ln -sfn "$nixroot/bin/nix" /target/var/nix/profiles/default/bin/nix
+ln -sfn "$nixroot/bin/nix-store" /target/var/nix/profiles/default/bin/nix-store
 ln -sfn "$readlinkroot/bin/readlink" /target/var/nix/profiles/default/bin/readlink
 chown -R 10001:10001 /target
 "#
@@ -223,11 +307,40 @@ chown -R 10001:10001 /target
         manifest.closure_manifest_sha256,
         closure_manifest_sha256(&manifest.facts)
     );
+    // Independent oracle: `nix-store`/`nix hash` commands, not the producer's
+    // `nix path-info --json` + `nix derivation show` parsing.
+    let oracle = independent_closure(
+        &runner,
+        &image,
+        &cache_volume,
+        &store_volume,
+        &manifest.observed_root,
+    );
+    assert_eq!(manifest.observed_root, root);
+    assert_eq!(manifest.fact_count, oracle.len());
+    for (path, expected) in &oracle {
+        let fact = manifest
+            .facts
+            .iter()
+            .find(|fact| &fact.store_path == path)
+            .unwrap_or_else(|| panic!("producer omitted oracle path {path}"));
+        assert_eq!(&fact.deriver, &expected.deriver, "deriver for {path}");
+        assert_eq!(&fact.nar_hash, &expected.nar_hash, "nar hash for {path}");
+        let mut outputs = fact.outputs.clone();
+        outputs.sort();
+        outputs.dedup();
+        assert_eq!(outputs, expected.outputs, "outputs for {path}");
+    }
     for fact in &manifest.facts {
+        assert!(
+            oracle.contains_key(&fact.store_path),
+            "producer returned a path outside the oracle closure: {}",
+            fact.store_path
+        );
         if fact.deriver.is_none() {
             assert_eq!(fact.outputs, vec![fact.store_path.clone()]);
         } else {
-            assert!(!fact.outputs.is_empty());
+            assert!(fact.outputs.contains(&fact.store_path));
         }
     }
     let envelope = IdentityFactsEnvelope {
@@ -236,6 +349,8 @@ chown -R 10001:10001 /target
         challenge: challenge.clone(),
         manifest: manifest.clone(),
     };
+    // This is a real HMAC over a real broker-observed manifest; the Core
+    // verifier below is the actual client method, not a fixture constructor.
     let receipt = IdentityFactsReceipt {
         signature: sign(&envelope, token.as_bytes()).expect("the broker signs the envelope"),
         envelope,

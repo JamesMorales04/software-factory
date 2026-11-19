@@ -36226,6 +36226,7 @@ mod tests {
             MismatchedRoot,
             InvalidReceipt,
             WrongSpecBinding,
+            FailedStatus,
         }
 
         #[cfg(feature = "test-support")]
@@ -36269,6 +36270,9 @@ mod tests {
                         }
                         ReceiptDefect::InvalidReceipt => receipt.output_sha256.clear(),
                         ReceiptDefect::WrongSpecBinding => receipt.spec_sha256 = "d".repeat(64),
+                        ReceiptDefect::FailedStatus => {
+                            receipt.status = factory_native::planning::environment::EnvironmentBuilderStatus::Failed
+                        }
                     }
                     Ok(receipt)
                 })
@@ -37456,6 +37460,9 @@ mod tests {
             let _ = std::fs::remove_dir_all(fixture.repository);
         }
 
+        /// Routing/freeze/DB evidence with a fixture builder. The fixture
+        /// receipt is a test-support type-state value, not an authenticated
+        /// broker observation; the real Podman self-test covers authenticity.
         #[tokio::test]
         async fn committed_environment_observes_identity_facts_before_the_license_gate() {
             let fixture = setup().await;
@@ -37571,6 +37578,7 @@ mod tests {
                 ReceiptDefect::MismatchedRoot,
                 ReceiptDefect::InvalidReceipt,
                 ReceiptDefect::WrongSpecBinding,
+                ReceiptDefect::FailedStatus,
             ] {
                 fixture.app.set_environment_builder(std::sync::Arc::new(
                     ReceiptDefectEnvironmentBuilder {

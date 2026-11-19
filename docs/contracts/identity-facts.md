@@ -176,3 +176,26 @@ an operator-visible capability exists.
 | Envelope absent after cleanup | `EvidenceAbsent`, build status unchanged |
 | Licence gate rejects after the receipt | environment blocked, receipt kept |
 | Any accepted facts | advisory only; no licence or policy effect |
+
+
+## Offline reproducible check
+
+An existing read-only Cargo registry cache can build and test this channel with
+no network:
+
+```sh
+podman run --rm --network=none --userns=keep-id \
+  -v "$PWD:/workspaces/software-factory:ro" \
+  -v /home/james/.cargo:/cargo-home:ro \
+  -v <fresh-target-volume>:/target \
+  -e CARGO_HOME=/cargo-home -e CARGO_NET_OFFLINE=true \
+  -e CARGO_TARGET_DIR=/target -w /workspaces/software-factory \
+  localhost/software-factory-dev:local \
+  cargo check --locked -p factory-native --all-targets --features test-support
+```
+
+The self-test harness supports the same lane with
+`FACTORY_IDF_CARGO_HOME_HOST`, `FACTORY_IDF_CARGO_HOME`,
+`FACTORY_IDF_CARGO_OFFLINE=1` and `FACTORY_IDF_COMPILE_NETWORK=none`. It never
+downloads dependencies silently; a missing cache entry fails the offline build
+with the exact crate name.
