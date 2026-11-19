@@ -156,10 +156,23 @@ fn is_sha256(value: &str) -> bool {
     let Some(rest) = value.strip_prefix("sha256-") else {
         return false;
     };
-    (40..=64).contains(&rest.len())
-        && rest.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/' || byte == b'='
-        })
+    base64_decoded_len(rest) == Some(32)
+}
+
+fn base64_decoded_len(value: &str) -> Option<usize> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes.len() % 4 != 0 {
+        return None;
+    }
+    let mut padding = 0usize;
+    for (index, byte) in bytes.iter().enumerate() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' => {}
+            b'=' if index >= bytes.len().saturating_sub(2) => padding += 1,
+            _ => return None,
+        }
+    }
+    Some(bytes.len() / 4 * 3 - padding)
 }
 
 fn exact_store_path(value: &str) -> bool {
@@ -194,6 +207,9 @@ fn evidence_binds_instance(bundle: &EvidenceBundle) -> Result<(), Classification
     let observation = &bundle.observation;
     for source in &bundle.sources {
         match source.kind {
+            EvidenceSourceKind::Pin if source.reference != observation.pin => {
+                return Err(ClassificationRefusal::DifferentInstance);
+            }
             EvidenceSourceKind::Derivation if source.reference != observation.deriver => {
                 return Err(ClassificationRefusal::DifferentInstance);
             }
@@ -203,11 +219,11 @@ fn evidence_binds_instance(bundle: &EvidenceBundle) -> Result<(), Classification
             _ => {}
         }
     }
+    // A pin source is context, never a primary instance source.
     let primary = bundle.sources.iter().any(|source| match source.kind {
-        EvidenceSourceKind::Pin => source.reference == observation.pin,
         EvidenceSourceKind::Derivation => source.reference == observation.deriver,
         EvidenceSourceKind::Output => source.reference == observation.store_path,
-        EvidenceSourceKind::UpstreamDocumentation => false,
+        EvidenceSourceKind::Pin | EvidenceSourceKind::UpstreamDocumentation => false,
     });
     if !primary {
         return Err(ClassificationRefusal::MissingPrimarySource);
@@ -442,7 +458,68 @@ mod tests {
                 Some(&pin_only),
                 LeadClassificationDecision::Accept
             ),
-            Err(ClassificationRefusal::MissingLicenceText)
+            Err(ClassificationRefusal::MissingPrimarySource)
+        );
+    }
+
+    #[test]
+    fn pin_only_with_documentation_is_not_a_primary_source() {
+        let (path, deriver) = CASES[0];
+        let mut evidence = bundle(path, deriver, Some("MIT"), Some(false));
+        evidence.sources = vec![
+            EvidenceSource {
+                kind: EvidenceSourceKind::Pin,
+                reference: PIN.into(),
+                digest: DIGEST.into(),
+            },
+            EvidenceSource {
+                kind: EvidenceSourceKind::UpstreamDocumentation,
+                reference: "https://example.invalid/LICENSE".into(),
+                digest: DIGEST.into(),
+            },
+        ];
+        assert_eq!(
+            classify_with_evidence(
+                &mandate(),
+                Some(&evidence),
+                LeadClassificationDecision::Accept
+            ),
+            Err(ClassificationRefusal::MissingPrimarySource)
+        );
+    }
+
+    #[test]
+    fn a_contradictory_pin_is_refused() {
+        let (path, deriver) = CASES[0];
+        let mut evidence = bundle(path, deriver, Some("MIT"), Some(false));
+        evidence.sources.push(EvidenceSource {
+            kind: EvidenceSourceKind::Pin,
+            reference: "github:NixOS/nixpkgs/0000000000000000000000000000000000000000".into(),
+            digest: DIGEST.into(),
+        });
+        assert_eq!(
+            classify_with_evidence(
+                &mandate(),
+                Some(&evidence),
+                LeadClassificationDecision::Accept
+            ),
+            Err(ClassificationRefusal::DifferentInstance)
+        );
+    }
+
+    #[test]
+    fn a_short_sri_digest_is_invalid() {
+        let (path, deriver) = CASES[0];
+        let mut evidence = bundle(path, deriver, Some("MIT"), Some(false));
+        evidence.licence_text_digest = "sha256-abc".into();
+        evidence.sources[1].digest = "sha256-abc".into();
+        assert_eq!(
+            classify_with_evidence(
+                &mandate(),
+                Some(&evidence),
+                LeadClassificationDecision::Accept
+            ),
+            Err(ClassificationRefusal::InvalidDigest)
         );
     }
 
