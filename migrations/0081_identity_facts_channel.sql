@@ -37,6 +37,8 @@ CREATE TABLE environment_identity_facts_receipts (
     plan_sha256 TEXT NOT NULL,
     pin TEXT NOT NULL,
     observed_root TEXT NOT NULL,
+    root_binding TEXT NOT NULL
+        CHECK (root_binding IN ('BUILD_RECEIPT', 'OPERATION_OBSERVATION')),
     fact_count INTEGER NOT NULL CHECK (fact_count > 0),
     closure_manifest_sha256 TEXT NOT NULL,
     manifest_json TEXT NOT NULL,

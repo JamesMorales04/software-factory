@@ -173,6 +173,33 @@ pub struct IdentityFactsReceipt {
     pub signature: String,
 }
 
+/// Receipt that passed MAC and binding verification.
+///
+/// The field is private and only [`verify`] (and the feature-gated fixture) can
+/// construct this type. The durable consumer accepts only this type, so a
+/// structurally plausible forged envelope cannot be persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedIdentityFacts(IdentityFactsReceipt);
+
+impl VerifiedIdentityFacts {
+    pub fn receipt(&self) -> &IdentityFactsReceipt {
+        &self.0
+    }
+}
+
+/// How Core bound the observed root to the operation outcome.
+///
+/// A successful build proves the exact realised `storePath`, so Core requires
+/// equality. A refused build has no successful receipt to compare; its identity
+/// receipt is retained as an operation observation and is never converted into
+/// an accepted build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum IdentityFactsRootBinding {
+    BuildReceipt,
+    OperationObservation,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentityFactsRefusal {
     EmptyManifest,
@@ -326,7 +353,7 @@ pub fn verify(
     receipt: &IdentityFactsReceipt,
     bearer: &[u8],
     expected: &IdentityFactsChallenge,
-) -> Result<(), IdentityFactsError> {
+) -> Result<VerifiedIdentityFacts, IdentityFactsError> {
     validate_envelope(&receipt.envelope)?;
     if receipt.envelope.context != IDENTITY_FACTS_CONTEXT {
         return Err(IdentityFactsError::ContextMismatch);
@@ -338,7 +365,8 @@ pub fn verify(
     let tag = decode_signature(&receipt.signature)?;
     let bytes = canonical_envelope_bytes(&receipt.envelope)?;
     let key = hmac::Key::new(hmac::HMAC_SHA256, &derive_key(bearer));
-    hmac::verify(&key, &bytes, &tag).map_err(|_| IdentityFactsError::SignatureMismatch)
+    hmac::verify(&key, &bytes, &tag).map_err(|_| IdentityFactsError::SignatureMismatch)?;
+    Ok(VerifiedIdentityFacts(receipt.clone()))
 }
 
 fn validate_envelope(envelope: &IdentityFactsEnvelope) -> Result<(), IdentityFactsError> {
@@ -427,16 +455,11 @@ pub fn validate_manifest(
             if challenge.questions.len() != manifest.facts.len() {
                 return Err(IdentityFactsRefusal::QuestionMismatch);
             }
-            for question in &challenge.questions {
-                let Some(fact) = manifest
-                    .facts
-                    .iter()
-                    .find(|fact| fact.store_path == question.store_path)
-                else {
-                    return Err(IdentityFactsRefusal::QuestionMismatch);
-                };
-                // Compare the complete expectation, not only the path.
-                if fact.deriver != question.deriver
+            // Questions are canonical: the answer must be in exactly the issued
+            // order, with every field equal. Reordering is a refusal.
+            for (question, fact) in challenge.questions.iter().zip(&manifest.facts) {
+                if fact.store_path != question.store_path
+                    || fact.deriver != question.deriver
                     || fact.nar_hash != question.nar_hash
                     || fact.outputs != question.outputs
                 {
@@ -488,6 +511,16 @@ pub fn fixture_receipt(challenge: &IdentityFactsChallenge, seed: &str) -> Identi
         },
         signature: "0".repeat(64),
     }
+}
+
+/// Feature-gated verified receipt for deterministic test builders.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn fixture_verified_receipt(
+    challenge: &IdentityFactsChallenge,
+    seed: &str,
+) -> VerifiedIdentityFacts {
+    VerifiedIdentityFacts(fixture_receipt(challenge, seed))
 }
 
 #[cfg(test)]
@@ -807,7 +840,21 @@ mod tests {
             },
         ];
         assert_eq!(
-            validate_manifest(&challenge(IdentityFactsMode::Questions, wanted), &partial),
+            validate_manifest(
+                &challenge(IdentityFactsMode::Questions, wanted.clone()),
+                &partial
+            ),
+            Err(IdentityFactsRefusal::QuestionMismatch)
+        );
+        // The answer order is canonical: reordering the issued questions is
+        // refused even when every expected identity is present.
+        let mut reordered = wanted.clone();
+        reordered.reverse();
+        assert_eq!(
+            validate_manifest(
+                &challenge(IdentityFactsMode::Questions, reordered),
+                &manifest
+            ),
             Err(IdentityFactsRefusal::QuestionMismatch)
         );
     }

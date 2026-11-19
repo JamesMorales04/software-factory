@@ -3541,7 +3541,7 @@ pub type EnvironmentIdentityFactsFuture<'a> = Pin<
     Box<
         dyn std::future::Future<
                 Output = Result<
-                    crate::planning::identity_facts::IdentityFactsReceipt,
+                    crate::planning::identity_facts::VerifiedIdentityFacts,
                     EnvironmentError,
                 >,
             > + Send
@@ -3746,7 +3746,7 @@ impl EnvironmentBuilder for TestEnvironmentBuilder {
     fn build<'a>(
         &'a self,
         spec: &'a EnvironmentSpec,
-        _plan: &'a EnvironmentPlan,
+        plan: &'a EnvironmentPlan,
         _workspace: Option<&'a std::path::Path>,
     ) -> EnvironmentBuilderFuture<'a> {
         Box::pin(async move {
@@ -3759,7 +3759,7 @@ impl EnvironmentBuilder for TestEnvironmentBuilder {
                 builder_image_digest: spec.builder_image_digest.clone(),
                 builder_policy_revision: self.descriptor.policy_revision.clone(),
                 status: EnvironmentBuilderStatus::Succeeded,
-                store_path: String::new(),
+                store_path: crate::planning::identity_facts::fixture_store_path(&plan.plan_sha256),
                 output_sha256: sha256_hex(spec.spec_sha256.as_bytes()),
                 sbom_sha256: spec.sbom_sha256.clone(),
                 log_ref: String::new(),
@@ -3789,7 +3789,7 @@ impl EnvironmentBuilder for TestEnvironmentBuilder {
         _spec: &'a EnvironmentSpec,
     ) -> EnvironmentIdentityFactsFuture<'a> {
         Box::pin(async move {
-            Ok(crate::planning::identity_facts::fixture_receipt(
+            Ok(crate::planning::identity_facts::fixture_verified_receipt(
                 challenge,
                 &plan.plan_sha256,
             ))
@@ -4191,8 +4191,7 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
                         EnvironmentBlockerCode::EnvironmentIdentityFactsRefused,
                         error.to_string(),
                     )
-                })?;
-            Ok(receipt)
+                })
         })
     }
 }

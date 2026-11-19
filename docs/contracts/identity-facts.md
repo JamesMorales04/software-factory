@@ -35,8 +35,12 @@ broker both know it; the broker refuses a challenge bound to another runtime.
 
 `mode`: `ENUMERATE` discovers the closure of the broker's realised root and
 requires `questions` to be empty; `QUESTIONS` requires 1..=64 complete
-Core-owned identities. Empty `questions` therefore means discovery, never an
-empty manifest.
+Core-owned identities and the producer answers exactly those identities in the
+issued order. Empty `questions` therefore means discovery, never an empty
+manifest; a reordered `QUESTIONS` answer is refused.
+
+`root` is `OPERATION` in this cut. The producer refuses `PLAN` or `RUNTIME`
+instead of silently treating them as the operation root.
 
 ## Manifest (complete, never paginated)
 
@@ -73,6 +77,11 @@ The builder image never sees the key and never signs anything. A manifest
 supplied by the builder, a model or an operator is rejected by construction
 because only the broker-owned fixed query produces the envelope.
 
+`VerifiedIdentityFacts` is a type-state value: its field is private and only
+the MAC/binding verifier (or a feature-gated fixture) constructs it. The
+durable consumer accepts only that type, so a structurally plausible forged
+envelope cannot be persisted just by calling the DB layer.
+
 ## Ordering, persistence and atomicity
 
 1. Issue the challenge and persist it as `PENDING` **before** external
@@ -91,6 +100,12 @@ because only the broker-owned fixed query produces the envelope.
 4. Core persists the receipt **before** applying the builder's licence outcome.
    If the existing licence gate refuses, the identity receipt is preserved and
    the environment remains blocked; it is never converted into an acceptance.
+   The receipt records its root binding: `BUILD_RECEIPT` when a successful build
+   reported the exact `storePath` (Core requires equality with `observedRoot`),
+   or `OPERATION_OBSERVATION` when the build was refused and no successful
+   receipt exists. Core cannot know a store hash before realisation, so the
+   refused case is a signed observation of the operation's exact spec-keyed
+   store, never a claimed accepted build.
 5. A missing or late envelope is a typed `EvidenceAbsent`: no receipt, an
    explicit blocker and an unchanged build status.
 

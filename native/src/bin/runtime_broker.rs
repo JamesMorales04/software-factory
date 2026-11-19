@@ -45,13 +45,11 @@ use tokio::{
 };
 
 use factory_native::planning::identity_facts::{
-    IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION, IdentityFactsEnvelope,
-    IdentityFactsManifest, IdentityFactsReceipt, validate_manifest,
+    IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION, IdentityFactsChallenge,
+    IdentityFactsEnvelope, IdentityFactsManifest, IdentityFactsReceipt, validate_manifest,
 };
 #[cfg(test)]
-use factory_native::planning::identity_facts::{
-    IdentityFactsChallenge, IdentityFactsMode, OperationRoot,
-};
+use factory_native::planning::identity_facts::{IdentityFactsMode, OperationRoot};
 use factory_native::runtime_broker::{
     ENVIRONMENT_BUILD_ROUTE, ENVIRONMENT_CHECK_CANCEL_ROUTE, ENVIRONMENT_CHECK_ROUTE,
     ENVIRONMENT_IDENTITY_FACTS_ROUTE, ENVIRONMENT_RESOLVE_ROUTE, EnvironmentBrokerOperation,
@@ -4951,8 +4949,13 @@ async fn execute_identity_facts_operation(
         )
         .await?;
         create_environment_volume(&app, &resources.cache_volume, &spec.spec_sha256, true).await?;
-        let manifest =
-            observe_identity_facts(&app, &validated.image_id, &resources.cache_volume).await?;
+        let manifest = observe_identity_facts(
+            &app,
+            &validated.image_id,
+            &resources.cache_volume,
+            challenge,
+        )
+        .await?;
         validate_manifest(challenge, &manifest).map_err(|error| {
             EnvironmentBrokerFailure::new("ENVIRONMENT_IDENTITY_FACTS_REFUSED", error.to_string())
         })?;
@@ -5019,6 +5022,7 @@ async fn observe_identity_facts(
     app: &Arc<App>,
     image_id: &str,
     cache_volume: &str,
+    challenge: &IdentityFactsChallenge,
 ) -> Result<IdentityFactsManifest, EnvironmentBrokerFailure> {
     let runner = AppIdentityFactsRunner(app);
     factory_native::runtime_broker::observe_identity_facts_with(
@@ -5026,6 +5030,7 @@ async fn observe_identity_facts(
         image_id,
         cache_volume,
         ENVIRONMENT_NIX_STORE_VOLUME,
+        challenge,
     )
     .await
     .map_err(|message| {

@@ -19,7 +19,7 @@ use crate::planning::environment::{
 use crate::planning::environment::{EnvironmentPlanStatus, EnvironmentSpecStatus};
 use crate::planning::identity_facts::{
     IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION, IdentityFactsChallenge,
-    IdentityFactsReceipt, validate_manifest,
+    IdentityFactsRootBinding, VerifiedIdentityFacts, validate_manifest,
 };
 
 const MAX_ENVIRONMENT_JSON_BYTES: usize = 4 * 1024 * 1024;
@@ -75,6 +75,7 @@ type CampaignRow = (
     String,
 );
 type IdentityFactsReceiptRow = (
+    String,
     String,
     String,
     String,
@@ -139,6 +140,7 @@ pub struct StoredIdentityFactsReceipt {
     pub plan_sha256: String,
     pub pin: String,
     pub observed_root: String,
+    pub root_binding: IdentityFactsRootBinding,
     pub fact_count: u32,
     pub closure_manifest_sha256: String,
     pub manifest_json: String,
@@ -1047,8 +1049,10 @@ impl Database {
     pub async fn consume_identity_facts(
         &self,
         challenge: &IdentityFactsChallenge,
-        receipt: &IdentityFactsReceipt,
+        verified: &VerifiedIdentityFacts,
+        root_binding: IdentityFactsRootBinding,
     ) -> Result<StoredIdentityFactsReceipt, Error> {
+        let receipt = verified.receipt();
         challenge
             .validate_shape()
             .map_err(|error| Error::Validation(error.to_string()))?;
@@ -1136,9 +1140,10 @@ impl Database {
         }
         if let Err(error) = sqlx::query::query(
             "INSERT INTO environment_identity_facts_receipts
-             (nonce,operation_id,runtime_id,plan_sha256,pin,observed_root,fact_count,
-              closure_manifest_sha256,manifest_json,envelope_json,signature,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+             (nonce,operation_id,runtime_id,plan_sha256,pin,observed_root,root_binding,
+              fact_count,closure_manifest_sha256,manifest_json,envelope_json,signature,
+              created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
         )
         .bind(&challenge.nonce)
         .bind(&challenge.operation_id)
@@ -1146,6 +1151,10 @@ impl Database {
         .bind(&challenge.plan_sha256)
         .bind(&challenge.pin)
         .bind(&manifest.observed_root)
+        .bind(match root_binding {
+            IdentityFactsRootBinding::BuildReceipt => "BUILD_RECEIPT",
+            IdentityFactsRootBinding::OperationObservation => "OPERATION_OBSERVATION",
+        })
         .bind(i64::try_from(manifest.fact_count).unwrap_or(i64::MAX))
         .bind(&manifest.closure_manifest_sha256)
         .bind(&manifest_json)
@@ -1169,6 +1178,7 @@ impl Database {
             plan_sha256: challenge.plan_sha256.clone(),
             pin: challenge.pin.clone(),
             observed_root: manifest.observed_root.clone(),
+            root_binding,
             fact_count: u32::try_from(manifest.fact_count).unwrap_or(u32::MAX),
             closure_manifest_sha256: manifest.closure_manifest_sha256.clone(),
             manifest_json,
@@ -1184,8 +1194,8 @@ impl Database {
     ) -> Result<StoredIdentityFactsReceipt, Error> {
         let row: Option<IdentityFactsReceiptRow> = sqlx::query_as::query_as(
             "SELECT nonce,operation_id,runtime_id,plan_sha256,pin,observed_root,
-                    fact_count,closure_manifest_sha256,manifest_json,envelope_json,
-                    signature,created_at
+                    root_binding,fact_count,closure_manifest_sha256,manifest_json,
+                    envelope_json,signature,created_at
              FROM environment_identity_facts_receipts WHERE nonce=?1",
         )
         .bind(nonce)
@@ -1198,6 +1208,7 @@ impl Database {
             plan_sha256,
             pin,
             observed_root,
+            root_binding,
             fact_count,
             closure_manifest_sha256,
             manifest_json,
@@ -1215,6 +1226,10 @@ impl Database {
             plan_sha256,
             pin,
             observed_root,
+            root_binding: match root_binding.as_str() {
+                "BUILD_RECEIPT" => IdentityFactsRootBinding::BuildReceipt,
+                _ => IdentityFactsRootBinding::OperationObservation,
+            },
             fact_count: u32::try_from(fact_count).unwrap_or(u32::MAX),
             closure_manifest_sha256,
             manifest_json,
@@ -1791,7 +1806,7 @@ impl Database {
 mod identity_facts_tests {
     use super::*;
     use crate::planning::identity_facts::{
-        IdentityFactsChallenge, IdentityFactsMode, OperationRoot, fixture_receipt,
+        IdentityFactsChallenge, IdentityFactsMode, OperationRoot, fixture_verified_receipt,
     };
 
     fn challenge(nonce: &str) -> IdentityFactsChallenge {
@@ -1823,20 +1838,21 @@ mod identity_facts_tests {
         db.issue_identity_facts_challenge(&challenge, Some("request-1"), "plan-1", 900)
             .await
             .unwrap();
-        let receipt = fixture_receipt(&challenge, "seed-1");
+        let receipt = fixture_verified_receipt(&challenge, "seed-1");
         let stored = db
-            .consume_identity_facts(&challenge, &receipt)
+            .consume_identity_facts(&challenge, &receipt, IdentityFactsRootBinding::BuildReceipt)
             .await
             .unwrap();
         assert_eq!(stored.nonce, "nonce-1");
         assert_eq!(stored.fact_count, 1);
         // Replay refuses without deleting the original receipt.
         assert!(matches!(
-            db.consume_identity_facts(&challenge, &receipt).await,
+            db.consume_identity_facts(&challenge, &receipt, IdentityFactsRootBinding::BuildReceipt)
+                .await,
             Err(Error::Conflict(_))
         ));
         let preserved = db.identity_facts_receipt("nonce-1").await.unwrap();
-        assert_eq!(preserved.signature, receipt.signature);
+        assert_eq!(preserved.signature, receipt.receipt().signature);
         assert_eq!(preserved.envelope_json, stored.envelope_json);
         db.close().await;
         let _ = std::fs::remove_file(path);
@@ -1849,19 +1865,33 @@ mod identity_facts_tests {
         db.issue_identity_facts_challenge(&challenge, None, "plan-1", 900)
             .await
             .unwrap();
-        let receipt = fixture_receipt(&challenge, "seed-concurrent");
+        let receipt = fixture_verified_receipt(&challenge, "seed-concurrent");
         let db = std::sync::Arc::new(db);
         let first = {
             let db = std::sync::Arc::clone(&db);
             let challenge = challenge.clone();
             let receipt = receipt.clone();
-            tokio::spawn(async move { db.consume_identity_facts(&challenge, &receipt).await })
+            tokio::spawn(async move {
+                db.consume_identity_facts(
+                    &challenge,
+                    &receipt,
+                    IdentityFactsRootBinding::BuildReceipt,
+                )
+                .await
+            })
         };
         let second = {
             let db = std::sync::Arc::clone(&db);
             let challenge = challenge.clone();
             let receipt = receipt.clone();
-            tokio::spawn(async move { db.consume_identity_facts(&challenge, &receipt).await })
+            tokio::spawn(async move {
+                db.consume_identity_facts(
+                    &challenge,
+                    &receipt,
+                    IdentityFactsRootBinding::BuildReceipt,
+                )
+                .await
+            })
         };
         let results = [first.await.unwrap(), second.await.unwrap()];
         assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
@@ -1883,17 +1913,23 @@ mod identity_facts_tests {
         db.issue_identity_facts_challenge(&foreign, None, "plan-1", 900)
             .await
             .unwrap();
-        let receipt = fixture_receipt(&foreign, "seed-foreign");
+        let receipt = fixture_verified_receipt(&foreign, "seed-foreign");
         let mut different = foreign.clone();
         different.operation_id = "operation-other".into();
         assert!(matches!(
-            db.consume_identity_facts(&different, &receipt).await,
+            db.consume_identity_facts(&different, &receipt, IdentityFactsRootBinding::BuildReceipt)
+                .await,
             Err(Error::Conflict(_)) | Err(Error::Validation(_))
         ));
         let unknown = challenge("nonce-unknown");
-        let unknown_receipt = fixture_receipt(&unknown, "seed-unknown");
+        let unknown_receipt = fixture_verified_receipt(&unknown, "seed-unknown");
         assert!(matches!(
-            db.consume_identity_facts(&unknown, &unknown_receipt).await,
+            db.consume_identity_facts(
+                &unknown,
+                &unknown_receipt,
+                IdentityFactsRootBinding::BuildReceipt
+            )
+            .await,
             Err(Error::Conflict(_))
         ));
         sqlx::query::query("UPDATE identity_facts_challenges SET state='REVOKED' WHERE nonce=?1")
@@ -1902,7 +1938,8 @@ mod identity_facts_tests {
             .await
             .unwrap();
         assert!(matches!(
-            db.consume_identity_facts(&foreign, &receipt).await,
+            db.consume_identity_facts(&foreign, &receipt, IdentityFactsRootBinding::BuildReceipt)
+                .await,
             Err(Error::Conflict(_))
         ));
         sqlx::query::query("UPDATE identity_facts_challenges SET state='PENDING' WHERE nonce=?1")
@@ -1920,7 +1957,8 @@ mod identity_facts_tests {
         .await
         .unwrap();
         assert!(matches!(
-            db.consume_identity_facts(&foreign, &receipt).await,
+            db.consume_identity_facts(&foreign, &receipt, IdentityFactsRootBinding::BuildReceipt)
+                .await,
             Err(Error::Conflict(_))
         ));
         assert!(matches!(

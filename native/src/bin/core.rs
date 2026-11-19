@@ -12773,8 +12773,9 @@ async fn observe_environment_identity_facts(
     app: &App,
     plan: &factory_native::planning::environment::EnvironmentPlan,
     spec: &factory_native::planning::environment::EnvironmentSpec,
+    root_binding: factory_native::planning::identity_facts::IdentityFactsRootBinding,
 ) -> Result<
-    factory_native::planning::identity_facts::IdentityFactsReceipt,
+    factory_native::planning::identity_facts::VerifiedIdentityFacts,
     factory_native::planning::environment::EnvironmentError,
 > {
     use factory_native::planning::identity_facts::{
@@ -12810,7 +12811,7 @@ async fn observe_environment_identity_facts(
         .identity_facts(&challenge, plan, spec)
         .await?;
     app.db
-        .consume_identity_facts(&challenge, &receipt)
+        .consume_identity_facts(&challenge, &receipt, root_binding)
         .await
         .map_err(|error| {
             factory_native::planning::environment::EnvironmentError::new(
@@ -12848,7 +12849,12 @@ async fn build_environment_before_freeze(
     // facts from the same spec-keyed realised store first, so a licence refusal
     // keeps its identity receipt and leaves the environment blocked.
     let build = builder.build(spec, plan, workspace).await;
-    let identity = observe_environment_identity_facts(app, plan, spec)
+    let root_binding = if build.is_ok() {
+        factory_native::planning::identity_facts::IdentityFactsRootBinding::BuildReceipt
+    } else {
+        factory_native::planning::identity_facts::IdentityFactsRootBinding::OperationObservation
+    };
+    let identity = observe_environment_identity_facts(app, plan, spec, root_binding)
         .await
         .map_err(|error| {
             (
@@ -12861,8 +12867,8 @@ async fn build_environment_before_freeze(
                 .into_response()
         })?;
     if let Ok(receipt) = &build
-        && !receipt.store_path.is_empty()
-        && receipt.store_path != identity.envelope.manifest.observed_root
+        && (receipt.store_path.is_empty()
+            || receipt.store_path != identity.receipt().envelope.manifest.observed_root)
     {
         return Err((
             StatusCode::CONFLICT,
@@ -36097,10 +36103,12 @@ mod tests {
             ) -> factory_native::planning::environment::EnvironmentIdentityFactsFuture<'a>
             {
                 Box::pin(async move {
-                    Ok(factory_native::planning::identity_facts::fixture_receipt(
-                        challenge,
-                        &plan.plan_sha256,
-                    ))
+                    Ok(
+                        factory_native::planning::identity_facts::fixture_verified_receipt(
+                            challenge,
+                            &plan.plan_sha256,
+                        ),
+                    )
                 })
             }
         }
@@ -36164,10 +36172,12 @@ mod tests {
             ) -> factory_native::planning::environment::EnvironmentIdentityFactsFuture<'a>
             {
                 Box::pin(async move {
-                    Ok(factory_native::planning::identity_facts::fixture_receipt(
-                        challenge,
-                        &plan.plan_sha256,
-                    ))
+                    Ok(
+                        factory_native::planning::identity_facts::fixture_verified_receipt(
+                            challenge,
+                            &plan.plan_sha256,
+                        ),
+                    )
                 })
             }
         }
@@ -37467,6 +37477,11 @@ mod tests {
                 .await
                 .expect("the refused operation still observed its realised environment");
             assert_ne!(latest.nonce, stored.nonce);
+            assert_eq!(
+                latest.root_binding,
+                factory_native::planning::identity_facts::IdentityFactsRootBinding::OperationObservation,
+                "a refused build keeps an operation-scoped receipt, never an accepted build binding"
+            );
 
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);

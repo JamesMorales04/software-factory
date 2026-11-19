@@ -20,8 +20,8 @@ use std::process::Command;
 use factory_native::db::Database;
 use factory_native::planning::identity_facts::{
     IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION, IdentityFactsChallenge,
-    IdentityFactsEnvelope, IdentityFactsMode, IdentityFactsReceipt, OperationRoot,
-    closure_manifest_sha256, sign,
+    IdentityFactsEnvelope, IdentityFactsMode, IdentityFactsReceipt, IdentityFactsRootBinding,
+    OperationRoot, closure_manifest_sha256, sign,
 };
 use factory_native::runtime_broker::{
     IdentityFactsCommandRunner, ResourceOwner, RuntimeBrokerClient, observe_identity_facts_with,
@@ -190,25 +190,6 @@ chown -R 10001:10001 /target
         ])
         .expect("write the realised profile into the disposable cache volume");
 
-    let manifest = observe_identity_facts_with(&runner, &image, &cache_volume, &store_volume)
-        .await
-        .expect("the broker producer observes the real closure");
-    assert_eq!(manifest.observed_root, root);
-    assert!(!manifest.facts.is_empty());
-    assert!(!manifest.truncated);
-    assert_eq!(manifest.fact_count, manifest.facts.len());
-    assert_eq!(
-        manifest.closure_manifest_sha256,
-        closure_manifest_sha256(&manifest.facts)
-    );
-    for fact in &manifest.facts {
-        if fact.deriver.is_none() {
-            assert_eq!(fact.outputs, vec![fact.store_path.clone()]);
-        } else {
-            assert!(!fact.outputs.is_empty());
-        }
-    }
-
     let plan_sha256 = sha256_hex(
         serde_json::json!({
             "source": "PROJECT_COMMITTED",
@@ -229,6 +210,25 @@ chown -R 10001:10001 /target
         root: OperationRoot::Operation,
         questions: Vec::new(),
     };
+    let manifest =
+        observe_identity_facts_with(&runner, &image, &cache_volume, &store_volume, &challenge)
+            .await
+            .expect("the broker producer observes the real closure");
+    assert_eq!(manifest.observed_root, root);
+    assert!(!manifest.facts.is_empty());
+    assert!(!manifest.truncated);
+    assert_eq!(manifest.fact_count, manifest.facts.len());
+    assert_eq!(
+        manifest.closure_manifest_sha256,
+        closure_manifest_sha256(&manifest.facts)
+    );
+    for fact in &manifest.facts {
+        if fact.deriver.is_none() {
+            assert_eq!(fact.outputs, vec![fact.store_path.clone()]);
+        } else {
+            assert!(!fact.outputs.is_empty());
+        }
+    }
     let envelope = IdentityFactsEnvelope {
         schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
         context: IDENTITY_FACTS_CONTEXT.into(),
@@ -247,7 +247,7 @@ chown -R 10001:10001 /target
         ResourceOwner::Environment,
     )
     .expect("construct the Core broker client");
-    client
+    let verified = client
         .verify_identity_facts(&receipt, &challenge)
         .expect("the Core verifier accepts the real broker receipt");
 
@@ -260,16 +260,82 @@ chown -R 10001:10001 /target
         .await
         .expect("persist the PENDING challenge");
     let stored = db
-        .consume_identity_facts(&challenge, &receipt)
+        .consume_identity_facts(
+            &challenge,
+            &verified,
+            IdentityFactsRootBinding::OperationObservation,
+        )
         .await
         .expect("consume the real receipt");
     assert_eq!(stored.observed_root, root);
     assert_eq!(stored.fact_count, manifest.fact_count as u32);
     assert!(
-        db.consume_identity_facts(&challenge, &receipt)
-            .await
-            .is_err(),
+        db.consume_identity_facts(
+            &challenge,
+            &verified,
+            IdentityFactsRootBinding::OperationObservation
+        )
+        .await
+        .is_err(),
         "a replayed nonce must be refused"
+    );
+    let db = std::sync::Arc::new(db);
+    let mut raced = challenge.clone();
+    raced.nonce = format!("selftest-nonce-race-{}", &id[..24]);
+    raced.operation_id = format!("selftest-operation-race-{}", &id[..24]);
+    db.issue_identity_facts_challenge(&raced, Some("selftest"), "selftest-plan", 900)
+        .await
+        .expect("persist the concurrent challenge");
+    let raced_envelope = IdentityFactsEnvelope {
+        schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
+        context: IDENTITY_FACTS_CONTEXT.into(),
+        challenge: raced.clone(),
+        manifest: manifest.clone(),
+    };
+    let raced_receipt = IdentityFactsReceipt {
+        signature: sign(&raced_envelope, token.as_bytes())
+            .expect("the broker signs the raced envelope"),
+        envelope: raced_envelope,
+    };
+    let raced_verified = client
+        .verify_identity_facts(&raced_receipt, &raced)
+        .expect("the raced receipt verifies");
+    let first = {
+        let db = std::sync::Arc::clone(&db);
+        let raced = raced.clone();
+        let raced_verified = raced_verified.clone();
+        tokio::spawn(async move {
+            db.consume_identity_facts(
+                &raced,
+                &raced_verified,
+                IdentityFactsRootBinding::OperationObservation,
+            )
+            .await
+        })
+    };
+    let second = {
+        let db = std::sync::Arc::clone(&db);
+        let raced = raced.clone();
+        let raced_verified = raced_verified.clone();
+        tokio::spawn(async move {
+            db.consume_identity_facts(
+                &raced,
+                &raced_verified,
+                IdentityFactsRootBinding::OperationObservation,
+            )
+            .await
+        })
+    };
+    let results = [first.await.unwrap(), second.await.unwrap()];
+    assert_eq!(
+        results.iter().filter(|result| result.is_ok()).count(),
+        1,
+        "exactly one concurrent consume must win"
+    );
+    assert_eq!(
+        results.iter().filter(|result| result.is_err()).count(),
+        1,
+        "the concurrent loser must be refused"
     );
     db.close().await;
     let _ = std::fs::remove_file(&db_path);
@@ -282,7 +348,7 @@ chown -R 10001:10001 /target
             "observedRoot": root,
             "factCount": manifest.fact_count,
             "closureManifestSha256": manifest.closure_manifest_sha256,
-            "signature": receipt.signature,
+            "signature": verified.receipt().signature,
             "planSource": "PROJECT_COMMITTED",
             "packages": [],
             "replay": "REFUSED",

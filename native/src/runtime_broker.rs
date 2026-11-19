@@ -14,7 +14,7 @@ use crate::planning::environment::{
 };
 use crate::planning::identity_facts::{
     IdentityFact, IdentityFactsChallenge, IdentityFactsError, IdentityFactsManifest,
-    IdentityFactsReceipt, MAX_IDENTITY_FACTS, closure_manifest_sha256,
+    IdentityFactsMode, IdentityFactsReceipt, MAX_IDENTITY_FACTS, closure_manifest_sha256,
 };
 
 const MAX_ERROR_BYTES: usize = 4096;
@@ -1262,7 +1262,7 @@ impl RuntimeBrokerClient {
         &self,
         receipt: &IdentityFactsReceipt,
         challenge: &IdentityFactsChallenge,
-    ) -> Result<(), IdentityFactsError> {
+    ) -> Result<crate::planning::identity_facts::VerifiedIdentityFacts, IdentityFactsError> {
         crate::planning::identity_facts::verify(receipt, self.token.as_bytes(), challenge)
     }
 
@@ -1601,6 +1601,7 @@ pub async fn observe_identity_facts_with(
     image_id: &str,
     cache_volume: &str,
     store_volume: &str,
+    challenge: &IdentityFactsChallenge,
 ) -> Result<IdentityFactsManifest, String> {
     let root = resolve_realized_environment_root_with(runner, image_id, cache_volume, store_volume)
         .await?;
@@ -1654,6 +1655,41 @@ pub async fn observe_identity_facts_with(
             outputs,
         });
     }
+    // `QUESTIONS` answers exactly the Core-issued identities in their issued
+    // order. `ENUMERATE` is discovery and must not carry questions.
+    let facts = match challenge.mode {
+        IdentityFactsMode::Enumerate => {
+            if !challenge.questions.is_empty() {
+                return Err("an enumeration challenge must not carry questions".into());
+            }
+            facts
+        }
+        IdentityFactsMode::Questions => {
+            let mut selected = Vec::with_capacity(challenge.questions.len());
+            for question in &challenge.questions {
+                let Some(fact) = facts
+                    .iter()
+                    .find(|fact| fact.store_path == question.store_path)
+                else {
+                    return Err(format!(
+                        "the realised closure does not contain the issued path {}",
+                        question.store_path
+                    ));
+                };
+                if fact.deriver != question.deriver
+                    || fact.nar_hash != question.nar_hash
+                    || fact.outputs != question.outputs
+                {
+                    return Err(format!(
+                        "the observed identity for {} does not match the issued identity",
+                        question.store_path
+                    ));
+                }
+                selected.push(fact.clone());
+            }
+            selected
+        }
+    };
     Ok(IdentityFactsManifest {
         observed_root: root,
         fact_count: facts.len(),
@@ -2094,5 +2130,118 @@ mod tests {
             .unwrap();
         assert_eq!(long.status(), reqwest::StatusCode::OK);
         server.await.unwrap();
+    }
+
+    struct CannedIdentityRunner;
+
+    impl IdentityFactsCommandRunner for CannedIdentityRunner {
+        fn run_identity_command<'a>(
+            &'a self,
+            _args: Vec<String>,
+            operation: &'a str,
+            _limit: usize,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                let root = format!("/nix/store/{}-root", "c".repeat(32));
+                let drv = format!("/nix/store/{}-root.drv", "d".repeat(32));
+                let helper = format!("/nix/store/{}-helper.sh", "e".repeat(32));
+                match operation {
+                    "environment identity root probe" => Ok(root.into_bytes()),
+                    "environment identity path-info" => {
+                        let mut paths = serde_json::Map::new();
+                        paths.insert(
+                            root.clone(),
+                            serde_json::json!({
+                                "narHash": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                                "deriver": drv,
+                            }),
+                        );
+                        paths.insert(
+                            helper.clone(),
+                            serde_json::json!({
+                                "narHash": "sha256-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+                                "deriver": null,
+                            }),
+                        );
+                        serde_json::to_vec(&serde_json::Value::Object(paths))
+                            .map_err(|error| error.to_string())
+                    }
+                    "environment identity derivation show" => {
+                        let mut derivations = serde_json::Map::new();
+                        derivations.insert(
+                            drv.clone(),
+                            serde_json::json!({"outputs": {"out": {"path": root}}}),
+                        );
+                        serde_json::to_vec(&serde_json::Value::Object(derivations))
+                            .map_err(|error| error.to_string())
+                    }
+                    other => Err(format!("unexpected identity operation {other}")),
+                }
+            })
+        }
+    }
+
+    fn questions_challenge(
+        questions: Vec<crate::planning::identity_facts::IdentityQuestion>,
+    ) -> crate::planning::identity_facts::IdentityFactsChallenge {
+        crate::planning::identity_facts::IdentityFactsChallenge {
+            operation_id: "identity-operation".into(),
+            runtime_id: "sha256:runtime".into(),
+            nonce: "identity-nonce".into(),
+            pin: "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d".into(),
+            plan_sha256: "b".repeat(64),
+            mode: crate::planning::identity_facts::IdentityFactsMode::Questions,
+            root: crate::planning::identity_facts::OperationRoot::Operation,
+            questions,
+        }
+    }
+
+    #[tokio::test]
+    async fn questions_mode_answers_exactly_the_issued_order() {
+        let root = format!("/nix/store/{}-root", "c".repeat(32));
+        let helper = format!("/nix/store/{}-helper.sh", "e".repeat(32));
+        let drv = format!("/nix/store/{}-root.drv", "d".repeat(32));
+        let questions = vec![
+            crate::planning::identity_facts::IdentityQuestion {
+                store_path: helper.clone(),
+                deriver: None,
+                nar_hash: "sha256-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=".into(),
+                outputs: vec![helper.clone()],
+            },
+            crate::planning::identity_facts::IdentityQuestion {
+                store_path: root.clone(),
+                deriver: Some(drv),
+                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                outputs: vec![root.clone()],
+            },
+        ];
+        let manifest = observe_identity_facts_with(
+            &CannedIdentityRunner,
+            "image",
+            "cache",
+            "store",
+            &questions_challenge(questions.clone()),
+        )
+        .await
+        .expect("the producer answers the issued questions");
+        assert_eq!(manifest.fact_count, 2);
+        assert_eq!(manifest.facts[0].store_path, helper);
+        assert_eq!(manifest.facts[1].store_path, root);
+
+        let mut wrong = questions;
+        wrong[0].nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into();
+        assert!(
+            observe_identity_facts_with(
+                &CannedIdentityRunner,
+                "image",
+                "cache",
+                "store",
+                &questions_challenge(wrong),
+            )
+            .await
+            .is_err(),
+            "an identity that does not match the issued expectation is refused"
+        );
     }
 }
