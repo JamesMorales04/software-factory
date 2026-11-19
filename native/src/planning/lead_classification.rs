@@ -158,6 +158,77 @@ pub fn classify_identity(
     })
 }
 
+
+/// Explicit prohibitions that complement the positive policy evaluation. They
+/// never replace it and never encode an identity allowlist.
+pub const DENIED_EVIDENCE_LICENSE_IDS: [&str; 2] = ["NOASSERTION", "NONE"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum EvidenceSourceKind {
+    Pin,
+    Derivation,
+    Output,
+    UpstreamDocumentation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EvidenceSource {
+    pub kind: EvidenceSourceKind,
+    pub reference: String,
+    pub digest: String,
+}
+
+/// Evidence gathered by the Lead through the Librarian for one observation.
+///
+/// The sources must describe the *same* derivation and output as the observation;
+/// evidence about another instance is never transferable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EvidenceBundle {
+    pub observation: IdentityObservation,
+    pub sources: Vec<EvidenceSource>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceRefusal {
+    MissingPrimarySource,
+    DifferentInstance,
+    EmptyDigest,
+}
+
+/// True only for a primary source bound to this exact pin, derivation or output.
+pub fn evidence_matches_instance(bundle: &EvidenceBundle) -> Result<(), EvidenceRefusal> {
+    if bundle.sources.iter().any(|source| source.digest.trim().is_empty()) {
+        return Err(EvidenceRefusal::EmptyDigest);
+    }
+    let observation = &bundle.observation;
+    // A source that names a derivation or output of a different instance is a
+    // transfer attempt, not a missing source.
+    for source in &bundle.sources {
+        match source.kind {
+            EvidenceSourceKind::Derivation if source.reference != observation.deriver => {
+                return Err(EvidenceRefusal::DifferentInstance)
+            }
+            EvidenceSourceKind::Output if source.reference != observation.store_path => {
+                return Err(EvidenceRefusal::DifferentInstance)
+            }
+            _ => {}
+        }
+    }
+    let primary = bundle.sources.iter().any(|source| match source.kind {
+        EvidenceSourceKind::Pin => source.reference == observation.pin,
+        EvidenceSourceKind::Derivation => source.reference == observation.deriver,
+        EvidenceSourceKind::Output => source.reference == observation.store_path,
+        EvidenceSourceKind::UpstreamDocumentation => false,
+    });
+    if !primary {
+        return Err(EvidenceRefusal::MissingPrimarySource);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +269,31 @@ mod tests {
             assert_eq!(grant.deriver, deriver);
             assert_eq!(grant.mandate_revision, 3);
         }
+    }
+
+
+    #[test]
+    fn evidence_must_describe_the_same_instance() {
+        let (path, deriver) = CASES[0];
+        let observation = observation(path, deriver, Some("MIT"), Some(false));
+        let same = EvidenceBundle {
+            observation: observation.clone(),
+            sources: vec![
+                EvidenceSource { kind: EvidenceSourceKind::Output, reference: path.into(), digest: "sha256-a".into() },
+                EvidenceSource { kind: EvidenceSourceKind::UpstreamDocumentation, reference: "https://example.invalid/LICENSE".into(), digest: "sha256-b".into() },
+            ],
+        };
+        assert_eq!(evidence_matches_instance(&same), Ok(()));
+        let other = EvidenceBundle {
+            observation: observation.clone(),
+            sources: vec![EvidenceSource { kind: EvidenceSourceKind::Output, reference: CASES[1].0.into(), digest: "sha256-c".into() }],
+        };
+        assert_eq!(evidence_matches_instance(&other), Err(EvidenceRefusal::DifferentInstance));
+        let docs_only = EvidenceBundle {
+            observation,
+            sources: vec![EvidenceSource { kind: EvidenceSourceKind::UpstreamDocumentation, reference: "https://example.invalid/LICENSE".into(), digest: "sha256-d".into() }],
+        };
+        assert_eq!(evidence_matches_instance(&docs_only), Err(EvidenceRefusal::MissingPrimarySource));
     }
 
     #[test]
