@@ -297,6 +297,8 @@ pub fn authorize(
     Ok(grants)
 }
 
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +331,167 @@ mod tests {
         roots.catalog_sha256 = canonical_roots_sha256(&roots);
         roots
     }
+
+    fn observation() -> HelperObservation {
+        HelperObservation {
+            store_path: HELPER.into(),
+            nar_hash: NAR.into(),
+            deriver: String::new(),
+            regular_file: true,
+            references: vec![STDENV.into(), SHELL.into()],
+        }
+    }
+
+    fn accept(observation: &HelperObservation) -> LeadHelperDecision {
+        LeadHelperDecision {
+            candidate_sha256: candidate_sha256(observation),
+            decision: HelperDecision::Accept,
+            rationale: "generated stdenv helper".into(),
+        }
+    }
+
+    #[test]
+    fn a_new_eligible_helper_is_authorized_without_an_owner_list() {
+        let roots = roots();
+        let observation = observation();
+        let grants = authorize(&roots, PIN, &[observation.clone()], &[accept(&observation)], "review-1")
+            .expect("eligible helper is authorized");
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].store_path, HELPER);
+        assert_eq!(grants[0].trust_roots_sha256, roots.catalog_sha256);
+    }
+
+    #[test]
+    fn an_arbitrary_referrer_is_rejected() {
+        let roots = roots();
+        let mut observation = observation();
+        observation
+            .references
+            .push("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-fake-devshell".into());
+        assert_eq!(
+            authorize(&roots, PIN, &[observation.clone()], &[accept(&observation)], "review-1"),
+            Err(HelperPerimeterError::UntrustedReferrer)
+        );
+    }
+
+    #[test]
+    fn the_wrapper_alone_is_not_sufficient() {
+        let roots = roots();
+        let mut observation = observation();
+        observation.references = vec![SHELL.into()];
+        assert_eq!(
+            authorize(&roots, PIN, &[observation.clone()], &[accept(&observation)], "review-1"),
+            Err(HelperPerimeterError::MissingTrustedReferrer)
+        );
+    }
+
+    #[test]
+    fn deriver_present_directory_or_wrong_class_are_rejected() {
+        let roots = roots();
+        let mut derived = observation();
+        derived.deriver = STDENV_DRV.into();
+        assert_eq!(
+            check_membership(&roots, &derived),
+            Err(HelperPerimeterError::DeriverPresent)
+        );
+        let mut directory = observation();
+        directory.regular_file = false;
+        assert_eq!(
+            check_membership(&roots, &directory),
+            Err(HelperPerimeterError::NotRegularFile)
+        );
+        let mut binary = observation();
+        binary.store_path = HELPER.replace(".sh", "");
+        assert_eq!(
+            check_membership(&roots, &binary),
+            Err(HelperPerimeterError::WrongClass)
+        );
+    }
+
+    #[test]
+    fn another_pin_or_a_tampered_record_is_rejected() {
+        let roots = roots();
+        let observation = observation();
+        assert_eq!(
+            authorize(&roots, "github:NixOS/nixpkgs/other", &[observation.clone()], &[accept(&observation)], "review-1"),
+            Err(HelperPerimeterError::PinMismatch)
+        );
+        let mut tampered = roots.clone();
+        tampered.revision = 2;
+        assert_eq!(
+            authorize(&tampered, PIN, &[observation.clone()], &[accept(&observation)], "review-1"),
+            Err(HelperPerimeterError::RootsDigestMismatch)
+        );
+    }
+
+    #[test]
+    fn an_invented_or_duplicated_decision_is_rejected() {
+        let roots = roots();
+        let observation = observation();
+        let invented = LeadHelperDecision {
+            candidate_sha256: "f".repeat(64),
+            decision: HelperDecision::Accept,
+            rationale: "invented".into(),
+        };
+        assert_eq!(
+            authorize(&roots, PIN, &[observation.clone()], &[invented], "review-1"),
+            Err(HelperPerimeterError::MissingDecision)
+        );
+        assert_eq!(
+            authorize(
+                &roots,
+                PIN,
+                &[observation.clone()],
+                &[accept(&observation), accept(&observation)],
+                "review-1"
+            ),
+            Err(HelperPerimeterError::DuplicateDecision)
+        );
+    }
+
+    #[test]
+    fn a_lead_rejection_keeps_the_block() {
+        let roots = roots();
+        let observation = observation();
+        let mut reject = accept(&observation);
+        reject.decision = HelperDecision::Reject;
+        assert_eq!(
+            authorize(&roots, PIN, &[observation], &[reject], "review-1"),
+            Err(HelperPerimeterError::Rejected)
+        );
+    }
+
+    #[test]
+    fn a_model_payload_cannot_supply_paths_or_extra_fields() {
+        let forged = serde_json::json!({
+            "candidateSha256": candidate_sha256(&observation()),
+            "decision": "ACCEPT",
+            "rationale": "ok",
+            "storePath": HELPER,
+        });
+        assert!(serde_json::from_value::<LeadHelperDecision>(forged).is_err());
+        let free_string = serde_json::json!({
+            "candidateSha256": candidate_sha256(&observation()),
+            "decision": "approve this helper please",
+            "rationale": "ok",
+        });
+        assert!(serde_json::from_value::<LeadHelperDecision>(free_string).is_err());
+    }
+
+    #[test]
+    fn the_candidate_count_is_bounded_by_evidence() {
+        let roots = roots();
+        let observations: Vec<HelperObservation> = (0..=MAX_HELPERS_PER_PLAN)
+            .map(|_| observation())
+            .collect();
+        assert_eq!(
+            authorize(&roots, PIN, &observations, &[], "review-1"),
+            Err(HelperPerimeterError::TooManyCandidates)
+        );
+    }
+}
+
+
 
     fn observation() -> HelperObservation {
         HelperObservation {
