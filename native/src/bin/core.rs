@@ -36270,9 +36270,8 @@ mod tests {
                         }
                         ReceiptDefect::InvalidReceipt => receipt.output_sha256.clear(),
                         ReceiptDefect::WrongSpecBinding => receipt.spec_sha256 = "d".repeat(64),
-                        ReceiptDefect::FailedStatus => {
-                            receipt.status = factory_native::planning::environment::EnvironmentBuilderStatus::Failed
-                        }
+                        ReceiptDefect::FailedStatus => receipt.status =
+                            factory_native::planning::environment::EnvironmentBuilderStatus::Failed,
                     }
                     Ok(receipt)
                 })
