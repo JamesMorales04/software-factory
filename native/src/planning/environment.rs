@@ -102,6 +102,12 @@ pub enum EnvironmentBlockerCode {
     EnvironmentHashMismatch,
     EnvironmentNotFrozen,
     EnvironmentSuperseded,
+    /// The broker did not return authenticated identity-facts evidence for the
+    /// realised environment. It is an explicit refusal, never an empty success.
+    EnvironmentIdentityEvidenceAbsent,
+    /// The broker or Core refused the identity-facts manifest as incomplete,
+    /// truncated, duplicated, mismatched or bound to another operation.
+    EnvironmentIdentityFactsRefused,
 }
 
 impl EnvironmentBlockerCode {
@@ -132,6 +138,8 @@ impl EnvironmentBlockerCode {
             Self::EnvironmentHashMismatch => "ENVIRONMENT_HASH_MISMATCH",
             Self::EnvironmentNotFrozen => "ENVIRONMENT_NOT_FROZEN",
             Self::EnvironmentSuperseded => "ENVIRONMENT_SUPERSEDED",
+            Self::EnvironmentIdentityEvidenceAbsent => "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT",
+            Self::EnvironmentIdentityFactsRefused => "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
         }
     }
 
@@ -164,6 +172,8 @@ impl EnvironmentBlockerCode {
             "ENVIRONMENT_HASH_MISMATCH" => Self::EnvironmentHashMismatch,
             "ENVIRONMENT_NOT_FROZEN" => Self::EnvironmentNotFrozen,
             "ENVIRONMENT_SUPERSEDED" => Self::EnvironmentSuperseded,
+            "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT" => Self::EnvironmentIdentityEvidenceAbsent,
+            "ENVIRONMENT_IDENTITY_FACTS_REFUSED" => Self::EnvironmentIdentityFactsRefused,
             _ => return None,
         })
     }
@@ -3527,6 +3537,18 @@ pub type EnvironmentResolutionFuture<'a> = Pin<
 pub type EnvironmentBuilderRefreshFuture<'a> =
     Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
 
+pub type EnvironmentIdentityFactsFuture<'a> = Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<
+                    crate::planning::identity_facts::IdentityFactsReceipt,
+                    EnvironmentError,
+                >,
+            > + Send
+            + 'a,
+    >,
+>;
+
 /// Builder port for the Nix/devenv image and Node/Playwright runtime. The
 /// builder runs outside Core with no Factory/provider/GitHub credentials, no
 /// host network and no host socket. It receives an already frozen spec and must
@@ -3559,6 +3581,17 @@ pub trait EnvironmentBuilder {
         plan: &'a EnvironmentPlan,
         workspace: Option<&'a std::path::Path>,
     ) -> EnvironmentBuilderFuture<'a>;
+
+    /// Observe the exact realised environment for one Core-issued
+    /// identity-facts challenge and return the authenticated receipt. The
+    /// broker owns the fixed Nix queries; a builder cannot supply a manifest.
+    /// `EvidenceAbsent` is a typed refusal, never an empty receipt.
+    fn identity_facts<'a>(
+        &'a self,
+        challenge: &'a crate::planning::identity_facts::IdentityFactsChallenge,
+        plan: &'a EnvironmentPlan,
+        spec: &'a EnvironmentSpec,
+    ) -> EnvironmentIdentityFactsFuture<'a>;
 }
 
 pub type SharedEnvironmentBuilder = std::sync::Arc<dyn EnvironmentBuilder + Send + Sync>;
@@ -3595,6 +3628,20 @@ impl EnvironmentBuilder for UnavailableEnvironmentBuilder {
             Err(EnvironmentError::new(
                 EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
                 "no environment builder is configured; no build receipt can be produced",
+            ))
+        })
+    }
+
+    fn identity_facts<'a>(
+        &'a self,
+        _challenge: &'a crate::planning::identity_facts::IdentityFactsChallenge,
+        _plan: &'a EnvironmentPlan,
+        _spec: &'a EnvironmentSpec,
+    ) -> EnvironmentIdentityFactsFuture<'a> {
+        Box::pin(async {
+            Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentIdentityEvidenceAbsent,
+                "no environment builder is configured; no realised environment can be observed",
             ))
         })
     }
@@ -3732,6 +3779,20 @@ impl EnvironmentBuilder for TestEnvironmentBuilder {
             };
             receipt.validate_for(spec)?;
             Ok(receipt)
+        })
+    }
+
+    fn identity_facts<'a>(
+        &'a self,
+        challenge: &'a crate::planning::identity_facts::IdentityFactsChallenge,
+        plan: &'a EnvironmentPlan,
+        _spec: &'a EnvironmentSpec,
+    ) -> EnvironmentIdentityFactsFuture<'a> {
+        Box::pin(async move {
+            Ok(crate::planning::identity_facts::fixture_receipt(
+                challenge,
+                &plan.plan_sha256,
+            ))
         })
     }
 }
@@ -3973,6 +4034,7 @@ impl RuntimeBrokerEnvironmentBuilder {
             plan: plan.clone(),
             spec: spec.cloned(),
             workspace_files,
+            identity_facts: None,
         })
     }
 
@@ -4080,6 +4142,56 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
             if let Some(blocker) = receipt.blockers.first() {
                 return Err(EnvironmentError::new(blocker.code, blocker.message.clone()));
             }
+            Ok(receipt)
+        })
+    }
+
+    fn identity_facts<'a>(
+        &'a self,
+        challenge: &'a crate::planning::identity_facts::IdentityFactsChallenge,
+        plan: &'a EnvironmentPlan,
+        spec: &'a EnvironmentSpec,
+    ) -> EnvironmentIdentityFactsFuture<'a> {
+        Box::pin(async move {
+            if self.status() == EnvironmentBuilderStatus::Unavailable {
+                let _ = self.refresh_status().await;
+            }
+            if self.status() == EnvironmentBuilderStatus::Unavailable {
+                return Err(EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentIdentityEvidenceAbsent,
+                    "the runtime environment builder is not available; no realised environment can be observed",
+                ));
+            }
+            let request = crate::runtime_broker::EnvironmentBrokerRequest {
+                schema_version: ENVIRONMENT_SCHEMA_VERSION,
+                operation: crate::runtime_broker::EnvironmentBrokerOperation::IdentityFacts,
+                phase: Some(crate::runtime_broker::EnvironmentBuildPhase::IdentityFacts),
+                image: self.descriptor.image.clone(),
+                digest: self.descriptor.digest.clone(),
+                plan: plan.clone(),
+                spec: Some(spec.clone()),
+                workspace_files: Vec::new(),
+                identity_facts: Some(challenge.clone()),
+            };
+            let result = self
+                .broker
+                .environment_build(&request, None)
+                .await
+                .map_err(environment_error_from_broker)?;
+            let Some(receipt) = result.identity_facts else {
+                return Err(EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentIdentityEvidenceAbsent,
+                    "the broker returned no identity-facts evidence for the realised environment",
+                ));
+            };
+            self.broker
+                .verify_identity_facts(&receipt, challenge)
+                .map_err(|error| {
+                    EnvironmentError::new(
+                        EnvironmentBlockerCode::EnvironmentIdentityFactsRefused,
+                        error.to_string(),
+                    )
+                })?;
             Ok(receipt)
         })
     }

@@ -5,8 +5,13 @@
 //! hash and output paths. The manifest is never paginated; a closure larger than
 //! the documented technical bound is refused instead of truncated.
 //!
-//! It is pure and unactivated: no producer or consumer calls it yet.
+//! The broker produces the manifest from its own fixed Nix queries over the
+//! realised store and authenticates it with a context-derived MAC of the
+//! existing scoped environment bearer. The builder never sees that key and
+//! never signs anything, and a model or builder-supplied manifest is rejected
+//! by construction because only the broker-fixed query produces this envelope.
 
+use ring::hmac;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -14,6 +19,11 @@ use super::lead_classification::is_sha256;
 
 /// Separate HMAC context; identity facts are not helper facts.
 pub const IDENTITY_FACTS_CONTEXT: &str = "factory.environment.identity-facts.v1";
+pub const IDENTITY_FACTS_SCHEMA_VERSION: u32 = 1;
+/// Bound for Core-issued exact questions (`QUESTIONS` mode).
+pub const MAX_IDENTITY_QUESTIONS: usize = 64;
+/// Bound for the declared output paths of one derivation.
+pub const MAX_IDENTITY_OUTPUTS: usize = 16;
 /// Documented technical bound. It must comfortably exceed a real closure (73 in
 /// Run10); exceeding it is a refusal, never a truncated manifest.
 pub const MAX_IDENTITY_FACTS: usize = 4096;
@@ -84,6 +94,85 @@ pub struct IdentityFactsChallenge {
     pub questions: Vec<IdentityQuestion>,
 }
 
+impl IdentityFactsChallenge {
+    /// Validate the Core-issued challenge before it is dispatched. Bounds are
+    /// applied to every field so a broker never runs a fixed query on an
+    /// oversized or incomplete binding.
+    pub fn validate_shape(&self) -> Result<(), IdentityFactsError> {
+        let bounded = |value: &str, max: usize, allow_controls: bool| {
+            !value.trim().is_empty()
+                && value.len() <= max
+                && (allow_controls || !value.chars().any(char::is_control))
+        };
+        if !bounded(&self.operation_id, 200, false)
+            || !bounded(&self.runtime_id, 200, false)
+            || !bounded(&self.nonce, 200, false)
+            || !bounded(&self.pin, 300, false)
+            || !is_sha256(&self.plan_sha256)
+            || self.questions.len() > MAX_IDENTITY_QUESTIONS
+        {
+            return Err(IdentityFactsError::InvalidChallenge);
+        }
+        let mut paths = std::collections::BTreeSet::new();
+        for question in &self.questions {
+            if !is_store_path(&question.store_path)
+                || !paths.insert(question.store_path.as_str())
+                || !is_sha256(&question.nar_hash)
+                || question
+                    .deriver
+                    .as_deref()
+                    .is_some_and(|deriver| !is_store_path(deriver) || !deriver.ends_with(".drv"))
+                || question.outputs.is_empty()
+                || question.outputs.len() > MAX_IDENTITY_OUTPUTS
+                || question.outputs.iter().any(|output| !is_store_path(output))
+                || question.outputs.len()
+                    != question
+                        .outputs
+                        .iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+            {
+                return Err(IdentityFactsError::InvalidChallenge);
+            }
+        }
+        // The producer resolves the realised store of its own operation. It does
+        // not implement a plan- or runtime-rooted resolution, so those selectors
+        // are refused instead of being silently treated as the operation root.
+        if self.root != OperationRoot::Operation {
+            return Err(IdentityFactsError::InvalidChallenge);
+        }
+        match self.mode {
+            IdentityFactsMode::Enumerate if !self.questions.is_empty() => {
+                Err(IdentityFactsError::InvalidChallenge)
+            }
+            IdentityFactsMode::Questions if self.questions.is_empty() => {
+                Err(IdentityFactsError::InvalidChallenge)
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// The signed envelope the broker returns to Core. It echoes the complete
+/// Core-issued challenge and the complete manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct IdentityFactsEnvelope {
+    pub schema_version: u32,
+    pub context: String,
+    pub challenge: IdentityFactsChallenge,
+    pub manifest: IdentityFactsManifest,
+}
+
+/// Envelope plus its MAC. The signature is outside the signed bytes, so a
+/// receipt never signs its own tag.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct IdentityFactsReceipt {
+    pub envelope: IdentityFactsEnvelope,
+    pub signature: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentityFactsRefusal {
     EmptyManifest,
@@ -113,6 +202,52 @@ impl std::fmt::Display for IdentityFactsRefusal {
 
 impl std::error::Error for IdentityFactsRefusal {}
 
+/// Typed failure of the authenticated identity-facts channel. `EvidenceAbsent`
+/// is not a silent success: Core must record an explicit blocker and keep the
+/// environment blocked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityFactsError {
+    InvalidChallenge,
+    InvalidEnvelope,
+    ContextMismatch,
+    BindingMismatch,
+    SignatureMismatch,
+    EvidenceAbsent,
+    Refused(IdentityFactsRefusal),
+}
+
+impl std::fmt::Display for IdentityFactsError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidChallenge => {
+                formatter.write_str("the identity-facts challenge is invalid")
+            }
+            Self::InvalidEnvelope => formatter.write_str("the identity-facts envelope is invalid"),
+            Self::ContextMismatch => {
+                formatter.write_str("the identity-facts context does not match")
+            }
+            Self::BindingMismatch => {
+                formatter.write_str("the identity facts are bound to another challenge")
+            }
+            Self::SignatureMismatch => {
+                formatter.write_str("the identity-facts signature does not verify")
+            }
+            Self::EvidenceAbsent => {
+                formatter.write_str("the broker returned no identity-facts evidence")
+            }
+            Self::Refused(refusal) => write!(formatter, "{refusal}"),
+        }
+    }
+}
+
+impl std::error::Error for IdentityFactsError {}
+
+impl From<IdentityFactsRefusal> for IdentityFactsError {
+    fn from(refusal: IdentityFactsRefusal) -> Self {
+        Self::Refused(refusal)
+    }
+}
+
 fn is_store_path(value: &str) -> bool {
     let Some(rest) = value.strip_prefix("/nix/store/") else {
         return false;
@@ -138,6 +273,80 @@ pub fn closure_manifest_sha256(facts: &[IdentityFact]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()
+}
+
+/// Derive the context-separated MAC key from the shared environment bearer.
+/// The bearer is the HMAC key and the context is the signed message, so the
+/// raw bearer is never used directly as a MAC key.
+pub fn derive_key(bearer: &[u8]) -> [u8; 32] {
+    let key = hmac::Key::new(hmac::HMAC_SHA256, bearer);
+    let tag = hmac::sign(&key, IDENTITY_FACTS_CONTEXT.as_bytes());
+    let mut derived = [0u8; 32];
+    derived.copy_from_slice(&tag.as_ref()[..32]);
+    derived
+}
+
+fn canonical_envelope_bytes(
+    envelope: &IdentityFactsEnvelope,
+) -> Result<Vec<u8>, IdentityFactsError> {
+    serde_json::to_vec(envelope).map_err(|_| IdentityFactsError::InvalidEnvelope)
+}
+
+fn decode_signature(signature: &str) -> Result<[u8; 32], IdentityFactsError> {
+    if signature.len() != 64 || !signature.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(IdentityFactsError::SignatureMismatch);
+    }
+    let mut tag = [0u8; 32];
+    for (index, chunk) in signature.as_bytes().chunks(2).enumerate() {
+        let text = std::str::from_utf8(chunk).map_err(|_| IdentityFactsError::SignatureMismatch)?;
+        tag[index] =
+            u8::from_str_radix(text, 16).map_err(|_| IdentityFactsError::SignatureMismatch)?;
+    }
+    Ok(tag)
+}
+
+/// Sign one envelope (broker side). The manifest is validated against the
+/// echoed challenge first, so a producer can never sign an incomplete or
+/// oversized closure.
+pub fn sign(envelope: &IdentityFactsEnvelope, bearer: &[u8]) -> Result<String, IdentityFactsError> {
+    validate_envelope(envelope)?;
+    let bytes = canonical_envelope_bytes(envelope)?;
+    let key = hmac::Key::new(hmac::HMAC_SHA256, &derive_key(bearer));
+    let tag = hmac::sign(&key, &bytes);
+    let mut output = String::with_capacity(64);
+    for byte in tag.as_ref() {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    Ok(output)
+}
+
+/// Verify a receipt (Core side): envelope shape, context, the exact echoed
+/// challenge, the manifest rules and the MAC.
+pub fn verify(
+    receipt: &IdentityFactsReceipt,
+    bearer: &[u8],
+    expected: &IdentityFactsChallenge,
+) -> Result<(), IdentityFactsError> {
+    validate_envelope(&receipt.envelope)?;
+    if receipt.envelope.context != IDENTITY_FACTS_CONTEXT {
+        return Err(IdentityFactsError::ContextMismatch);
+    }
+    if &receipt.envelope.challenge != expected {
+        return Err(IdentityFactsError::BindingMismatch);
+    }
+    validate_manifest(expected, &receipt.envelope.manifest)?;
+    let tag = decode_signature(&receipt.signature)?;
+    let bytes = canonical_envelope_bytes(&receipt.envelope)?;
+    let key = hmac::Key::new(hmac::HMAC_SHA256, &derive_key(bearer));
+    hmac::verify(&key, &bytes, &tag).map_err(|_| IdentityFactsError::SignatureMismatch)
+}
+
+fn validate_envelope(envelope: &IdentityFactsEnvelope) -> Result<(), IdentityFactsError> {
+    if envelope.schema_version != IDENTITY_FACTS_SCHEMA_VERSION {
+        return Err(IdentityFactsError::InvalidEnvelope);
+    }
+    envelope.challenge.validate_shape()?;
+    Ok(())
 }
 
 /// Validate a manifest against its challenge.
@@ -178,7 +387,7 @@ pub fn validate_manifest(
     let mut seen = std::collections::BTreeSet::new();
     for fact in &manifest.facts {
         let deriver_ok = match &fact.deriver {
-            Some(deriver) => deriver.ends_with(".drv"),
+            Some(deriver) => is_store_path(deriver) && deriver.ends_with(".drv"),
             // A deriver-less path is explicit and still needs its outputs.
             None => true,
         };
@@ -186,6 +395,7 @@ pub fn validate_manifest(
             || !deriver_ok
             || !is_sha256(&fact.nar_hash)
             || fact.outputs.is_empty()
+            || fact.outputs.len() > MAX_IDENTITY_OUTPUTS
             || fact.outputs.iter().any(|output| !is_store_path(output))
             || fact.outputs.len()
                 != fact
@@ -238,9 +448,53 @@ pub fn validate_manifest(
     }
 }
 
+/// Deterministic store path for feature-gated test builders.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn fixture_store_path(seed: &str) -> String {
+    let digest = Sha256::digest(seed.as_bytes());
+    let hash: String = digest
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("/nix/store/{hash}-fixture-environment")
+}
+
+/// Deterministic receipt for feature-gated test builders. It is never
+/// compiled into a production binary and is not accepted as real evidence.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn fixture_receipt(challenge: &IdentityFactsChallenge, seed: &str) -> IdentityFactsReceipt {
+    let path = fixture_store_path(seed);
+    let facts = vec![IdentityFact {
+        store_path: path.clone(),
+        deriver: None,
+        nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+        outputs: vec![path.clone()],
+    }];
+    IdentityFactsReceipt {
+        envelope: IdentityFactsEnvelope {
+            schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
+            context: IDENTITY_FACTS_CONTEXT.into(),
+            challenge: challenge.clone(),
+            manifest: IdentityFactsManifest {
+                observed_root: path,
+                fact_count: facts.len(),
+                closure_manifest_sha256: closure_manifest_sha256(&facts),
+                truncated: false,
+                facts,
+            },
+        },
+        signature: "0".repeat(64),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const BEARER: &[u8] = b"scoped-environment-bearer-0123456789abcdef";
 
     fn fact(index: usize) -> IdentityFact {
         let hash = format!("{index:032x}");
@@ -363,6 +617,160 @@ mod tests {
             validate_manifest(&challenge(IdentityFactsMode::Enumerate, vec![]), &tampered),
             Err(IdentityFactsRefusal::DigestMismatch)
         );
+    }
+
+    fn signed_receipt(
+        challenge: &IdentityFactsChallenge,
+        facts: Vec<IdentityFact>,
+        bearer: &[u8],
+    ) -> IdentityFactsReceipt {
+        let manifest = make_manifest(facts);
+        let envelope = IdentityFactsEnvelope {
+            schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
+            context: IDENTITY_FACTS_CONTEXT.into(),
+            challenge: challenge.clone(),
+            manifest,
+        };
+        let signature = sign(&envelope, bearer).expect("the fixture envelope signs");
+        IdentityFactsReceipt {
+            envelope,
+            signature,
+        }
+    }
+
+    #[test]
+    fn the_broker_fixture_manifest_is_structurally_valid() {
+        let root = format!("/nix/store/{}-fixture-root", "c".repeat(32));
+        let drv = format!("/nix/store/{}-fixture.drv", "d".repeat(32));
+        let helper = format!("/nix/store/{}-helper.sh", "e".repeat(32));
+        let facts = vec![
+            IdentityFact {
+                store_path: root.clone(),
+                deriver: Some(drv.clone()),
+                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                outputs: vec![root.clone()],
+            },
+            IdentityFact {
+                store_path: helper.clone(),
+                deriver: None,
+                nar_hash: "sha256-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=".into(),
+                outputs: vec![helper.clone()],
+            },
+        ];
+        let manifest = make_manifest(facts);
+        validate_manifest(&challenge(IdentityFactsMode::Enumerate, vec![]), &manifest)
+            .expect("the broker fixture manifest must validate");
+    }
+
+    #[test]
+    fn a_broker_receipt_verifies_for_its_exact_challenge() {
+        let challenge = challenge(IdentityFactsMode::Enumerate, vec![]);
+        let receipt = signed_receipt(&challenge, vec![fact(0)], BEARER);
+        verify(&receipt, BEARER, &challenge).expect("the exact challenge verifies");
+    }
+
+    #[test]
+    fn tampered_manifest_context_or_signature_is_refused() {
+        let challenge = challenge(IdentityFactsMode::Enumerate, vec![]);
+        let receipt = signed_receipt(&challenge, vec![fact(0)], BEARER);
+
+        let mut tampered = receipt.clone();
+        tampered.envelope.manifest.facts[0]
+            .outputs
+            .push(format!("/nix/store/{}-other-output", "b".repeat(32)));
+        tampered.envelope.manifest.closure_manifest_sha256 =
+            closure_manifest_sha256(&tampered.envelope.manifest.facts);
+        assert_eq!(
+            verify(&tampered, BEARER, &challenge),
+            Err(IdentityFactsError::SignatureMismatch)
+        );
+
+        let mut wrong_context = receipt.clone();
+        wrong_context.envelope.context = "factory.environment.helper-facts.v1".into();
+        assert_eq!(
+            verify(&wrong_context, BEARER, &challenge),
+            Err(IdentityFactsError::ContextMismatch)
+        );
+
+        assert_eq!(
+            verify(&receipt, b"another-bearer-0123456789abcdefghij", &challenge),
+            Err(IdentityFactsError::SignatureMismatch)
+        );
+    }
+
+    #[test]
+    fn another_operation_nonce_plan_runtime_or_pin_is_refused() {
+        let challenge = challenge(IdentityFactsMode::Enumerate, vec![]);
+        let receipt = signed_receipt(&challenge, vec![fact(0)], BEARER);
+        let mut other = challenge.clone();
+        other.nonce = "nonce-2".into();
+        assert_eq!(
+            verify(&receipt, BEARER, &other),
+            Err(IdentityFactsError::BindingMismatch)
+        );
+        let mut other = challenge.clone();
+        other.operation_id = "op-2".into();
+        assert_eq!(
+            verify(&receipt, BEARER, &other),
+            Err(IdentityFactsError::BindingMismatch)
+        );
+        let mut other = challenge.clone();
+        other.plan_sha256 = "b".repeat(64);
+        assert_eq!(
+            verify(&receipt, BEARER, &other),
+            Err(IdentityFactsError::BindingMismatch)
+        );
+        let mut other = challenge.clone();
+        other.runtime_id = "runtime-2".into();
+        assert_eq!(
+            verify(&receipt, BEARER, &other),
+            Err(IdentityFactsError::BindingMismatch)
+        );
+        let mut other = challenge.clone();
+        other.pin = "github:NixOS/nixpkgs/other".into();
+        assert_eq!(
+            verify(&receipt, BEARER, &other),
+            Err(IdentityFactsError::BindingMismatch)
+        );
+    }
+
+    #[test]
+    fn a_malformed_challenge_is_refused_before_dispatch() {
+        let mut empty_questions = challenge(IdentityFactsMode::Questions, vec![]);
+        assert_eq!(
+            empty_questions.validate_shape(),
+            Err(IdentityFactsError::InvalidChallenge)
+        );
+        empty_questions.mode = IdentityFactsMode::Enumerate;
+        empty_questions
+            .validate_shape()
+            .expect("enumerate is discovery");
+        let mut discovery_with_questions =
+            challenge(IdentityFactsMode::Enumerate, vec![question(0)]);
+        assert_eq!(
+            discovery_with_questions.validate_shape(),
+            Err(IdentityFactsError::InvalidChallenge)
+        );
+        discovery_with_questions.mode = IdentityFactsMode::Questions;
+        discovery_with_questions
+            .validate_shape()
+            .expect("questions mode accepts exact questions");
+        let mut bad_plan = challenge(IdentityFactsMode::Enumerate, vec![]);
+        bad_plan.plan_sha256 = "not-a-hash".into();
+        assert_eq!(
+            bad_plan.validate_shape(),
+            Err(IdentityFactsError::InvalidChallenge)
+        );
+    }
+
+    fn question(index: usize) -> IdentityQuestion {
+        let item = fact(index);
+        IdentityQuestion {
+            store_path: item.store_path,
+            deriver: item.deriver,
+            nar_hash: item.nar_hash,
+            outputs: item.outputs,
+        }
     }
 
     #[test]

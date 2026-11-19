@@ -17,6 +17,10 @@ use crate::planning::environment::{
     LicenseInventory,
 };
 use crate::planning::environment::{EnvironmentPlanStatus, EnvironmentSpecStatus};
+use crate::planning::identity_facts::{
+    IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION, IdentityFactsChallenge,
+    IdentityFactsReceipt, validate_manifest,
+};
 
 const MAX_ENVIRONMENT_JSON_BYTES: usize = 4 * 1024 * 1024;
 
@@ -70,6 +74,20 @@ type CampaignRow = (
     String,
     String,
 );
+type IdentityFactsReceiptRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -107,6 +125,26 @@ pub struct CampaignEnvironmentBinding {
     pub builder_image: String,
     pub builder_image_digest: String,
     pub bound_at: String,
+}
+
+/// Durable, immutable identity-facts receipt. The manifest and the complete
+/// signed envelope are retained verbatim so a later audit can re-check the
+/// exact bytes against the broker bearer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredIdentityFactsReceipt {
+    pub nonce: String,
+    pub operation_id: String,
+    pub runtime_id: String,
+    pub plan_sha256: String,
+    pub pin: String,
+    pub observed_root: String,
+    pub fact_count: u32,
+    pub closure_manifest_sha256: String,
+    pub manifest_json: String,
+    pub envelope_json: String,
+    pub signature: String,
+    pub created_at: String,
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -929,6 +967,280 @@ impl Database {
         Ok(())
     }
 
+    /// Persist the Core-issued identity-facts challenge as PENDING before any
+    /// external observation dispatch. A repeated exact challenge is idempotent;
+    /// a different challenge under the same nonce is a conflict.
+    pub async fn issue_identity_facts_challenge(
+        &self,
+        challenge: &IdentityFactsChallenge,
+        request_id: Option<&str>,
+        plan_id: &str,
+        ttl_secs: i64,
+    ) -> Result<(), Error> {
+        challenge
+            .validate_shape()
+            .map_err(|error| Error::Validation(error.to_string()))?;
+        if plan_id.trim().is_empty() || plan_id.len() > 200 {
+            return Err(Error::Validation(
+                "identity-facts plan id is empty or unbounded".into(),
+            ));
+        }
+        let questions_json = serde_json::to_string(&challenge.questions)
+            .map_err(|_| Error::Invalid("identity-facts questions encoding"))?;
+        let challenge_json = serde_json::to_string(challenge)
+            .map_err(|_| Error::Invalid("identity-facts challenge encoding"))?;
+        validate_json_size("identity facts challenge", &challenge_json)?;
+        let now = Utc::now();
+        let expires_at = (now + chrono::Duration::seconds(ttl_secs.max(1))).to_rfc3339();
+        let now = now.to_rfc3339();
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let existing: Option<(String, String)> = sqlx::query_as::query_as(
+            "SELECT challenge_json,state FROM identity_facts_challenges WHERE nonce=?1",
+        )
+        .bind(&challenge.nonce)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some((stored_json, state)) = existing {
+            transaction.commit().await?;
+            if stored_json != challenge_json {
+                return Err(Error::Conflict(
+                    "identity-facts nonce already has a different challenge",
+                ));
+            }
+            if state != "PENDING" {
+                return Err(Error::Conflict(
+                    "identity-facts challenge is no longer pending",
+                ));
+            }
+            return Ok(());
+        }
+        sqlx::query::query(
+            "INSERT INTO identity_facts_challenges
+             (nonce,operation_id,runtime_id,plan_sha256,pin,mode,root,questions_json,
+              challenge_json,request_id,plan_id,state,created_at,expires_at,consumed_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'PENDING',?12,?13,NULL)",
+        )
+        .bind(&challenge.nonce)
+        .bind(&challenge.operation_id)
+        .bind(&challenge.runtime_id)
+        .bind(&challenge.plan_sha256)
+        .bind(&challenge.pin)
+        .bind(format!("{:?}", challenge.mode).to_uppercase())
+        .bind(format!("{:?}", challenge.root).to_uppercase())
+        .bind(&questions_json)
+        .bind(&challenge_json)
+        .bind(request_id)
+        .bind(plan_id)
+        .bind(&now)
+        .bind(&expires_at)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Atomically consume one PENDING challenge and insert its immutable
+    /// receipt. The `UPDATE ... WHERE state='PENDING'` is the replay fence: a
+    /// replayed, concurrent or foreign nonce matches no row, changes nothing and
+    /// deletes nothing.
+    pub async fn consume_identity_facts(
+        &self,
+        challenge: &IdentityFactsChallenge,
+        receipt: &IdentityFactsReceipt,
+    ) -> Result<StoredIdentityFactsReceipt, Error> {
+        challenge
+            .validate_shape()
+            .map_err(|error| Error::Validation(error.to_string()))?;
+        if receipt.envelope.schema_version != IDENTITY_FACTS_SCHEMA_VERSION
+            || receipt.envelope.context != IDENTITY_FACTS_CONTEXT
+            || &receipt.envelope.challenge != challenge
+        {
+            return Err(Error::Validation(
+                "identity-facts receipt is not bound to the issued challenge".into(),
+            ));
+        }
+        validate_manifest(challenge, &receipt.envelope.manifest)
+            .map_err(|error| Error::Validation(error.to_string()))?;
+        if receipt.signature.len() != 64
+            || !receipt
+                .signature
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(Error::Validation(
+                "identity-facts receipt signature is malformed".into(),
+            ));
+        }
+        let challenge_json = serde_json::to_string(challenge)
+            .map_err(|_| Error::Invalid("identity-facts challenge encoding"))?;
+        let manifest_json = serde_json::to_string(&receipt.envelope.manifest)
+            .map_err(|_| Error::Invalid("identity-facts manifest encoding"))?;
+        let envelope_json = serde_json::to_string(&receipt.envelope)
+            .map_err(|_| Error::Invalid("identity-facts envelope encoding"))?;
+        validate_json_size("identity facts envelope", &envelope_json)?;
+        let manifest = &receipt.envelope.manifest;
+        let now = Utc::now().to_rfc3339();
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let row: Option<(String, String, String)> = sqlx::query_as::query_as(
+            "SELECT challenge_json,state,expires_at FROM identity_facts_challenges
+             WHERE nonce=?1",
+        )
+        .bind(&challenge.nonce)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some((stored_json, state, expires_at)) = row else {
+            transaction.rollback().await?;
+            return Err(Error::Conflict(
+                "identity-facts challenge is foreign or unknown",
+            ));
+        };
+        if stored_json != challenge_json {
+            transaction.rollback().await?;
+            return Err(Error::Conflict(
+                "identity-facts receipt does not echo the issued challenge",
+            ));
+        }
+        if state != "PENDING" {
+            transaction.rollback().await?;
+            return Err(Error::Conflict(
+                "identity-facts challenge was already consumed or revoked",
+            ));
+        }
+        if expires_at <= now {
+            sqlx::query::query(
+                "UPDATE identity_facts_challenges SET state='EXPIRED'
+                 WHERE nonce=?1 AND state='PENDING'",
+            )
+            .bind(&challenge.nonce)
+            .execute(&mut *transaction)
+            .await?;
+            transaction.commit().await?;
+            return Err(Error::Conflict("identity-facts challenge expired"));
+        }
+        let updated = sqlx::query::query(
+            "UPDATE identity_facts_challenges
+             SET state='CONSUMED',consumed_at=?2
+             WHERE nonce=?1 AND state='PENDING'",
+        )
+        .bind(&challenge.nonce)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        if updated.rows_affected() != 1 {
+            transaction.rollback().await?;
+            return Err(Error::Conflict(
+                "identity-facts challenge is no longer pending",
+            ));
+        }
+        if let Err(error) = sqlx::query::query(
+            "INSERT INTO environment_identity_facts_receipts
+             (nonce,operation_id,runtime_id,plan_sha256,pin,observed_root,fact_count,
+              closure_manifest_sha256,manifest_json,envelope_json,signature,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+        )
+        .bind(&challenge.nonce)
+        .bind(&challenge.operation_id)
+        .bind(&challenge.runtime_id)
+        .bind(&challenge.plan_sha256)
+        .bind(&challenge.pin)
+        .bind(&manifest.observed_root)
+        .bind(i64::try_from(manifest.fact_count).unwrap_or(i64::MAX))
+        .bind(&manifest.closure_manifest_sha256)
+        .bind(&manifest_json)
+        .bind(&envelope_json)
+        .bind(&receipt.signature)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await
+        {
+            tracing::warn!(%error, "identity-facts receipt insert refused; preserving the pending state");
+            transaction.rollback().await?;
+            return Err(Error::Conflict(
+                "identity-facts receipt already exists for this operation",
+            ));
+        }
+        transaction.commit().await?;
+        Ok(StoredIdentityFactsReceipt {
+            nonce: challenge.nonce.clone(),
+            operation_id: challenge.operation_id.clone(),
+            runtime_id: challenge.runtime_id.clone(),
+            plan_sha256: challenge.plan_sha256.clone(),
+            pin: challenge.pin.clone(),
+            observed_root: manifest.observed_root.clone(),
+            fact_count: u32::try_from(manifest.fact_count).unwrap_or(u32::MAX),
+            closure_manifest_sha256: manifest.closure_manifest_sha256.clone(),
+            manifest_json,
+            envelope_json,
+            signature: receipt.signature.clone(),
+            created_at: now,
+        })
+    }
+
+    pub async fn identity_facts_receipt(
+        &self,
+        nonce: &str,
+    ) -> Result<StoredIdentityFactsReceipt, Error> {
+        let row: Option<IdentityFactsReceiptRow> = sqlx::query_as::query_as(
+            "SELECT nonce,operation_id,runtime_id,plan_sha256,pin,observed_root,
+                    fact_count,closure_manifest_sha256,manifest_json,envelope_json,
+                    signature,created_at
+             FROM environment_identity_facts_receipts WHERE nonce=?1",
+        )
+        .bind(nonce)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((
+            nonce,
+            operation_id,
+            runtime_id,
+            plan_sha256,
+            pin,
+            observed_root,
+            fact_count,
+            closure_manifest_sha256,
+            manifest_json,
+            envelope_json,
+            signature,
+            created_at,
+        )) = row
+        else {
+            return Err(Error::NotFound);
+        };
+        Ok(StoredIdentityFactsReceipt {
+            nonce,
+            operation_id,
+            runtime_id,
+            plan_sha256,
+            pin,
+            observed_root,
+            fact_count: u32::try_from(fact_count).unwrap_or(u32::MAX),
+            closure_manifest_sha256,
+            manifest_json,
+            envelope_json,
+            signature,
+            created_at,
+        })
+    }
+
+    pub async fn latest_identity_facts_receipt(
+        &self,
+        plan_sha256: &str,
+    ) -> Result<StoredIdentityFactsReceipt, Error> {
+        let nonce: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT nonce FROM environment_identity_facts_receipts
+             WHERE plan_sha256=?1 ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(plan_sha256)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((nonce,)) = nonce else {
+            return Err(Error::NotFound);
+        };
+        self.identity_facts_receipt(&nonce).await
+    }
+
     pub async fn save_environment_build_receipt(
         &self,
         receipt: &EnvironmentBuildReceipt,
@@ -1472,6 +1784,151 @@ impl Database {
         .await?;
         transaction.commit().await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod identity_facts_tests {
+    use super::*;
+    use crate::planning::identity_facts::{
+        IdentityFactsChallenge, IdentityFactsMode, OperationRoot, fixture_receipt,
+    };
+
+    fn challenge(nonce: &str) -> IdentityFactsChallenge {
+        IdentityFactsChallenge {
+            operation_id: format!("operation-{nonce}"),
+            runtime_id: format!("sha256:{}", "a".repeat(64)),
+            nonce: nonce.into(),
+            pin: "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d".into(),
+            plan_sha256: "b".repeat(64),
+            mode: IdentityFactsMode::Enumerate,
+            root: OperationRoot::Operation,
+            questions: Vec::new(),
+        }
+    }
+
+    async fn database() -> (Database, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "factory-identity-facts-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Database::open(&path).await.unwrap();
+        (db, path)
+    }
+
+    #[tokio::test]
+    async fn a_pending_challenge_consumes_once_and_preserves_the_receipt() {
+        let (db, path) = database().await;
+        let challenge = challenge("nonce-1");
+        db.issue_identity_facts_challenge(&challenge, Some("request-1"), "plan-1", 900)
+            .await
+            .unwrap();
+        let receipt = fixture_receipt(&challenge, "seed-1");
+        let stored = db
+            .consume_identity_facts(&challenge, &receipt)
+            .await
+            .unwrap();
+        assert_eq!(stored.nonce, "nonce-1");
+        assert_eq!(stored.fact_count, 1);
+        // Replay refuses without deleting the original receipt.
+        assert!(matches!(
+            db.consume_identity_facts(&challenge, &receipt).await,
+            Err(Error::Conflict(_))
+        ));
+        let preserved = db.identity_facts_receipt("nonce-1").await.unwrap();
+        assert_eq!(preserved.signature, receipt.signature);
+        assert_eq!(preserved.envelope_json, stored.envelope_json);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn concurrent_consumption_accepts_exactly_one_receipt() {
+        let (db, path) = database().await;
+        let challenge = challenge("nonce-concurrent");
+        db.issue_identity_facts_challenge(&challenge, None, "plan-1", 900)
+            .await
+            .unwrap();
+        let receipt = fixture_receipt(&challenge, "seed-concurrent");
+        let db = std::sync::Arc::new(db);
+        let first = {
+            let db = std::sync::Arc::clone(&db);
+            let challenge = challenge.clone();
+            let receipt = receipt.clone();
+            tokio::spawn(async move { db.consume_identity_facts(&challenge, &receipt).await })
+        };
+        let second = {
+            let db = std::sync::Arc::clone(&db);
+            let challenge = challenge.clone();
+            let receipt = receipt.clone();
+            tokio::spawn(async move { db.consume_identity_facts(&challenge, &receipt).await })
+        };
+        let results = [first.await.unwrap(), second.await.unwrap()];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(Error::Conflict(_))))
+                .count(),
+            1
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn foreign_expired_or_different_challenge_is_refused() {
+        let (db, path) = database().await;
+        let foreign = challenge("nonce-foreign");
+        db.issue_identity_facts_challenge(&foreign, None, "plan-1", 900)
+            .await
+            .unwrap();
+        let receipt = fixture_receipt(&foreign, "seed-foreign");
+        let mut different = foreign.clone();
+        different.operation_id = "operation-other".into();
+        assert!(matches!(
+            db.consume_identity_facts(&different, &receipt).await,
+            Err(Error::Conflict(_)) | Err(Error::Validation(_))
+        ));
+        let unknown = challenge("nonce-unknown");
+        let unknown_receipt = fixture_receipt(&unknown, "seed-unknown");
+        assert!(matches!(
+            db.consume_identity_facts(&unknown, &unknown_receipt).await,
+            Err(Error::Conflict(_))
+        ));
+        sqlx::query::query("UPDATE identity_facts_challenges SET state='REVOKED' WHERE nonce=?1")
+            .bind(&foreign.nonce)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            db.consume_identity_facts(&foreign, &receipt).await,
+            Err(Error::Conflict(_))
+        ));
+        sqlx::query::query("UPDATE identity_facts_challenges SET state='PENDING' WHERE nonce=?1")
+            .bind(&foreign.nonce)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        // Force expiry without changing the binding.
+        sqlx::query::query(
+            "UPDATE identity_facts_challenges SET expires_at='2000-01-01T00:00:00+00:00'
+             WHERE nonce=?1",
+        )
+        .bind(&foreign.nonce)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            db.consume_identity_facts(&foreign, &receipt).await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            db.identity_facts_receipt(&foreign.nonce).await,
+            Err(Error::NotFound)
+        ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
     }
 }
 

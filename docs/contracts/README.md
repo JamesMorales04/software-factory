@@ -14,6 +14,7 @@
 | Native campaign orchestration | `campaign-orchestration-s4b.md` | S4-B | Core-owned Campaign/Task plan, native dispatch, repair, budgets, restart and Office projection |
 | Agent Office and interactive WorkGraph | `agent-office-s4.md` | S4 | participant/tool-event projections, redaction, filters, visual Office and dependency graph |
 | Environment plan and spec | `environment-plan.md` | WP0 / program | ProjectConventions, Nix/devenv plan, Lead approval, license gate, frozen EnvironmentSpec, builder sandbox and evidence |
+| Environment identity facts | `identity-facts.md` | WP0 / program | broker-observed complete closure, context-separated HMAC, durable pending challenge, atomic receipt, replay refusal and committed-path coverage |
 | Risk-tiered delivery | `delivery-policy.md` | WP0 / program | DeliveryPolicy, exact-head merge, R0/R1/R2/R3 eligibility, fresh checks, idempotency, incidents and manual revert |
 | Issue-linked delivery lifecycle | `issue-lifecycle.md` | WP0 / program | frozen issue links, six lifecycle states, PR comment, close-after-merge and partial-issue handling |
 | Intake follow-up and merged base lineage | `intake-follow-up.md` | WP0 / program | one child per terminal request, exact profile/policy continuity, no parent evidence reuse, and verified default-branch base advance |

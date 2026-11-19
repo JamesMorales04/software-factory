@@ -12763,6 +12763,64 @@ async fn resolve_generated_environment(
     Ok(resolved)
 }
 
+/// Issue the Core-owned identity-facts challenge, persist it PENDING before
+/// dispatch, observe the realised environment through the builder port, verify
+/// the authenticated receipt and consume the challenge atomically.
+///
+/// The observation is deterministic: Core owns the operation/nonce/plan/pin
+/// binding and never supplies a store hash, argv or manifest.
+async fn observe_environment_identity_facts(
+    app: &App,
+    plan: &factory_native::planning::environment::EnvironmentPlan,
+    spec: &factory_native::planning::environment::EnvironmentSpec,
+) -> Result<
+    factory_native::planning::identity_facts::IdentityFactsReceipt,
+    factory_native::planning::environment::EnvironmentError,
+> {
+    use factory_native::planning::identity_facts::{
+        IdentityFactsChallenge, IdentityFactsMode, OperationRoot,
+    };
+    let marker = uuid::Uuid::new_v4().simple().to_string();
+    let challenge = IdentityFactsChallenge {
+        operation_id: format!("environment-identity:{marker}"),
+        runtime_id: spec.builder_image_digest.clone(),
+        nonce: format!("identity-facts:{marker}"),
+        pin: plan.nix.nixpkgs.clone(),
+        plan_sha256: plan.plan_sha256.clone(),
+        mode: IdentityFactsMode::Enumerate,
+        root: OperationRoot::Operation,
+        questions: Vec::new(),
+    };
+    app.db
+        .issue_identity_facts_challenge(
+            &challenge,
+            Some(&plan.request_id),
+            &plan.plan_id,
+            3_600,
+        )
+        .await
+        .map_err(|error| {
+            factory_native::planning::environment::EnvironmentError::new(
+                factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentIdentityEvidenceAbsent,
+                format!("the identity-facts challenge could not be persisted: {error}"),
+            )
+        })?;
+    let receipt = app
+        .environment_builder()
+        .identity_facts(&challenge, plan, spec)
+        .await?;
+    app.db
+        .consume_identity_facts(&challenge, &receipt)
+        .await
+        .map_err(|error| {
+            factory_native::planning::environment::EnvironmentError::new(
+                factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentIdentityFactsRefused,
+                format!("the identity-facts receipt was refused: {error}"),
+            )
+        })?;
+    Ok(receipt)
+}
+
 async fn build_environment_before_freeze(
     app: &App,
     plan: &factory_native::planning::environment::EnvironmentPlan,
@@ -12777,10 +12835,20 @@ async fn build_environment_before_freeze(
     builder.refresh().await;
     let descriptor = builder.descriptor();
     if !descriptor.is_available() || descriptor.status == EnvironmentBuilderStatus::Unavailable {
-        return Ok(None);
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the realised environment cannot be observed without an available builder; identity evidence is absent",
+                "code": "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT",
+            })),
+        )
+            .into_response());
     }
-    let receipt = builder
-        .build(spec, plan, workspace)
+    // The build may refuse at the licence gate. Observe and persist identity
+    // facts from the same spec-keyed realised store first, so a licence refusal
+    // keeps its identity receipt and leaves the environment blocked.
+    let build = builder.build(spec, plan, workspace).await;
+    let identity = observe_environment_identity_facts(app, plan, spec)
         .await
         .map_err(|error| {
             (
@@ -12792,6 +12860,29 @@ async fn build_environment_before_freeze(
             )
                 .into_response()
         })?;
+    if let Ok(receipt) = &build
+        && !receipt.store_path.is_empty()
+        && receipt.store_path != identity.envelope.manifest.observed_root
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the observed identity root does not match the realised build root",
+                "code": "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+            })),
+        )
+            .into_response());
+    }
+    let receipt = build.map_err(|error| {
+        (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": error.message,
+                "code": error.code_str(),
+            })),
+        )
+            .into_response()
+    })?;
     receipt.validate_for(spec).map_err(|error| {
         (
             StatusCode::CONFLICT,
@@ -29851,6 +29942,16 @@ mod tests {
             ) -> factory_native::planning::environment::EnvironmentBuilderFuture<'a> {
                 self.inner.build(spec, plan, workspace)
             }
+
+            fn identity_facts<'a>(
+                &'a self,
+                challenge: &'a factory_native::planning::identity_facts::IdentityFactsChallenge,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                spec: &'a factory_native::planning::environment::EnvironmentSpec,
+            ) -> factory_native::planning::environment::EnvironmentIdentityFactsFuture<'a>
+            {
+                self.inner.identity_facts(challenge, plan, spec)
+            }
         }
 
         #[cfg(feature = "test-support")]
@@ -35948,7 +36049,7 @@ mod tests {
             fn build<'a>(
                 &'a self,
                 spec: &'a factory_native::planning::environment::EnvironmentSpec,
-                _plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
                 _workspace: Option<&'a std::path::Path>,
             ) -> factory_native::planning::environment::EnvironmentBuilderFuture<'a> {
                 Box::pin(async move {
@@ -35965,7 +36066,9 @@ mod tests {
                         builder_image_digest: spec.builder_image_digest.clone(),
                         builder_policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
                         status: EnvironmentBuilderStatus::Succeeded,
-                        store_path: "/nix/store/fake".into(),
+                        store_path: factory_native::planning::identity_facts::fixture_store_path(
+                            &plan.plan_sha256,
+                        ),
                         output_sha256: "b".repeat(64),
                         sbom_sha256: spec.sbom_sha256.clone(),
                         log_ref: "evidence/fake.log".into(),
@@ -35983,6 +36086,21 @@ mod tests {
                         duration_ms: 1,
                         created_at: chrono::Utc::now().to_rfc3339(),
                     })
+                })
+            }
+
+            fn identity_facts<'a>(
+                &'a self,
+                challenge: &'a factory_native::planning::identity_facts::IdentityFactsChallenge,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _spec: &'a factory_native::planning::environment::EnvironmentSpec,
+            ) -> factory_native::planning::environment::EnvironmentIdentityFactsFuture<'a>
+            {
+                Box::pin(async move {
+                    Ok(factory_native::planning::identity_facts::fixture_receipt(
+                        challenge,
+                        &plan.plan_sha256,
+                    ))
                 })
             }
         }
@@ -36034,6 +36152,21 @@ mod tests {
                     Err(factory_native::planning::environment::EnvironmentError::new(
                         factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentBuildFailed,
                         "the fixture builder cannot build",
+                    ))
+                })
+            }
+
+            fn identity_facts<'a>(
+                &'a self,
+                challenge: &'a factory_native::planning::identity_facts::IdentityFactsChallenge,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _spec: &'a factory_native::planning::environment::EnvironmentSpec,
+            ) -> factory_native::planning::environment::EnvironmentIdentityFactsFuture<'a>
+            {
+                Box::pin(async move {
+                    Ok(factory_native::planning::identity_facts::fixture_receipt(
+                        challenge,
+                        &plan.plan_sha256,
                     ))
                 })
             }
@@ -37204,6 +37337,136 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::CONFLICT);
             assert_eq!(stale["code"], "ENVIRONMENT_HASH_MISMATCH");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn committed_environment_observes_identity_facts_before_the_license_gate() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FakeEnvironmentBuilder));
+            let (status, intake) = create_intake(&fixture, "identity-facts-committed").await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            let mut plan =
+                compile_environment_for_request(&fixture.app, &record, &config, 1, "R0", None)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                plan.source,
+                factory_native::planning::environment::EnvironmentPlanSource::ProjectCommitted
+            );
+            assert!(plan.packages.is_empty());
+            assert!(
+                plan.files
+                    .iter()
+                    .any(|file| file.path.eq_ignore_ascii_case("devenv.lock"))
+            );
+            let model_review =
+                factory_native::planning::environment::EnvironmentLeadReviewModel {
+                    schema_version: 1,
+                    request_id: record.id.clone(),
+                    action_id: record.action_id.clone(),
+                    plan_sha256: plan.plan_sha256.clone(),
+                    plan_revision: plan.revision,
+                    risk_class: plan.risk_class.clone(),
+                    decision: factory_native::planning::environment::EnvironmentLeadReviewModelDecision::Approve,
+                    rationale: "The committed environment is exact and has no blocker.".into(),
+                    constraints: Vec::new(),
+                };
+            model_review
+                .validate_for(&plan, chrono::Utc::now())
+                .unwrap();
+            let review = factory_native::planning::environment::record_lead_review(
+                &mut plan,
+                factory_native::planning::environment::RecordLeadReviewInput {
+                    review_id: "review-identity-facts".into(),
+                    principal_id: &format!("lead:{}", record.lead_request_id),
+                    recorded_by: "core:lead-environment-review",
+                    decision: factory_native::planning::environment::LeadReviewDecision::Approved,
+                    rationale: &model_review.rationale,
+                    constraints: Vec::new(),
+                    evidence_refs: Vec::new(),
+                    model_call: factory_native::planning::environment::EnvironmentReviewModelCall {
+                        mechanism: "MODEL".into(),
+                        provider: "opencode-go".into(),
+                        model: "deepseek-v4.1-flash".into(),
+                        reservation_id: "reservation-identity-facts".into(),
+                        request_sha256: "d".repeat(64),
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        total_tokens: 2,
+                        cost_micros: 1,
+                        usage_known: true,
+                    },
+                    now: chrono::Utc::now(),
+                },
+            )
+            .unwrap();
+            let spec = factory_native::planning::environment::freeze_environment_spec(
+                &plan,
+                &review,
+                factory_native::planning::environment::FreezeEnvironmentInput {
+                    spec_id: "spec-identity-facts".into(),
+                    nix_version: "2.28.3",
+                    devenv_version: "1.11.2",
+                    now: chrono::Utc::now(),
+                },
+            )
+            .unwrap();
+            let plan_sha256 = plan.plan_sha256.clone();
+            let receipt = build_environment_before_freeze(&fixture.app, &plan, &spec, None)
+                .await
+                .unwrap()
+                .expect("the fake builder must produce a build receipt");
+            assert_eq!(receipt.spec_sha256, spec.spec_sha256);
+            let stored = fixture
+                .app
+                .db
+                .latest_identity_facts_receipt(&plan_sha256)
+                .await
+                .expect("the committed path must persist an identity receipt");
+            assert_eq!(stored.plan_sha256, plan_sha256);
+            assert!(stored.fact_count >= 1);
+            assert_eq!(
+                stored.runtime_id, plan.builder.digest,
+                "the runtime binding is the exact builder digest"
+            );
+
+            // A licence refusal still runs the build call and returns an error,
+            // but the identity receipt is already durable and stays there.
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FailingEnvironmentBuilder));
+            let refused = build_environment_before_freeze(&fixture.app, &plan, &spec, None).await;
+            assert!(refused.is_err(), "the failing licence gate must refuse");
+            let preserved = fixture
+                .app
+                .db
+                .identity_facts_receipt(&stored.nonce)
+                .await
+                .expect("a licence refusal must keep the original identity receipt");
+            assert_eq!(preserved.signature, stored.signature);
+            let latest = fixture
+                .app
+                .db
+                .latest_identity_facts_receipt(&plan_sha256)
+                .await
+                .expect("the refused operation still observed its realised environment");
+            assert_ne!(latest.nonce, stored.nonce);
 
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
