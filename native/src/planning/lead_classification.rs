@@ -259,7 +259,7 @@ fn policy_allows(license: &str) -> Result<(), ClassificationRefusal> {
 /// `actor_in_scope` must come from Core's own verification of the Lead actor and
 /// its active delegation; it is never read from a request payload. The evidence
 /// bundle, the exact identity and the mandate are all validated in this one
-/// decision, and any incomplete or unverified input refuses.
+/// decision, and any incomplete or unverified input yields no dictum.
 pub fn classify_with_evidence(
     mandate: &ClassificationMandate,
     bundle: Option<&EvidenceBundle>,
@@ -420,7 +420,7 @@ mod tests {
                 Some(&bundle(path, deriver, Some("MIT"), Some(false))),
                 LeadClassificationDecision::Accept,
             )
-            .expect("eligible identity");
+            .expect("a bound identity yields an advisory dictum");
             assert_eq!(dictum.store_path, path);
             assert_eq!(dictum.deriver, deriver);
             assert_eq!(dictum.mandate_revision, 4);

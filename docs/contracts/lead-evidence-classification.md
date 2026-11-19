@@ -109,7 +109,7 @@ offline and simulated until an authenticated channel exists.
 ## Non-authorizing dictum, and what is still missing
 
 `classify_with_evidence` no longer emits an approval. It returns a
-`ClassificationDictum` with `authorized: false` that records the licence, the
+`ClassificationDictum` that records the licence, the
 digested licence text, the intended use, the obligation review, the mandate
 revision and the canonical bundle digest, all bound to the same candidate. There
 is no constructor, flag or caller-supplied handle that turns it into an approval:
