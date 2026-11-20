@@ -629,6 +629,19 @@ struct ResolveOwnerDecisionRequest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct NewLicenseDecisionRequest {
+    delegation_id: String,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RevokeLicenseDecisionRequest {
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RepairCampaignRequest {
     #[serde(default)]
     confirm: bool,
@@ -1301,6 +1314,15 @@ fn office_api_router(app: Arc<App>) -> Router {
             "/agentic/decisions/{id}/resolve",
             post(resolve_agentic_owner_decision),
         )
+        .route("/agentic/license-decisions", get(license_decisions))
+        .route(
+            "/agentic/requests/{id}/license-decision",
+            post(record_license_decision),
+        )
+        .route(
+            "/agentic/license-decisions/{id}/revoke",
+            post(revoke_license_decision),
+        )
         .route("/agentic/requests/{id}", get(agentic_request_detail))
         .route("/agentic/requests/{id}/trace", get(agentic_request_trace))
         .route(
@@ -1630,6 +1652,15 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/agentic/decisions/{id}/resolve",
             post(resolve_agentic_owner_decision),
+        )
+        .route("/agentic/license-decisions", get(license_decisions))
+        .route(
+            "/agentic/requests/{id}/license-decision",
+            post(record_license_decision),
+        )
+        .route(
+            "/agentic/license-decisions/{id}/revoke",
+            post(revoke_license_decision),
         )
         .route("/agentic/requests/{id}", get(agentic_request_detail))
         .route("/agentic/requests/{id}/trace", get(agentic_request_trace))
@@ -18711,6 +18742,198 @@ async fn resolve_agentic_owner_decision(
         .resolve_agentic_owner_decision(&id, &input.option, &input.rationale, &principal)
         .await
     {
+        Ok(decision) => Json(decision).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn license_decisions(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(project_id) = query.get("project_id").map(String::as_str) else {
+        return api_error(Error::Invalid("project_id is required"));
+    };
+    match app.db.license_decisions(project_id).await {
+        Ok(decisions) => Json(json!({"decisions": decisions})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn revoke_license_decision(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<RevokeLicenseDecisionRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.revoke_license_decision(&id, &input.reason).await {
+        Ok(decision) => Json(decision).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+/// IDs-only Lead licence-decision consumer.
+///
+/// The HTTP caller supplies only the delegation id and idempotency key. Core
+/// loads the exact SETTLED Lead reservation, the model output, the Owner
+/// delegation and the current policy/execution binding. No licence, payment,
+/// obligation, identity or decision attribute is accepted from the caller.
+async fn record_license_decision(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<NewLicenseDecisionRequest>,
+) -> Response {
+    use factory_native::planning::lead_classification::{
+        CLASS_SCOPE, ClassificationMandate, VerifiedLicenseMandate,
+    };
+    use factory_native::planning::license_decision::{
+        LicenseEvidenceReview, PolicyBinding, validate_license_evidence_review,
+    };
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let intake = match app.db.intake_request(&id).await {
+        Ok(intake) => intake,
+        Err(error) => return api_error(error),
+    };
+    let lead = match app.db.lead_request(&intake.lead_request_id).await {
+        Ok(lead) => lead,
+        Err(error) => return api_error(error),
+    };
+    let delegation = match app.db.agentic_owner_decision(&input.delegation_id).await {
+        Ok(delegation) => delegation,
+        Err(error) => return api_error(error),
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    if delegation.project_id != intake.project_id {
+        return api_error(Error::Forbidden(
+            "licence delegation belongs to another project".to_string(),
+        ));
+    }
+    if delegation.matter != "LICENSE_IDENTITY_EVIDENCE_DELEGATION"
+        || delegation.status != "APPROVED"
+        || delegation.selected_option.as_deref() != Some("APPROVE_DELEGATION")
+    {
+        return api_error(Error::IntakeConflict {
+            code: "LICENSE_DELEGATION_REQUIRED",
+            message: "an approved, current Owner delegation is required".into(),
+        });
+    }
+    if delegation.deadline <= now {
+        return api_error(Error::IntakeConflict {
+            code: "LICENSE_DELEGATION_EXPIRED",
+            message: "the Owner licence delegation has expired".into(),
+        });
+    }
+    let reservation = match app.db.lead_license_evidence_reservation(&lead.id).await {
+        Ok(reservation) => reservation,
+        Err(Error::NotFound) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_EVIDENCE_REQUIRED",
+                message: "a SETTLED license_evidence_review reservation is required".into(),
+            });
+        }
+        Err(error) => return api_error(error),
+    };
+    let review: LicenseEvidenceReview = match serde_json::from_str(reservation.response_text()) {
+        Ok(review) => review,
+        Err(_) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_EVIDENCE_INVALID",
+                message: "the Lead evidence review is not a valid typed output".into(),
+            });
+        }
+    };
+    let config = match app.db.project_config(&intake.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let binding = PolicyBinding {
+        catalog_sha256: factory_native::planning::license_policy::default_catalog_sha256()
+            .to_owned(),
+        profile_sha256: factory_native::planning::license_policy::default_profile_sha256()
+            .to_owned(),
+        policy_sha256: factory_native::planning::license_policy::default_binding_sha256(),
+        spec_sha256: lead.project_config_hash.clone(),
+        inventory_sha256: lead.project_config_hash.clone(),
+        candidate_sha256: factory_native::device_session::sha256_hex(&config.base_commit),
+    };
+    let verified = match validate_license_evidence_review(&review, &delegation.evidence, &binding) {
+        Ok(verified) => verified,
+        Err(message) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_EVIDENCE_INVALID",
+                message,
+            });
+        }
+    };
+    let revision = delegation
+        .evidence
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let delegation_pin = delegation
+        .evidence
+        .get("pin")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let mandate = match VerifiedLicenseMandate::from_reservation(
+        &reservation,
+        &lead.id,
+        &delegation.id,
+        revision,
+        "licenses-identity-evidence",
+        delegation_pin,
+        &review.pin,
+        true,
+        ClassificationMandate {
+            scope: CLASS_SCOPE.into(),
+            revision,
+            revoked: false,
+        },
+    ) {
+        Ok(mandate) => mandate,
+        Err(error) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_ACTOR_INVALID",
+                message: error.to_string(),
+            });
+        }
+    };
+    let actor_sha256 = mandate.actor_binding_sha256();
+    let obligations = match serde_json::to_value(&verified.obligations) {
+        Ok(obligations) => obligations,
+        Err(_) => return api_error(Error::Invalid("licence obligations encoding")),
+    };
+    let new = factory_native::db::NewLicenseDecision {
+        delegation_id: &delegation.id,
+        project_id: &intake.project_id,
+        lead_request_id: &lead.id,
+        lead_reservation_id: reservation.reservation_id(),
+        lead_actor_sha256: &actor_sha256,
+        identity: &verified.identity,
+        license_expression: &verified.license_expression,
+        selected_branch: &verified.selected_branch,
+        documentation_license: verified.documentation_license.as_deref(),
+        evidence_sha256: &verified.evidence_sha256,
+        provenance: &verified.provenance,
+        use_context: &verified.use_context,
+        commercial_use: verified.commercial_use,
+        payment_required: verified.payment_required,
+        obligations: &obligations,
+        decision: &verified.decision,
+        revision: verified.revision,
+        idempotency_key: &input.idempotency_key,
+    };
+    match app.db.create_license_decision(&new).await {
         Ok(decision) => Json(decision).into_response(),
         Err(error) => api_error(error),
     }

@@ -20,6 +20,7 @@ pub mod helper_exceptions;
 pub mod helper_facts;
 pub mod identity_facts;
 pub mod lead_classification;
+pub mod license_decision;
 pub mod license_policy;
 pub mod prompts;
 pub mod route;

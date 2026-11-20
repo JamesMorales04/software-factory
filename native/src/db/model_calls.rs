@@ -311,6 +311,16 @@ pub struct LicenseEvidenceReservation {
     pub(crate) updated_at: String,
 }
 
+impl LicenseEvidenceReservation {
+    pub fn reservation_id(&self) -> &str {
+        &self.reservation_id
+    }
+
+    pub fn response_text(&self) -> &str {
+        &self.response_text
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelCallRecord {
     pub reservation_id: String,
