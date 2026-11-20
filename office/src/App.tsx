@@ -15,6 +15,7 @@ import { AgentOffice } from "./views/AgentOffice";
 import { CampaignDetail } from "./views/CampaignDetail";
 import { Campaigns } from "./views/Campaigns";
 import { Charter } from "./views/Charter";
+import { LicenseDecisions } from "./views/LicenseDecisions";
 import { DecisionInbox } from "./views/DecisionInbox";
 import { DevicePairClaim } from "./views/DevicePairClaim";
 import { Director } from "./views/Director";
@@ -244,6 +245,7 @@ export function App() {
         <Route path="/specs" element={<Specs />} />
         <Route path="/skills" element={<Skills />} />
         <Route path="/charter" element={<Charter />} />
+        <Route path="/licenses" element={<LicenseDecisions />} />
         <Route path="/campaigns/:campaignId" element={<CampaignDetail />} />
         <Route path="/agents" element={<AgentOffice />} />
         <Route path="/agents/:participantId" element={<AgentOffice />} />

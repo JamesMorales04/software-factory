@@ -3028,6 +3028,30 @@ export interface AgenticOwnerDecision {
   resolvedAt: string | null;
 }
 
+export interface LicenseDecisionRecord {
+  id: string;
+  delegationId: string;
+  projectId: string;
+  leadRequestId: string;
+  leadReservationId: string;
+  leadActorSha256: string;
+  identity: Record<string, unknown>;
+  licenseExpression: string;
+  selectedBranch: string;
+  documentationLicense: string | null;
+  evidenceSha256: string;
+  provenance: Record<string, unknown>;
+  useContext: string;
+  commercialUse: boolean;
+  paymentRequired: boolean;
+  obligations: string[];
+  decision: "ACCEPT" | "NEEDS_EVIDENCE" | "DENY" | "STALE" | "UNKNOWN";
+  revision: number;
+  createdAt: string;
+  revokedAt: string | null;
+  revocationReason: string | null;
+}
+
 export interface AgenticKnowledgeSource {
   title: string;
   url: string;
@@ -4710,6 +4734,20 @@ export const coreApi = {
     request<AgenticOwnerDecision>(
       `/agentic/decisions/${encodeURIComponent(id)}/resolve`,
       { method: "POST", body: JSON.stringify({ option, rationale }) },
+    ),
+  listLicenseDecisions: (projectId: string) =>
+    request<{ decisions: LicenseDecisionRecord[] }>(
+      `/agentic/license-decisions?project_id=${encodeURIComponent(projectId)}`,
+    ),
+  revokeLicenseDecision: (id: string, reason: string) =>
+    request<LicenseDecisionRecord>(
+      `/agentic/license-decisions/${encodeURIComponent(id)}/revoke`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  revokeLicenseDelegation: (id: string, reason: string) =>
+    request<{ delegationId: string; revoked: boolean }>(
+      `/agentic/license-delegations/${encodeURIComponent(id)}/revoke`,
+      { method: "POST", body: JSON.stringify({ reason }) },
     ),
   getAgenticKnowledge: (id: string) =>
     request<AgenticKnowledgeResponse>(
