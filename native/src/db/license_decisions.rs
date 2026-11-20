@@ -20,6 +20,7 @@ pub struct LicenseDecisionRecord {
     pub lead_actor_sha256: String,
     pub identity: serde_json::Value,
     pub license_expression: String,
+    pub selected_branch: String,
     pub documentation_license: Option<String>,
     pub evidence_sha256: String,
     pub provenance: serde_json::Value,
@@ -43,6 +44,7 @@ pub struct NewLicenseDecision<'a> {
     pub lead_actor_sha256: &'a str,
     pub identity: &'a serde_json::Value,
     pub license_expression: &'a str,
+    pub selected_branch: &'a str,
     pub documentation_license: Option<&'a str>,
     pub evidence_sha256: &'a str,
     pub provenance: &'a serde_json::Value,
@@ -66,6 +68,7 @@ fn decision_from_row(row: &sqlx_sqlite::SqliteRow) -> Result<LicenseDecisionReco
         identity: serde_json::from_str(&row.try_get::<String, _>("identity_json")?)
             .map_err(|_| Error::Invalid("licence decision identity"))?,
         license_expression: row.try_get("license_expression")?,
+        selected_branch: row.try_get("selected_branch")?,
         documentation_license: row.try_get("documentation_license")?,
         evidence_sha256: row.try_get("evidence_sha256")?,
         provenance: serde_json::from_str(&row.try_get::<String, _>("provenance_json")?)
@@ -94,6 +97,7 @@ impl Database {
             || input.lead_reservation_id.trim().is_empty()
             || input.lead_actor_sha256.len() != 64
             || input.license_expression.trim().is_empty()
+            || input.selected_branch.trim().is_empty()
             || input.evidence_sha256.len() != 64
             || input.use_context.trim().is_empty()
             || input.revision == 0
@@ -114,7 +118,7 @@ impl Database {
         let mut transaction = self.pool.begin().await?;
         if let Some(existing) = sqlx::query::query(
             "SELECT id,delegation_id,project_id,lead_request_id,lead_reservation_id,
-                    lead_actor_sha256,identity_json,license_expression,documentation_license,
+                    lead_actor_sha256,identity_json,license_expression,selected_branch,documentation_license,
                     evidence_sha256,provenance_json,use_context,commercial_use,payment_required,
                     obligations_json,decision,revision,created_at,revoked_at,revocation_reason
              FROM license_decisions WHERE idempotency_key=?1",
@@ -142,10 +146,10 @@ impl Database {
         let result = sqlx::query::query(
             "INSERT INTO license_decisions
              (id,delegation_id,project_id,lead_request_id,lead_reservation_id,lead_actor_sha256,
-              identity_json,license_expression,documentation_license,evidence_sha256,
+              identity_json,license_expression,selected_branch,documentation_license,evidence_sha256,
               provenance_json,use_context,commercial_use,payment_required,obligations_json,
               decision,revision,idempotency_key,created_at,revoked_at,revocation_reason)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,NULL,NULL)",
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,NULL,NULL)",
         )
         .bind(&id)
         .bind(input.delegation_id)
@@ -155,6 +159,7 @@ impl Database {
         .bind(input.lead_actor_sha256)
         .bind(&identity_json)
         .bind(input.license_expression)
+        .bind(input.selected_branch)
         .bind(input.documentation_license)
         .bind(input.evidence_sha256)
         .bind(&provenance_json)
@@ -176,7 +181,7 @@ impl Database {
                 transaction.rollback().await?;
                 let existing = sqlx::query::query(
                     "SELECT id,delegation_id,project_id,lead_request_id,lead_reservation_id,
-                            lead_actor_sha256,identity_json,license_expression,documentation_license,
+                            lead_actor_sha256,identity_json,license_expression,selected_branch,documentation_license,
                             evidence_sha256,provenance_json,use_context,commercial_use,payment_required,
                             obligations_json,decision,revision,created_at,revoked_at,revocation_reason
                      FROM license_decisions WHERE idempotency_key=?1",
@@ -202,7 +207,7 @@ impl Database {
         }
         let row = sqlx::query::query(
             "SELECT id,delegation_id,project_id,lead_request_id,lead_reservation_id,
-                    lead_actor_sha256,identity_json,license_expression,documentation_license,
+                    lead_actor_sha256,identity_json,license_expression,selected_branch,documentation_license,
                     evidence_sha256,provenance_json,use_context,commercial_use,payment_required,
                     obligations_json,decision,revision,created_at,revoked_at,revocation_reason
              FROM license_decisions WHERE id=?1",
@@ -218,7 +223,7 @@ impl Database {
     pub async fn license_decision(&self, id: &str) -> Result<LicenseDecisionRecord, Error> {
         let row = sqlx::query::query(
             "SELECT id,delegation_id,project_id,lead_request_id,lead_reservation_id,
-                    lead_actor_sha256,identity_json,license_expression,documentation_license,
+                    lead_actor_sha256,identity_json,license_expression,selected_branch,documentation_license,
                     evidence_sha256,provenance_json,use_context,commercial_use,payment_required,
                     obligations_json,decision,revision,created_at,revoked_at,revocation_reason
              FROM license_decisions WHERE id=?1",
@@ -236,7 +241,7 @@ impl Database {
     ) -> Result<Vec<LicenseDecisionRecord>, Error> {
         let rows = sqlx::query::query(
             "SELECT id,delegation_id,project_id,lead_request_id,lead_reservation_id,
-                    lead_actor_sha256,identity_json,license_expression,documentation_license,
+                    lead_actor_sha256,identity_json,license_expression,selected_branch,documentation_license,
                     evidence_sha256,provenance_json,use_context,commercial_use,payment_required,
                     obligations_json,decision,revision,created_at,revoked_at,revocation_reason
              FROM license_decisions WHERE project_id=?1 ORDER BY created_at DESC,id DESC",
@@ -316,6 +321,7 @@ mod tests {
             lead_actor_sha256,
             identity,
             license_expression,
+            selected_branch: "MIT",
             documentation_license: None,
             evidence_sha256,
             provenance,

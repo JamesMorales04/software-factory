@@ -175,6 +175,33 @@ pub(crate) fn is_sha256(value: &str) -> bool {
     }
 }
 
+pub(crate) fn actor_binding_sha256(
+    lead_request_id: &str,
+    reservation_id: &str,
+    request_sha256: &str,
+    output_sha256: &str,
+    purpose: &str,
+    role: &str,
+    state: &str,
+) -> String {
+    let payload = serde_json::json!({
+        "leadRequestId": lead_request_id,
+        "reservationId": reservation_id,
+        "requestSha256": request_sha256,
+        "outputSha256": output_sha256,
+        "purpose": purpose,
+        "role": role,
+        "state": state,
+    });
+    sha256_hex(&serde_json::to_vec(&payload).expect("actor binding payload is serializable"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn exact_store_path(value: &str) -> bool {
     let Some(rest) = value.strip_prefix("/nix/store/") else {
         return false;
@@ -371,8 +398,28 @@ pub struct LicenseActorBinding {
 }
 
 impl LicenseActorBinding {
+    /// Construct the actor only from a database-loaded SETTLED reservation.
+    pub fn from_reservation(
+        reservation: &crate::db::LicenseEvidenceReservation,
+        lead_request_id: &str,
+    ) -> Result<Self, ClassificationRefusal> {
+        if reservation.objective_id != lead_request_id {
+            return Err(ClassificationRefusal::ActorMismatch);
+        }
+        let output_sha256 = sha256_hex(reservation.response_text.as_bytes());
+        Self::verify(
+            lead_request_id,
+            &reservation.reservation_id,
+            &reservation.request_sha256,
+            &output_sha256,
+            &reservation.purpose,
+            &reservation.role,
+            &reservation.state,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
-    pub fn verify(
+    fn verify(
         lead_request_id: &str,
         reservation_id: &str,
         request_sha256: &str,
@@ -405,22 +452,15 @@ impl LicenseActorBinding {
     }
 
     pub fn binding_sha256(&self) -> String {
-        use sha2::{Digest, Sha256};
-        let canonical = format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}",
-            self.lead_request_id,
-            self.reservation_id,
-            self.request_sha256,
-            self.output_sha256,
-            self.purpose,
-            self.role,
-            self.state
-        );
-        let digest = Sha256::digest(canonical.as_bytes());
-        digest
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
+        actor_binding_sha256(
+            &self.lead_request_id,
+            &self.reservation_id,
+            &self.request_sha256,
+            &self.output_sha256,
+            &self.purpose,
+            &self.role,
+            &self.state,
+        )
     }
 }
 
@@ -440,8 +480,35 @@ pub struct VerifiedLicenseMandate {
 }
 
 impl VerifiedLicenseMandate {
+    /// Core-facing constructor: the actor is the database-loaded reservation;
+    /// the delegation fields are loaded from the owner-decision row by Core.
     #[allow(clippy::too_many_arguments)]
-    pub fn verify(
+    pub fn from_reservation(
+        reservation: &crate::db::LicenseEvidenceReservation,
+        lead_request_id: &str,
+        delegation_id: &str,
+        delegation_revision: u64,
+        delegation_domain: &str,
+        delegation_pin: &str,
+        request_pin: &str,
+        delegation_active: bool,
+        mandate: ClassificationMandate,
+    ) -> Result<Self, ClassificationRefusal> {
+        let actor = LicenseActorBinding::from_reservation(reservation, lead_request_id)?;
+        Self::verify(
+            mandate,
+            actor,
+            delegation_id,
+            delegation_revision,
+            delegation_domain,
+            delegation_pin,
+            request_pin,
+            delegation_active,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn verify(
         mandate: ClassificationMandate,
         actor: LicenseActorBinding,
         delegation_id: &str,

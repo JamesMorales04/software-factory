@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS license_decisions (
   lead_actor_sha256 TEXT NOT NULL,
   identity_json TEXT NOT NULL,
   license_expression TEXT NOT NULL,
+  selected_branch TEXT NOT NULL,
   documentation_license TEXT,
   evidence_sha256 TEXT NOT NULL,
   provenance_json TEXT NOT NULL,

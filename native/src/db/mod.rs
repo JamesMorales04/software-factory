@@ -1189,8 +1189,8 @@ pub use issue_links::{
     NewIssueDeliveryEvent,
 };
 pub use model_calls::{
-    ModelCallDecision, ModelCallGrant, ModelCallPolicy, ModelCallRecord, ModelCallResult,
-    ModelCallRole, ModelCallUsage, NewModelCallAuthorization,
+    LicenseEvidenceReservation, ModelCallDecision, ModelCallGrant, ModelCallPolicy,
+    ModelCallRecord, ModelCallResult, ModelCallRole, ModelCallUsage, NewModelCallAuthorization,
 };
 mod delivery;
 pub use delivery::{

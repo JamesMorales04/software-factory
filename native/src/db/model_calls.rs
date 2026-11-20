@@ -291,6 +291,26 @@ pub struct ModelCallUsage {
     pub content: String,
 }
 
+/// Database proof of the exact SETTLED Lead evidence-review reservation.
+/// Fields are crate-visible for the planning/actor constructor but not for an
+/// HTTP or model caller.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fields are consumed by the Core endpoint/actor integration.
+pub struct LicenseEvidenceReservation {
+    pub(crate) reservation_id: String,
+    pub(crate) role: String,
+    pub(crate) project_id: String,
+    pub(crate) objective_id: String,
+    pub(crate) scope_id: String,
+    pub(crate) provider: String,
+    pub(crate) model: String,
+    pub(crate) purpose: String,
+    pub(crate) request_sha256: String,
+    pub(crate) state: String,
+    pub(crate) response_text: String,
+    pub(crate) updated_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelCallRecord {
     pub reservation_id: String,
@@ -1325,6 +1345,56 @@ impl Database {
     /// Lead model-call provenance bound to one Lead request. This exposes the
     /// Core reservation identity, route and measured usage without returning
     /// prompts, responses or credentials.
+    /// Exact SETTLED `license_evidence_review` reservation for one Lead request.
+    /// The fields are private to the database/planning modules; an HTTP caller
+    /// cannot construct this proof from payload strings.
+    pub async fn lead_license_evidence_reservation(
+        &self,
+        lead_request_id: &str,
+    ) -> Result<LicenseEvidenceReservation, Error> {
+        let rows = sqlx::query::query(
+            "SELECT reservation_id,role,project_id,objective_id,scope_id,provider,model,
+                    purpose,request_sha256,state,COALESCE(response_text,'') AS response_text,
+                    updated_at,expires_at_ms
+             FROM model_call_reservations
+             WHERE role='LEAD' AND objective_id=?1 AND purpose='license_evidence_review'
+               AND state='SETTLED'
+             ORDER BY created_at DESC,reservation_id DESC LIMIT 2",
+        )
+        .bind(lead_request_id)
+        .fetch_all(&self.pool)
+        .await?;
+        if rows.is_empty() {
+            return Err(Error::NotFound);
+        }
+        if rows.len() > 1 {
+            return Err(Error::Conflict(
+                "multiple SETTLED license_evidence_review reservations",
+            ));
+        }
+        let row = &rows[0];
+        let expires_at_ms: i64 = row.try_get("expires_at_ms")?;
+        if expires_at_ms <= Utc::now().timestamp_millis() {
+            return Err(Error::Conflict(
+                "license_evidence_review reservation expired",
+            ));
+        }
+        Ok(LicenseEvidenceReservation {
+            reservation_id: row.try_get("reservation_id")?,
+            role: row.try_get("role")?,
+            project_id: row.try_get("project_id")?,
+            objective_id: row.try_get("objective_id")?,
+            scope_id: row.try_get("scope_id")?,
+            provider: row.try_get("provider")?,
+            model: row.try_get("model")?,
+            purpose: row.try_get("purpose")?,
+            request_sha256: row.try_get("request_sha256")?,
+            state: row.try_get("state")?,
+            response_text: row.try_get("response_text")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+
     pub async fn lead_model_calls(&self, request_id: &str) -> Result<Vec<ModelCallRecord>, Error> {
         let rows = sqlx::query::query(
             "SELECT reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,
