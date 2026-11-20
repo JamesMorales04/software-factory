@@ -615,7 +615,7 @@ try {
           candidate: process.env.FACTORY_SOURCE_SHA || null,
           consoleErrors: consoleErrors.map((entry) =>
             entry.text.includes("401") &&
-            entry.url.includes("extra-usage")
+            expectedHttpFailures.some((failure) => failure.status === 401)
               ? { ...entry, expected: true }
               : entry,
           ),
