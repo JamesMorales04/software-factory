@@ -131,6 +131,28 @@ class LicenseDecisionTests(unittest.TestCase):
         with self.assertRaises(license_decision.LicenseDecisionError):
             license_decision.validate_license_decision_receipt(evidence, plan())
 
+    def test_missing_decision_and_document_association_fail_closed(self) -> None:
+        with self.assertRaises(license_decision.LicenseDecisionError):
+            license_decision.validate_license_decision_receipt({}, plan())
+        missing_output = receipt()
+        del missing_output["documentation"][0]["outputSha256"]
+        with self.assertRaises(license_decision.LicenseDecisionError):
+            license_decision.validate_license_decision_receipt(missing_output, plan())
+        missing_text = receipt()
+        del missing_text["documentation"][0]["licenseTextPath"]
+        with self.assertRaises(license_decision.LicenseDecisionError):
+            license_decision.validate_license_decision_receipt(missing_text, plan())
+
+    def test_builder_overlay_is_exact_and_absent_by_default(self) -> None:
+        from environment_builder.cli import _with_license_decisions
+
+        decisions = [{"id": "decision-1"}]
+        merged = _with_license_decisions({"licenseDecisions": decisions}, {"plan": 1})
+        self.assertEqual(merged["licenseDecisions"], decisions)
+        self.assertEqual(merged["plan"], 1)
+        unchanged = _with_license_decisions({}, {"plan": 1})
+        self.assertNotIn("licenseDecisions", unchanged)
+
     def test_documentation_obligations_are_exact(self) -> None:
         changed = receipt()
         changed["documentation"][0]["obligations"] = ["notice"]
