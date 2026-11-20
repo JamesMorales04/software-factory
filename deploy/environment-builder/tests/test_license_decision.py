@@ -95,6 +95,14 @@ class LicenseDecisionTests(unittest.TestCase):
         self.assertEqual(identity["name"], "ed")
         self.assertEqual(identity["license"], "GPL-2.0-or-later")
 
+    def test_core_record_identity_and_stage_string_are_accepted(self) -> None:
+        record = receipt()
+        asset = json.loads(license_decision.ASSET_FILE.read_text(encoding="utf-8"))
+        record["identity"] = asset["identities"][0]
+        record["stage"] = json.dumps(record["stage"], separators=(",", ":"))
+        identity = license_decision.validate_license_decision_receipt(record, plan())
+        self.assertEqual(identity["name"], "ed")
+
     def test_changed_plan_stage_is_stale(self) -> None:
         changed = plan()
         changed["revision"] = 2

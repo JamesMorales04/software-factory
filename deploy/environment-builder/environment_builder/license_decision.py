@@ -54,15 +54,16 @@ def _identity(asset: dict[str, Any], receipt: dict[str, Any]) -> dict[str, Any]:
         raise LicenseDecisionError(
             "ENVIRONMENT_LICENSE_DECISION_INVALID", "the decision has no identity"
         )
+    output = identity.get("output") if isinstance(identity.get("output"), dict) else {}
+    store_path = identity.get("outputStorePath") or output.get("storePath")
+    nar_hash = identity.get("outputNarHash") or output.get("narHash")
     for entry in asset.get("identities", []):
         if (
             entry.get("pin") == identity.get("pin")
             and entry.get("name") == identity.get("name")
             and entry.get("version") == identity.get("version")
-            and entry.get("output", {}).get("storePath")
-            == identity.get("outputStorePath")
-            and entry.get("output", {}).get("narHash")
-            == identity.get("outputNarHash")
+            and entry.get("output", {}).get("storePath") == store_path
+            and entry.get("output", {}).get("narHash") == nar_hash
         ):
             return entry
     raise LicenseDecisionError(
