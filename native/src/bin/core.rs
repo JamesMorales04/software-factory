@@ -21204,21 +21204,31 @@ async fn create_intake_subscription_admission(
     if record.campaign_id.is_some() {
         return api_error(Error::Conflict("intake request already has a Campaign"));
     }
-    // An exact replay of an already-recorded admission returns it even if the
-    // Owner declaration was revoked afterwards; revocation is not retroactive.
-    // A changed payload under the same key is still refused.
-    if let Some(existing) = match app
+    // Exact replay of the original request is stable across revocation and
+    // unrelated settings changes; any changed client payload or frozen profile
+    // identity under the same key is refused.
+    let request_fingerprint = factory_native::db::subscription_request_fingerprint(
+        &input.assumption_id,
+        &input.confirmed_by,
+        input.confirmed_at_ms,
+        input.valid_until_ms,
+        input.extra_usage_disabled,
+        &input.statement,
+        &input.test_profile_id,
+        &input.idempotency_key,
+        &record.profile_revision_id,
+        &record.profile_hash,
+    );
+    let existing = match app
         .db
         .subscription_scope_admission_by_key(&input.idempotency_key)
         .await
     {
         Ok(existing) => existing,
         Err(error) => return api_error(error),
-    } {
-        if existing.intake_request_id == record.id
-            && existing.test_profile_id == input.test_profile_id
-            && existing.assumption.assumption_id == input.assumption_id
-        {
+    };
+    if let Some(existing) = existing {
+        if existing.request_fingerprint == request_fingerprint {
             return Json(existing).into_response();
         }
         return api_error(Error::Conflict(
@@ -21434,48 +21444,37 @@ async fn create_intake_subscription_admission(
             "Owner billing assumption is invalid or expired",
         ));
     }
-    let owner_extra_usage_declarations: Vec<factory_native::db::OwnerExtraUsageBinding> =
-        opencode_settings
+    let mut owner_extra_usage_declarations = Vec::new();
+    for route in &routes {
+        if route.provider != "opencode-go" {
+            continue;
+        }
+        let Some(settings) = opencode_settings
             .iter()
-            .filter_map(|settings| {
-                let declaration = declarations.iter().find(|declaration| {
-                    declaration.base_url == settings.base_url
-                        && declaration.credential_fingerprint == settings.credential_fingerprint
-                })?;
-                let route = routes.iter().find(|route| {
-                    route.provider == "opencode-go"
-                        && route.settings_revision == settings.revision.to_string()
-                })?;
-                Some(factory_native::db::OwnerExtraUsageBinding {
-                    provider: "opencode-go".into(),
-                    model: route.model.clone(),
-                    settings_revision: route.settings_revision.clone(),
-                    base_url: settings.base_url.clone(),
-                    credential_fingerprint: settings.credential_fingerprint.clone(),
-                    declaration_id: declaration.declaration_id.clone(),
-                })
-            })
-            .collect::<Vec<_>>();
-    let mut owner_extra_usage_declarations = owner_extra_usage_declarations;
-    owner_extra_usage_declarations.sort_by(|left, right| {
-        (
-            &left.provider,
-            &left.model,
-            &left.settings_revision,
-            &left.base_url,
-            &left.credential_fingerprint,
-            &left.declaration_id,
-        )
-            .cmp(&(
-                &right.provider,
-                &right.model,
-                &right.settings_revision,
-                &right.base_url,
-                &right.credential_fingerprint,
-                &right.declaration_id,
-            ))
-    });
-    owner_extra_usage_declarations.dedup();
+            .find(|settings| settings.revision.to_string() == route.settings_revision)
+        else {
+            return api_error(Error::Conflict(
+                "an OpenCode Go route has no current provider settings",
+            ));
+        };
+        let Some(declaration) = declarations.iter().find(|declaration| {
+            declaration.base_url == settings.base_url
+                && declaration.credential_fingerprint == settings.credential_fingerprint
+        }) else {
+            return api_error(Error::Conflict(
+                "an OpenCode Go route has no active Owner declaration",
+            ));
+        };
+        owner_extra_usage_declarations.push(factory_native::db::OwnerExtraUsageBinding {
+            role: route.role.as_str().to_owned(),
+            provider: route.provider.clone(),
+            model: route.model.clone(),
+            settings_revision: route.settings_revision.clone(),
+            base_url: settings.base_url.clone(),
+            credential_fingerprint: settings.credential_fingerprint.clone(),
+            declaration_id: declaration.declaration_id.clone(),
+        });
+    }
     let write = factory_native::db::ScopeAdmissionWrite {
         intake_request_id: record.id.clone(),
         lead_request_id: record.lead_request_id.clone(),
@@ -21489,6 +21488,7 @@ async fn create_intake_subscription_admission(
         assumption,
         routes,
         owner_extra_usage_declarations,
+        request_fingerprint,
         idempotency_key: input.idempotency_key,
     };
     match app.db.create_subscription_scope_admission(&write).await {
@@ -34779,6 +34779,25 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{replay}");
             assert_eq!(replay["admissionId"], admission["admissionId"]);
 
+            // A changed payload under the same key is refused, not silently
+            // answered with the old admission.
+            let (status, conflict) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/subscription-admission"),
+                Some(json!({
+                    "assumption_id": "owner-extra-usage-1",
+                    "confirmed_by": "Product Owner",
+                    "confirmed_at_ms": now - 1_000,
+                    "valid_until_ms": now + 60_000,
+                    "statement": "A different Owner statement for the same key",
+                    "test_profile_id": "opencode-go-subscription",
+                    "idempotency_key": "extra-usage-admission-1",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+
             // Revocation invalidates reuse immediately.
             let (status, revoked) = send(
                 &fixture.router,
@@ -34903,6 +34922,7 @@ mod tests {
                         },
                     ],
                     owner_extra_usage_declarations: Vec::new(),
+                    request_fingerprint: String::new(),
                     idempotency_key: "autopilot-funding-only-admission".into(),
                 })
                 .await

@@ -5043,6 +5043,7 @@ async fn owner_confirmed_campaign_admission_enables_subscription_mode() {
     };
     let admission = ScopeAdmissionRecord {
         admission_id: "admission-1".into(),
+        request_fingerprint: String::new(),
         intake_request_id: "intake-1".into(),
         lead_request_id: "lead-1".into(),
         test_profile_id: WAVE3_TEST_PROFILE_ID.into(),

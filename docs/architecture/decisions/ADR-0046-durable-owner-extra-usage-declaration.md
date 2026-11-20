@@ -23,7 +23,10 @@ admission still passes the route, settings, profile and campaign checks.
    - `provider`,
    - canonical `base_url`,
    - the existing `credential_fingerprint` (never the credential itself).
-2. The settings **revision** is not part of the binding. Model, timeout,
+2. The settings **revision** is not part of the declaration key. The
+   admission separately records a route binding (role, model and settings
+   revision) for freshness and audit; that binding is not the Owner
+   declaration identity. Model, timeout,
    pricing or display changes do not change the upstream Extra Usage setting
    and therefore do not ask the Owner again.
 3. A changed credential fingerprint or base URL, a cleared credential, or an
@@ -70,6 +73,9 @@ admission still passes the route, settings, profile and campaign checks.
 - No new provider/account identifier is invented. If a provider does not expose
   an account identifier, the existing configuration fingerprint remains the
   binding.
+- **Enable toggle.** Disabling and re-enabling the same provider account with
+  the same endpoint and credential fingerprint does not re-prompt: the upstream
+  Extra Usage setting is unchanged. A changed credential or endpoint does.
 - **Limitation.** The declaration is an Owner statement; Core does not
   re-observe the upstream console and cannot prove the setting is still off. A
   remote change must be communicated by the Owner, who revokes the declaration

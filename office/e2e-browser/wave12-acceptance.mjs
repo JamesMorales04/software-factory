@@ -553,6 +553,7 @@ try {
       );
     },
   );
+  expectHttpFailure(/\/settings\/providers\/opencode-go\/extra-usage$/, 401);
   await check(
     "WP10-EU-006",
     "Unauthenticated declaration write",

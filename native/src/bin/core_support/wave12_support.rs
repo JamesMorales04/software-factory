@@ -84,7 +84,7 @@ pub async fn seed(
                     auth_mode: "api_key".into(),
                     credential_ciphertext: encrypted.ciphertext,
                     credential_nonce: encrypted.nonce,
-                    credential_fingerprint: "wave12-extra-usage-fixture".into(),
+                    credential_fingerprint: encrypted.fingerprint,
                     enabled: true,
                     is_default: true,
                     max_turns: 8,

@@ -155,11 +155,18 @@ impl super::Database {
         .await?
         {
             let declaration = row_to_declaration(&row)?;
+            if declaration.revoked_at.is_some() {
+                return Err(Error::Conflict(
+                    "the provider Extra Usage idempotency key was revoked; a new confirmation is required",
+                ));
+            }
             if declaration.base_url != input.base_url
                 || declaration.credential_fingerprint != input.credential_fingerprint
+                || declaration.statement != input.statement.trim()
+                || declaration.principal_id != input.principal_id
             {
                 return Err(Error::Conflict(
-                    "the provider Extra Usage idempotency key is bound to another configuration",
+                    "the provider Extra Usage idempotency key is bound to other evidence",
                 ));
             }
             transaction.commit().await?;
@@ -635,6 +642,22 @@ mod tests {
             .await
             .unwrap();
         assert!(renewed.created);
+        // A model/price/timeout change with the same account configuration does
+        // not re-prompt the Owner.
+        let mut untouched = settings(a, "fingerprint-a");
+        untouched.model = "another-model".into();
+        untouched.max_turns = 12;
+        untouched.input_micros_per_million = 9;
+        db.save_provider_settings(&untouched, "owner")
+            .await
+            .unwrap();
+        assert!(
+            db.active_provider_extra_usage_declaration("opencode-go", a, "fingerprint-a")
+                .await
+                .unwrap()
+                .is_some(),
+            "unrelated settings changes must not invalidate the declaration"
+        );
         db.clear_provider_credential("opencode-go", "owner")
             .await
             .unwrap();

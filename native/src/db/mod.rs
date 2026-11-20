@@ -1238,6 +1238,7 @@ pub use provider_extra_usage::{
 pub use provider_settings::{ProviderSettingsAudit, ProviderSettingsRecord, ProviderSettingsWrite};
 pub use subscription_admissions::{
     OwnerExtraUsageBinding, ScopeAdmissionRecord, ScopeAdmissionWrite,
+    subscription_request_fingerprint,
 };
 mod runtime_settings;
 pub use project_configs::NewProjectConfig;
