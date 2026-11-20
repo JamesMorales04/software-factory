@@ -1163,22 +1163,20 @@ impl LeadPlanProposal {
                 &unit.allowed_paths,
             )?;
             unique_values("capabilities", &unit.capabilities)?;
-            if !unit.allowed_paths.is_empty()
-                && !unit
-                    .allowed_paths
-                    .iter()
-                    .all(|path| covered_by(path, grant_paths))
+            if !unit
+                .allowed_paths
+                .iter()
+                .all(|path| covered_by(path, grant_paths))
             {
                 return Err(LeadError::WorkGraph(format!(
                     "WorkUnit {} paths are outside the delegation",
                     unit.id
                 )));
             }
-            if !unit.allowed_paths.is_empty()
-                && !unit
-                    .allowed_paths
-                    .iter()
-                    .all(|path| covered_by(path, &project.allowed_paths))
+            if !unit
+                .allowed_paths
+                .iter()
+                .all(|path| covered_by(path, &project.allowed_paths))
             {
                 return Err(LeadError::WorkGraph(format!(
                     "WorkUnit {} paths are outside the project scope",
@@ -1542,12 +1540,9 @@ impl LeadAssessment {
                 "a change assessment requires an executable proposal".into(),
             ));
         }
-        if self.intent != Intent::Change
-            && let Some(proposal) = &self.proposal
-            && !proposal.work_units.is_empty()
-        {
+        if self.intent != Intent::Change && self.proposal.is_some() {
             return Err(LeadError::Assessment(
-                "a non-change intent cannot include executable WorkUnits".into(),
+                "a non-change intent cannot include an executable proposal".into(),
             ));
         }
         Ok(())
@@ -2778,7 +2773,7 @@ mod tests {
     }
 
     #[test]
-    fn non_change_intent_cannot_carry_executable_units() {
+    fn non_change_intent_cannot_carry_a_proposal_even_without_units() {
         let mut value = assessment();
         value.intent = Intent::Audit;
         value.effort_estimate = EffortEstimate {
@@ -2789,12 +2784,14 @@ mod tests {
             assumptions: Vec::new(),
             unknown_reason: String::new(),
         };
-        value.proposal.as_mut().unwrap().work_units = vec![unit("api")];
+        value.proposal.as_mut().unwrap().work_units.clear();
         let error = value.validate(&assessment_input()).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "invalid assessment: a non-change intent cannot include executable WorkUnits"
+            "invalid assessment: a non-change intent cannot include an executable proposal"
         );
+        value.proposal.as_mut().unwrap().work_units = vec![unit("api")];
+        assert!(value.validate(&assessment_input()).is_err());
     }
 
     #[test]
@@ -2803,6 +2800,23 @@ mod tests {
         value.intent = Intent::Change;
         value.proposal.as_mut().unwrap().work_units = vec![unit("api")];
         value.validate(&assessment_input()).unwrap();
+    }
+
+    #[test]
+    fn every_declared_work_unit_needs_its_own_path_scope() {
+        let grant = grant();
+        let project = project();
+        let mut value = proposal(vec![unit("api")]);
+        let mut empty = unit("tests");
+        empty.allowed_paths.clear();
+        value.work_units.push(empty);
+        let error = value
+            .validate_work_units_against(&grant.allowed_paths, &grant.capabilities, &project)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("allowedPaths must not be empty"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -3203,6 +3203,15 @@ fn root_action_scope(
     config: &ProjectConfig,
     grant: &StandingDelegationV2,
 ) -> Result<Vec<String>, Error> {
+    if proposal
+        .work_units
+        .iter()
+        .any(|unit| unit.allowed_paths.is_empty())
+    {
+        return Err(Error::Forbidden(
+            "a work unit with no allowed path scope cannot be frozen".into(),
+        ));
+    }
     let mut allowed_paths = std::collections::BTreeSet::new();
     for unit in &proposal.work_units {
         allowed_paths.extend(unit.allowed_paths.iter().cloned());
@@ -5483,6 +5492,10 @@ mod tests {
         );
         let empty = proposal_with_units(vec![work_unit(Vec::new())]);
         assert!(root_action_scope(&empty, &config, &grant).is_err());
+        let mut empty_second = work_unit(Vec::new());
+        empty_second.id = "tests".into();
+        let mixed = proposal_with_units(vec![work_unit(vec!["src/api"]), empty_second]);
+        assert!(root_action_scope(&mixed, &config, &grant).is_err());
     }
 
     #[test]

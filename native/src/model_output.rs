@@ -467,7 +467,8 @@ mod tests {
     /// Regression for the real smoke failure
     /// (`a non-change intent cannot include executable WorkUnits`): the JSON
     /// Schema accepts the shape, and the deterministic domain validator rejects
-    /// it fail-closed. The invariant stays; the prompt must stop producing it.
+    /// any proposal for a non-change intent fail-closed. The invariant stays;
+    /// the prompt must stop producing it.
     #[test]
     fn informational_with_work_units_is_rejected_by_domain() {
         let mut value = assessment();
@@ -482,7 +483,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("a non-change intent cannot include executable WorkUnits"),
+                .contains("a non-change intent cannot include an executable proposal"),
             "{error}"
         );
     }
