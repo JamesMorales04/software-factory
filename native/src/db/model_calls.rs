@@ -308,6 +308,10 @@ pub struct LicenseEvidenceReservation {
     pub(crate) request_sha256: String,
     pub(crate) state: String,
     pub(crate) response_text: String,
+    pub(crate) principal_id: String,
+    pub(crate) expires_at_ms: i64,
+    pub(crate) lead_state: String,
+    pub(crate) withdrawn: bool,
     pub(crate) updated_at: String,
 }
 
@@ -318,6 +322,46 @@ impl LicenseEvidenceReservation {
 
     pub fn response_text(&self) -> &str {
         &self.response_text
+    }
+
+    pub fn role(&self) -> &str {
+        &self.role
+    }
+
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    pub fn objective_id(&self) -> &str {
+        &self.objective_id
+    }
+
+    pub fn purpose(&self) -> &str {
+        &self.purpose
+    }
+
+    pub fn request_sha256(&self) -> &str {
+        &self.request_sha256
+    }
+
+    pub fn state(&self) -> &str {
+        &self.state
+    }
+
+    pub fn principal_id(&self) -> &str {
+        &self.principal_id
+    }
+
+    pub fn expires_at_ms(&self) -> i64 {
+        self.expires_at_ms
+    }
+
+    pub fn lead_state(&self) -> &str {
+        &self.lead_state
+    }
+
+    pub fn withdrawn(&self) -> bool {
+        self.withdrawn
     }
 }
 
@@ -1363,13 +1407,16 @@ impl Database {
         lead_request_id: &str,
     ) -> Result<LicenseEvidenceReservation, Error> {
         let rows = sqlx::query::query(
-            "SELECT reservation_id,role,project_id,objective_id,scope_id,provider,model,
-                    purpose,request_sha256,state,COALESCE(response_text,'') AS response_text,
-                    updated_at,expires_at_ms
-             FROM model_call_reservations
-             WHERE role='LEAD' AND objective_id=?1 AND purpose='license_evidence_review'
-               AND state='SETTLED'
-             ORDER BY created_at DESC,reservation_id DESC LIMIT 2",
+            "SELECT m.reservation_id,m.role,m.project_id,m.objective_id,m.scope_id,m.provider,m.model,
+                    m.purpose,m.request_sha256,m.state,COALESCE(m.response_text,'') AS response_text,
+                    m.principal_id,m.expires_at_ms,COALESCE(l.state,'') AS lead_state,
+                    EXISTS(SELECT 1 FROM lead_withdrawals w WHERE w.request_id=m.objective_id) AS withdrawn,
+                    m.updated_at
+             FROM model_call_reservations m
+             LEFT JOIN lead_requests l ON l.id=m.objective_id
+             WHERE m.role='LEAD' AND m.objective_id=?1 AND m.purpose='license_evidence_review'
+               AND m.state='SETTLED'
+             ORDER BY m.created_at DESC,m.reservation_id DESC LIMIT 2",
         )
         .bind(lead_request_id)
         .fetch_all(&self.pool)
@@ -1401,6 +1448,10 @@ impl Database {
             request_sha256: row.try_get("request_sha256")?,
             state: row.try_get("state")?,
             response_text: row.try_get("response_text")?,
+            principal_id: row.try_get("principal_id")?,
+            expires_at_ms,
+            lead_state: row.try_get("lead_state")?,
+            withdrawn: row.try_get("withdrawn")?,
             updated_at: row.try_get("updated_at")?,
         })
     }

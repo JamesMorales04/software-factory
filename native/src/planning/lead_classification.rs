@@ -41,12 +41,11 @@ pub enum EvidenceSourceKind {
     UpstreamDocumentation,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct ClassificationMandate {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ClassificationMandate {
     pub scope: String,
     pub revision: u64,
-    pub revoked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,7 +123,11 @@ pub enum ClassificationRefusal {
     ActorMismatch,
     ActorPurpose,
     ActorStale,
+    ActorScope,
+    LeadTerminal,
     DelegationMismatch,
+    DelegationExpired,
+    DelegationOption,
 }
 
 impl std::fmt::Display for ClassificationRefusal {
@@ -152,8 +155,14 @@ impl std::fmt::Display for ClassificationRefusal {
             }
             Self::ActorPurpose => "the Lead actor reservation has the wrong purpose",
             Self::ActorStale => "the Lead actor reservation is not a SETTLED LEAD reservation",
+            Self::ActorScope => "the Lead actor reservation is outside the exact project and input",
+            Self::LeadTerminal => "the Lead request is terminal and cannot authorize a decision",
             Self::DelegationMismatch => {
                 "the licence delegation does not bind the exact request pin and revision"
+            }
+            Self::DelegationExpired => "the Owner licence delegation has expired",
+            Self::DelegationOption => {
+                "the Owner delegation did not select the exact licence delegation option"
             }
         })
     }
@@ -175,7 +184,10 @@ pub(crate) fn is_sha256(value: &str) -> bool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn actor_binding_sha256(
+    project_id: &str,
+    principal_id: &str,
     lead_request_id: &str,
     reservation_id: &str,
     request_sha256: &str,
@@ -185,6 +197,8 @@ pub(crate) fn actor_binding_sha256(
     state: &str,
 ) -> String {
     let payload = serde_json::json!({
+        "projectId": project_id,
+        "principalId": principal_id,
         "leadRequestId": lead_request_id,
         "reservationId": reservation_id,
         "requestSha256": request_sha256,
@@ -196,7 +210,7 @@ pub(crate) fn actor_binding_sha256(
     sha256_hex(&serde_json::to_vec(&payload).expect("actor binding payload is serializable"))
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -293,13 +307,13 @@ fn policy_allows(license: &str) -> Result<(), ClassificationRefusal> {
     }
 }
 
-/// Deterministic Core decision for a class-level Lead classification.
+/// Deterministic classification body over an already-validated mandate.
 ///
-/// `actor_in_scope` must come from Core's own verification of the Lead actor and
-/// its active delegation; it is never read from a request payload. The evidence
-/// bundle, the exact identity and the mandate are all validated in this one
-/// decision, and any incomplete or unverified input yields no dictum.
-pub fn classify_with_evidence(
+/// This function proves only that the evidence bundle is internally exact and
+/// that the current policy classifies it. It is not a public authority path:
+/// callers must use [`classify_verified_with_evidence`], whose mandate can only
+/// be built from the exact database reservation and Owner delegation.
+pub(crate) fn classify_with_evidence(
     mandate: &ClassificationMandate,
     bundle: Option<&EvidenceBundle>,
     decision: LeadClassificationDecision,
@@ -309,9 +323,6 @@ pub fn classify_with_evidence(
     }
     if mandate.scope != CLASS_SCOPE {
         return Err(ClassificationRefusal::OutOfClass);
-    }
-    if mandate.revoked {
-        return Err(ClassificationRefusal::MandateRevoked);
     }
     let Some(bundle) = bundle else {
         return Err(ClassificationRefusal::NoEvidence);
@@ -388,6 +399,8 @@ pub fn classify_with_evidence(
 /// model, chat message or HTTP payload cannot manufacture it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LicenseActorBinding {
+    project_id: String,
+    principal_id: String,
     lead_request_id: String,
     reservation_id: String,
     request_sha256: String,
@@ -406,8 +419,20 @@ impl LicenseActorBinding {
         if reservation.objective_id != lead_request_id {
             return Err(ClassificationRefusal::ActorMismatch);
         }
+        if reservation.project_id.trim().is_empty() || reservation.principal_id.trim().is_empty() {
+            return Err(ClassificationRefusal::ActorScope);
+        }
+        if reservation.expires_at_ms <= chrono::Utc::now().timestamp_millis() {
+            return Err(ClassificationRefusal::ActorStale);
+        }
+        if matches!(reservation.lead_state.as_str(), "BLOCKED" | "FAILED") || reservation.withdrawn
+        {
+            return Err(ClassificationRefusal::LeadTerminal);
+        }
         let output_sha256 = sha256_hex(reservation.response_text.as_bytes());
         Self::verify(
+            &reservation.project_id,
+            &reservation.principal_id,
             lead_request_id,
             &reservation.reservation_id,
             &reservation.request_sha256,
@@ -420,6 +445,8 @@ impl LicenseActorBinding {
 
     #[allow(clippy::too_many_arguments)]
     fn verify(
+        project_id: &str,
+        principal_id: &str,
         lead_request_id: &str,
         reservation_id: &str,
         request_sha256: &str,
@@ -428,7 +455,11 @@ impl LicenseActorBinding {
         role: &str,
         state: &str,
     ) -> Result<Self, ClassificationRefusal> {
-        if lead_request_id.trim().is_empty() || reservation_id.trim().is_empty() {
+        if lead_request_id.trim().is_empty()
+            || reservation_id.trim().is_empty()
+            || project_id.trim().is_empty()
+            || principal_id.trim().is_empty()
+        {
             return Err(ClassificationRefusal::ActorMismatch);
         }
         if purpose != "license_evidence_review" {
@@ -441,6 +472,8 @@ impl LicenseActorBinding {
             return Err(ClassificationRefusal::InvalidDigest);
         }
         Ok(Self {
+            project_id: project_id.into(),
+            principal_id: principal_id.into(),
             lead_request_id: lead_request_id.into(),
             reservation_id: reservation_id.into(),
             request_sha256: request_sha256.into(),
@@ -451,8 +484,34 @@ impl LicenseActorBinding {
         })
     }
 
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    pub fn principal_id(&self) -> &str {
+        &self.principal_id
+    }
+
+    pub fn lead_request_id(&self) -> &str {
+        &self.lead_request_id
+    }
+
+    pub fn reservation_id(&self) -> &str {
+        &self.reservation_id
+    }
+
+    pub fn request_sha256(&self) -> &str {
+        &self.request_sha256
+    }
+
+    pub fn output_sha256(&self) -> &str {
+        &self.output_sha256
+    }
+
     pub fn binding_sha256(&self) -> String {
         actor_binding_sha256(
+            &self.project_id,
+            &self.principal_id,
             &self.lead_request_id,
             &self.reservation_id,
             &self.request_sha256,
@@ -469,7 +528,8 @@ impl LicenseActorBinding {
 /// The delegation is an `agentic_owner_decisions` record read by Core; the
 /// actor is the exact Lead reservation above. The fields are private and the
 /// type is not `Deserialize`; a caller cannot widen the scope or mint the
-/// authority from JSON or chat.
+/// authority from JSON or chat. Revocation is read from the durable
+/// append-only revocation record, never from a boolean in a payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedLicenseMandate {
     mandate: ClassificationMandate,
@@ -477,73 +537,134 @@ pub struct VerifiedLicenseMandate {
     delegation_id: String,
     delegation_revision: u64,
     delegation_pin: String,
+    use_context: String,
+    project_id: String,
 }
 
 impl VerifiedLicenseMandate {
     /// Core-facing constructor: the actor is the database-loaded reservation;
     /// the delegation fields are loaded from the owner-decision row by Core.
-    #[allow(clippy::too_many_arguments)]
     pub fn from_reservation(
         reservation: &crate::db::LicenseEvidenceReservation,
         lead_request_id: &str,
-        delegation_id: &str,
-        delegation_revision: u64,
-        delegation_domain: &str,
-        delegation_pin: &str,
+        delegation: &crate::db::AgenticOwnerDecisionRecord,
+        delegation_revoked: bool,
         request_pin: &str,
-        delegation_active: bool,
-        mandate: ClassificationMandate,
     ) -> Result<Self, ClassificationRefusal> {
         let actor = LicenseActorBinding::from_reservation(reservation, lead_request_id)?;
-        Self::verify(
-            mandate,
-            actor,
-            delegation_id,
-            delegation_revision,
-            delegation_domain,
-            delegation_pin,
-            request_pin,
-            delegation_active,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn verify(
-        mandate: ClassificationMandate,
-        actor: LicenseActorBinding,
-        delegation_id: &str,
-        delegation_revision: u64,
-        delegation_domain: &str,
-        delegation_pin: &str,
-        request_pin: &str,
-        delegation_active: bool,
-    ) -> Result<Self, ClassificationRefusal> {
-        if delegation_id.trim().is_empty() || delegation_revision == 0 {
+        if actor.project_id != delegation.project_id {
+            return Err(ClassificationRefusal::ActorScope);
+        }
+        if delegation.id.trim().is_empty() {
             return Err(ClassificationRefusal::DelegationMismatch);
         }
-        if delegation_domain != "licenses-identity-evidence" {
+        if delegation.matter != "LICENSE_IDENTITY_EVIDENCE_DELEGATION" {
             return Err(ClassificationRefusal::OutOfClass);
         }
-        if !delegation_active || mandate.revoked {
+        if delegation.status != "APPROVED" || delegation_revoked {
             return Err(ClassificationRefusal::MandateRevoked);
         }
-        // The mandate scope is the class; the exact pin is checked against the
-        // evidence bundle by Core before this type is used.
-        if delegation_pin != request_pin {
+        if delegation.selected_option.as_deref() != Some("APPROVE_DELEGATION")
+            || !delegation
+                .options
+                .iter()
+                .any(|option| option == "APPROVE_DELEGATION")
+        {
+            return Err(ClassificationRefusal::DelegationOption);
+        }
+        let deadline = chrono::DateTime::parse_from_rfc3339(&delegation.deadline)
+            .map_err(|_| ClassificationRefusal::DelegationExpired)?;
+        if deadline <= chrono::Utc::now() {
+            return Err(ClassificationRefusal::DelegationExpired);
+        }
+        let evidence = &delegation.evidence;
+        if exact(evidence, "domain") != Some("licenses-identity-evidence") {
+            return Err(ClassificationRefusal::OutOfClass);
+        }
+        if exact(evidence, "pin") != Some(request_pin) {
             return Err(ClassificationRefusal::DelegationMismatch);
         }
+        let revision = evidence
+            .get("revision")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        if revision == 0 {
+            return Err(ClassificationRefusal::DelegationMismatch);
+        }
+        let use_context = exact(evidence, "useContext")
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(ClassificationRefusal::OutOfClass)?;
+        if exact(evidence, "economicCriterion") != Some("no-mandatory-fee-commercial-use") {
+            return Err(ClassificationRefusal::OutOfClass);
+        }
         Ok(Self {
-            mandate,
+            mandate: ClassificationMandate {
+                scope: CLASS_SCOPE.into(),
+                revision,
+            },
             actor,
-            delegation_id: delegation_id.into(),
-            delegation_revision,
-            delegation_pin: delegation_pin.into(),
+            delegation_id: delegation.id.clone(),
+            delegation_revision: revision,
+            delegation_pin: request_pin.into(),
+            use_context: use_context.into(),
+            project_id: delegation.project_id.clone(),
         })
     }
 
     pub fn actor_binding_sha256(&self) -> String {
         self.actor.binding_sha256()
     }
+
+    pub fn actor(&self) -> &LicenseActorBinding {
+        &self.actor
+    }
+
+    pub fn mandate_scope(&self) -> &str {
+        &self.mandate.scope
+    }
+
+    pub fn delegation_id(&self) -> &str {
+        &self.delegation_id
+    }
+
+    pub fn delegation_revision(&self) -> u64 {
+        self.delegation_revision
+    }
+
+    pub fn delegation_pin(&self) -> &str {
+        &self.delegation_pin
+    }
+
+    pub fn use_context(&self) -> &str {
+        &self.use_context
+    }
+
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+}
+
+fn exact<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(serde_json::Value::as_str)
+}
+
+/// Public authority path for a class-level classification: only a mandate built
+/// from the exact reservation and Owner delegation can reach the policy body.
+pub fn classify_verified_with_evidence(
+    mandate: &VerifiedLicenseMandate,
+    bundle: Option<&EvidenceBundle>,
+    decision: LeadClassificationDecision,
+) -> Result<ClassificationDictum, ClassificationRefusal> {
+    let Some(bundle) = bundle else {
+        return Err(ClassificationRefusal::NoEvidence);
+    };
+    if bundle.observation.pin != mandate.delegation_pin {
+        return Err(ClassificationRefusal::DelegationMismatch);
+    }
+    if bundle.intended_use != mandate.use_context {
+        return Err(ClassificationRefusal::DelegationMismatch);
+    }
+    classify_with_evidence(&mandate.mandate, Some(bundle), decision)
 }
 
 #[cfg(test)]
@@ -567,132 +688,209 @@ mod tests {
         ),
     ];
 
-    fn actor(lead: &str, reservation: &str) -> LicenseActorBinding {
-        LicenseActorBinding::verify(
-            lead,
-            reservation,
-            &"a".repeat(64),
-            &"b".repeat(64),
-            "license_evidence_review",
-            "LEAD",
-            "SETTLED",
-        )
-        .expect("valid actor binding")
+    fn reservation() -> crate::db::LicenseEvidenceReservation {
+        crate::db::LicenseEvidenceReservation {
+            reservation_id: "reservation-1".into(),
+            role: "LEAD".into(),
+            project_id: "project-1".into(),
+            objective_id: "lead-1".into(),
+            scope_id: "scope-1".into(),
+            provider: "provider".into(),
+            model: "model".into(),
+            purpose: "license_evidence_review".into(),
+            request_sha256: "a".repeat(64),
+            state: "SETTLED".into(),
+            response_text: "the exact model output".into(),
+            principal_id: "operator".into(),
+            expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
+            lead_state: "RUNNING".into(),
+            withdrawn: false,
+            updated_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    fn delegation() -> crate::db::AgenticOwnerDecisionRecord {
+        crate::db::AgenticOwnerDecisionRecord {
+            id: "delegation-1".into(),
+            project_id: "project-1".into(),
+            request_id: None,
+            campaign_id: None,
+            matter: "LICENSE_IDENTITY_EVIDENCE_DELEGATION".into(),
+            risk: crate::lead::RiskClass::R0,
+            status: "APPROVED".into(),
+            options: vec!["APPROVE_DELEGATION".into(), "DENY".into()],
+            evidence: serde_json::json!({
+                "domain": "licenses-identity-evidence",
+                "pin": PIN,
+                "useContext": "commercial-development",
+                "economicCriterion": "no-mandatory-fee-commercial-use",
+                "revision": 3,
+            }),
+            recommendation: "delegate the exact decision".into(),
+            deadline: (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+            selected_option: Some("APPROVE_DELEGATION".into()),
+            rationale: Some("owner".into()),
+            resolved_by: Some("operator".into()),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            resolved_at: Some(chrono::Utc::now().to_rfc3339()),
+        }
     }
 
     #[test]
-    fn actor_binding_requires_exact_lead_purpose_and_settled_reservation() {
-        let valid = actor("lead-1", "reservation-1");
+    fn actor_binding_requires_exact_lead_purpose_settled_and_project() {
+        let valid = LicenseActorBinding::from_reservation(&reservation(), "lead-1")
+            .expect("valid actor binding");
         assert_eq!(valid.binding_sha256().len(), 64);
-        assert!(
-            LicenseActorBinding::verify(
-                "lead-1",
-                "reservation-1",
-                &"a".repeat(64),
-                &"b".repeat(64),
-                "lead_environment_review",
-                "LEAD",
-                "SETTLED"
-            )
-            .is_err()
+        assert_eq!(valid.project_id(), "project-1");
+        assert_eq!(valid.principal_id(), "operator");
+
+        let mut wrong_purpose = reservation();
+        wrong_purpose.purpose = "lead_environment_review".into();
+        assert_eq!(
+            LicenseActorBinding::from_reservation(&wrong_purpose, "lead-1"),
+            Err(ClassificationRefusal::ActorPurpose)
         );
-        assert!(
-            LicenseActorBinding::verify(
-                "lead-1",
-                "reservation-1",
-                &"a".repeat(64),
-                &"b".repeat(64),
-                "license_evidence_review",
-                "WORKER",
-                "SETTLED"
-            )
-            .is_err()
+        let mut worker = reservation();
+        worker.role = "WORKER".into();
+        assert_eq!(
+            LicenseActorBinding::from_reservation(&worker, "lead-1"),
+            Err(ClassificationRefusal::ActorStale)
         );
-        assert!(
-            LicenseActorBinding::verify(
-                "lead-1",
-                "reservation-1",
-                &"a".repeat(64),
-                &"b".repeat(64),
-                "license_evidence_review",
-                "LEAD",
-                "RESERVED"
-            )
-            .is_err()
+        let mut reserved = reservation();
+        reserved.state = "RESERVED".into();
+        assert_eq!(
+            LicenseActorBinding::from_reservation(&reserved, "lead-1"),
+            Err(ClassificationRefusal::ActorStale)
         );
-        assert!(
-            LicenseActorBinding::verify(
-                "lead-1",
-                "reservation-1",
-                "not-a-digest",
-                &"b".repeat(64),
-                "license_evidence_review",
-                "LEAD",
-                "SETTLED"
-            )
-            .is_err()
+        let mut terminal = reservation();
+        terminal.lead_state = "BLOCKED".into();
+        assert_eq!(
+            LicenseActorBinding::from_reservation(&terminal, "lead-1"),
+            Err(ClassificationRefusal::LeadTerminal)
+        );
+        let mut expired = reservation();
+        expired.expires_at_ms = chrono::Utc::now().timestamp_millis() - 1;
+        assert_eq!(
+            LicenseActorBinding::from_reservation(&expired, "lead-1"),
+            Err(ClassificationRefusal::ActorStale)
+        );
+        let mut no_principal = reservation();
+        no_principal.principal_id = " ".into();
+        assert_eq!(
+            LicenseActorBinding::from_reservation(&no_principal, "lead-1"),
+            Err(ClassificationRefusal::ActorScope)
         );
     }
 
     #[test]
-    fn verified_mandate_requires_active_delegation_and_exact_pin() {
-        let mandate = ClassificationMandate {
-            scope: CLASS_SCOPE.into(),
-            revision: 1,
-            revoked: false,
-        };
-        let actor = actor("lead-1", "reservation-1");
-        let pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d";
-        let valid = VerifiedLicenseMandate::verify(
-            mandate.clone(),
-            actor.clone(),
-            "delegation-1",
-            1,
-            "licenses-identity-evidence",
-            pin,
-            pin,
-            true,
+    fn verified_mandate_requires_active_delegation_option_project_and_pin() {
+        let delegation = delegation();
+        let valid = VerifiedLicenseMandate::from_reservation(
+            &reservation(),
+            "lead-1",
+            &delegation,
+            false,
+            PIN,
         )
         .expect("valid verified mandate");
-        assert_eq!(valid.actor_binding_sha256(), actor.binding_sha256());
-        assert!(
-            VerifiedLicenseMandate::verify(
-                mandate.clone(),
-                actor.clone(),
-                "delegation-1",
-                1,
-                "other-domain",
-                pin,
-                pin,
-                true
-            )
-            .is_err()
+        assert_eq!(valid.actor_binding_sha256().len(), 64);
+        assert_eq!(valid.project_id(), "project-1");
+        assert_eq!(valid.delegation_revision(), 3);
+        assert_eq!(valid.mandate_scope(), CLASS_SCOPE);
+        assert_eq!(valid.use_context(), "commercial-development");
+
+        let mut revoked = delegation.clone();
+        revoked.status = "DENIED".into();
+        assert_eq!(
+            VerifiedLicenseMandate::from_reservation(
+                &reservation(),
+                "lead-1",
+                &revoked,
+                false,
+                PIN
+            ),
+            Err(ClassificationRefusal::MandateRevoked)
         );
-        assert!(
-            VerifiedLicenseMandate::verify(
-                mandate.clone(),
-                actor.clone(),
-                "delegation-1",
-                1,
-                "licenses-identity-evidence",
-                pin,
-                pin,
-                false
-            )
-            .is_err()
+        assert_eq!(
+            VerifiedLicenseMandate::from_reservation(
+                &reservation(),
+                "lead-1",
+                &delegation,
+                true,
+                PIN
+            ),
+            Err(ClassificationRefusal::MandateRevoked)
         );
-        assert!(
-            VerifiedLicenseMandate::verify(
-                mandate,
-                actor,
-                "delegation-1",
-                1,
-                "licenses-identity-evidence",
-                pin,
-                "github:NixOS/nixpkgs/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                true
-            )
-            .is_err()
+        let mut other_project = delegation.clone();
+        other_project.project_id = "project-2".into();
+        assert_eq!(
+            VerifiedLicenseMandate::from_reservation(
+                &reservation(),
+                "lead-1",
+                &other_project,
+                false,
+                PIN
+            ),
+            Err(ClassificationRefusal::ActorScope)
+        );
+        let mut wrong_option = delegation.clone();
+        wrong_option.selected_option = Some("DENY".into());
+        assert_eq!(
+            VerifiedLicenseMandate::from_reservation(
+                &reservation(),
+                "lead-1",
+                &wrong_option,
+                false,
+                PIN
+            ),
+            Err(ClassificationRefusal::DelegationOption)
+        );
+        let mut expired = delegation.clone();
+        expired.deadline = (chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339();
+        assert_eq!(
+            VerifiedLicenseMandate::from_reservation(
+                &reservation(),
+                "lead-1",
+                &expired,
+                false,
+                PIN
+            ),
+            Err(ClassificationRefusal::DelegationExpired)
+        );
+        assert_eq!(
+            VerifiedLicenseMandate::from_reservation(
+                &reservation(),
+                "lead-1",
+                &delegation,
+                false,
+                "github:NixOS/nixpkgs/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ),
+            Err(ClassificationRefusal::DelegationMismatch)
+        );
+        let mut other_domain = delegation.clone();
+        other_domain.evidence["domain"] = serde_json::json!("other");
+        assert_eq!(
+            VerifiedLicenseMandate::from_reservation(
+                &reservation(),
+                "lead-1",
+                &other_domain,
+                false,
+                PIN
+            ),
+            Err(ClassificationRefusal::OutOfClass)
+        );
+        let mut wrong_criterion = delegation;
+        wrong_criterion.evidence["economicCriterion"] = serde_json::json!("any");
+        assert_eq!(
+            VerifiedLicenseMandate::from_reservation(
+                &reservation(),
+                "lead-1",
+                &wrong_criterion,
+                false,
+                PIN
+            ),
+            Err(ClassificationRefusal::OutOfClass)
         );
     }
 
@@ -742,7 +940,6 @@ mod tests {
         ClassificationMandate {
             scope: CLASS_SCOPE.into(),
             revision: 4,
-            revoked: false,
         }
     }
 
@@ -955,16 +1152,6 @@ mod tests {
                 Err(refusal)
             );
         }
-        let mut revoked = mandate();
-        revoked.revoked = true;
-        assert_eq!(
-            classify_with_evidence(
-                &revoked,
-                Some(&bundle(path, deriver, Some("MIT"), Some(false))),
-                LeadClassificationDecision::Accept
-            ),
-            Err(ClassificationRefusal::MandateRevoked)
-        );
         let mut out_of_class = mandate();
         out_of_class.scope = "some-other-class".into();
         assert_eq!(

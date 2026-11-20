@@ -1155,7 +1155,7 @@ pub use github::{
 mod inference_ledger;
 mod lead;
 mod license_decisions;
-pub use license_decisions::{LicenseDecisionRecord, NewLicenseDecision};
+pub use license_decisions::LicenseDecisionRecord;
 mod model_calls;
 pub use crate::inference_ledger::{
     CampaignEnvelopeBindingInput, CampaignInferenceRequirement, InferenceEnvelopeRecord,
@@ -1208,7 +1208,10 @@ mod execution_receipts;
 mod project_configs;
 pub use execution_receipts::{ExecutionCheckInput, ExecutionCheckReceiptRecord};
 mod environment;
-pub use environment::{CampaignEnvironmentBinding, StoredEnvironmentPlan, StoredEnvironmentSpec};
+pub use environment::{
+    CampaignEnvironmentBinding, StoredEnvironmentPlan, StoredEnvironmentSpec,
+    StoredIdentityFactsReceipt,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use environment::{
     TestEnvironmentBinding, apply_test_environment_binding,
