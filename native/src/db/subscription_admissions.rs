@@ -804,7 +804,7 @@ mod tests {
             output_micros_per_million: 1,
         };
         db.save_provider_settings(&settings, "owner").await.unwrap();
-        let declaration = db
+        let _declaration = db
             .declare_provider_extra_usage(super::super::DeclareProviderExtraUsage {
                 provider: "opencode-go",
                 base_url: "https://opencode.ai/inference/go/openai/v1",
