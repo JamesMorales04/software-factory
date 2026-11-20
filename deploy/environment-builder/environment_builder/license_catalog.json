@@ -3,7 +3,7 @@
   "revision": "spdx-catalog-2026-11-16",
   "spdxLicenseListVersion": "3.27",
   "sourceUrl": "https://spdx.org/licenses/",
-  "sha256": "725ba589f774e2f1415534e2ee37157ae9fa1ecacfc956a462529d167297cd36",
+  "sha256": "edef68e16ad7c465eb8a263d5a74e23c361b8aa7a7eb9186197699265c1e9a49",
   "entries": [
     {
       "id": "0BSD",
@@ -178,6 +178,22 @@
         "Commons Clause"
       ],
       "sourceUrl": "https://commonsclause.com/",
+      "aliases": []
+    },
+    {
+      "id": "GFDL-1.3-or-later",
+      "family": "strong-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/GFDL-1.3-or-later.html",
       "aliases": []
     },
     {

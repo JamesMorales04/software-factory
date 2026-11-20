@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "revision": "versioned-source-evidence-2026-11-20-v2",
+  "evidence": {
+    "cacheNarInfoSha256": "44784cb7c2747c16eb93a973cf3ff69a7c35c0f711725fe1a665fa9fb0117c80",
+    "sourceFlatSha256": "d6d0c7192b02b0519c902a93719053e865ade5a784a3b327d93d888457b23c4b",
+    "outputDrvAtermSha256": "294060511213ba226bb3687e28ad65650d8058e4b60fab50157ba19d2ad46d8c",
+    "sourceDrvAtermSha256": "5c1177a7e9a55b0e5fc1860375b211e13560ae88776e3796fee8ec105d9cf52e",
+    "licenseEvidenceCanonicalSha256": "0818042ead5df4e5c4cca5db7938fa4137dc6fdf33949950c4bd788e0b301508",
+    "outputFilesCanonicalSha256": "a78f57391f96292e404af855b9479712044d70fc7c3f95dfca5022693c7dd4fc",
+    "drvJsonIsByteObservation": false
+  },
+  "identities": [
+    {
+      "pin": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+      "name": "ed",
+      "version": "1.21.1",
+      "versionState": "Known",
+      "license": "GPL-2.0-or-later",
+      "documentationLicense": "GFDL-1.3-or-later",
+      "output": {
+        "drvPath": "/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv",
+        "storePath": "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1",
+        "narHash": "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=",
+        "narSize": 151016,
+        "signature": "cache.nixos.org-1:bJ3/QVik4lh9na2YYZmc4+Lxz6gC4p/97vsDjrdOL7ZCe7aBd/VhbFhMvq2K446dmi+CRzPqXqr5/L22BorQDw=="
+      },
+      "source": {
+        "drvPath": "/nix/store/j151nb5vh176kdrrh1rkilxkdkmvm47w-ed-1.21.1.tar.lz.drv",
+        "storePath": "/nix/store/wa88qds9615j2r5imfryzbyg86c97iga-ed-1.21.1.tar.lz",
+        "url": "https://ftpmirror.gnu.org/ed/ed-1.21.1.tar.lz",
+        "outputHash": "sha256-1tDHGSsCsFGckCqTcZBT6GWt5aeEo7Mn2T2IhFeyPEs=",
+        "narHash": "sha256-dEsPDHFVSahejFEnqz5gAMxx+ls+idLXQ6qOovYOecE=",
+        "narSize": 70136,
+        "signature": "cache.nixos.org-1:xYwC8Vo2buDIPQNzCyHhC8Kz7Y6riU596Zp3tnRTIicdLtih5xQzAPlip25FtXIsShiTfkl4eABEg4TX0c+ZDA=="
+      },
+      "licenseEvidence": [
+        {
+          "path": "COPYING",
+          "purpose": "license-text",
+          "role": "license-text",
+          "license": "GPL-2.0-only",
+          "sha256": "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6"
+        },
+        {
+          "path": "doc/fdl.texi",
+          "purpose": "documentation-license-text",
+          "role": "license-text",
+          "license": "GFDL-1.3-or-later",
+          "sha256": "a7e43ea88ee8fc4722d38482fd1a14c12bfbe2f0512d61980c810627b19cdce5"
+        },
+        {
+          "path": "ed.h",
+          "purpose": "header",
+          "role": "licensing",
+          "license": "GPL-2.0-or-later",
+          "sha256": "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58"
+        },
+        {
+          "path": "main.c",
+          "purpose": "source-version",
+          "role": "licensing",
+          "license": "GPL-2.0-or-later",
+          "sha256": "764b174f290d14091790023e5d536bf7a3090dd6933bb591222b91faa1eae6e3"
+        }
+      ],
+      "outputFiles": [
+        {
+          "path": "bin/ed",
+          "purpose": "software",
+          "sha256": "0cd4a2f8d8e9b709f53915c2c57adffb1c2855147d4599ed3f68ede1fd1fb6d7",
+          "license": "GPL-2.0-or-later"
+        },
+        {
+          "path": "bin/red",
+          "purpose": "software",
+          "sha256": "417f37ffe30a83d9b2a7e0340e57e46018f6ee6919ee1b6f63b791d716c3f65a",
+          "license": "GPL-2.0-or-later"
+        },
+        {
+          "path": "share/info/ed.info",
+          "purpose": "documentation",
+          "sha256": "3618c355d1fd6b5ae66048499735d14a0dd0c438b29e5c2e41040f76fd03d19b",
+          "license": "GFDL-1.3-or-later"
+        },
+        {
+          "path": "share/man/man1/ed.1.gz",
+          "purpose": "documentation",
+          "sha256": "891a6ac40cfdd4e3b58ef59444cd7544d2304feb986752a033270f69ec0a11c2",
+          "license": "GPL-2.0-or-later",
+          "note": "the man page declares GPLv2+; it is not asserted as GFDL"
+        }
+      ],
+      "licenseEvidenceRule": "COPYING is the GPL-2.0 license text only; the package GPL-2.0-or-later is established by the ed.h/main.c headers, not by COPYING alone. GFDL applies to ed.info and the fdl source, not the man page."
+    }
+  ]
+}
