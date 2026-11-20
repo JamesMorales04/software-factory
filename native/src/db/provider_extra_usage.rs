@@ -54,6 +54,18 @@ pub struct DeclaredProviderExtraUsage {
 
 fn validate_declaration(input: &DeclareProviderExtraUsage<'_>) -> Result<(), Error> {
     let statement = input.statement.trim();
+    if input.provider != "opencode-go" {
+        return Err(Error::Invalid(
+            "the Owner Extra Usage declaration is only valid for opencode-go",
+        ));
+    }
+    if !crate::provider_catalog::is_canonical_opencode_go_base_url(input.base_url)
+        && !crate::provider_catalog::is_test_upstream_url(input.base_url)
+    {
+        return Err(Error::Invalid(
+            "the Owner Extra Usage declaration requires the canonical OpenCode Go endpoint",
+        ));
+    }
     if input.provider.trim().is_empty()
         || input.provider.len() > 64
         || !(input.base_url.starts_with("https://") || input.base_url.starts_with("http://"))
@@ -225,16 +237,21 @@ impl super::Database {
     pub async fn revoke_provider_extra_usage(
         &self,
         provider: &str,
+        base_url: &str,
+        credential_fingerprint: &str,
         principal_id: &str,
     ) -> Result<ProviderExtraUsageDeclaration, Error> {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let row = sqlx::query::query(&format!(
             "SELECT {DECLARATION_COLUMNS} FROM provider_extra_usage_declarations
-             WHERE provider=?1 AND revoked_at IS NULL
+             WHERE provider=?1 AND base_url=?2 AND credential_fingerprint=?3
+               AND revoked_at IS NULL
              ORDER BY declared_at DESC LIMIT 1"
         ))
         .bind(provider)
+        .bind(base_url)
+        .bind(credential_fingerprint)
         .fetch_optional(&mut *transaction)
         .await?;
         let Some(row) = row else {
@@ -266,6 +283,45 @@ impl super::Database {
         transaction.commit().await?;
         Ok(declaration)
     }
+}
+
+/// Revoke every active declaration for one exact configuration. Used when a
+/// real credential or endpoint change makes the old Owner statement stale, so
+/// switching back cannot silently reactivate it.
+pub(crate) async fn revoke_configuration_in(
+    connection: &mut SqliteConnection,
+    provider: &str,
+    base_url: &str,
+    credential_fingerprint: &str,
+    actor: &str,
+    reason: &str,
+) -> Result<u64, Error> {
+    let now = Utc::now().to_rfc3339();
+    let result = sqlx::query::query(
+        "UPDATE provider_extra_usage_declarations
+         SET revoked_at=?1, revoked_by=?2
+         WHERE provider=?3 AND base_url=?4 AND credential_fingerprint=?5
+           AND revoked_at IS NULL",
+    )
+    .bind(&now)
+    .bind(actor)
+    .bind(provider)
+    .bind(base_url)
+    .bind(credential_fingerprint)
+    .execute(&mut *connection)
+    .await?;
+    if result.rows_affected() > 0 {
+        record_audit(
+            connection,
+            provider,
+            0,
+            "extra_usage_invalidated",
+            actor,
+            &format!("reason={reason} base_url={base_url} fingerprint={credential_fingerprint}"),
+        )
+        .await?;
+    }
+    Ok(result.rows_affected())
 }
 
 async fn active_declaration_in(
@@ -353,7 +409,7 @@ mod tests {
         let first = db
             .declare_provider_extra_usage(declaration(
                 "opencode-go",
-                "https://opencode.ai/zen/go/v1",
+                "https://opencode.ai/inference/go/openai/v1",
                 "fingerprint-a",
                 "declare-1",
             ))
@@ -363,7 +419,7 @@ mod tests {
         let replay = db
             .declare_provider_extra_usage(declaration(
                 "opencode-go",
-                "https://opencode.ai/zen/go/v1",
+                "https://opencode.ai/inference/go/openai/v1",
                 "fingerprint-a",
                 "declare-1",
             ))
@@ -377,7 +433,7 @@ mod tests {
         let same_configuration = db
             .declare_provider_extra_usage(declaration(
                 "opencode-go",
-                "https://opencode.ai/zen/go/v1",
+                "https://opencode.ai/inference/go/openai/v1",
                 "fingerprint-a",
                 "declare-2",
             ))
@@ -391,7 +447,7 @@ mod tests {
         assert!(
             db.active_provider_extra_usage_declaration(
                 "opencode-go",
-                "https://opencode.ai/zen/go/v1",
+                "https://opencode.ai/inference/go/openai/v1",
                 "fingerprint-a"
             )
             .await
@@ -402,7 +458,7 @@ mod tests {
         assert!(
             db.active_provider_extra_usage_declaration(
                 "opencode-go",
-                "https://opencode.ai/zen/go/v1",
+                "https://opencode.ai/inference/go/openai/v1",
                 "fingerprint-a"
             )
             .await
@@ -414,7 +470,7 @@ mod tests {
         assert!(
             db.active_provider_extra_usage_declaration(
                 "opencode-go",
-                "https://opencode.ai/zen/go/v1",
+                "https://opencode.ai/inference/go/openai/v1",
                 "fingerprint-b"
             )
             .await
@@ -441,14 +497,19 @@ mod tests {
         let first = db
             .declare_provider_extra_usage(declaration(
                 "opencode-go",
-                "https://opencode.ai/zen/go/v1",
+                "https://opencode.ai/inference/go/openai/v1",
                 "fingerprint-a",
                 "declare-revoke-1",
             ))
             .await
             .unwrap();
         let revoked = db
-            .revoke_provider_extra_usage("opencode-go", "operator-token")
+            .revoke_provider_extra_usage(
+                "opencode-go",
+                "https://opencode.ai/inference/go/openai/v1",
+                "fingerprint-a",
+                "operator-token",
+            )
             .await
             .unwrap();
         assert!(revoked.revoked_at.is_some());
@@ -456,7 +517,7 @@ mod tests {
         assert!(
             db.active_provider_extra_usage_declaration(
                 "opencode-go",
-                "https://opencode.ai/zen/go/v1",
+                "https://opencode.ai/inference/go/openai/v1",
                 "fingerprint-a"
             )
             .await
@@ -464,14 +525,19 @@ mod tests {
             .is_none()
         );
         assert!(
-            db.revoke_provider_extra_usage("opencode-go", "operator-token")
-                .await
-                .is_err()
+            db.revoke_provider_extra_usage(
+                "opencode-go",
+                "https://opencode.ai/inference/go/openai/v1",
+                "fingerprint-a",
+                "operator-token",
+            )
+            .await
+            .is_err()
         );
         let renewed = db
             .declare_provider_extra_usage(declaration(
                 "opencode-go",
-                "https://opencode.ai/zen/go/v1",
+                "https://opencode.ai/inference/go/openai/v1",
                 "fingerprint-a",
                 "declare-revoke-2",
             ))
@@ -483,11 +549,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn configuration_changes_invalidate_and_cannot_reactivate() {
+        let (path, db) = fixture_db().await;
+        let a = "https://opencode.ai/inference/go/openai/v1";
+        let settings = |base_url: &str, fingerprint: &str| super::super::ProviderSettingsWrite {
+            provider: "opencode-go".into(),
+            kind: "opencode".into(),
+            model: "deepseek-v4.1-flash".into(),
+            base_url: base_url.into(),
+            auth_mode: "api_key".into(),
+            credential_ciphertext: "ciphertext".into(),
+            credential_nonce: "nonce".into(),
+            credential_fingerprint: fingerprint.into(),
+            enabled: true,
+            is_default: true,
+            max_turns: 8,
+            max_input_tokens: 128_000,
+            max_output_tokens: 8_192,
+            max_cost_micros: 1_000_000,
+            input_micros_per_million: 0,
+            output_micros_per_million: 0,
+        };
+        db.save_provider_settings(&settings(a, "fingerprint-a"), "owner")
+            .await
+            .unwrap();
+        db.declare_provider_extra_usage(declaration(
+            "opencode-go",
+            a,
+            "fingerprint-a",
+            "invalidate-1",
+        ))
+        .await
+        .unwrap();
+        db.save_provider_settings(
+            &settings("https://example.invalid/v1", "fingerprint-a"),
+            "owner",
+        )
+        .await
+        .unwrap();
+        assert!(
+            db.active_provider_extra_usage_declaration("opencode-go", a, "fingerprint-a")
+                .await
+                .unwrap()
+                .is_none(),
+            "changing the endpoint must revoke the old declaration"
+        );
+        // Switching back to the previous endpoint does not resurrect it.
+        db.save_provider_settings(&settings(a, "fingerprint-a"), "owner")
+            .await
+            .unwrap();
+        assert!(
+            db.active_provider_extra_usage_declaration("opencode-go", a, "fingerprint-a")
+                .await
+                .unwrap()
+                .is_none(),
+            "a revoked declaration must not reactivate by reverting settings"
+        );
+        let renewed = db
+            .declare_provider_extra_usage(declaration(
+                "opencode-go",
+                a,
+                "fingerprint-a",
+                "invalidate-2",
+            ))
+            .await
+            .unwrap();
+        assert!(renewed.created);
+        db.clear_provider_credential("opencode-go", "owner")
+            .await
+            .unwrap();
+        assert!(
+            db.active_provider_extra_usage_declaration("opencode-go", a, "fingerprint-a")
+                .await
+                .unwrap()
+                .is_none(),
+            "clearing the credential must revoke the declaration"
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn revocation_targets_the_current_configuration_only() {
+        let (path, db) = fixture_db().await;
+        let a = "https://opencode.ai/inference/go/openai/v1";
+        let b = "https://opencode.ai/inference/go/openai/v1";
+        db.declare_provider_extra_usage(declaration("opencode-go", a, "fingerprint-a", "multi-a"))
+            .await
+            .unwrap();
+        db.declare_provider_extra_usage(declaration("opencode-go", b, "fingerprint-b", "multi-b"))
+            .await
+            .unwrap();
+        db.revoke_provider_extra_usage("opencode-go", a, "fingerprint-a", "owner")
+            .await
+            .unwrap();
+        assert!(
+            db.active_provider_extra_usage_declaration("opencode-go", a, "fingerprint-a")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.active_provider_extra_usage_declaration("opencode-go", b, "fingerprint-b")
+                .await
+                .unwrap()
+                .is_some(),
+            "revoking one configuration must not revoke another active one"
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn unbounded_or_mismatched_declarations_are_refused() {
         let (path, db) = fixture_db().await;
         let mut short = declaration(
             "opencode-go",
-            "https://opencode.ai/zen/go/v1",
+            "https://opencode.ai/inference/go/openai/v1",
             "fingerprint-a",
             "declare-short",
         );
@@ -495,7 +673,7 @@ mod tests {
         assert!(db.declare_provider_extra_usage(short).await.is_err());
         db.declare_provider_extra_usage(declaration(
             "opencode-go",
-            "https://opencode.ai/zen/go/v1",
+            "https://opencode.ai/inference/go/openai/v1",
             "fingerprint-a",
             "declare-bound",
         ))

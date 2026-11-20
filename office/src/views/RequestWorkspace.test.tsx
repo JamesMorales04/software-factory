@@ -830,6 +830,57 @@ describe("RequestWorkspace", () => {
     expect(
       screen.getByRole("button", { name: "Revoke Extra Usage confirmation" }),
     ).toBeDefined();
+    await userEvent.click(subscription);
+    await waitFor(() =>
+      expect(mocks.createIntakeSubscriptionAdmission).toHaveBeenCalledWith(
+        "request-1",
+        expect.not.objectContaining({ extra_usage_disabled: true }),
+      ),
+    );
+    await screen.findByText(/Subscription confirmation recorded/);
+  });
+
+  it("revokes the persisted Extra Usage confirmation", async () => {
+    mocks.getProviderExtraUsage.mockResolvedValue({
+      provider: "opencode-go",
+      baseUrl: "https://opencode.ai/inference/go/openai/v1",
+      credentialBound: true,
+      active: true,
+      declaration: {
+        declarationId: "declaration-1",
+        declaredAt: "2026-11-20T00:00:00Z",
+        declaredBy: "operator-token",
+        statement:
+          "I confirm OpenCode Go Extra Usage is disabled for this provider configuration.",
+        revokedAt: null,
+      },
+    });
+    mocks.revokeProviderExtraUsage.mockResolvedValue({
+      provider: "opencode-go",
+      baseUrl: "https://opencode.ai/inference/go/openai/v1",
+      credentialBound: true,
+      active: false,
+      declaration: {
+        declarationId: "declaration-1",
+        declaredAt: "2026-11-20T00:00:00Z",
+        declaredBy: "operator-token",
+        statement:
+          "I confirm OpenCode Go Extra Usage is disabled for this provider configuration.",
+        revokedAt: "2026-11-20T01:00:00Z",
+      },
+    });
+    mocks.getIntakeRequest.mockResolvedValue(submitted);
+    renderRequest();
+    const revoke = await screen.findByRole("button", {
+      name: "Revoke Extra Usage confirmation",
+    });
+    await userEvent.click(revoke);
+    await waitFor(() =>
+      expect(mocks.revokeProviderExtraUsage).toHaveBeenCalledWith("opencode-go"),
+    );
+    expect(
+      await screen.findByText(/Extra Usage confirmation revoked/),
+    ).toBeDefined();
   });
 
   it("persists the Extra Usage confirmation once and then hides the checkbox", async () => {

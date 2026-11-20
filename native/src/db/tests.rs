@@ -5060,6 +5060,7 @@ async fn owner_confirmed_campaign_admission_enables_subscription_mode() {
             settings_revision: "1".into(),
             transport: "OPENCODE_GO_SUBSCRIPTION".into(),
         }],
+        owner_extra_usage_declaration_ids: Vec::new(),
         state: "ACTIVE".into(),
         campaign_id: None,
         created_at_ms: Utc::now().timestamp_millis(),

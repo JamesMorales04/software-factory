@@ -32,6 +32,9 @@ pub struct ScopeAdmissionWrite {
     pub profile_hash: String,
     pub assumption: OwnerBillingAssumption,
     pub routes: Vec<TestRouteBinding>,
+    /// Exact durable Owner Extra Usage declarations backing this admission.
+    /// Empty for the legacy per-request confirmation.
+    pub owner_extra_usage_declaration_ids: Vec<String>,
     pub idempotency_key: String,
 }
 
@@ -50,6 +53,7 @@ pub struct ScopeAdmissionRecord {
     pub profile_hash: String,
     pub assumption: OwnerBillingAssumption,
     pub routes: Vec<TestRouteBinding>,
+    pub owner_extra_usage_declaration_ids: Vec<String>,
     pub state: String,
     pub campaign_id: Option<String>,
     pub created_at_ms: i64,
@@ -79,6 +83,7 @@ fn receipt_digest(
         "profileHash": input.profile_hash,
         "assumption": assumption_json,
         "routes": routes_json,
+        "ownerExtraUsageDeclarationIds": input.owner_extra_usage_declaration_ids,
         "idempotencyKey": input.idempotency_key,
     });
     let bytes = serde_json::to_vec(&value)
@@ -151,8 +156,34 @@ impl Database {
         let assumption_sha256 = sha256_hex(assumption_json.as_bytes());
         let routes_json = canonical_routes(&input.routes)?;
         let receipt_sha256 = receipt_digest(input, &assumption_json, &routes_json)?;
+        if input.owner_extra_usage_declaration_ids.len() > 16
+            || input
+                .owner_extra_usage_declaration_ids
+                .iter()
+                .any(|id| id.trim().is_empty() || id.len() > 64)
+        {
+            return Err(Error::Invalid(
+                "subscription admission Owner declaration list is not bounded",
+            ));
+        }
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        // Fence revocation: every cited Owner declaration must still be active
+        // inside the admission write transaction.
+        for declaration_id in &input.owner_extra_usage_declaration_ids {
+            let active: Option<(i64,)> = sqlx::query_as::query_as(
+                "SELECT 1 FROM provider_extra_usage_declarations
+                 WHERE declaration_id=?1 AND revoked_at IS NULL",
+            )
+            .bind(declaration_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if active.is_none() {
+                return Err(Error::Conflict(
+                    "an Owner Extra Usage declaration was revoked before the admission",
+                ));
+            }
+        }
         let existing: Option<(String, String, String, String)> = sqlx::query_as::query_as(
             "SELECT admission_id,receipt_sha256,state,idempotency_key
              FROM subscription_scope_admissions WHERE idempotency_key=?1",
@@ -181,9 +212,10 @@ impl Database {
             "INSERT INTO subscription_scope_admissions
              (admission_id,intake_request_id,lead_request_id,test_profile_id,execution_profile_id,provider,model,
               settings_revision,profile_revision_id,profile_hash,assumption_json,
-              assumption_sha256,routes_json,state,campaign_id,created_at_ms,expires_at_ms,
+              assumption_sha256,routes_json,owner_extra_usage_declaration_ids_json,
+              state,campaign_id,created_at_ms,expires_at_ms,
               consumed_at_ms,idempotency_key,receipt_sha256)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'ACTIVE',NULL,?14,?15,NULL,?16,?17)",
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'ACTIVE',NULL,?15,?16,NULL,?17,?18)",
         )
         .bind(&admission_id)
         .bind(&input.intake_request_id)
@@ -198,6 +230,10 @@ impl Database {
         .bind(&assumption_json)
         .bind(&assumption_sha256)
         .bind(&routes_json)
+        .bind(
+            serde_json::to_string(&input.owner_extra_usage_declaration_ids)
+                .map_err(|_| Error::Invalid("Owner declaration list encoding"))?,
+        )
         .bind(now_ms)
         .bind(expires_at_ms)
         .bind(&input.idempotency_key)
@@ -268,8 +304,8 @@ pub(super) async fn load_scope_admission(
     let row = sqlx::query::query(
         "SELECT admission_id,intake_request_id,lead_request_id,test_profile_id,execution_profile_id,provider,model,
                 settings_revision,profile_revision_id,profile_hash,assumption_json,
-                assumption_sha256,routes_json,state,campaign_id,created_at_ms,expires_at_ms,
-                receipt_sha256
+                assumption_sha256,routes_json,owner_extra_usage_declaration_ids_json,
+                state,campaign_id,created_at_ms,expires_at_ms,receipt_sha256
          FROM subscription_scope_admissions WHERE admission_id=?1",
     )
     .bind(admission_id)
@@ -288,6 +324,9 @@ pub(super) async fn load_scope_admission(
     let routes_json: String = row.try_get("routes_json")?;
     let routes: Vec<TestRouteBinding> = serde_json::from_str(&routes_json)
         .map_err(|_| Error::Invalid("subscription admission route encoding"))?;
+    let owner_extra_usage_declaration_ids: Vec<String> =
+        serde_json::from_str(&row.try_get::<String, _>("owner_extra_usage_declaration_ids_json")?)
+            .map_err(|_| Error::Invalid("subscription admission Owner declaration encoding"))?;
     Ok(Some(ScopeAdmissionRecord {
         admission_id: row.try_get("admission_id")?,
         intake_request_id: row.try_get("intake_request_id")?,
@@ -301,6 +340,7 @@ pub(super) async fn load_scope_admission(
         profile_hash: row.try_get("profile_hash")?,
         assumption,
         routes,
+        owner_extra_usage_declaration_ids,
         state: row.try_get("state")?,
         campaign_id: row.try_get("campaign_id")?,
         created_at_ms: row.try_get("created_at_ms")?,

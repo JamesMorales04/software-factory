@@ -26,22 +26,33 @@ admission still passes the route, settings, profile and campaign checks.
 2. The settings **revision** is not part of the binding. Model, timeout,
    pricing or display changes do not change the upstream Extra Usage setting
    and therefore do not ask the Owner again.
-3. A changed credential fingerprint or base URL, or an explicit revocation,
-   invalidates the declaration. A later admission then requires a new
-   declaration (or the legacy per-request confirmation), fail-closed.
+3. A changed credential fingerprint or base URL, a cleared credential, or an
+   explicit revocation invalidates the declaration **irreversibly**: switching
+   the settings back cannot reactivate the old row. A later admission then
+   requires a new declaration (or the legacy per-request confirmation),
+   fail-closed. Model, timeout, pricing and display changes do not invalidate
+   it because they do not change the upstream Extra Usage setting.
 4. `PUT/DELETE /settings/providers/{provider}/extra-usage` are authenticated
-   operator operations; `GET` returns only the declaration state (dates, author,
-   statement, active flag), never credential material. Only `opencode-go` uses
-   this declaration.
+   operations. In `TRUSTED_LOCAL` the authenticated operator token or paired
+   device session **is** the Owner principal; there is no separate product
+   Owner role to invent. `GET` returns the declaration state (provider, active,
+   base URL, credential-bound flag, declaration id, dates, author, statement,
+   revoked timestamp) and never credential material. Only `opencode-go`, with a
+   canonical (or explicitly enabled test) endpoint, uses this declaration.
 5. `POST /intake/requests/{id}/subscription-admission` reuses active
    declarations that cover every OpenCode Go route in the frozen profile. The
    admission still creates its own time-scoped `OwnerBillingAssumption`
    (24 hours) with the Owner declaration as its factual basis, and still
    validates routes, settings revisions, quota/funding state and profile
-   identity. Existing admissions are not extended or renewed by reuse.
-6. Revocation stops future reuse. It does not retroactively cancel a Campaign or
-   rewrite an already-recorded assumption, which expires within its bounded
-   window and remains independent of Campaign/policy/lease authority.
+   identity. Every declaration id used is persisted on the admission and is
+   re-checked as active **inside the admission write transaction**, so a
+   concurrent revocation cannot be bypassed by a read-then-write race.
+   Existing admissions are not extended or renewed by reuse.
+6. Revocation targets the provider's **current** configuration
+   (`base_url` + credential fingerprint), never an arbitrary historical row. It
+   stops future reuse. It does not retroactively cancel a Campaign or rewrite an
+   already-recorded assumption, which expires within its bounded window and
+   remains independent of Campaign/policy/lease authority.
 7. The legacy explicit per-request confirmation remains accepted when no
    declaration covers the route; it does not create a durable declaration
    implicitly.
@@ -59,3 +70,8 @@ admission still passes the route, settings, profile and campaign checks.
 - No new provider/account identifier is invented. If a provider does not expose
   an account identifier, the existing configuration fingerprint remains the
   binding.
+- **Limitation.** The declaration is an Owner statement; Core does not
+  re-observe the upstream console and cannot prove the setting is still off. A
+  remote change must be communicated by the Owner, who revokes the declaration
+  or changes the configuration. The declaration itself has no expiry, while
+  every admission assumption remains bounded to 24 hours.

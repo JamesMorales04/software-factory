@@ -3553,11 +3553,20 @@ async fn revoke_provider_extra_usage(
         )
             .into_response();
     }
+    let settings = match app.db.provider_settings(&provider).await {
+        Ok(settings) => settings,
+        Err(error) => return api_error(error),
+    };
     let (principal_id, _) =
         authenticated_operator(session.as_ref().map(|Extension(device)| device));
     match app
         .db
-        .revoke_provider_extra_usage(&provider, &principal_id)
+        .revoke_provider_extra_usage(
+            &provider,
+            &settings.base_url,
+            &settings.credential_fingerprint,
+            &principal_id,
+        )
         .await
     {
         Ok(_) => match provider_extra_usage_state(&app, &provider).await {
@@ -21406,6 +21415,10 @@ async fn create_intake_subscription_admission(
         profile_hash: record.profile_hash.clone(),
         assumption,
         routes,
+        owner_extra_usage_declaration_ids: declarations
+            .iter()
+            .map(|declaration| declaration.declaration_id.clone())
+            .collect(),
         idempotency_key: input.idempotency_key,
     };
     match app.db.create_subscription_scope_admission(&write).await {
@@ -34668,6 +34681,12 @@ mod tests {
                 "the persisted declaration must remove the repeated confirmation: {admission}"
             );
             assert_eq!(admission["state"], "ACTIVE");
+            assert!(
+                admission["ownerExtraUsageDeclarationIds"]
+                    .as_array()
+                    .is_some_and(|ids| !ids.is_empty()),
+                "the admission must persist every Owner declaration it used: {admission}"
+            );
 
             // Revocation invalidates reuse immediately.
             let (status, revoked) = send(
@@ -34774,6 +34793,7 @@ mod tests {
                             transport: "OPENCODE_GO_SUBSCRIPTION".into(),
                         },
                     ],
+                    owner_extra_usage_declaration_ids: Vec::new(),
                     idempotency_key: "autopilot-funding-only-admission".into(),
                 })
                 .await
