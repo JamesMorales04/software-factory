@@ -150,6 +150,30 @@ Run10 took with a committed lock and `packages = []`; a hook only in
 its source, plan and lock; identity observation never converts it into a
 generated plan or accepts an environment in order to obtain evidence.
 
+## Real broker observation of the substrate outputs (Option B)
+
+`scripts/identity-facts-optionb-probe.sh` is the bounded Option-B harness. It
+builds a disposable, own Nix store from the frozen composition audit, verifies
+both reconstructed NARs with the real `nix-store --dump` (stdenv 60856 /
+`sha256-7uyA…`, hook 968 / `sha256-wIte…`), extracts the exact reference sets
+(31 for stdenv, 1 for the hook as Nix reference scanning finds them) and decides
+whether a truthful validity registration is possible from bytes available
+offline.
+
+**Status: BLOCKED.** The two outputs reference five paths that have neither
+bytes nor validity rows in the pinned builder image (bytes and database) or the
+retained Run10 store (bytes and database): `file-5.45`, `patchelf-0.15.0`,
+`patch-2.7.6`, `gnumake-4.4.1` and `gnu-config-2024-01-01`. Nix reports each one
+as `path ... is not valid`. The harness stops there: it does not register the
+outputs, does not fabricate a NAR hash, derivation, reference or validity row,
+and does not write to the retained volume. Questions mode narrows the observed
+facts but cannot make an absent reference valid.
+
+This is a feasibility/observation lane only: no historical output observation,
+no `nix build`/realise/fetch, no image build, no Run11 and no product E2E. The
+authenticated Option-A acceptance remains the evidence for the binding; Option B
+adds no licence claim.
+
 ## Office impact
 
 `impact: none` for this internal observation preparation. There is no new
