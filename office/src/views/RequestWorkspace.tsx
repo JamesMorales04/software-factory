@@ -16,6 +16,7 @@ import {
   CoreApiError,
   coreApi,
   type IntakeRequestProjection,
+  type ProviderExtraUsageView,
   newIdempotencyKey,
 } from "../coreApi";
 import { shortId } from "../format";
@@ -71,6 +72,9 @@ export function RequestWorkspace() {
   const [rationale, setRationale] = useState("");
   const [approvedScope, setApprovedScope] = useState(false);
   const [extraUsageConfirmed, setExtraUsageConfirmed] = useState(false);
+  const [extraUsage, setExtraUsage] = useState<ProviderExtraUsageView | null>(
+    null,
+  );
   const [messageBody, setMessageBody] = useState("");
   const [cancelOpen, setCancelOpen] = useState(false);
   const [repairOpen, setRepairOpen] = useState(false);
@@ -133,6 +137,21 @@ export function RequestWorkspace() {
   }, [requestId]);
 
   useEffect(() => {
+    let active = true;
+    coreApi
+      .getProviderExtraUsage("opencode-go")
+      .then((view) => {
+        if (active) setExtraUsage(view);
+      })
+      .catch(() => {
+        if (active) setExtraUsage(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [requestId]);
+
+  useEffect(() => {
     setData(null);
     setLoadError(null);
     setNotFound(false);
@@ -143,6 +162,7 @@ export function RequestWorkspace() {
     setFencedCampaignId(null);
     setRationale("");
     setApprovedScope(false);
+    setExtraUsageConfirmed(false);
     setMessageBody("");
     setCancelOpen(false);
     setCancelReason("");
@@ -371,8 +391,37 @@ export function RequestWorkspace() {
     );
   }
 
+  async function saveExtraUsageDeclaration() {
+    if (!extraUsageConfirmed) return;
+    await runAction(
+      "extra-usage",
+      async () => {
+        const next = await coreApi.declareProviderExtraUsage("opencode-go", {
+          statement:
+            "I confirm OpenCode Go Extra Usage is disabled for this Factory provider configuration.",
+          idempotency_key: newIdempotencyKey(),
+        });
+        setExtraUsage(next);
+        setExtraUsageConfirmed(false);
+      },
+      t("request.subscription.savedOnce"),
+    );
+  }
+
+  async function revokeExtraUsageDeclaration() {
+    await runAction(
+      "extra-usage",
+      async () => {
+        const next = await coreApi.revokeProviderExtraUsage("opencode-go");
+        setExtraUsage(next);
+      },
+      t("request.subscription.revoked"),
+    );
+  }
+
   async function confirmSubscription() {
-    if (!data || !extraUsageConfirmed) return;
+    const persisted = extraUsage?.active === true;
+    if (!data || (!persisted && !extraUsageConfirmed)) return;
     await runAction(
       "subscription",
       async () => {
@@ -382,7 +431,7 @@ export function RequestWorkspace() {
           confirmed_by: "Product Owner",
           confirmed_at_ms: now,
           valid_until_ms: now + 24 * 60 * 60 * 1000,
-          extra_usage_disabled: true,
+          extra_usage_disabled: persisted ? undefined : true,
           statement:
             "I confirm OpenCode Go Extra Usage is disabled for this Factory subscription route.",
           test_profile_id: "opencode-go-subscription",
@@ -800,18 +849,56 @@ export function RequestWorkspace() {
                         <p className="muted">
                           {t("request.subscription.help")}
                         </p>
-                        <Checkbox
-                          label={t("request.subscription.confirm")}
-                          checked={extraUsageConfirmed}
-                          onChange={(event) =>
-                            setExtraUsageConfirmed(event.target.checked)
-                          }
-                          disabled={busy !== null || offline}
-                        />
+                        {extraUsage?.active && extraUsage.declaration ? (
+                          <>
+                            <p className="muted" role="status">
+                              {t("request.subscription.persisted").replace(
+                                "{date}",
+                                formatDate(extraUsage.declaration.declaredAt),
+                              )}
+                            </p>
+                            <p className="muted">
+                              {t("request.subscription.persistedHelp")}
+                            </p>
+                            <Button
+                              variant="secondary"
+                              disabled={busy !== null || offline}
+                              onClick={() => void revokeExtraUsageDeclaration()}
+                            >
+                              {busy === "extra-usage"
+                                ? t("request.subscription.saving")
+                                : t("request.subscription.revoke")}
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <Checkbox
+                              label={t("request.subscription.confirm")}
+                              checked={extraUsageConfirmed}
+                              onChange={(event) =>
+                                setExtraUsageConfirmed(event.target.checked)
+                              }
+                              disabled={busy !== null || offline}
+                            />
+                            <Button
+                              variant="secondary"
+                              disabled={
+                                busy !== null || offline || !extraUsageConfirmed
+                              }
+                              onClick={() => void saveExtraUsageDeclaration()}
+                            >
+                              {busy === "extra-usage"
+                                ? t("request.subscription.saving")
+                                : t("request.subscription.saveOnce")}
+                            </Button>
+                          </>
+                        )}
                         <Button
                           variant="secondary"
                           disabled={
-                            busy !== null || offline || !extraUsageConfirmed
+                            busy !== null ||
+                            offline ||
+                            (!extraUsage?.active && !extraUsageConfirmed)
                           }
                           onClick={() => void confirmSubscription()}
                         >

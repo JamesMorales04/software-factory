@@ -386,6 +386,14 @@ export const es: Catalog = {
   "request.subscription.confirm":
     "Confirmo que Extra Usage está DESACTIVADO para esta suscripción.",
   "request.subscription.save": "Confirmar suscripción",
+  "request.subscription.persisted":
+    "Extra Usage está confirmado como DESACTIVADO para esta configuración de OpenCode Go desde {date}.",
+  "request.subscription.persistedHelp":
+    "La confirmación se guarda para esta cuenta y ruta del proveedor. No se vuelve a pedir salvo que cambien la credencial, el endpoint o la declaración.",
+  "request.subscription.saveOnce": "Confirmar una vez y guardar",
+  "request.subscription.savedOnce": "Confirmación de Extra Usage guardada.",
+  "request.subscription.revoke": "Revocar confirmación de Extra Usage",
+  "request.subscription.revoked": "Confirmación de Extra Usage revocada.",
   "request.subscription.saving": "Confirmando…",
   "request.subscription.confirmed": "Confirmación de suscripción registrada.",
   "request.next.assessing": "Evaluando…",

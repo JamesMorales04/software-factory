@@ -498,10 +498,23 @@ struct IntakeSubscriptionAdmissionRequest {
     confirmed_by: String,
     confirmed_at_ms: i64,
     valid_until_ms: i64,
+    /// Legacy per-request confirmation. When a durable Owner provider
+    /// declaration covers every OpenCode Go route, Core reuses it and this
+    /// field may be omitted.
+    #[serde(default)]
     extra_usage_disabled: bool,
     statement: String,
     test_profile_id: String,
     idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderExtraUsageRequest {
+    extra_usage_disabled: bool,
+    statement: String,
+    #[serde(default)]
+    idempotency_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1143,6 +1156,12 @@ fn office_api_router(app: Arc<App>) -> Router {
             get(provider_models),
         )
         .route("/settings/providers/{provider}/audit", get(provider_audit))
+        .route(
+            "/settings/providers/{provider}/extra-usage",
+            get(provider_extra_usage)
+                .put(declare_provider_extra_usage)
+                .delete(revoke_provider_extra_usage),
+        )
         .route("/projects", get(projects).post(register_project))
         .route(
             "/projects/import/archive",
@@ -1465,6 +1484,12 @@ fn api_router(app: Arc<App>) -> Router {
             get(provider_models),
         )
         .route("/settings/providers/{provider}/audit", get(provider_audit))
+        .route(
+            "/settings/providers/{provider}/extra-usage",
+            get(provider_extra_usage)
+                .put(declare_provider_extra_usage)
+                .delete(revoke_provider_extra_usage),
+        )
         .route("/worker/provider_profile", get(worker_provider_profile))
         .route("/projects", get(projects).post(register_project))
         .route(
@@ -3381,6 +3406,166 @@ async fn provider_models(
         "inference": inference,
     }))
     .into_response()
+}
+
+fn extra_usage_provider(provider: &str) -> bool {
+    provider == "opencode-go"
+}
+
+async fn provider_extra_usage_state(
+    app: &Arc<App>,
+    provider: &str,
+) -> Result<serde_json::Value, Response> {
+    if !extra_usage_provider(provider) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"unknown provider"})),
+        )
+            .into_response());
+    }
+    let settings = app
+        .db
+        .provider_settings(provider)
+        .await
+        .map_err(api_error)?;
+    let active = app
+        .db
+        .active_provider_extra_usage_declaration(
+            provider,
+            &settings.base_url,
+            &settings.credential_fingerprint,
+        )
+        .await
+        .map_err(api_error)?;
+    let latest = app
+        .db
+        .provider_extra_usage_declaration(provider)
+        .await
+        .map_err(api_error)?;
+    let declaration = active.as_ref().or(latest.as_ref());
+    Ok(json!({
+        "provider": provider,
+        "baseUrl": settings.base_url,
+        "credentialBound": !settings.credential_fingerprint.is_empty(),
+        "active": active.is_some(),
+        "declaration": declaration.map(|value| json!({
+            "declarationId": value.declaration_id,
+            "declaredAt": value.declared_at,
+            "declaredBy": value.principal_id,
+            "statement": value.statement,
+            "revokedAt": value.revoked_at,
+        })),
+    }))
+}
+
+async fn provider_extra_usage(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(provider): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match provider_extra_usage_state(&app, &provider).await {
+        Ok(value) => Json(value).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn declare_provider_extra_usage(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(provider): AxumPath<String>,
+    Json(input): Json<ProviderExtraUsageRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !extra_usage_provider(&provider) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"unknown provider"})),
+        )
+            .into_response();
+    }
+    if !input.extra_usage_disabled {
+        return api_error(Error::Forbidden(
+            "Owner must confirm Extra Usage is disabled".into(),
+        ));
+    }
+    let settings = match app.db.provider_settings(&provider).await {
+        Ok(settings) => settings,
+        Err(error) => return api_error(error),
+    };
+    if !settings.enabled || settings.credential_fingerprint.is_empty() {
+        return api_error(Error::Forbidden(
+            "the provider is not configured and enabled".into(),
+        ));
+    }
+    if !factory_native::provider_catalog::is_canonical_opencode_go_base_url(&settings.base_url)
+        && !factory_native::provider_catalog::is_test_upstream_url(&settings.base_url)
+    {
+        return api_error(Error::Forbidden(
+            "OpenCode Go must use the canonical subscription endpoint".into(),
+        ));
+    }
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let idempotency_key = input
+        .idempotency_key
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    match app
+        .db
+        .declare_provider_extra_usage(factory_native::db::DeclareProviderExtraUsage {
+            provider: &provider,
+            base_url: &settings.base_url,
+            credential_fingerprint: &settings.credential_fingerprint,
+            principal_id: &principal_id,
+            statement: &input.statement,
+            settings_revision: settings.revision,
+            idempotency_key: &idempotency_key,
+        })
+        .await
+    {
+        Ok(_) => match provider_extra_usage_state(&app, &provider).await {
+            Ok(value) => Json(value).into_response(),
+            Err(response) => response,
+        },
+        Err(error) => api_error(error),
+    }
+}
+
+async fn revoke_provider_extra_usage(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(provider): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !extra_usage_provider(&provider) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"unknown provider"})),
+        )
+            .into_response();
+    }
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .revoke_provider_extra_usage(&provider, &principal_id)
+        .await
+    {
+        Ok(_) => match provider_extra_usage_state(&app, &provider).await {
+            Ok(value) => Json(value).into_response(),
+            Err(response) => response,
+        },
+        Err(error) => api_error(error),
+    }
 }
 
 async fn provider_audit(
@@ -20996,11 +21181,6 @@ async fn create_intake_subscription_admission(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if !input.extra_usage_disabled {
-        return api_error(Error::Forbidden(
-            "Owner must confirm Extra Usage is disabled".into(),
-        ));
-    }
     if input.test_profile_id.trim().is_empty() {
         return api_error(Error::Forbidden(
             "subscription admission requires an admission profile".into(),
@@ -21103,13 +21283,14 @@ async fn create_intake_subscription_admission(
         },
     ];
     let reviewer = &content.roles.semantic_reviewer;
+    let mut reviewer_settings: Option<factory_native::db::ProviderSettingsRecord> = None;
     if reviewer.provider == "opencode-go" {
         let Some(reviewer_transport) = test_transport_for_provider(&reviewer.provider) else {
             return api_error(Error::Forbidden(
                 "semantic reviewer provider is outside the automated acceptance allowlist".into(),
             ));
         };
-        let reviewer_settings = match app.db.provider_settings(&reviewer.provider).await {
+        let settings = match app.db.provider_settings(&reviewer.provider).await {
             Ok(settings) if settings.enabled && !settings.credential_ciphertext.is_empty() => {
                 settings
             }
@@ -21120,21 +21301,90 @@ async fn create_intake_subscription_admission(
             }
             Err(error) => return api_error(error),
         };
+        reviewer_settings = Some(settings.clone());
         routes.push(factory_native::subscription_admission::TestRouteBinding {
             role: factory_native::subscription_admission::TestModelRole::SemanticReviewer,
             provider: reviewer.provider.clone(),
             model: reviewer.model.clone(),
-            settings_revision: reviewer_settings.revision.to_string(),
+            settings_revision: settings.revision.to_string(),
             transport: reviewer_transport.to_owned(),
         });
     }
+    // Resolve the durable Owner declaration for every OpenCode Go route. A
+    // declaration is factual provider configuration evidence: it removes the
+    // repeated confirmation, but the admission still passes every route,
+    // settings and funding check and keeps its own bounded time window.
+    let mut opencode_settings: Vec<&factory_native::db::ProviderSettingsRecord> = Vec::new();
+    if assessment_provider == "opencode-go" {
+        opencode_settings.push(&assessment_settings);
+    }
+    if implementer.provider == "opencode-go" {
+        opencode_settings.push(&implementer_settings);
+    }
+    if let Some(settings) = reviewer_settings.as_ref() {
+        opencode_settings.push(settings);
+    }
+    let mut declarations = Vec::new();
+    let mut covered = true;
+    let mut seen = std::collections::BTreeSet::new();
+    for settings in &opencode_settings {
+        if !seen.insert((
+            settings.base_url.clone(),
+            settings.credential_fingerprint.clone(),
+        )) {
+            continue;
+        }
+        match app
+            .db
+            .active_provider_extra_usage_declaration(
+                "opencode-go",
+                &settings.base_url,
+                &settings.credential_fingerprint,
+            )
+            .await
+        {
+            Ok(Some(declaration)) => declarations.push(declaration),
+            Ok(None) => covered = false,
+            Err(error) => return api_error(error),
+        }
+    }
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let (confirmed_by, confirmed_at_ms, valid_until_ms, statement) =
+        if covered && !declarations.is_empty() {
+            let first = &declarations[0];
+            let declared_at_ms = chrono::DateTime::parse_from_rfc3339(&first.declared_at)
+                .map(|value| value.timestamp_millis())
+                .unwrap_or(0);
+            if declared_at_ms <= 0 {
+                return api_error(Error::Invalid(
+                    "the persisted Owner Extra Usage declaration is invalid",
+                ));
+            }
+            (
+                format!("{}:persisted-owner-declaration", first.principal_id),
+                declared_at_ms,
+                now_ms + 24 * 60 * 60 * 1_000,
+                first.statement.clone(),
+            )
+        } else if input.extra_usage_disabled {
+            (
+                format!("{principal_id}:{}", input.confirmed_by),
+                input.confirmed_at_ms,
+                input.valid_until_ms,
+                input.statement,
+            )
+        } else {
+            return api_error(Error::Forbidden(
+                "Owner must confirm Extra Usage is disabled for this provider configuration".into(),
+            ));
+        };
     let assumption = factory_native::execution_policy::OwnerBillingAssumption {
         assumption_id: input.assumption_id,
-        confirmed_by: format!("{principal_id}:{}", input.confirmed_by),
-        confirmed_at_ms: input.confirmed_at_ms,
-        valid_until_ms: input.valid_until_ms,
+        confirmed_by,
+        confirmed_at_ms,
+        valid_until_ms,
         extra_usage: factory_native::execution_policy::OwnerControlledExtraUsage::Disabled,
-        statement: input.statement,
+        statement,
     };
     if assumption
         .validate_at(chrono::Utc::now().timestamp_millis())
@@ -34340,6 +34590,120 @@ mod tests {
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn provider_extra_usage_declaration_is_persisted_and_reused() {
+            // The declaration binds the exact provider configuration; a
+            // loopback test upstream keeps the canonical-endpoint guard active
+            // without any network call.
+            unsafe {
+                std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1");
+            }
+            let master_key = structured_lead_master_key();
+            let fixture = setup_with(
+                Some(&master_key),
+                "http://127.0.0.1:9/v1",
+                "http://127.0.0.1:9/v1",
+                profile_content(),
+            )
+            .await;
+            let (status, state) = send(
+                &fixture.router,
+                "PUT",
+                "/settings/providers/opencode-go/extra-usage",
+                Some(json!({
+                    "extra_usage_disabled": true,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this provider configuration.",
+                    "idempotency_key": "extra-usage-declaration-1",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{state}");
+            assert_eq!(state["active"], true);
+            assert_eq!(state["credentialBound"], true);
+            assert_eq!(
+                state["declaration"]["declaredBy"], "operator-token",
+                "{state}"
+            );
+
+            // The confirmation is persisted and returned without a new write.
+            let (status, state) = send(
+                &fixture.router,
+                "GET",
+                "/settings/providers/opencode-go/extra-usage",
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(state["active"], true);
+
+            let (status, policy) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED, "{policy}");
+            let (status, created) =
+                create_intake_with_amount(&fixture, "request-extra-usage-1", None).await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let now = chrono::Utc::now().timestamp_millis();
+            let (status, admission) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/subscription-admission"),
+                Some(json!({
+                    "assumption_id": "owner-extra-usage-1",
+                    "confirmed_by": "Product Owner",
+                    "confirmed_at_ms": now - 1_000,
+                    "valid_until_ms": now + 60_000,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this subscription route.",
+                    "test_profile_id": "opencode-go-subscription",
+                    "idempotency_key": "extra-usage-admission-1",
+                })),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "the persisted declaration must remove the repeated confirmation: {admission}"
+            );
+            assert_eq!(admission["state"], "ACTIVE");
+
+            // Revocation invalidates reuse immediately.
+            let (status, revoked) = send(
+                &fixture.router,
+                "DELETE",
+                "/settings/providers/opencode-go/extra-usage",
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{revoked}");
+            assert_eq!(revoked["active"], false);
+            let (status, created) =
+                create_intake_with_amount(&fixture, "request-extra-usage-2", None).await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let second_id = created["id"].as_str().unwrap().to_owned();
+            let (status, refused) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{second_id}/subscription-admission"),
+                Some(json!({
+                    "assumption_id": "owner-extra-usage-2",
+                    "confirmed_by": "Product Owner",
+                    "confirmed_at_ms": now - 1_000,
+                    "valid_until_ms": now + 60_000,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this subscription route.",
+                    "test_profile_id": "opencode-go-subscription",
+                    "idempotency_key": "extra-usage-admission-2",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(&fixture.path);
+            let _ = std::fs::remove_dir_all(&fixture.repository);
         }
 
         #[tokio::test]

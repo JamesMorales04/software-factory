@@ -27,6 +27,10 @@ const mocks = vi.hoisted(() => ({
   repairCampaign: vi.fn(),
   getRequestTrace: vi.fn(),
   getAgenticSpec: vi.fn(),
+  getProviderExtraUsage: vi.fn(),
+  declareProviderExtraUsage: vi.fn(),
+  revokeProviderExtraUsage: vi.fn(),
+  createIntakeSubscriptionAdmission: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -285,6 +289,18 @@ describe("RequestWorkspace", () => {
       frozen: null,
       draft: null,
     });
+    mocks.getProviderExtraUsage.mockReset().mockResolvedValue({
+      provider: "opencode-go",
+      baseUrl: "https://opencode.ai/inference/go/openai/v1",
+      credentialBound: true,
+      active: false,
+      declaration: null,
+    });
+    mocks.declareProviderExtraUsage.mockReset();
+    mocks.revokeProviderExtraUsage.mockReset();
+    mocks.createIntakeSubscriptionAdmission
+      .mockReset()
+      .mockResolvedValue({ admissionId: "admission-1", state: "ACTIVE" });
     mocks.getRequestTrace.mockReset().mockResolvedValue({
       requestId: "request-1",
       run: null,
@@ -782,6 +798,76 @@ describe("RequestWorkspace", () => {
       }),
     );
     expect((approve as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("reuses a persisted Extra Usage confirmation without the checkbox", async () => {
+    mocks.getProviderExtraUsage.mockResolvedValue({
+      provider: "opencode-go",
+      baseUrl: "https://opencode.ai/inference/go/openai/v1",
+      credentialBound: true,
+      active: true,
+      declaration: {
+        declarationId: "declaration-1",
+        declaredAt: "2026-11-20T00:00:00Z",
+        declaredBy: "operator-token",
+        statement:
+          "I confirm OpenCode Go Extra Usage is disabled for this provider configuration.",
+        revokedAt: null,
+      },
+    });
+    mocks.getIntakeRequest.mockResolvedValue(submitted);
+    renderRequest();
+    expect(
+      await screen.findByText(/Extra Usage is confirmed OFF/),
+    ).toBeDefined();
+    expect(
+      screen.queryByRole("checkbox", { name: /I confirm Extra Usage is OFF/ }),
+    ).toBeNull();
+    const subscription = screen.getByRole("button", {
+      name: "Confirm subscription",
+    });
+    expect((subscription as HTMLButtonElement).disabled).toBe(false);
+    expect(
+      screen.getByRole("button", { name: "Revoke Extra Usage confirmation" }),
+    ).toBeDefined();
+  });
+
+  it("persists the Extra Usage confirmation once and then hides the checkbox", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(submitted);
+    mocks.declareProviderExtraUsage.mockResolvedValue({
+      provider: "opencode-go",
+      baseUrl: "https://opencode.ai/inference/go/openai/v1",
+      credentialBound: true,
+      active: true,
+      declaration: {
+        declarationId: "declaration-1",
+        declaredAt: "2026-11-20T00:00:00Z",
+        declaredBy: "operator-token",
+        statement:
+          "I confirm OpenCode Go Extra Usage is disabled for this provider configuration.",
+        revokedAt: null,
+      },
+    });
+    renderRequest();
+    const checkbox = await screen.findByRole("checkbox", {
+      name: /I confirm Extra Usage is OFF/,
+    });
+    expect(
+      screen.queryByText(/Extra Usage is confirmed OFF/),
+    ).toBeNull();
+    await userEvent.click(checkbox);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Confirm once and save" }),
+    );
+    await waitFor(() =>
+      expect(mocks.declareProviderExtraUsage).toHaveBeenCalledWith(
+        "opencode-go",
+        expect.objectContaining({ statement: expect.any(String) }),
+      ),
+    );
+    expect(
+      await screen.findByText(/Extra Usage is confirmed OFF/),
+    ).toBeDefined();
   });
 
   it("runs the assessment Core operation and refreshes the projection", async () => {

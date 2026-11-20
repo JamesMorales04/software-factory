@@ -3346,6 +3346,22 @@ export interface ProviderView {
   leadRetryOutputTokens?: number;
 }
 
+export interface ProviderExtraUsageDeclarationView {
+  declarationId: string;
+  declaredAt: string;
+  declaredBy: string;
+  statement: string;
+  revokedAt: string | null;
+}
+
+export interface ProviderExtraUsageView {
+  provider: string;
+  baseUrl: string;
+  credentialBound: boolean;
+  active: boolean;
+  declaration: ProviderExtraUsageDeclarationView | null;
+}
+
 export interface UpdateProviderRequest {
   model: string;
   baseUrl: string;
@@ -4379,6 +4395,26 @@ export const coreApi = {
       `/settings/providers/${encodeURIComponent(provider)}/credential`,
       { method: "DELETE" },
     ),
+  getProviderExtraUsage: (provider: string) =>
+    request<ProviderExtraUsageView>(
+      `/settings/providers/${encodeURIComponent(provider)}/extra-usage`,
+    ),
+  declareProviderExtraUsage: (
+    provider: string,
+    input: { statement: string; idempotency_key: string },
+  ) =>
+    request<ProviderExtraUsageView>(
+      `/settings/providers/${encodeURIComponent(provider)}/extra-usage`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ extra_usage_disabled: true, ...input }),
+      },
+    ),
+  revokeProviderExtraUsage: (provider: string) =>
+    request<ProviderExtraUsageView>(
+      `/settings/providers/${encodeURIComponent(provider)}/extra-usage`,
+      { method: "DELETE" },
+    ),
   providerAudit: (provider: string) =>
     request<{ audit: ProviderAudit[] }>(
       `/settings/providers/${encodeURIComponent(provider)}/audit`,
@@ -4788,7 +4824,8 @@ export const coreApi = {
       confirmed_by: string;
       confirmed_at_ms: number;
       valid_until_ms: number;
-      extra_usage_disabled: boolean;
+      /** Omit when a durable Owner provider declaration covers the route. */
+      extra_usage_disabled?: boolean;
       statement: string;
       test_profile_id: string;
       idempotency_key: string;

@@ -374,6 +374,14 @@ export const en = {
   "request.subscription.confirm":
     "I confirm Extra Usage is OFF for this subscription.",
   "request.subscription.save": "Confirm subscription",
+  "request.subscription.persisted":
+    "Extra Usage is confirmed OFF for this OpenCode Go configuration since {date}.",
+  "request.subscription.persistedHelp":
+    "The confirmation is stored for this provider account and route. You are not asked again unless the credential, endpoint or declaration changes.",
+  "request.subscription.saveOnce": "Confirm once and save",
+  "request.subscription.savedOnce": "Extra Usage confirmation saved.",
+  "request.subscription.revoke": "Revoke Extra Usage confirmation",
+  "request.subscription.revoked": "Extra Usage confirmation revoked.",
   "request.subscription.saving": "Confirming…",
   "request.subscription.confirmed": "Subscription confirmation recorded.",
   "request.next.assessing": "Assessing…",
