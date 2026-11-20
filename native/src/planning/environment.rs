@@ -18,6 +18,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::OnceLock;
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
@@ -26,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::lead::SpecCheck;
+use crate::planning::identity_facts::VerifiedIdentityFacts;
 use crate::planning::license_policy::{
     LicenseContext, LicenseDecision, default_catalog, default_catalog_sha256, default_profile,
     default_profile_sha256, evaluate,
@@ -269,6 +271,18 @@ fn canonical_hash<T: Serialize>(value: &T) -> String {
 
 fn is_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Accept a NAR hash in either its hex or `sha256-<base64>` SRI form.
+fn is_nar_hash(value: &str) -> bool {
+    use base64::Engine as _;
+    if is_sha256(value) {
+        return true;
+    }
+    value
+        .strip_prefix("sha256-")
+        .and_then(|rest| base64::engine::general_purpose::STANDARD.decode(rest).ok())
+        .is_some_and(|decoded| decoded.len() == 32)
 }
 
 fn is_digest(value: &str) -> bool {
@@ -4271,14 +4285,232 @@ pub struct VerifiedPackage {
 /// derives this from the actual closure and the pinned nixpkgs metadata, not
 /// from the Core plan, so a constructed nixpkgs config cannot hide an unfree
 /// transitive dependency.
+/// One exact source-file/input pair for a source-licensed identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SourceLicenseInput {
+    pub store_path: String,
+    pub sha256: String,
+    pub source_path: String,
+    pub source_sha256: String,
+}
+
+/// Exact reviewed origin for a source-licensed, unversioned substrate identity.
+///
+/// It binds the identity, pinned source and licence bytes; it is not a licence
+/// decision and never comes from model output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SourceLicenseOrigin {
+    pub pin: String,
+    pub deriver: String,
+    pub store_path: String,
+    pub nar_hash: String,
+    pub source_store_path: String,
+    pub source_nar_sha256: String,
+    pub license_file: String,
+    pub license_file_sha256: String,
+    pub license: String,
+    pub input_sources: Vec<SourceLicenseInput>,
+    pub composition_nar_sha256: String,
+    pub composition_nar_size: u64,
+}
+
+impl SourceLicenseOrigin {
+    fn validate_for(
+        &self,
+        name: &str,
+        path: &str,
+        license: &str,
+        version_state: LicenseVersionState,
+    ) -> Result<(), EnvironmentError> {
+        let mut seen = BTreeSet::new();
+        if name
+            .chars()
+            .any(|character| matches!(character, '*' | '?' | '[' | ']'))
+            || !self.pin.starts_with("github:NixOS/nixpkgs/")
+            || self.store_path != path
+            || !self.deriver.starts_with("/nix/store/")
+            || !self.deriver.ends_with(".drv")
+            || !is_nar_hash(&self.nar_hash)
+            || !self.source_store_path.starts_with("/nix/store/")
+            || !is_nar_hash(&self.source_nar_sha256)
+            || self.license_file != "COPYING"
+            || self.license_file_sha256
+                != "b1269cab8c739a49b41c7f89a679805b200f268246fe9ee077c91da78b602f9e"
+            || self.license != "MIT"
+            || license != "MIT"
+            || !is_nar_hash(&self.composition_nar_sha256)
+            || self.composition_nar_size == 0
+            || self.composition_nar_size > 256 * 1024 * 1024
+            || self.input_sources.is_empty()
+            || self.input_sources.len() > 4096
+        {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "the source license origin is inconsistent",
+            ));
+        }
+        for input in &self.input_sources {
+            if !input.store_path.starts_with("/nix/store/")
+                || !is_sha256(&input.sha256)
+                || !is_sha256(&input.source_sha256)
+                || input.sha256 != input.source_sha256
+                || input.source_path.is_empty()
+                || input.source_path.starts_with('/')
+                || input.source_path.split('/').any(|part| part == "..")
+                || !seen.insert(input.store_path.as_str())
+            {
+                return Err(EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                    "a source license input pair is inconsistent",
+                ));
+            }
+        }
+        let Some(reviewed) = reviewed_source_license_origins().get(&(
+            self.pin.clone(),
+            self.deriver.clone(),
+            self.store_path.clone(),
+        )) else {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "the source license origin is not a reviewed exact origin",
+            ));
+        };
+        if reviewed.name != name
+            || !reviewed.version.is_empty()
+            || reviewed.version_state != LicenseVersionState::Unversioned
+            || version_state != LicenseVersionState::Unversioned
+            || reviewed.license != license
+            || reviewed.unfree
+            || &reviewed.source_origin != self
+        {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "the source license origin does not equal its reviewed exact origin",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Anchor this origin to the authenticated identity-facts manifest.
+    ///
+    /// Only the broker produces and signs the manifest; a caller or model never
+    /// supplies facts. The origin's store path, derivation and NAR hash must
+    /// equal one signed fact, so an origin is bound to the exact observed
+    /// identity rather than to a table alone.
+    pub fn bind_identity_facts(
+        &self,
+        verified: &VerifiedIdentityFacts,
+    ) -> Result<(), EnvironmentError> {
+        let facts = &verified.receipt().envelope.manifest.facts;
+        let Some(fact) = facts.iter().find(|fact| fact.store_path == self.store_path) else {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "a source license origin has no authenticated identity fact",
+            ));
+        };
+        if fact.deriver.as_deref() != Some(self.deriver.as_str())
+            || fact.nar_hash != self.nar_hash
+            || !fact.outputs.iter().any(|output| output == &self.store_path)
+        {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "a source license origin does not match its authenticated identity fact",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Reviewed exact origins shared with the environment builder.
+///
+/// The data file is compiled into Core, so a caller, model or forged receipt
+/// cannot mint a source-licence origin: an origin is accepted only when it
+/// equals a reviewed entry keyed by exact pin, derivation and store path.
+const SOURCE_LICENSE_ORIGINS_JSON: &str = include_str!(
+    "../../../deploy/environment-builder/environment_builder/source_license_origins.json"
+);
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ReviewedSourceLicenseEntry {
+    name: String,
+    version: String,
+    version_state: LicenseVersionState,
+    license: String,
+    unfree: bool,
+    source_origin: SourceLicenseOrigin,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ReviewedSourceLicenseOrigins {
+    schema_version: u32,
+    evidence: BTreeMap<String, String>,
+    identities: Vec<ReviewedSourceLicenseEntry>,
+}
+
+type ReviewedOriginKey = (String, String, String);
+
+fn reviewed_source_license_origins()
+-> &'static BTreeMap<ReviewedOriginKey, ReviewedSourceLicenseEntry> {
+    static ORIGINS: OnceLock<BTreeMap<ReviewedOriginKey, ReviewedSourceLicenseEntry>> =
+        OnceLock::new();
+    ORIGINS.get_or_init(|| {
+        let document: ReviewedSourceLicenseOrigins =
+            serde_json::from_str(SOURCE_LICENSE_ORIGINS_JSON)
+                .expect("the reviewed source license origins are valid JSON");
+        assert_eq!(
+            document.schema_version, 1,
+            "the reviewed source license origins schema version"
+        );
+        assert!(
+            !document.evidence.is_empty(),
+            "the reviewed source license origins bind evidence"
+        );
+        document
+            .identities
+            .into_iter()
+            .map(|entry| {
+                let key = (
+                    entry.source_origin.pin.clone(),
+                    entry.source_origin.deriver.clone(),
+                    entry.source_origin.store_path.clone(),
+                );
+                (key, entry)
+            })
+            .collect()
+    })
+}
+
+/// Explicit version state of a closure identity.
+///
+/// `version` is never interpreted as a version when this state is
+/// `Unversioned`; the unversioned state is only admitted with an exact reviewed
+/// source origin. An absent state deserialises as `Known`, and a `Known` entry
+/// with an empty version is refused.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum LicenseVersionState {
+    #[default]
+    Known,
+    Unversioned,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ClosureLicense {
     pub path: String,
     pub name: String,
     pub version: String,
+    #[serde(default)]
+    pub version_state: LicenseVersionState,
     pub license: String,
     pub unfree: bool,
+    /// Present only for an exact reviewed unversioned source origin.
+    #[serde(default)]
+    pub source_origin: Option<SourceLicenseOrigin>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -4305,6 +4537,20 @@ pub struct EnvironmentResolution {
 }
 
 impl EnvironmentResolution {
+    /// Reject any source-licence origin that is not anchored in the exact
+    /// authenticated identity-facts manifest of this environment.
+    pub fn validate_source_license_identity(
+        &self,
+        verified: &VerifiedIdentityFacts,
+    ) -> Result<(), EnvironmentError> {
+        for entry in &self.closure_licenses {
+            if let Some(origin) = &entry.source_origin {
+                origin.bind_identity_facts(verified)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), EnvironmentError> {
         if self.schema_version != ENVIRONMENT_SCHEMA_VERSION {
             return Err(invalid("unsupported environment resolution schema version"));
@@ -4354,7 +4600,37 @@ impl EnvironmentResolution {
                 ));
             }
             bounded_text("closure license name", &entry.name, 200)?;
-            bounded_text("closure license version", &entry.version, 128)?;
+            match entry.version_state {
+                LicenseVersionState::Unversioned => {
+                    if !entry.version.is_empty() {
+                        return Err(EnvironmentError::new(
+                            EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                            "an unversioned closure identity must not carry a version",
+                        ));
+                    }
+                    let Some(origin) = &entry.source_origin else {
+                        return Err(EnvironmentError::new(
+                            EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                            "an unversioned closure identity requires an exact source license origin",
+                        ));
+                    };
+                    origin.validate_for(
+                        &entry.name,
+                        &entry.path,
+                        &entry.license,
+                        entry.version_state,
+                    )?;
+                }
+                LicenseVersionState::Known => {
+                    bounded_text("closure license version", &entry.version, 128)?;
+                    if entry.source_origin.is_some() {
+                        return Err(EnvironmentError::new(
+                            EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                            "a versioned closure identity must not carry a source license origin",
+                        ));
+                    }
+                }
+            }
             if entry.unfree {
                 return Err(license_blocked(format!(
                     "transitive closure package {} {} is unfree",
@@ -4942,8 +5218,44 @@ mod tests {
             path: format!("/nix/store/{}-bash-5.2", "a".repeat(32)),
             name: "bash".into(),
             version: "5.2".into(),
+            version_state: LicenseVersionState::Known,
             license: "GPL-3.0-or-later".into(),
             unfree: false,
+            source_origin: None,
+        }
+    }
+
+    fn reviewed_closure_license(marker: &str) -> ClosureLicense {
+        let reviewed = reviewed_source_license_origins()
+            .values()
+            .find(|entry| entry.name == marker)
+            .expect("the reviewed source license origin exists");
+        ClosureLicense {
+            path: reviewed.source_origin.store_path.clone(),
+            name: reviewed.name.clone(),
+            version: reviewed.version.clone(),
+            version_state: reviewed.version_state,
+            license: reviewed.license.clone(),
+            unfree: reviewed.unfree,
+            source_origin: Some(reviewed.source_origin.clone()),
+        }
+    }
+
+    fn source_license_resolution() -> EnvironmentResolution {
+        let content = "{\"nodes\":{}}".to_string();
+        EnvironmentResolution {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            plan_sha256: "a".repeat(64),
+            files: vec![EnvironmentFile {
+                path: "flake.lock".into(),
+                sha256: sha256_hex(content.as_bytes()),
+                origin: EnvironmentFileOrigin::Generated,
+                content: Some(content),
+            }],
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            packages: Vec::new(),
+            closure_licenses: vec![reviewed_closure_license("stdenv-linux")],
         }
     }
 
@@ -5753,8 +6065,10 @@ mod tests {
                 path: format!("/nix/store/{}-secret-tool-1.0", "c".repeat(32)),
                 name: "secret-tool".into(),
                 version: "1.0".into(),
+                version_state: LicenseVersionState::Known,
                 license: "MIT".into(),
                 unfree: true,
+                source_origin: None,
             }],
         });
         plan.refresh_hash();
@@ -5773,6 +6087,203 @@ mod tests {
         assert_eq!(
             error.code,
             EnvironmentBlockerCode::EnvironmentLicenseUnknown
+        );
+    }
+
+    fn identity_facts_for_origins(
+        mutate: impl FnOnce(&mut Vec<crate::planning::identity_facts::IdentityFact>),
+    ) -> VerifiedIdentityFacts {
+        use crate::planning::identity_facts::{
+            IdentityFact, IdentityFactsChallenge, IdentityFactsMode, OperationRoot,
+            fixture_verified_receipt_with_facts,
+        };
+        let mut facts: Vec<IdentityFact> = reviewed_source_license_origins()
+            .values()
+            .map(|entry| IdentityFact {
+                store_path: entry.source_origin.store_path.clone(),
+                deriver: Some(entry.source_origin.deriver.clone()),
+                nar_hash: entry.source_origin.nar_hash.clone(),
+                outputs: vec![entry.source_origin.store_path.clone()],
+            })
+            .collect();
+        mutate(&mut facts);
+        let challenge = IdentityFactsChallenge {
+            operation_id: "operation".into(),
+            runtime_id: "sha256:runtime".into(),
+            nonce: "nonce".into(),
+            pin: "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d".into(),
+            plan_sha256: "a".repeat(64),
+            spec_sha256: "b".repeat(64),
+            mode: IdentityFactsMode::Enumerate,
+            root: OperationRoot::Operation,
+            questions: Vec::new(),
+        };
+        fixture_verified_receipt_with_facts(&challenge, facts)
+    }
+
+    #[test]
+    fn source_license_origin_must_match_the_authenticated_identity_facts() {
+        let mut resolution = source_license_resolution();
+        resolution.closure_licenses.push(reviewed_closure_license(
+            "update-autotools-gnu-config-scripts-hook",
+        ));
+        resolution
+            .closure_licenses
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        let verified = identity_facts_for_origins(|_| {});
+        resolution
+            .validate_source_license_identity(&verified)
+            .expect("the origins bind to the authenticated facts");
+
+        let mut tampered = resolution.clone();
+        tampered.closure_licenses[0]
+            .source_origin
+            .as_mut()
+            .unwrap()
+            .nar_hash = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into();
+        assert!(
+            tampered
+                .validate_source_license_identity(&verified)
+                .is_err()
+        );
+        let mut tampered = resolution.clone();
+        tampered.closure_licenses[0]
+            .source_origin
+            .as_mut()
+            .unwrap()
+            .deriver = format!("/nix/store/{}-other.drv", "b".repeat(32));
+        assert!(
+            tampered
+                .validate_source_license_identity(&verified)
+                .is_err()
+        );
+        let mut tampered = resolution.clone();
+        tampered.closure_licenses[0]
+            .source_origin
+            .as_mut()
+            .unwrap()
+            .store_path = format!("/nix/store/{}-other", "b".repeat(32));
+        assert!(
+            tampered
+                .validate_source_license_identity(&verified)
+                .is_err()
+        );
+
+        // Tampering the signed fact, not the origin, must also fail closed.
+        let tampered_facts = identity_facts_for_origins(|facts| {
+            facts[0].nar_hash = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into();
+        });
+        assert!(
+            resolution
+                .validate_source_license_identity(&tampered_facts)
+                .is_err()
+        );
+        let missing_fact = identity_facts_for_origins(|facts| {
+            facts.retain(|fact| fact.store_path != resolution.closure_licenses[0].path);
+        });
+        assert!(
+            resolution
+                .validate_source_license_identity(&missing_fact)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn unreviewed_structurally_valid_source_origin_fails_closed() {
+        let mut resolution = source_license_resolution();
+        let origin = resolution.closure_licenses[0]
+            .source_origin
+            .as_mut()
+            .expect("reviewed origin");
+        origin.deriver = format!("/nix/store/{}-unreviewed.drv", "f".repeat(32));
+        origin.store_path = format!("/nix/store/{}-unreviewed", "f".repeat(32));
+        resolution.closure_licenses[0].path = origin.store_path.clone();
+        let error = resolution.validate().unwrap_err();
+        assert_eq!(
+            error.code,
+            EnvironmentBlockerCode::EnvironmentLicenseUnknown
+        );
+    }
+
+    #[test]
+    fn exact_source_license_origin_is_required_for_unversioned_entries() {
+        let reviewed = reviewed_source_license_origins();
+        assert_eq!(reviewed.len(), 2, "exactly two reviewed source origins");
+        let mut sizes: Vec<usize> = reviewed
+            .values()
+            .map(|entry| entry.source_origin.input_sources.len())
+            .collect();
+        sizes.sort_unstable();
+        assert_eq!(sizes, vec![3, 16], "per-derivation input source counts");
+        for entry in reviewed.values() {
+            assert_eq!(entry.version, "", "reviewed origins are unversioned");
+            assert_eq!(entry.version_state, LicenseVersionState::Unversioned);
+            assert_eq!(entry.license, "MIT");
+            assert!(!entry.unfree);
+            assert_eq!(
+                entry.source_origin.license_file_sha256,
+                "b1269cab8c739a49b41c7f89a679805b200f268246fe9ee077c91da78b602f9e"
+            );
+        }
+        let resolution = source_license_resolution();
+        resolution.validate().unwrap();
+
+        type Mutation = Box<dyn Fn(&mut ClosureLicense)>;
+        let mutations: Vec<Mutation> = vec![
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().pin =
+                    format!("github:NixOS/nixpkgs/{}", "b".repeat(40))
+            }),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().deriver =
+                    format!("/nix/store/{}-other.drv", "b".repeat(32))
+            }),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().store_path =
+                    format!("/nix/store/{}-other", "b".repeat(32))
+            }),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().nar_hash =
+                    "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into()
+            }),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().source_store_path =
+                    format!("/nix/store/{}-other-source", "b".repeat(32))
+            }),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().source_nar_sha256 =
+                    "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into()
+            }),
+            Box::new(|entry| entry.source_origin.as_mut().unwrap().license_file = "LICENSE".into()),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().license_file_sha256 = "b".repeat(64)
+            }),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().input_sources[0].sha256 = "b".repeat(64)
+            }),
+            Box::new(|entry| entry.source_origin.as_mut().unwrap().composition_nar_size = 0),
+            Box::new(|entry| entry.name = "stdenv*".into()),
+            Box::new(|entry| entry.name = "gnu-config".into()),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().input_sources[0].source_path =
+                    "pkgs/other.sh".into()
+            }),
+            Box::new(|entry| entry.version = "1.0".into()),
+            Box::new(|entry| entry.version_state = LicenseVersionState::Known),
+        ];
+        for mutate in mutations {
+            let mut changed = resolution.clone();
+            mutate(&mut changed.closure_licenses[0]);
+            assert!(
+                changed.validate().is_err(),
+                "mutated source origin must fail closed"
+            );
+        }
+        let mut missing = resolution.clone();
+        missing.closure_licenses[0].source_origin = None;
+        assert!(
+            missing.validate().is_err(),
+            "unversioned without origin must fail"
         );
     }
 

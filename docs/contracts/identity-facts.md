@@ -176,6 +176,19 @@ an operator-visible capability exists.
 | Envelope absent after cleanup | `EvidenceAbsent`, build status unchanged |
 | Licence gate rejects after the receipt | environment blocked, receipt kept |
 | Any accepted facts | advisory only; no licence or policy effect |
+| Exact source-license origin not present as a signed fact | refused with `ENVIRONMENT_LICENSE_UNKNOWN` after the receipt is consumed |
+
+## Downstream licence consumption
+
+Identity facts are **not** a licence and never become one. A separate, factual
+`SourceLicenseOrigin` (see [environment-plan §7.5](environment-plan.md)) may
+reference a path in the manifest, but it is admitted only when its exact
+`storePath`, `deriver` and `narHash` equal one signed fact of the consumed
+receipt. The receipt is consumed first; a licence origin that is absent from the
+authenticated manifest, or that differs in any identity field, fails closed.
+Only the broker emits facts (`identity-facts` context MAC); a builder, caller or
+model cannot supply them, and the reviewed origin data asset cannot authorize a
+licence on its own.
 
 
 ## Offline reproducible check

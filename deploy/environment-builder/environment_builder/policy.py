@@ -8,6 +8,7 @@ falls back to a host or language image.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -1020,6 +1021,209 @@ def validate_license_expression(value: str) -> None:
     fail("ENVIRONMENT_LICENSE_UNKNOWN", f"the license expression {value} is unknown")
 
 
+#: Reviewed exact source-licence origins for unversioned substrate identities.
+#: The data file is shared with the Rust authority (`include_str!`), so the
+#: builder and Core validate the same reviewed table. It is evidence binding,
+#: not a licence allowlist: an origin outside this table fails closed.
+SOURCE_LICENSE_ORIGINS_FILE: Final[Path] = Path(__file__).with_name(
+    "source_license_origins.json"
+)
+
+
+def _load_source_license_origins() -> dict[str, dict[tuple[str, str], dict[str, Any]]]:
+    """Load the reviewed origins keyed by pin and exact (deriver, store path)."""
+    try:
+        document = json.loads(SOURCE_LICENSE_ORIGINS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        fail(
+            "ENVIRONMENT_LICENSE_UNKNOWN",
+            f"the reviewed source license origins file is unreadable: {error}",
+        )
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"schemaVersion", "evidence", "identities"}
+        or document["schemaVersion"] != 1
+        or not isinstance(document["identities"], list)
+    ):
+        fail(
+            "ENVIRONMENT_LICENSE_UNKNOWN",
+            "the reviewed source license origins file is malformed",
+        )
+    table: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
+    for entry in document["identities"]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("sourceOrigin"), dict):
+            fail(
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                "a reviewed source license origin entry is malformed",
+            )
+        origin = entry["sourceOrigin"]
+        pin = origin.get("pin")
+        key = (origin.get("deriver"), origin.get("storePath"))
+        if (
+            not isinstance(pin, str)
+            or not all(isinstance(part, str) for part in key)
+            or key in table.setdefault(pin, {})
+        ):
+            fail(
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                "a reviewed source license origin entry is malformed",
+            )
+        table[pin][key] = entry
+    return table
+
+
+SOURCE_LICENSE_ORIGINS = _load_source_license_origins()
+
+
+def _is_nar_hash(value: Any) -> bool:
+    if is_sha256(value):
+        return True
+    if not isinstance(value, str) or not value.startswith("sha256-"):
+        return False
+    try:
+        return len(base64.b64decode(value.removeprefix("sha256-"), validate=True)) == 32
+    except (ValueError, TypeError):
+        return False
+
+
+def _validate_source_license_origin(
+    value: Any,
+    *,
+    path: str,
+    name: str,
+    license_value: str,
+) -> dict[str, Any]:
+    """Validate one exact reviewed source-licence origin.
+
+    This is evidence binding, not a licence decision: the entry must name the
+    exact pin, derivation, store path and NAR hash, the pinned nixpkgs source and
+    its NAR hash, the exact COPYING bytes, all input source pairs and the
+    reconstructed output NAR. No name-only or wildcard match is accepted.
+    """
+    origin = _require_mapping(value, "source license origin")
+    if set(origin) != {
+        "pin",
+        "deriver",
+        "storePath",
+        "narHash",
+        "sourceStorePath",
+        "sourceNarSha256",
+        "licenseFile",
+        "licenseFileSha256",
+        "license",
+        "inputSources",
+        "compositionNarSha256",
+        "compositionNarSize",
+    }:
+        fail(
+            "ENVIRONMENT_LICENSE_UNKNOWN",
+            "a source license origin has unexpected or missing fields",
+        )
+    pin = _require_str(origin.get("pin"), "source license pin", 200)
+    if not pin.startswith(NIXPKGS_PREFIX):
+        fail("ENVIRONMENT_LICENSE_UNKNOWN", "the source license pin is not a nixpkgs pin")
+    deriver = _require_str(origin.get("deriver"), "source license deriver", 512)
+    store_path = _require_str(origin.get("storePath"), "source license store path", 512)
+    nar_hash = _require_str(origin.get("narHash"), "source license NAR hash", 128)
+    source_path = _require_str(origin.get("sourceStorePath"), "source license source path", 512)
+    source_nar = _require_str(origin.get("sourceNarSha256"), "source license source NAR", 128)
+    license_file = _require_str(origin.get("licenseFile"), "source license file", 32)
+    license_file_sha = _require_str(origin.get("licenseFileSha256"), "source license file hash", 64)
+    origin_license = _require_str(origin.get("license"), "source license expression", 200)
+    composition_sha = _require_str(
+        origin.get("compositionNarSha256"), "source composition NAR hash", 128
+    )
+    composition_size = origin.get("compositionNarSize")
+    if (
+        store_path != path
+        or any(character in name for character in "*?[]")
+        or not deriver.startswith("/nix/store/")
+        or not deriver.endswith(".drv")
+        or not _is_nar_hash(nar_hash)
+        or not source_path.startswith("/nix/store/")
+        or not _is_nar_hash(source_nar)
+        or license_file != "COPYING"
+        or not is_sha256(license_file_sha)
+        or license_file_sha != "b1269cab8c739a49b41c7f89a679805b200f268246fe9ee077c91da78b602f9e"
+        or origin_license != "MIT"
+        or license_value != "MIT"
+        or not _is_nar_hash(composition_sha)
+        or not isinstance(composition_size, int)
+        or composition_size <= 0
+        or composition_size > 256 * 1024 * 1024
+    ):
+        fail("ENVIRONMENT_LICENSE_UNKNOWN", f"the source license origin for {name} is inconsistent")
+    input_sources = _require_list(
+        origin.get("inputSources"), "source license input sources"
+    )
+    if not 1 <= len(input_sources) <= MAX_CLOSURE_PACKAGES:
+        fail("ENVIRONMENT_LICENSE_UNKNOWN", "the source license input list is outside its bound")
+    normalized_inputs: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in input_sources:
+        item = _require_mapping(item, "source license input")
+        if set(item) != {"storePath", "sha256", "sourcePath", "sourceSha256"}:
+            fail(
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                "a source license input pair has unexpected or missing fields",
+            )
+        input_store = _require_str(item.get("storePath"), "source license input path", 512)
+        input_sha = _require_str(item.get("sha256"), "source license input hash", 128)
+        input_source = _require_str(item.get("sourcePath"), "source license input source", 512)
+        input_source_sha = _require_str(
+            item.get("sourceSha256"), "source license input source hash", 128
+        )
+        if (
+            not input_store.startswith("/nix/store/")
+            or not is_sha256(input_sha)
+            or not is_sha256(input_source_sha)
+            or input_sha != input_source_sha
+            or input_store in seen
+            or input_source.startswith("/")
+            or ".." in input_source.split("/")
+            or not input_source
+        ):
+            fail("ENVIRONMENT_LICENSE_UNKNOWN", "a source license input pair is inconsistent")
+        seen.add(input_store)
+        normalized_inputs.append(
+            {
+                "storePath": input_store,
+                "sha256": input_sha,
+                "sourcePath": input_source,
+                "sourceSha256": input_source_sha,
+            }
+        )
+    normalized_origin = {
+        "pin": pin,
+        "deriver": deriver,
+        "storePath": store_path,
+        "narHash": nar_hash,
+        "sourceStorePath": source_path,
+        "sourceNarSha256": source_nar,
+        "licenseFile": license_file,
+        "licenseFileSha256": license_file_sha,
+        "license": origin_license,
+        "inputSources": normalized_inputs,
+        "compositionNarSha256": composition_sha,
+        "compositionNarSize": composition_size,
+    }
+    reviewed = SOURCE_LICENSE_ORIGINS.get(pin, {}).get((deriver, store_path))
+    if (
+        reviewed is None
+        or reviewed.get("version") != ""
+        or reviewed.get("versionState") != "unversioned"
+        or reviewed.get("name") != name
+        or reviewed.get("license") != origin_license
+        or reviewed.get("unfree") is not False
+        or reviewed.get("sourceOrigin") != normalized_origin
+    ):
+        fail(
+            "ENVIRONMENT_LICENSE_UNKNOWN",
+            f"the source license origin for {name} is not a reviewed exact origin",
+        )
+    return normalized_origin
+
+
 def validate_closure_licenses(entries: Any) -> list[dict[str, Any]]:
     """Fail closed on any unfree, denied or unknown package in the realised
     environment closure. This evidence comes from the builder's independent
@@ -1034,8 +1238,41 @@ def validate_closure_licenses(entries: Any) -> list[dict[str, Any]]:
         if not path.startswith("/nix/store/"):
             fail("ENVIRONMENT_LICENSE_UNKNOWN", "a closure license path is not a Nix store path")
         name = _require_str(entry.get("name"), "closure license name", 200)
-        version = _require_str(entry.get("version"), "closure license version", 128)
+        version_state = entry.get("versionState", "known")
+        if version_state not in ("known", "unversioned"):
+            fail(
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                "a closure identity version state must be known or unversioned",
+            )
+        origin_value = entry.get("sourceOrigin")
         license_value = _require_str(entry.get("license"), "closure license expression", 200)
+        if version_state == "unversioned":
+            if origin_value is None:
+                fail(
+                    "ENVIRONMENT_LICENSE_UNKNOWN",
+                    "an unversioned closure identity requires an exact source license origin",
+                )
+            raw_version = entry.get("version")
+            if raw_version not in (None, ""):
+                fail(
+                    "ENVIRONMENT_LICENSE_UNKNOWN",
+                    "an unversioned closure identity must not carry a version",
+                )
+            version = ""
+            source_origin = _validate_source_license_origin(
+                origin_value,
+                path=path,
+                name=name,
+                license_value=license_value,
+            )
+        else:
+            version = _require_str(entry.get("version"), "closure license version", 128)
+            if origin_value is not None:
+                fail(
+                    "ENVIRONMENT_LICENSE_UNKNOWN",
+                    "a versioned closure identity must not carry a source license origin",
+                )
+            source_origin = None
         unfree = _require_bool(entry.get("unfree"), "closure license unfree")
         if unfree:
             fail(
@@ -1058,15 +1295,17 @@ def validate_closure_licenses(entries: Any) -> list[dict[str, Any]]:
                 "ENVIRONMENT_LICENSE_UNKNOWN",
                 f"transitive closure package {name} {version} has unknown license {license_value}",
             )
-        observed.append(
-            {
-                "path": path,
-                "name": name,
-                "version": version,
-                "license": license_value,
-                "unfree": unfree,
-            }
-        )
+        observed_entry: dict[str, Any] = {
+            "path": path,
+            "name": name,
+            "version": version,
+            "versionState": version_state,
+            "license": license_value,
+            "unfree": unfree,
+        }
+        if source_origin is not None:
+            observed_entry["sourceOrigin"] = source_origin
+        observed.append(observed_entry)
     return observed
 
 

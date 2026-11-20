@@ -18,6 +18,7 @@ use std::pin::Pin;
 use std::process::Command;
 
 use factory_native::db::Database;
+use factory_native::planning::environment::{SourceLicenseInput, SourceLicenseOrigin};
 use factory_native::planning::identity_facts::{
     BoundIdentityFacts, IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION,
     IdentityFactsChallenge, IdentityFactsEnvelope, IdentityFactsMode, IdentityFactsReceipt,
@@ -366,6 +367,56 @@ chown -R 10001:10001 /target
     let verified = client
         .verify_identity_facts(&receipt, &challenge)
         .expect("the Core verifier accepts the real broker receipt");
+
+    // Licence-origin binding against the real signed manifest: an origin is
+    // admitted only when it equals a signed fact of this exact closure, so
+    // tampering any identity field (NAR hash, derivation, store path) fails.
+    let licensed = manifest
+        .facts
+        .iter()
+        .find(|fact| fact.deriver.is_some())
+        .expect("the real closure contains a derived package");
+    let origin = SourceLicenseOrigin {
+        pin: challenge.pin.clone(),
+        deriver: licensed.deriver.clone().expect("the fact has a deriver"),
+        store_path: licensed.store_path.clone(),
+        nar_hash: licensed.nar_hash.clone(),
+        source_store_path: "/nix/store/3p306srz83h9z9v0ma9xcxb8y8cdxkxj-source".into(),
+        source_nar_sha256: "sha256-16KkgfdYqjaeRGBaYsNrhPRRENs0qzkQVUooNHtoy2w=".into(),
+        license_file: "COPYING".into(),
+        license_file_sha256: "b1269cab8c739a49b41c7f89a679805b200f268246fe9ee077c91da78b602f9e"
+            .into(),
+        license: "MIT".into(),
+        input_sources: vec![SourceLicenseInput {
+            store_path: "/nix/store/q855jh4ms79mqdmz0jjsimp9d16isfkk-setup.sh".into(),
+            sha256: "0".repeat(64),
+            source_path: "pkgs/stdenv/generic/setup.sh".into(),
+            source_sha256: "0".repeat(64),
+        }],
+        composition_nar_sha256: licensed.nar_hash.clone(),
+        composition_nar_size: 1,
+    };
+    origin
+        .bind_identity_facts(&verified)
+        .expect("the origin binds to the real signed fact");
+    let mut tampered = origin.clone();
+    tampered.nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into();
+    assert!(
+        tampered.bind_identity_facts(&verified).is_err(),
+        "a changed NAR hash must be refused"
+    );
+    let mut tampered = origin.clone();
+    tampered.deriver = format!("/nix/store/{}-other.drv", "f".repeat(32));
+    assert!(
+        tampered.bind_identity_facts(&verified).is_err(),
+        "a changed derivation must be refused"
+    );
+    let mut tampered = origin.clone();
+    tampered.store_path = format!("/nix/store/{}-other", "f".repeat(32));
+    assert!(
+        tampered.bind_identity_facts(&verified).is_err(),
+        "a changed store path must be refused"
+    );
 
     // Actual SQLite consume and replay refusal.
     let db_path = std::env::temp_dir().join(format!("factory-idf-selftest-{}.sqlite", &id[..24]));

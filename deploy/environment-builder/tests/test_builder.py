@@ -909,6 +909,109 @@ class PolicyTests(unittest.TestCase):
                 validate_closure_licenses([entry])
             self.assertEqual(raised.exception.code, code, change)
 
+    def test_exact_source_license_origin_accepts_unversioned_identities(self) -> None:
+        pin = next(iter(cli.SOURCE_LICENSE_ORIGINS))
+        for (deriver, path), origin in cli.SOURCE_LICENSE_ORIGINS[pin].items():
+            entry = {"path": path, "version": "", **origin}
+            validated = validate_closure_licenses([entry])[0]
+            self.assertEqual(validated["name"], origin["name"])
+            self.assertEqual(validated["version"], "")
+            self.assertEqual(validated["versionState"], "unversioned")
+            self.assertEqual(validated["license"], "MIT")
+            self.assertEqual(
+                validated["sourceOrigin"]["deriver"], deriver
+            )
+            self.assertEqual(
+                validated["sourceOrigin"]["storePath"], path
+            )
+            self.assertEqual(
+                len(validated["sourceOrigin"]["inputSources"]),
+                16 if origin["name"] == "stdenv-linux" else 3,
+            )
+
+        base = {"path": path, "version": "", **origin}
+        mutations = [
+            ("pin", "github:NixOS/nixpkgs/" + "b" * 40),
+            ("deriver", "/nix/store/" + "b" * 32 + "-other.drv"),
+            ("storePath", "/nix/store/" + "b" * 32 + "-other"),
+            ("narHash", "sha256-" + "B" * 43 + "="),
+            ("sourceStorePath", "/nix/store/" + "b" * 32 + "-source"),
+            ("sourceNarSha256", "sha256-" + "B" * 43 + "="),
+            ("licenseFile", "LICENSE"),
+            ("licenseFileSha256", "b" * 64),
+            ("compositionNarSha256", "sha256-" + "B" * 43 + "="),
+            ("compositionNarSize", 0),
+        ]
+        for field, value in mutations:
+            entry = json.loads(json.dumps(base))
+            entry["sourceOrigin"][field] = value
+            with self.assertRaises(BuilderError) as raised:
+                validate_closure_licenses([entry])
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN", field)
+
+        # The explicit version state is refused when it disagrees with the
+        # exact origin: no empty-version or origin-carrying "known" exception.
+        entry = json.loads(json.dumps(base))
+        entry["versionState"] = "known"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        entry["version"] = "1.0"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        entry["sourceOrigin"]["extra"] = "value"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        entry["sourceOrigin"]["inputSources"][0]["extra"] = "value"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+
+        entry = json.loads(json.dumps(base))
+        entry["sourceOrigin"]["inputSources"][0]["sha256"] = "b" * 64
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        entry["version"] = "1.0"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        del entry["sourceOrigin"]
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        # A name-only or wildcard origin is not enough; the exact key is
+        # required and ordinary transitive entries keep their separate policy.
+        ordinary = {
+            "path": "/nix/store/" + "c" * 32 + "-gnu-config",
+            "name": "gnu-config",
+            "version": "2024-01-01",
+            "license": "GPL-3.0-or-later",
+            "unfree": False,
+        }
+        validated_ordinary = validate_closure_licenses([ordinary])[0]
+        self.assertEqual(validated_ordinary["name"], "gnu-config")
+        self.assertEqual(validated_ordinary["versionState"], "known")
+        # A known identity with no version, or a known identity carrying a
+        # source origin, is not an unversioned exception.
+        empty_version = {**ordinary, "version": ""}
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([empty_version])
+        known_with_origin = {**base, "versionState": "known"}
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([known_with_origin])
+        # The reviewed substrate lookup returns the exact origin only for the
+        # exact (pin, deriver, store path) key.
+        for (deriver, path), table_entry in cli.SOURCE_LICENSE_ORIGINS[pin].items():
+            reviewed = cli._reviewed_substrate_identity(pin, path, deriver)
+            self.assertIsNotNone(reviewed)
+            self.assertEqual(reviewed["path"], path)
+            self.assertEqual(reviewed["sourceOrigin"], table_entry["sourceOrigin"])
+            self.assertEqual(reviewed["versionState"], "unversioned")
+            self.assertIsNone(cli._reviewed_substrate_identity(pin + "0", path, deriver))
+            self.assertIsNone(cli._reviewed_substrate_identity(pin, path + "-other", deriver))
+            self.assertIsNone(cli._reviewed_substrate_identity(pin, path, deriver + "x"))
+
     def test_missing_command_executable_is_rejected(self) -> None:
         plan = {"commands": {"test": {"argv": ["cargo", "test"]}}}
         with mock.patch(

@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "evidence": {
+    "licenseEvidenceV2Sha256": "aaaeaf3a78d8338840bace2174410afd8eb6bb4cfb95d706cb35f93010faa55c",
+    "compositionAuditSha256Sums": "71e4ea4b243092ba0d26b6b30a320f37a9ecb04b6c90ef80b788657e07ce51e8",
+    "independentReconstructionSha256": "cd4dbace2c0facc48dae2be6078d23bd156bbcaad06d51dcd1c2e859265b1b42"
+  },
+  "identities": [
+    {
+      "name": "stdenv-linux",
+      "version": "",
+      "versionState": "unversioned",
+      "license": "MIT",
+      "unfree": false,
+      "sourceOrigin": {
+        "pin": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+        "deriver": "/nix/store/nsvrknrqxdf2lxcfbqkr0p05897ww5lx-stdenv-linux.drv",
+        "storePath": "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "narHash": "sha256-7uyA5WT1X+9o1QV/Dqs7GsmWtellurWH5ipGyZK8Szk=",
+        "sourceStorePath": "/nix/store/3p306srz83h9z9v0ma9xcxb8y8cdxkxj-source",
+        "sourceNarSha256": "sha256-16KkgfdYqjaeRGBaYsNrhPRRENs0qzkQVUooNHtoy2w=",
+        "licenseFile": "COPYING",
+        "licenseFileSha256": "b1269cab8c739a49b41c7f89a679805b200f268246fe9ee077c91da78b602f9e",
+        "license": "MIT",
+        "inputSources": [
+          {
+            "storePath": "/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh",
+            "sha256": "a2b81e17abbb89b8be49de3d92213906c53b1694e1ab675a01fd8759141edebc",
+            "sourcePath": "pkgs/build-support/setup-hooks/move-docs.sh",
+            "sourceSha256": "a2b81e17abbb89b8be49de3d92213906c53b1694e1ab675a01fd8759141edebc"
+          },
+          {
+            "storePath": "/nix/store/cickvswrvann041nqxb0rxilc46svw1n-prune-libtool-files.sh",
+            "sha256": "e4e396e4e65504fc0176388239cd242a8a2b9510b151842579047acd04f2a7e2",
+            "sourcePath": "pkgs/build-support/setup-hooks/prune-libtool-files.sh",
+            "sourceSha256": "e4e396e4e65504fc0176388239cd242a8a2b9510b151842579047acd04f2a7e2"
+          },
+          {
+            "storePath": "/nix/store/cmzya9irvxzlkh7lfy6i82gbp0saxqj3-multiple-outputs.sh",
+            "sha256": "97919a67ca4d94240eee9e0611b7faa571ff47f0022fc6b89deb350f777d3a0c",
+            "sourcePath": "pkgs/build-support/setup-hooks/multiple-outputs.sh",
+            "sourceSha256": "97919a67ca4d94240eee9e0611b7faa571ff47f0022fc6b89deb350f777d3a0c"
+          },
+          {
+            "storePath": "/nix/store/cnss4bmvsa7kjmghgksgcadrxsvkyla1-builder.sh",
+            "sha256": "8a0a49f2cb20c4348d8af44975251b4003297b45e9d29a5efc9f29c2cf7900cf",
+            "sourcePath": "pkgs/stdenv/generic/builder.sh",
+            "sourceSha256": "8a0a49f2cb20c4348d8af44975251b4003297b45e9d29a5efc9f29c2cf7900cf"
+          },
+          {
+            "storePath": "/nix/store/fyaryjvghbkpfnsyw97hb3lyb37s1pd6-move-lib64.sh",
+            "sha256": "e9f0ad31fe4e88f7988ff60d80c1ca21bd2459ee9f91c96b2dc362e8eb544e23",
+            "sourcePath": "pkgs/build-support/setup-hooks/move-lib64.sh",
+            "sourceSha256": "e9f0ad31fe4e88f7988ff60d80c1ca21bd2459ee9f91c96b2dc362e8eb544e23"
+          },
+          {
+            "storePath": "/nix/store/h9lc1dpi14z7is86ffhl3ld569138595-audit-tmpdir.sh",
+            "sha256": "22c0ee0738cbb3ee37665718ccf640b9eb9baff5c9947f7ec6b07894b388f8a3",
+            "sourcePath": "pkgs/build-support/setup-hooks/audit-tmpdir.sh",
+            "sourceSha256": "22c0ee0738cbb3ee37665718ccf640b9eb9baff5c9947f7ec6b07894b388f8a3"
+          },
+          {
+            "storePath": "/nix/store/hxv896faph0rqxjq2ycxpcrbnngc95sz-patch-shebangs.sh",
+            "sha256": "47d27bfbd3c8551dbc356313529595fab187725c0168103967038137483bacb6",
+            "sourcePath": "pkgs/build-support/setup-hooks/patch-shebangs.sh",
+            "sourceSha256": "47d27bfbd3c8551dbc356313529595fab187725c0168103967038137483bacb6"
+          },
+          {
+            "storePath": "/nix/store/jjhw2phnaip4kg0qjas3x3fsaifi8y0w-no-broken-symlinks.sh",
+            "sha256": "dcedf208537c2eb90f9b837c23494d486558e515c5b1d5dc1f3530566669bb30",
+            "sourcePath": "pkgs/build-support/setup-hooks/no-broken-symlinks.sh",
+            "sourceSha256": "dcedf208537c2eb90f9b837c23494d486558e515c5b1d5dc1f3530566669bb30"
+          },
+          {
+            "storePath": "/nix/store/kd4xwxjpjxi71jkm6ka0np72if9rm3y0-move-sbin.sh",
+            "sha256": "4f4478806af26b443258d85023bf4398b8bde76484315eef8238562d11b5178f",
+            "sourcePath": "pkgs/build-support/setup-hooks/move-sbin.sh",
+            "sourceSha256": "4f4478806af26b443258d85023bf4398b8bde76484315eef8238562d11b5178f"
+          },
+          {
+            "storePath": "/nix/store/m54bmrhj6fqz8nds5zcj97w9s9bckc9v-compress-man-pages.sh",
+            "sha256": "4baff46d7c41baea965985e19c38676ce3b5201c371f889eeca4470acacb2b1a",
+            "sourcePath": "pkgs/build-support/setup-hooks/compress-man-pages.sh",
+            "sourceSha256": "4baff46d7c41baea965985e19c38676ce3b5201c371f889eeca4470acacb2b1a"
+          },
+          {
+            "storePath": "/nix/store/pag6l61paj1dc9sv15l7bm5c17xn5kyk-move-systemd-user-units.sh",
+            "sha256": "0c865a233e39a50eff8196ad8704f30827d95898307f99abed34dd2e92087580",
+            "sourcePath": "pkgs/build-support/setup-hooks/move-systemd-user-units.sh",
+            "sourceSha256": "0c865a233e39a50eff8196ad8704f30827d95898307f99abed34dd2e92087580"
+          },
+          {
+            "storePath": "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
+            "sha256": "38554a9ca6d0a77b151b2598db2de8d770d127d797f2f0dd55bdc9b154f37325",
+            "sourcePath": "pkgs/build-support/setup-hooks/strip.sh",
+            "sourceSha256": "38554a9ca6d0a77b151b2598db2de8d770d127d797f2f0dd55bdc9b154f37325"
+          },
+          {
+            "storePath": "/nix/store/q855jh4ms79mqdmz0jjsimp9d16isfkk-setup.sh",
+            "sha256": "0563c9d5c3a2eb3802138b5a5cd21b3079d061ae9437dba8c0414bde21ebafb8",
+            "sourcePath": "pkgs/stdenv/generic/setup.sh",
+            "sourceSha256": "0563c9d5c3a2eb3802138b5a5cd21b3079d061ae9437dba8c0414bde21ebafb8"
+          },
+          {
+            "storePath": "/nix/store/wgrbkkaldkrlrni33ccvm3b6vbxzb656-make-symlinks-relative.sh",
+            "sha256": "7ee65e11224d9a4490a28725e1c3c564f115fd218841806026e0f60b56a1befe",
+            "sourcePath": "pkgs/build-support/setup-hooks/make-symlinks-relative.sh",
+            "sourceSha256": "7ee65e11224d9a4490a28725e1c3c564f115fd218841806026e0f60b56a1befe"
+          },
+          {
+            "storePath": "/nix/store/xyff06pkhki3qy1ls77w10s0v79c9il0-reproducible-builds.sh",
+            "sha256": "1e5b00e153164cf18667e2e006e9d4c6a0084974a48ab693d6e5626f29a43768",
+            "sourcePath": "pkgs/build-support/setup-hooks/reproducible-builds.sh",
+            "sourceSha256": "1e5b00e153164cf18667e2e006e9d4c6a0084974a48ab693d6e5626f29a43768"
+          },
+          {
+            "storePath": "/nix/store/z7k98578dfzi6l3hsvbivzm7hfqlk0zc-set-source-date-epoch-to-latest.sh",
+            "sha256": "c3a7d11b5fcbbe7e73524af8f802f51bb3ab5d7b99f431a606e5a0314a1a5444",
+            "sourcePath": "pkgs/build-support/setup-hooks/set-source-date-epoch-to-latest.sh",
+            "sourceSha256": "c3a7d11b5fcbbe7e73524af8f802f51bb3ab5d7b99f431a606e5a0314a1a5444"
+          }
+        ],
+        "compositionNarSha256": "sha256-7uyA5WT1X+9o1QV/Dqs7GsmWtellurWH5ipGyZK8Szk=",
+        "compositionNarSize": 60856
+      }
+    },
+    {
+      "name": "update-autotools-gnu-config-scripts-hook",
+      "version": "",
+      "versionState": "unversioned",
+      "license": "MIT",
+      "unfree": false,
+      "sourceOrigin": {
+        "pin": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+        "deriver": "/nix/store/n4jk7pj33qywkrlsgnf5611lc1c7wp08-update-autotools-gnu-config-scripts-hook.drv",
+        "storePath": "/nix/store/f244pq7qm9ga22jpa4l0vca2ys4q7wh7-update-autotools-gnu-config-scripts-hook",
+        "narHash": "sha256-wIte/PovG1/aVE3yV/TmEf9bQKvXYDVlNJB+wcOZP8w=",
+        "sourceStorePath": "/nix/store/3p306srz83h9z9v0ma9xcxb8y8cdxkxj-source",
+        "sourceNarSha256": "sha256-16KkgfdYqjaeRGBaYsNrhPRRENs0qzkQVUooNHtoy2w=",
+        "licenseFile": "COPYING",
+        "licenseFileSha256": "b1269cab8c739a49b41c7f89a679805b200f268246fe9ee077c91da78b602f9e",
+        "license": "MIT",
+        "inputSources": [
+          {
+            "storePath": "/nix/store/96rvfw5vlv1hwwm9sdxhdkkpjyym6p2x-update-autotools-gnu-config-scripts.sh",
+            "sha256": "848ddddceb0d4433f51382e28d080fe9d7755d94937f60c270b2c5fadaf09335",
+            "sourcePath": "pkgs/build-support/setup-hooks/update-autotools-gnu-config-scripts.sh",
+            "sourceSha256": "848ddddceb0d4433f51382e28d080fe9d7755d94937f60c270b2c5fadaf09335"
+          },
+          {
+            "storePath": "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh",
+            "sha256": "21c4af68b16048dc99687b414d8d89e980b623cd0ce0f8106de5248f7af75619",
+            "sourcePath": "pkgs/stdenv/generic/default-builder.sh",
+            "sourceSha256": "21c4af68b16048dc99687b414d8d89e980b623cd0ce0f8106de5248f7af75619"
+          },
+          {
+            "storePath": "/nix/store/vj1c3wf9c11a0qs6p3ymfvrnsdgsdcbq-source-stdenv.sh",
+            "sha256": "9ac7374ce23dcbe65c2ceb452d49cbed818fda67077c676ca1da5ab2800a33d7",
+            "sourcePath": "pkgs/stdenv/generic/source-stdenv.sh",
+            "sourceSha256": "9ac7374ce23dcbe65c2ceb452d49cbed818fda67077c676ca1da5ab2800a33d7"
+          }
+        ],
+        "compositionNarSha256": "sha256-wIte/PovG1/aVE3yV/TmEf9bQKvXYDVlNJB+wcOZP8w=",
+        "compositionNarSize": 968
+      }
+    }
+  ]
+}

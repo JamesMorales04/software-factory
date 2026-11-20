@@ -629,6 +629,37 @@ pub fn fixture_verified_receipt(
     VerifiedIdentityFacts(fixture_receipt(challenge, seed))
 }
 
+/// Feature-gated verified receipt over exact caller-supplied facts. It exists
+/// only for deterministic binding tests; production receipts come from the
+/// broker's fixed queries and MAC verification.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn fixture_verified_receipt_with_facts(
+    challenge: &IdentityFactsChallenge,
+    facts: Vec<IdentityFact>,
+) -> VerifiedIdentityFacts {
+    let observed_root = facts
+        .first()
+        .map(|fact| fact.store_path.clone())
+        .unwrap_or_default();
+    let manifest = IdentityFactsManifest {
+        observed_root,
+        fact_count: facts.len(),
+        closure_manifest_sha256: closure_manifest_sha256(&facts),
+        truncated: false,
+        facts,
+    };
+    VerifiedIdentityFacts(IdentityFactsReceipt {
+        envelope: IdentityFactsEnvelope {
+            schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
+            context: IDENTITY_FACTS_CONTEXT.into(),
+            challenge: challenge.clone(),
+            manifest,
+        },
+        signature: "0".repeat(64),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

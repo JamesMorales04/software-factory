@@ -367,6 +367,63 @@ cannot keep the same identity.
   distributed runtime context) is reported as not evaluated. It does not imply a
   default allowance and does not authorize a new family.
 
+### 7.5 Exact source origins and unversioned substrate identities
+
+Some substrate identities are unversioned derivations (`stdenv-linux`,
+`update-autotools-gnu-config-scripts-hook`). Their licence is not inferred from
+a name, a store-path suffix or a neighbouring `COPYING` file. An unversioned
+closure entry is admitted only with an **exact reviewed source origin**.
+
+`SourceLicenseOrigin` binds, for one identity:
+
+| Field | Meaning |
+| --- | --- |
+| `pin` | Exact `github:NixOS/nixpkgs/<commit>` whose source produced the scripts |
+| `deriver`, `storePath`, `narHash` | Exact identity of the realised output |
+| `sourceStorePath`, `sourceNarSha256` | Pinned nixpkgs source tree and its NAR hash |
+| `licenseFile`, `licenseFileSha256` | Exact licence file (`COPYING`) and its bytes |
+| `license` | Licence expression the reviewed bytes establish (`MIT`) |
+| `inputSources` | Per-input `(storePath, sha256, sourcePath, sourceSha256)` pairs |
+| `compositionNarSha256`, `compositionNarSize` | Deterministic reconstruction of the exact output |
+
+Rules:
+
+- **Evidence binding, not authorization.** The reviewed origins live in one data
+  asset, `source_license_origins.json`, shared by the builder and Core (Core
+  compiles it in). Membership only makes a **factual origin** admissible. It is
+  not an allowlist, grants no licence, overrides no verdict and cannot admit a
+  new licence family. The verdict still comes from the catalogue/profile context
+  evaluator and the entry's licence expression.
+- **Exact equality.** A submitted origin must equal the reviewed origin for the
+  exact `(pin, deriver, storePath)` key: every hash, size, source path, licence
+  file and input pair. Name-only, wildcard, prefix, extra-field or
+  structurally-plausible-but-unreviewed origins fail closed with
+  `ENVIRONMENT_LICENSE_UNKNOWN`. Inputs are unique and byte-identical
+  (`sha256 == sourceSha256`).
+- **Explicit version state.** `versionState` is `known` or `unversioned`; an
+  absent value is `known`. `known` requires a non-empty version and forbids a
+  source origin. `unversioned` requires an empty version **and** an exact
+  origin. No other combination is tolerated, so an empty version is never an
+  implicit exception.
+- **Identity-facts anchor.** Origins are consumed only after the authenticated
+  identity-facts receipt exists. Each origin's `storePath`, `deriver` and
+  `narHash` must equal one signed manifest fact of that exact environment
+  ([identity-facts](identity-facts.md)); an origin without a matching signed
+  fact fails closed. Only the broker produces and signs those facts, so a
+  caller, builder or model cannot mint one.
+- **Bounded scope.** These MIT records cover only the exact scripts and outputs
+  of the two reviewed identities. Transitive components (`gnu-config`,
+  `gcc-wrapper`, `bash`, and the `inputDrvs`) keep their separate frozen
+  inventory entries; the `COPYING` file is never extrapolated to them.
+- **Provenance.** The data asset records the digests of the licence evidence,
+  the composition audit and the independent reconstruction it was derived from.
+  Changing any byte of evidence invalidates the binding rather than silently
+  widening it.
+- **Office impact.** None: this is internal evidence and provenance plumbing.
+  Existing environment blockers still surface through the same typed
+  `ENVIRONMENT_LICENSE_*` errors, so no user-facing control, route or label
+  changes.
+
 ## 8. Builder sandbox
 
 The generated plan/files are untrusted. Build/evaluation runs in a dedicated

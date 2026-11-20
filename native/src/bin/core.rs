@@ -12936,6 +12936,23 @@ async fn build_environment_before_freeze(
         )
             .into_response()
     })?;
+    // Licence origins are consumed only after the authenticated identity-facts
+    // receipt exists: every origin must equal a signed fact of this exact
+    // environment, so the receipt anchors store path, derivation and NAR hash.
+    if let Some(resolution) = plan.resolution.as_ref() {
+        resolution
+            .validate_source_license_identity(bound.verified())
+            .map_err(|error| {
+                (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": error.message,
+                        "code": error.code_str(),
+                    })),
+                )
+                    .into_response()
+            })?;
+    }
     Ok(Some(receipt))
 }
 
@@ -36082,8 +36099,11 @@ mod tests {
                             path: format!("/nix/store/{}-bash-5.2", "b".repeat(32)),
                             name: "bash".into(),
                             version: "5.2".into(),
+                            version_state:
+                                factory_native::planning::environment::LicenseVersionState::Known,
                             license: "GPL-3.0-or-later".into(),
                             unfree: false,
+                            source_origin: None,
                         }],
                     })
                 })
