@@ -21204,6 +21204,27 @@ async fn create_intake_subscription_admission(
     if record.campaign_id.is_some() {
         return api_error(Error::Conflict("intake request already has a Campaign"));
     }
+    // An exact replay of an already-recorded admission returns it even if the
+    // Owner declaration was revoked afterwards; revocation is not retroactive.
+    // A changed payload under the same key is still refused.
+    if let Some(existing) = match app
+        .db
+        .subscription_scope_admission_by_key(&input.idempotency_key)
+        .await
+    {
+        Ok(existing) => existing,
+        Err(error) => return api_error(error),
+    } {
+        if existing.intake_request_id == record.id
+            && existing.test_profile_id == input.test_profile_id
+            && existing.assumption.assumption_id == input.assumption_id
+        {
+            return Json(existing).into_response();
+        }
+        return api_error(Error::Conflict(
+            "subscription admission idempotency key was used for different evidence",
+        ));
+    }
     let profile = match app
         .db
         .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
@@ -21358,6 +21379,16 @@ async fn create_intake_subscription_admission(
         }
     }
     let now_ms = chrono::Utc::now().timestamp_millis();
+    if covered
+        && declarations.iter().any(|declaration| {
+            declaration.principal_id != declarations[0].principal_id
+                || declaration.statement != declarations[0].statement
+        })
+    {
+        return api_error(Error::Conflict(
+            "the Owner Extra Usage declarations disagree on author or statement",
+        ));
+    }
     let (confirmed_by, confirmed_at_ms, valid_until_ms, statement) =
         if covered && !declarations.is_empty() {
             let first = &declarations[0];
@@ -21403,6 +21434,48 @@ async fn create_intake_subscription_admission(
             "Owner billing assumption is invalid or expired",
         ));
     }
+    let owner_extra_usage_declarations: Vec<factory_native::db::OwnerExtraUsageBinding> =
+        opencode_settings
+            .iter()
+            .filter_map(|settings| {
+                let declaration = declarations.iter().find(|declaration| {
+                    declaration.base_url == settings.base_url
+                        && declaration.credential_fingerprint == settings.credential_fingerprint
+                })?;
+                let route = routes.iter().find(|route| {
+                    route.provider == "opencode-go"
+                        && route.settings_revision == settings.revision.to_string()
+                })?;
+                Some(factory_native::db::OwnerExtraUsageBinding {
+                    provider: "opencode-go".into(),
+                    model: route.model.clone(),
+                    settings_revision: route.settings_revision.clone(),
+                    base_url: settings.base_url.clone(),
+                    credential_fingerprint: settings.credential_fingerprint.clone(),
+                    declaration_id: declaration.declaration_id.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+    let mut owner_extra_usage_declarations = owner_extra_usage_declarations;
+    owner_extra_usage_declarations.sort_by(|left, right| {
+        (
+            &left.provider,
+            &left.model,
+            &left.settings_revision,
+            &left.base_url,
+            &left.credential_fingerprint,
+            &left.declaration_id,
+        )
+            .cmp(&(
+                &right.provider,
+                &right.model,
+                &right.settings_revision,
+                &right.base_url,
+                &right.credential_fingerprint,
+                &right.declaration_id,
+            ))
+    });
+    owner_extra_usage_declarations.dedup();
     let write = factory_native::db::ScopeAdmissionWrite {
         intake_request_id: record.id.clone(),
         lead_request_id: record.lead_request_id.clone(),
@@ -21415,10 +21488,7 @@ async fn create_intake_subscription_admission(
         profile_hash: record.profile_hash.clone(),
         assumption,
         routes,
-        owner_extra_usage_declaration_ids: declarations
-            .iter()
-            .map(|declaration| declaration.declaration_id.clone())
-            .collect(),
+        owner_extra_usage_declarations,
         idempotency_key: input.idempotency_key,
     };
     match app.db.create_subscription_scope_admission(&write).await {
@@ -34682,11 +34752,32 @@ mod tests {
             );
             assert_eq!(admission["state"], "ACTIVE");
             assert!(
-                admission["ownerExtraUsageDeclarationIds"]
+                admission["ownerExtraUsageDeclarations"]
                     .as_array()
                     .is_some_and(|ids| !ids.is_empty()),
                 "the admission must persist every Owner declaration it used: {admission}"
             );
+
+            // An exact replay of the recorded admission is not cancelled by a
+            // later revocation; a changed payload under the same key is refused.
+            let (status, replay) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/subscription-admission"),
+                Some(json!({
+                    "assumption_id": "owner-extra-usage-1",
+                    "confirmed_by": "Product Owner",
+                    "confirmed_at_ms": now - 1_000,
+                    "valid_until_ms": now + 60_000,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this subscription route.",
+                    "test_profile_id": "opencode-go-subscription",
+                    "idempotency_key": "extra-usage-admission-1",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{replay}");
+            assert_eq!(replay["admissionId"], admission["admissionId"]);
 
             // Revocation invalidates reuse immediately.
             let (status, revoked) = send(
@@ -34719,6 +34810,24 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+            let (status, replay) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/subscription-admission"),
+                Some(json!({
+                    "assumption_id": "owner-extra-usage-1",
+                    "confirmed_by": "Product Owner",
+                    "confirmed_at_ms": now - 1_000,
+                    "valid_until_ms": now + 60_000,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this subscription route.",
+                    "test_profile_id": "opencode-go-subscription",
+                    "idempotency_key": "extra-usage-admission-1",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{replay}");
+            assert_eq!(replay["admissionId"], admission["admissionId"]);
 
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(&fixture.path);
@@ -34793,7 +34902,7 @@ mod tests {
                             transport: "OPENCODE_GO_SUBSCRIPTION".into(),
                         },
                     ],
-                    owner_extra_usage_declaration_ids: Vec::new(),
+                    owner_extra_usage_declarations: Vec::new(),
                     idempotency_key: "autopilot-funding-only-admission".into(),
                 })
                 .await

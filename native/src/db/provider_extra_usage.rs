@@ -602,6 +602,26 @@ mod tests {
             db.active_provider_extra_usage_declaration("opencode-go", a, "fingerprint-a")
                 .await
                 .unwrap()
+                .is_none()
+        );
+        // A credential-fingerprint change behaves the same way.
+        db.save_provider_settings(&settings(a, "fingerprint-b"), "owner")
+            .await
+            .unwrap();
+        db.save_provider_settings(&settings(a, "fingerprint-a"), "owner")
+            .await
+            .unwrap();
+        assert!(
+            db.active_provider_extra_usage_declaration("opencode-go", a, "fingerprint-a")
+                .await
+                .unwrap()
+                .is_none(),
+            "a fingerprint change must not reactivate by reverting"
+        );
+        assert!(
+            db.active_provider_extra_usage_declaration("opencode-go", a, "fingerprint-a")
+                .await
+                .unwrap()
                 .is_none(),
             "a revoked declaration must not reactivate by reverting settings"
         );
@@ -624,6 +644,22 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "clearing the credential must revoke the declaration"
+        );
+        db.save_provider_settings(&settings(a, "fingerprint-a"), "owner")
+            .await
+            .unwrap();
+        let after_clear = db
+            .declare_provider_extra_usage(declaration(
+                "opencode-go",
+                a,
+                "fingerprint-a",
+                "invalidate-3",
+            ))
+            .await
+            .unwrap();
+        assert!(
+            after_clear.created,
+            "a new declaration is required after clear"
         );
         db.close().await;
         let _ = std::fs::remove_file(path);

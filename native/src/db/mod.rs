@@ -1236,7 +1236,9 @@ pub use provider_extra_usage::{
     DeclareProviderExtraUsage, DeclaredProviderExtraUsage, ProviderExtraUsageDeclaration,
 };
 pub use provider_settings::{ProviderSettingsAudit, ProviderSettingsRecord, ProviderSettingsWrite};
-pub use subscription_admissions::{ScopeAdmissionRecord, ScopeAdmissionWrite};
+pub use subscription_admissions::{
+    OwnerExtraUsageBinding, ScopeAdmissionRecord, ScopeAdmissionWrite,
+};
 mod runtime_settings;
 pub use project_configs::NewProjectConfig;
 pub use runtime_settings::FactorySettings;

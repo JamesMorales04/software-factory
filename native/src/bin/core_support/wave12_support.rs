@@ -65,6 +65,42 @@ pub async fn seed(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    // The Owner Extra Usage journey needs an enabled opencode-go configuration.
+    // The credential is fixture material encrypted with this Core's master key;
+    // no provider call is made and no real secret is used.
+    if let Some(key) = app.master_key.as_ref() {
+        let encrypted = match key.encrypt(b"wave12-extra-usage-fixture") {
+            Ok(encrypted) => encrypted,
+            Err(error) => return super::api_error(factory_native::db::Error::Validation(error)),
+        };
+        if let Err(error) = app
+            .db
+            .save_provider_settings(
+                &factory_native::db::ProviderSettingsWrite {
+                    provider: "opencode-go".into(),
+                    kind: "opencode".into(),
+                    model: "deepseek-v4.1-flash".into(),
+                    base_url: "https://opencode.ai/inference/go/openai/v1".into(),
+                    auth_mode: "api_key".into(),
+                    credential_ciphertext: encrypted.ciphertext,
+                    credential_nonce: encrypted.nonce,
+                    credential_fingerprint: "wave12-extra-usage-fixture".into(),
+                    enabled: true,
+                    is_default: true,
+                    max_turns: 8,
+                    max_input_tokens: 128_000,
+                    max_output_tokens: 8_192,
+                    max_cost_micros: 1_000_000,
+                    input_micros_per_million: 1,
+                    output_micros_per_million: 1,
+                },
+                "wave12-fixture",
+            )
+            .await
+        {
+            return super::api_error(error);
+        }
+    }
     let manifest = match app.db.seed_wave12_fixtures(&principal).await {
         Ok(manifest) => manifest,
         Err(error) => return super::api_error(error),
