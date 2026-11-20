@@ -114,6 +114,9 @@ impl Database {
         let obligations_json = serde_json::to_string(input.obligations)
             .map_err(|_| Error::Invalid("licence decision obligations encoding"))?;
         let now = Utc::now().to_rfc3339();
+        if self.license_delegation_revoked(input.delegation_id).await? {
+            return Err(Error::Conflict("licence delegation is revoked"));
+        }
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         if let Some(existing) = sqlx::query::query(
@@ -250,6 +253,44 @@ impl Database {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(decision_from_row).collect()
+    }
+
+    pub async fn license_delegation_revoked(&self, delegation_id: &str) -> Result<bool, Error> {
+        let row = sqlx::query::query(
+            "SELECT 1 FROM license_delegation_revocations WHERE delegation_id=?1",
+        )
+        .bind(delegation_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
+    }
+
+    pub async fn revoke_license_delegation(
+        &self,
+        delegation_id: &str,
+        reason: &str,
+        revoked_by: &str,
+    ) -> Result<(), Error> {
+        if reason.trim().is_empty()
+            || reason.len() > 500
+            || revoked_by.trim().is_empty()
+            || revoked_by.len() > 200
+        {
+            return Err(Error::Invalid("licence delegation revocation fields"));
+        }
+        let _write = self.write_lock.lock().await;
+        sqlx::query::query(
+            "INSERT INTO license_delegation_revocations(delegation_id,reason,revoked_by,created_at)
+             VALUES (?1,?2,?3,?4)
+             ON CONFLICT(delegation_id) DO NOTHING",
+        )
+        .bind(delegation_id)
+        .bind(reason)
+        .bind(revoked_by)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn revoke_license_decision(
@@ -416,6 +457,24 @@ mod tests {
             .unwrap();
         assert!(revoked.revoked_at.is_some());
         assert_eq!(db.license_decisions("project").await.unwrap().len(), 1);
+        db.revoke_license_delegation(&owner.id, "owner revoke", "operator")
+            .await
+            .unwrap();
+        assert!(db.license_delegation_revoked(&owner.id).await.unwrap());
+        let second = new_decision(
+            &owner.id,
+            &actor,
+            &identity,
+            &evidence,
+            &provenance,
+            &obligations,
+            "MIT",
+            "decision-2",
+        );
+        assert!(matches!(
+            db.create_license_decision(&second).await,
+            Err(Error::Conflict(_))
+        ));
         db.close().await;
         let reopened = Database::open(&path).await.unwrap();
         let durable = reopened.license_decision(&first.id).await.unwrap();

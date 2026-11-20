@@ -642,6 +642,12 @@ struct RevokeLicenseDecisionRequest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RevokeLicenseDelegationRequest {
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RepairCampaignRequest {
     #[serde(default)]
     confirm: bool,
@@ -1323,6 +1329,10 @@ fn office_api_router(app: Arc<App>) -> Router {
             "/agentic/license-decisions/{id}/revoke",
             post(revoke_license_decision),
         )
+        .route(
+            "/agentic/license-delegations/{id}/revoke",
+            post(revoke_license_delegation),
+        )
         .route("/agentic/requests/{id}", get(agentic_request_detail))
         .route("/agentic/requests/{id}/trace", get(agentic_request_trace))
         .route(
@@ -1661,6 +1671,10 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/agentic/license-decisions/{id}/revoke",
             post(revoke_license_decision),
+        )
+        .route(
+            "/agentic/license-delegations/{id}/revoke",
+            post(revoke_license_delegation),
         )
         .route("/agentic/requests/{id}", get(agentic_request_detail))
         .route("/agentic/requests/{id}/trace", get(agentic_request_trace))
@@ -18775,6 +18789,27 @@ async fn revoke_license_decision(
     }
     match app.db.revoke_license_decision(&id, &input.reason).await {
         Ok(decision) => Json(decision).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn revoke_license_delegation(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<RevokeLicenseDelegationRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = operator_principal(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .revoke_license_delegation(&id, &input.reason, &principal)
+        .await
+    {
+        Ok(()) => Json(json!({"delegationId": id, "revoked": true})).into_response(),
         Err(error) => api_error(error),
     }
 }
