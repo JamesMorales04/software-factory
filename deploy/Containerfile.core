@@ -48,6 +48,7 @@ COPY native/src native/src
 COPY native/fixtures native/fixtures
 COPY deploy/environment-builder/environment_builder/license_catalog.json /build/deploy/environment-builder/environment_builder/
 COPY deploy/environment-builder/environment_builder/license_profile.json /build/deploy/environment-builder/environment_builder/
+COPY deploy/environment-builder/environment_builder/source_license_origins.json /build/deploy/environment-builder/environment_builder/
 COPY xtask/Cargo.toml xtask/Cargo.toml
 COPY xtask/src xtask/src
 COPY migrations migrations
