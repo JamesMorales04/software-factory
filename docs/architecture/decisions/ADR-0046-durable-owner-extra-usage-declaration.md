@@ -50,7 +50,12 @@ admission still passes the route, settings, profile and campaign checks.
    identity. Every declaration id used is persisted on the admission and is
    re-checked as active **inside the admission write transaction**, so a
    concurrent revocation cannot be bypassed by a read-then-write race.
-   Existing admissions are not extended or renewed by reuse.
+   Existing admissions are not extended or renewed by reuse. A stable
+   `requestFingerprint` (the full client payload plus the exact request/Lead/
+   profile identities and profile revision/hash) is persisted and returned for
+   audit; an exact original replay survives revocation or unrelated settings
+   changes, while any changed payload field under the same idempotency key is
+   refused with `409`.
 6. Revocation targets the provider's **current** configuration
    (`base_url` + credential fingerprint), never an arbitrary historical row. It
    stops future reuse. It does not retroactively cancel a Campaign or rewrite an

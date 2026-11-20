@@ -99,6 +99,9 @@ pub fn subscription_request_fingerprint(
     idempotency_key: &str,
     profile_revision_id: &str,
     profile_hash: &str,
+    intake_request_id: &str,
+    lead_request_id: &str,
+    execution_profile_id: &str,
 ) -> String {
     let value = serde_json::json!({
         "schema": "factory-subscription-request-v1",
@@ -112,6 +115,9 @@ pub fn subscription_request_fingerprint(
         "idempotencyKey": idempotency_key,
         "profileRevisionId": profile_revision_id,
         "profileHash": profile_hash,
+        "intakeRequestId": intake_request_id,
+        "leadRequestId": lead_request_id,
+        "executionProfileId": execution_profile_id,
     });
     sha256_hex(&serde_json::to_vec(&value).expect("subscription request fingerprint"))
 }
@@ -298,10 +304,8 @@ impl Database {
                     "an Owner Extra Usage declaration was bound to a stale settings revision",
                 ));
             }
-            if !input
-                .assumption
-                .confirmed_by
-                .starts_with(&declaration_principal)
+            if input.assumption.confirmed_by
+                != format!("{declaration_principal}:persisted-owner-declaration")
                 || input.assumption.statement != declaration_statement
             {
                 return Err(Error::Conflict(
@@ -319,21 +323,23 @@ impl Database {
                 ));
             }
         }
-        for route in input
-            .routes
-            .iter()
-            .filter(|route| route.provider == "opencode-go")
-        {
-            let covered = input.owner_extra_usage_declarations.iter().any(|binding| {
-                binding.role == route.role.as_str()
-                    && binding.provider == route.provider
-                    && binding.model == route.model
-                    && binding.settings_revision == route.settings_revision
-            });
-            if !covered {
-                return Err(Error::Conflict(
-                    "an OpenCode Go route has no exact Owner Extra Usage binding",
-                ));
+        if !input.owner_extra_usage_declarations.is_empty() {
+            for route in input
+                .routes
+                .iter()
+                .filter(|route| route.provider == "opencode-go")
+            {
+                let covered = input.owner_extra_usage_declarations.iter().any(|binding| {
+                    binding.role == route.role.as_str()
+                        && binding.provider == route.provider
+                        && binding.model == route.model
+                        && binding.settings_revision == route.settings_revision
+                });
+                if !covered {
+                    return Err(Error::Conflict(
+                        "an OpenCode Go route has no exact Owner Extra Usage binding",
+                    ));
+                }
             }
         }
         let admission_id = Uuid::new_v4().to_string();
@@ -765,4 +771,147 @@ pub(super) async fn insert_enabled_campaign_admission_in_tx(
     .execute(&mut *connection)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution_policy::{OwnerBillingAssumption, OwnerControlledExtraUsage};
+    use crate::subscription_admission::{TestModelRole, TestRouteBinding};
+
+    async fn fixture() -> (std::path::PathBuf, super::super::Database) {
+        let path = std::env::temp_dir().join(format!(
+            "factory-admission-binding-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = super::super::Database::open(&path).await.unwrap();
+        let settings = super::super::ProviderSettingsWrite {
+            provider: "opencode-go".into(),
+            kind: "opencode".into(),
+            model: "deepseek-v4.1-flash".into(),
+            base_url: "https://opencode.ai/inference/go/openai/v1".into(),
+            auth_mode: "api_key".into(),
+            credential_ciphertext: "ciphertext".into(),
+            credential_nonce: "nonce".into(),
+            credential_fingerprint: "fp".into(),
+            enabled: true,
+            is_default: true,
+            max_turns: 8,
+            max_input_tokens: 128_000,
+            max_output_tokens: 8_192,
+            max_cost_micros: 1_000_000,
+            input_micros_per_million: 1,
+            output_micros_per_million: 1,
+        };
+        db.save_provider_settings(&settings, "owner").await.unwrap();
+        let declaration = db
+            .declare_provider_extra_usage(super::super::DeclareProviderExtraUsage {
+                provider: "opencode-go",
+                base_url: "https://opencode.ai/inference/go/openai/v1",
+                credential_fingerprint: "fp",
+                principal_id: "operator-token",
+                statement:
+                    "I confirm OpenCode Go Extra Usage is disabled for this provider configuration.",
+                settings_revision: 1,
+                idempotency_key: "binding-declaration",
+            })
+            .await
+            .unwrap();
+        (path, db)
+    }
+
+    fn route(role: TestModelRole) -> TestRouteBinding {
+        TestRouteBinding {
+            role,
+            provider: "opencode-go".into(),
+            model: "deepseek-v4.1-flash".into(),
+            settings_revision: "1".into(),
+            transport: "OPENCODE_GO_SUBSCRIPTION".into(),
+        }
+    }
+
+    fn write(
+        bindings: Vec<OwnerExtraUsageBinding>,
+        routes: Vec<TestRouteBinding>,
+    ) -> ScopeAdmissionWrite {
+        let now = Utc::now().timestamp_millis();
+        ScopeAdmissionWrite {
+            intake_request_id: "intake".into(),
+            lead_request_id: "lead".into(),
+            test_profile_id: "opencode-go-subscription".into(),
+            execution_profile_id: "profile".into(),
+            provider: "opencode-go".into(),
+            model: "deepseek-v4.1-flash".into(),
+            settings_revision: "model-gateway:opencode-go:deepseek-v4.1-flash".into(),
+            profile_revision_id: "revision".into(),
+            profile_hash: "a".repeat(64),
+            assumption: OwnerBillingAssumption {
+                assumption_id: "binding-assumption".into(),
+                confirmed_by: "operator-token:persisted-owner-declaration".into(),
+                confirmed_at_ms: now - 1_000,
+                valid_until_ms: now + 60_000,
+                extra_usage: OwnerControlledExtraUsage::Disabled,
+                statement:
+                    "I confirm OpenCode Go Extra Usage is disabled for this provider configuration."
+                        .into(),
+            },
+            routes,
+            owner_extra_usage_declarations: bindings,
+            request_fingerprint: "f".repeat(64),
+            idempotency_key: "binding-admission".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_foreign_and_partial_bindings_are_refused() {
+        let (path, db) = fixture().await;
+        let declaration = db
+            .active_provider_extra_usage_declaration(
+                "opencode-go",
+                "https://opencode.ai/inference/go/openai/v1",
+                "fp",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let binding = |settings_revision: &str, declaration_id: &str| OwnerExtraUsageBinding {
+            role: "lead".into(),
+            provider: "opencode-go".into(),
+            model: "deepseek-v4.1-flash".into(),
+            settings_revision: settings_revision.into(),
+            base_url: "https://opencode.ai/inference/go/openai/v1".into(),
+            credential_fingerprint: "fp".into(),
+            declaration_id: declaration_id.into(),
+        };
+        let lead = route(TestModelRole::Lead);
+        assert!(
+            db.create_subscription_scope_admission(&write(
+                vec![binding("999", &declaration.declaration_id)],
+                vec![lead.clone()],
+            ))
+            .await
+            .is_err(),
+            "stale revision"
+        );
+        assert!(
+            db.create_subscription_scope_admission(&write(
+                vec![binding("1", "foreign-declaration")],
+                vec![lead.clone()],
+            ))
+            .await
+            .is_err(),
+            "foreign declaration"
+        );
+        assert!(
+            db.create_subscription_scope_admission(&write(
+                vec![binding("1", &declaration.declaration_id)],
+                vec![lead, route(TestModelRole::Implementer)],
+            ))
+            .await
+            .is_err(),
+            "partial route coverage"
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
 }

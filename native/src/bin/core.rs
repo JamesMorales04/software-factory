@@ -21218,6 +21218,9 @@ async fn create_intake_subscription_admission(
         &input.idempotency_key,
         &record.profile_revision_id,
         &record.profile_hash,
+        &record.id,
+        &record.lead_request_id,
+        &record.profile_id,
     );
     let existing = match app
         .db
@@ -21228,7 +21231,11 @@ async fn create_intake_subscription_admission(
         Err(error) => return api_error(error),
     };
     if let Some(existing) = existing {
-        if existing.request_fingerprint == request_fingerprint {
+        if existing.request_fingerprint == request_fingerprint
+            && existing.intake_request_id == record.id
+            && existing.lead_request_id == record.lead_request_id
+            && existing.execution_profile_id == record.profile_id
+        {
             return Json(existing).into_response();
         }
         return api_error(Error::Conflict(
@@ -21445,35 +21452,37 @@ async fn create_intake_subscription_admission(
         ));
     }
     let mut owner_extra_usage_declarations = Vec::new();
-    for route in &routes {
-        if route.provider != "opencode-go" {
-            continue;
+    if covered && !declarations.is_empty() {
+        for route in &routes {
+            if route.provider != "opencode-go" {
+                continue;
+            }
+            let Some(settings) = opencode_settings
+                .iter()
+                .find(|settings| settings.revision.to_string() == route.settings_revision)
+            else {
+                return api_error(Error::Conflict(
+                    "an OpenCode Go route has no current provider settings",
+                ));
+            };
+            let Some(declaration) = declarations.iter().find(|declaration| {
+                declaration.base_url == settings.base_url
+                    && declaration.credential_fingerprint == settings.credential_fingerprint
+            }) else {
+                return api_error(Error::Conflict(
+                    "an OpenCode Go route has no active Owner declaration",
+                ));
+            };
+            owner_extra_usage_declarations.push(factory_native::db::OwnerExtraUsageBinding {
+                role: route.role.as_str().to_owned(),
+                provider: route.provider.clone(),
+                model: route.model.clone(),
+                settings_revision: route.settings_revision.clone(),
+                base_url: settings.base_url.clone(),
+                credential_fingerprint: settings.credential_fingerprint.clone(),
+                declaration_id: declaration.declaration_id.clone(),
+            });
         }
-        let Some(settings) = opencode_settings
-            .iter()
-            .find(|settings| settings.revision.to_string() == route.settings_revision)
-        else {
-            return api_error(Error::Conflict(
-                "an OpenCode Go route has no current provider settings",
-            ));
-        };
-        let Some(declaration) = declarations.iter().find(|declaration| {
-            declaration.base_url == settings.base_url
-                && declaration.credential_fingerprint == settings.credential_fingerprint
-        }) else {
-            return api_error(Error::Conflict(
-                "an OpenCode Go route has no active Owner declaration",
-            ));
-        };
-        owner_extra_usage_declarations.push(factory_native::db::OwnerExtraUsageBinding {
-            role: route.role.as_str().to_owned(),
-            provider: route.provider.clone(),
-            model: route.model.clone(),
-            settings_revision: route.settings_revision.clone(),
-            base_url: settings.base_url.clone(),
-            credential_fingerprint: settings.credential_fingerprint.clone(),
-            declaration_id: declaration.declaration_id.clone(),
-        });
     }
     let write = factory_native::db::ScopeAdmissionWrite {
         intake_request_id: record.id.clone(),
@@ -34778,25 +34787,50 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::OK, "{replay}");
             assert_eq!(replay["admissionId"], admission["admissionId"]);
+            let bindings = replay["ownerExtraUsageDeclarations"].as_array().unwrap();
+            let roles: std::collections::BTreeSet<String> = bindings
+                .iter()
+                .map(|binding| binding["role"].as_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(
+                roles,
+                ["lead", "implementer", "semanticReviewer"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                "one binding per OpenCode Go role: {replay}"
+            );
 
-            // A changed payload under the same key is refused, not silently
-            // answered with the old admission.
-            let (status, conflict) = send(
-                &fixture.router,
-                "POST",
-                &format!("/intake/requests/{intake_id}/subscription-admission"),
-                Some(json!({
+            // A changed payload under the same key is refused for every
+            // evidence field, not only the statement.
+            for changed in [
+                json!({"statement": "A different statement for the same key"}),
+                json!({"valid_until_ms": now + 120_000}),
+                json!({"confirmed_by": "Another principal"}),
+                json!({"confirmed_at_ms": now - 5_000}),
+            ] {
+                let mut payload = json!({
                     "assumption_id": "owner-extra-usage-1",
                     "confirmed_by": "Product Owner",
                     "confirmed_at_ms": now - 1_000,
                     "valid_until_ms": now + 60_000,
-                    "statement": "A different Owner statement for the same key",
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this subscription route.",
                     "test_profile_id": "opencode-go-subscription",
                     "idempotency_key": "extra-usage-admission-1",
-                })),
-            )
-            .await;
-            assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+                });
+                for (key, value) in changed.as_object().unwrap() {
+                    payload[key] = value.clone();
+                }
+                let (status, conflict) = send(
+                    &fixture.router,
+                    "POST",
+                    &format!("/intake/requests/{intake_id}/subscription-admission"),
+                    Some(payload),
+                )
+                .await;
+                assert_eq!(status, StatusCode::CONFLICT, "{changed}: {conflict}");
+            }
 
             // Revocation invalidates reuse immediately.
             let (status, revoked) = send(
@@ -34829,6 +34863,54 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+
+            // The legacy explicit per-request confirmation still works.
+            let (status, legacy) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{second_id}/subscription-admission"),
+                Some(json!({
+                    "assumption_id": "owner-extra-usage-legacy",
+                    "confirmed_by": "Product Owner",
+                    "confirmed_at_ms": now - 1_000,
+                    "valid_until_ms": now + 60_000,
+                    "extra_usage_disabled": true,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this subscription route.",
+                    "test_profile_id": "opencode-go-subscription",
+                    "idempotency_key": "extra-usage-admission-legacy",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{legacy}");
+            assert!(
+                legacy["ownerExtraUsageDeclarations"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty(),
+                "the legacy path carries no durable bindings: {legacy}"
+            );
+
+            // Reusing the same key on another request is refused even with the
+            // same payload/profile.
+            let (status, other) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{second_id}/subscription-admission"),
+                Some(json!({
+                    "assumption_id": "owner-extra-usage-1",
+                    "confirmed_by": "Product Owner",
+                    "confirmed_at_ms": now - 1_000,
+                    "valid_until_ms": now + 60_000,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this subscription route.",
+                    "test_profile_id": "opencode-go-subscription",
+                    "idempotency_key": "extra-usage-admission-1",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{other}");
+
             let (status, replay) = send(
                 &fixture.router,
                 "POST",

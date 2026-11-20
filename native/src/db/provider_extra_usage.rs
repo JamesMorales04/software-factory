@@ -551,6 +551,42 @@ mod tests {
             .await
             .unwrap();
         assert!(renewed.created);
+        // Reusing the revoked key is an explicit conflict, not a fake success.
+        assert!(
+            db.declare_provider_extra_usage(declaration(
+                "opencode-go",
+                "https://opencode.ai/inference/go/openai/v1",
+                "fingerprint-a",
+                "declare-revoke-1",
+            ))
+            .await
+            .is_err()
+        );
+        // Reusing the active key with changed evidence conflicts.
+        let mut changed_statement = declaration(
+            "opencode-go",
+            "https://opencode.ai/inference/go/openai/v1",
+            "fingerprint-a",
+            "declare-revoke-2",
+        );
+        changed_statement.statement = "A different Owner statement for the same key";
+        assert!(
+            db.declare_provider_extra_usage(changed_statement)
+                .await
+                .is_err()
+        );
+        let mut changed_principal = declaration(
+            "opencode-go",
+            "https://opencode.ai/inference/go/openai/v1",
+            "fingerprint-a",
+            "declare-revoke-2",
+        );
+        changed_principal.principal_id = "another-owner";
+        assert!(
+            db.declare_provider_extra_usage(changed_principal)
+                .await
+                .is_err()
+        );
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

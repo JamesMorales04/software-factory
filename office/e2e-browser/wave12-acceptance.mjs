@@ -613,7 +613,12 @@ try {
       JSON.stringify(
         {
           candidate: process.env.FACTORY_SOURCE_SHA || null,
-          consoleErrors,
+          consoleErrors: consoleErrors.map((entry) =>
+            entry.text.includes("401") &&
+            entry.url.includes("extra-usage")
+              ? { ...entry, expected: true }
+              : entry,
+          ),
           pageErrors,
           httpFailures,
           results,
