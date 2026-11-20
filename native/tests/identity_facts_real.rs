@@ -368,17 +368,25 @@ chown -R 10001:10001 /target
         .verify_identity_facts(&receipt, &challenge)
         .expect("the Core verifier accepts the real broker receipt");
 
-    // Licence-origin binding against the real signed manifest: an origin is
-    // admitted only when it equals a signed fact of this exact closure, so
-    // tampering any identity field (NAR hash, derivation, store path) fails.
-    let licensed = manifest
-        .facts
-        .iter()
-        .find(|fact| fact.deriver.is_some())
-        .expect("the real closure contains a derived package");
+    // Licence-origin binding against the real signed manifest. A source origin
+    // is admitted only when it equals a signed fact of this exact closure. The
+    // disposable seeded store has no derivation registrations, so this fixture
+    // proves the fail-closed path for a fabricated derivation; the authenticated
+    // acceptance path is covered by the deterministic verified-receipt test in
+    // `planning::environment`.
+    let derived = manifest.facts.iter().find(|fact| fact.deriver.is_some());
+    let licensed = derived.unwrap_or_else(|| {
+        manifest
+            .facts
+            .first()
+            .expect("the real closure is not empty")
+    });
     let origin = SourceLicenseOrigin {
         pin: challenge.pin.clone(),
-        deriver: licensed.deriver.clone().expect("the fact has a deriver"),
+        deriver: licensed
+            .deriver
+            .clone()
+            .unwrap_or_else(|| format!("/nix/store/{}-unregistered.drv", "f".repeat(32))),
         store_path: licensed.store_path.clone(),
         nar_hash: licensed.nar_hash.clone(),
         source_store_path: "/nix/store/3p306srz83h9z9v0ma9xcxb8y8cdxkxj-source".into(),
@@ -396,9 +404,16 @@ chown -R 10001:10001 /target
         composition_nar_sha256: licensed.nar_hash.clone(),
         composition_nar_size: 1,
     };
-    origin
-        .bind_identity_facts(&verified)
-        .expect("the origin binds to the real signed fact");
+    if derived.is_some() {
+        origin
+            .bind_identity_facts(&verified)
+            .expect("the origin binds to the real signed fact");
+    } else {
+        assert!(
+            origin.bind_identity_facts(&verified).is_err(),
+            "a derivation that is not in the signed manifest must be refused"
+        );
+    }
     let mut tampered = origin.clone();
     tampered.nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into();
     assert!(
@@ -498,6 +513,12 @@ chown -R 10001:10001 /target
             "packages": [],
             "replay": "REFUSED",
             "coreVerifier": "ACCEPTED",
+            "derivedFactAvailable": derived.is_some(),
+            "licenceOriginBinding": if derived.is_some() {
+                "ACCEPTED_THEN_TAMPER_REFUSED"
+            } else {
+                "REFUSED_UNREGISTERED_DERIVATION"
+            },
         })
     );
 }
