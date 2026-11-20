@@ -336,6 +336,7 @@ enum Expr {
     Atom(String),
     And(Vec<Expr>),
     Or(Vec<Expr>),
+    With(Box<Expr>, String),
 }
 
 fn tokenize(value: &str) -> Vec<String> {
@@ -417,11 +418,6 @@ impl ExpressionParser {
                     self.position += 1;
                     factors.push(self.parse_atom()?);
                 }
-                Some("WITH") => {
-                    self.position += 1;
-                    // A WITH exception is a conjunction, never an ignored token.
-                    factors.push(self.parse_atom()?);
-                }
                 Some("OR") | Some(")") | None => break,
                 // Adjacent SPDX atoms (and a WITH exception) are implicitly AND.
                 Some(_) => factors.push(self.parse_atom()?),
@@ -435,19 +431,40 @@ impl ExpressionParser {
     }
 
     fn parse_atom(&mut self) -> Result<Expr, String> {
-        match self.take().as_deref() {
+        let base = match self.take().as_deref() {
             Some("(") => {
                 let expression = self.parse_or()?;
                 if self.take().as_deref() != Some(")") {
                     return Err("unbalanced licence expression parentheses".into());
                 }
-                Ok(expression)
+                expression
             }
-            Some(")") | Some("AND") | Some("OR") | None => {
-                Err("invalid licence expression atom".into())
+            Some(")") | Some("AND") | Some("OR") | Some("WITH") | None => {
+                return Err("invalid licence expression atom".into());
             }
-            Some(atom) => Ok(Expr::Atom(atom.to_string())),
+            Some(atom) => Expr::Atom(atom.to_string()),
+        };
+        if self.peek() != Some("WITH") {
+            return Ok(base);
         }
+        self.position += 1;
+        // SPDX WITH is a postfix on one licence id: base WITH exception.
+        if !matches!(base, Expr::Atom(_)) {
+            return Err("WITH must bind to a single licence id".into());
+        }
+        let exception = match self.take().as_deref() {
+            Some(exception)
+                if !matches!(exception, "(" | ")" | "AND" | "OR" | "WITH")
+                    && !exception.starts_with('-') =>
+            {
+                exception.to_string()
+            }
+            _ => return Err("WITH requires an exception identifier".into()),
+        };
+        if self.peek() == Some("WITH") {
+            return Err("nested WITH is invalid".into());
+        }
+        Ok(Expr::With(Box::new(base), exception))
     }
 }
 
@@ -457,11 +474,10 @@ fn atom_decision(
     profile: &LicenseProfile,
     policy: &ContextPolicy,
 ) -> LicenseDecision {
-    if atom == "LLVM-exception" {
-        return LicenseDecision::Allowed;
-    }
-    if atom.ends_with("-exception") || atom.ends_with("-exception-2.0") {
-        // Unrecognised SPDX exceptions are not silently ignored.
+    if atom == "LLVM-exception" || atom.ends_with("-exception") || atom.ends_with("-exception-2.0")
+    {
+        // An exception is never a standalone licence and is never silently
+        // ignored; only the postfix WITH form can consume a recognised one.
         return LicenseDecision::Unknown;
     }
     let identifier = catalog
@@ -534,14 +550,27 @@ fn evaluate_expression(
                     LicenseDecision::NotEvaluated => not_evaluated = true,
                 }
             }
-            if denied {
-                LicenseDecision::Denied
-            } else if unknown {
+            // Unknown (including an exception-only branch) is never an allow;
+            // a denied branch is reported only when no branch is unknown.
+            if unknown {
                 LicenseDecision::Unknown
+            } else if denied {
+                LicenseDecision::Denied
             } else if not_evaluated {
                 LicenseDecision::NotEvaluated
             } else {
                 LicenseDecision::Unknown
+            }
+        }
+        Expr::With(base, exception) => {
+            if !matches!(exception.as_str(), "LLVM-exception") {
+                return LicenseDecision::Unknown;
+            }
+            match base.as_ref() {
+                Expr::Atom(atom) if !atom.ends_with("-exception") => {
+                    atom_decision(atom, catalog, profile, policy)
+                }
+                _ => LicenseDecision::Unknown,
             }
         }
     }
@@ -918,6 +947,36 @@ mod tests {
             evaluate("MIT WITH", LicenseContext::Closure, catalog, profile),
             LicenseDecision::Unknown
         );
+    }
+
+    #[test]
+    fn with_exception_is_postfix_and_exception_only_is_never_a_license() {
+        let catalog = default_catalog();
+        let profile = default_profile();
+        for (expression, expected) in [
+            ("MIT WITH LLVM-exception", LicenseDecision::Allowed),
+            ("LLVM-exception", LicenseDecision::Unknown),
+            ("BUSL-1.1 OR LLVM-exception", LicenseDecision::Unknown),
+            ("AGPL-3.0-only OR LLVM-exception", LicenseDecision::Unknown),
+            ("BUSL-1.1 WITH LLVM-exception", LicenseDecision::Denied),
+            ("MIT WITH Classpath-exception-2.0", LicenseDecision::Unknown),
+            ("MIT WITH", LicenseDecision::Unknown),
+            ("WITH MIT", LicenseDecision::Unknown),
+            (
+                "(MIT OR Apache-2.0) WITH LLVM-exception",
+                LicenseDecision::Unknown,
+            ),
+            (
+                "MIT WITH LLVM-exception WITH LLVM-exception",
+                LicenseDecision::Unknown,
+            ),
+        ] {
+            assert_eq!(
+                evaluate(expression, LicenseContext::Closure, catalog, profile),
+                expected,
+                "{expression}"
+            );
+        }
     }
 
     #[test]

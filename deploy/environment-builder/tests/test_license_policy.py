@@ -116,6 +116,29 @@ class LicensePolicyTests(unittest.TestCase):
             self.decision("MIT WITH", lp.LicenseContext.CLOSURE),
             "unknown",
         )
+        self.assertEqual(
+            self.decision("LLVM-exception", lp.LicenseContext.CLOSURE),
+            "unknown",
+        )
+        self.assertEqual(
+            self.decision("BUSL-1.1 OR LLVM-exception", lp.LicenseContext.CLOSURE),
+            "unknown",
+        )
+        self.assertEqual(
+            self.decision("AGPL-3.0-only OR LLVM-exception", lp.LicenseContext.CLOSURE),
+            "unknown",
+        )
+        self.assertEqual(
+            self.decision("BUSL-1.1 WITH LLVM-exception", lp.LicenseContext.CLOSURE),
+            "denied",
+        )
+        self.assertEqual(
+            self.decision(
+                "(MIT OR Apache-2.0) WITH LLVM-exception",
+                lp.LicenseContext.CLOSURE,
+            ),
+            "unknown",
+        )
 
     def test_public_domain_is_a_documented_alias_not_a_new_id(self) -> None:
         self.assertNotIn("Public Domain", self.catalog.entries)

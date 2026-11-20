@@ -327,10 +327,6 @@ class _ExpressionParser:
             if token == "AND":
                 self.position += 1
                 factors.append(self.parse_atom())
-            elif token == "WITH":
-                self.position += 1
-                # A WITH exception is a conjunction, never an ignored token.
-                factors.append(self.parse_atom())
             elif token in (None, "OR", ")"):
                 break
             else:
@@ -341,13 +337,24 @@ class _ExpressionParser:
     def parse_atom(self) -> tuple:
         token = self.take()
         if token == "(":
-            expression = self.parse_or()
+            base = self.parse_or()
             if self.take() != ")":
                 raise ValueError("unbalanced licence expression parentheses")
-            return expression
-        if token in (None, ")", "AND", "OR"):
+        elif token in (None, ")", "AND", "OR", "WITH"):
             raise ValueError("invalid licence expression atom")
-        return ("atom", token)
+        else:
+            base = ("atom", token)
+        if self.peek() != "WITH":
+            return base
+        self.position += 1
+        if base[0] != "atom":
+            raise ValueError("WITH must bind to a single licence id")
+        exception = self.take()
+        if exception in (None, ")", "(", "AND", "OR", "WITH") or exception.startswith("-"):
+            raise ValueError("WITH requires an exception identifier")
+        if self.peek() == "WITH":
+            raise ValueError("nested WITH is invalid")
+        return ("with", base, exception)
 
 
 def _atom_decision(
@@ -356,10 +363,8 @@ def _atom_decision(
     profile: LicenseProfile,
     config: dict[str, Any],
 ) -> LicenseDecision:
-    if atom == "LLVM-exception":
-        return LicenseDecision.ALLOWED
-    if atom.endswith("-exception") or atom.endswith("-exception-2.0"):
-        # Unrecognised SPDX exceptions are not silently ignored.
+    if atom == "LLVM-exception" or atom.endswith("-exception") or atom.endswith("-exception-2.0"):
+        # An exception is never a standalone licence and is never ignored.
         return LicenseDecision.UNKNOWN
     identifier = catalog.alias_index.get(atom, atom)
     if identifier in profile.denied_ids:
@@ -413,12 +418,19 @@ def _evaluate_expression(
                 unknown = True
             else:
                 not_evaluated = True
-        if denied:
-            return LicenseDecision.DENIED
         if unknown:
             return LicenseDecision.UNKNOWN
+        if denied:
+            return LicenseDecision.DENIED
         if not_evaluated:
             return LicenseDecision.NOT_EVALUATED
+        return LicenseDecision.UNKNOWN
+    if kind == "with":
+        base, exception = expression[1], expression[2]
+        if exception != "LLVM-exception":
+            return LicenseDecision.UNKNOWN
+        if base[0] == "atom" and not base[1].endswith("-exception"):
+            return _atom_decision(base[1], catalog, profile, config)
         return LicenseDecision.UNKNOWN
     return LicenseDecision.UNKNOWN
 
