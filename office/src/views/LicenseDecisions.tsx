@@ -187,7 +187,8 @@ export function LicenseDecisions() {
       />
       {notice ? <p className="notice">{notice}</p> : null}
       {error ? <p className="form-error">{error}</p> : null}
-      <Panel title={t("licenses.delegation.title")}>
+      <Panel>
+        <h2 className="ui-section-title">{t("licenses.delegation.title")}</h2>
         <div className="inline-form">
           <Select
             label={t("licenses.project")}
@@ -297,7 +298,8 @@ export function LicenseDecisions() {
           </div>
         )}
       </Panel>
-      <Panel title={t("licenses.decisions.title")}>
+      <Panel>
+        <h2 className="ui-section-title">{t("licenses.decisions.title")}</h2>
         {decisions.length === 0 ? (
           <EmptyState
             title={t("licenses.decisions.emptyTitle")}

@@ -1,0 +1,114 @@
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { I18nProvider } from "../i18n";
+import { LicenseDecisions } from "./LicenseDecisions";
+
+const mocks = vi.hoisted(() => ({
+  listProjects: vi.fn(),
+  listAgenticDecisions: vi.fn(),
+  listLicenseDecisions: vi.fn(),
+  createAgenticOwnerDecision: vi.fn(),
+  resolveAgenticOwnerDecision: vi.fn(),
+  revokeLicenseDecision: vi.fn(),
+  revokeLicenseDelegation: vi.fn(),
+}));
+
+vi.mock("../coreApi", () => ({
+  coreApi: mocks,
+  CoreApiError: class CoreApiError extends Error {
+    readonly status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.name = "CoreApiError";
+      this.status = status;
+    }
+  },
+}));
+
+function renderView() {
+  return render(
+    <I18nProvider initialLocale="en">
+      <LicenseDecisions />
+    </I18nProvider>,
+  );
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.listProjects.mockResolvedValue([
+    {
+      id: "project-1",
+      repository: "/repo",
+      base_commit: "b".repeat(40),
+      created_at: "2026-11-20T00:00:00Z",
+      name: "Project One",
+    },
+  ]);
+  mocks.listAgenticDecisions.mockResolvedValue({ decisions: [] });
+  mocks.listLicenseDecisions.mockResolvedValue({ decisions: [] });
+});
+
+describe("LicenseDecisions", () => {
+  it("renders the exact delegation and decision empty states", async () => {
+    renderView();
+    expect(
+      await screen.findByText("Licenses, identity and evidence"),
+    ).toBeTruthy();
+    expect(screen.getByText("No licence delegation")).toBeTruthy();
+    expect(screen.getByText("No Lead decisions")).toBeTruthy();
+  });
+
+  it("creates an exact Owner delegation through the real action", async () => {
+    mocks.createAgenticOwnerDecision.mockResolvedValue({});
+    renderView();
+    await screen.findByText("Owner delegation");
+    await userEvent.click(screen.getByText("Create delegation"));
+    await waitFor(() =>
+      expect(mocks.createAgenticOwnerDecision).toHaveBeenCalledTimes(1),
+    );
+    const input = mocks.createAgenticOwnerDecision.mock.calls[0][0];
+    expect(input.matter).toBe("LICENSE_IDENTITY_EVIDENCE_DELEGATION");
+    expect(input.options).toEqual([
+      "APPROVE_DELEGATION",
+      "DENY_DELEGATION",
+    ]);
+    expect(input.evidence).toMatchObject({
+      domain: "licenses-identity-evidence",
+      economicCriterion: "no-mandatory-fee-commercial-use",
+    });
+  });
+
+  it("shows a revoked exact decision without offering a second revoke", async () => {
+    mocks.listLicenseDecisions.mockResolvedValue({
+      decisions: [
+        {
+          id: "decision-1",
+          delegationId: "delegation-1",
+          projectId: "project-1",
+          leadRequestId: "lead-1",
+          leadReservationId: "reservation-1",
+          leadActorSha256: "a".repeat(64),
+          identity: { name: "ed", version: "1.21.1" },
+          licenseExpression: "GPL-2.0-or-later",
+          selectedBranch: "GPL-2.0-or-later",
+          documentationLicense: "GFDL-1.3-or-later",
+          evidenceSha256: "b".repeat(64),
+          provenance: {},
+          useContext: "commercial-development",
+          commercialUse: true,
+          paymentRequired: false,
+          obligations: ["notice", "source"],
+          decision: "ACCEPT",
+          revision: 1,
+          createdAt: "2026-11-20T00:00:00Z",
+          revokedAt: "2026-11-20T01:00:00Z",
+          revocationReason: "superseded",
+        },
+      ],
+    });
+    renderView();
+    expect(await screen.findByText("REVOKED")).toBeTruthy();
+    expect(screen.queryByText("Revoke")).toBeNull();
+  });
+});
