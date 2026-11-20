@@ -498,10 +498,23 @@ struct IntakeSubscriptionAdmissionRequest {
     confirmed_by: String,
     confirmed_at_ms: i64,
     valid_until_ms: i64,
+    /// Legacy per-request confirmation. When a durable Owner provider
+    /// declaration covers every OpenCode Go route, Core reuses it and this
+    /// field may be omitted.
+    #[serde(default)]
     extra_usage_disabled: bool,
     statement: String,
     test_profile_id: String,
     idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderExtraUsageRequest {
+    extra_usage_disabled: bool,
+    statement: String,
+    #[serde(default)]
+    idempotency_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1143,6 +1156,12 @@ fn office_api_router(app: Arc<App>) -> Router {
             get(provider_models),
         )
         .route("/settings/providers/{provider}/audit", get(provider_audit))
+        .route(
+            "/settings/providers/{provider}/extra-usage",
+            get(provider_extra_usage)
+                .put(declare_provider_extra_usage)
+                .delete(revoke_provider_extra_usage),
+        )
         .route("/projects", get(projects).post(register_project))
         .route(
             "/projects/import/archive",
@@ -1465,6 +1484,12 @@ fn api_router(app: Arc<App>) -> Router {
             get(provider_models),
         )
         .route("/settings/providers/{provider}/audit", get(provider_audit))
+        .route(
+            "/settings/providers/{provider}/extra-usage",
+            get(provider_extra_usage)
+                .put(declare_provider_extra_usage)
+                .delete(revoke_provider_extra_usage),
+        )
         .route("/worker/provider_profile", get(worker_provider_profile))
         .route("/projects", get(projects).post(register_project))
         .route(
@@ -3381,6 +3406,175 @@ async fn provider_models(
         "inference": inference,
     }))
     .into_response()
+}
+
+fn extra_usage_provider(provider: &str) -> bool {
+    provider == "opencode-go"
+}
+
+async fn provider_extra_usage_state(
+    app: &Arc<App>,
+    provider: &str,
+) -> Result<serde_json::Value, Response> {
+    if !extra_usage_provider(provider) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"unknown provider"})),
+        )
+            .into_response());
+    }
+    let settings = app
+        .db
+        .provider_settings(provider)
+        .await
+        .map_err(api_error)?;
+    let active = app
+        .db
+        .active_provider_extra_usage_declaration(
+            provider,
+            &settings.base_url,
+            &settings.credential_fingerprint,
+        )
+        .await
+        .map_err(api_error)?;
+    let latest = app
+        .db
+        .provider_extra_usage_declaration(provider)
+        .await
+        .map_err(api_error)?;
+    let declaration = active.as_ref().or(latest.as_ref());
+    Ok(json!({
+        "provider": provider,
+        "baseUrl": settings.base_url,
+        "credentialBound": !settings.credential_fingerprint.is_empty(),
+        "active": active.is_some(),
+        "declaration": declaration.map(|value| json!({
+            "declarationId": value.declaration_id,
+            "declaredAt": value.declared_at,
+            "declaredBy": value.principal_id,
+            "statement": value.statement,
+            "revokedAt": value.revoked_at,
+        })),
+    }))
+}
+
+async fn provider_extra_usage(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(provider): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match provider_extra_usage_state(&app, &provider).await {
+        Ok(value) => Json(value).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn declare_provider_extra_usage(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(provider): AxumPath<String>,
+    Json(input): Json<ProviderExtraUsageRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !extra_usage_provider(&provider) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"unknown provider"})),
+        )
+            .into_response();
+    }
+    if !input.extra_usage_disabled {
+        return api_error(Error::Forbidden(
+            "Owner must confirm Extra Usage is disabled".into(),
+        ));
+    }
+    let settings = match app.db.provider_settings(&provider).await {
+        Ok(settings) => settings,
+        Err(error) => return api_error(error),
+    };
+    if !settings.enabled || settings.credential_fingerprint.is_empty() {
+        return api_error(Error::Forbidden(
+            "the provider is not configured and enabled".into(),
+        ));
+    }
+    if !factory_native::provider_catalog::is_canonical_opencode_go_base_url(&settings.base_url)
+        && !factory_native::provider_catalog::is_test_upstream_url(&settings.base_url)
+    {
+        return api_error(Error::Forbidden(
+            "OpenCode Go must use the canonical subscription endpoint".into(),
+        ));
+    }
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let idempotency_key = input
+        .idempotency_key
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    match app
+        .db
+        .declare_provider_extra_usage(factory_native::db::DeclareProviderExtraUsage {
+            provider: &provider,
+            base_url: &settings.base_url,
+            credential_fingerprint: &settings.credential_fingerprint,
+            principal_id: &principal_id,
+            statement: &input.statement,
+            settings_revision: settings.revision,
+            idempotency_key: &idempotency_key,
+        })
+        .await
+    {
+        Ok(_) => match provider_extra_usage_state(&app, &provider).await {
+            Ok(value) => Json(value).into_response(),
+            Err(response) => response,
+        },
+        Err(error) => api_error(error),
+    }
+}
+
+async fn revoke_provider_extra_usage(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    AxumPath(provider): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !extra_usage_provider(&provider) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"unknown provider"})),
+        )
+            .into_response();
+    }
+    let settings = match app.db.provider_settings(&provider).await {
+        Ok(settings) => settings,
+        Err(error) => return api_error(error),
+    };
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .revoke_provider_extra_usage(
+            &provider,
+            &settings.base_url,
+            &settings.credential_fingerprint,
+            &principal_id,
+        )
+        .await
+    {
+        Ok(_) => match provider_extra_usage_state(&app, &provider).await {
+            Ok(value) => Json(value).into_response(),
+            Err(response) => response,
+        },
+        Err(error) => api_error(error),
+    }
 }
 
 async fn provider_audit(
@@ -12763,6 +12957,76 @@ async fn resolve_generated_environment(
     Ok(resolved)
 }
 
+/// Issue the Core-owned identity-facts challenge, persist it PENDING before
+/// dispatch, observe the realised environment through the builder port, verify
+/// the authenticated receipt and consume the challenge atomically.
+///
+/// The observation is deterministic: Core owns the operation/nonce/plan/pin
+/// binding and never supplies a store hash, argv or manifest.
+async fn prepare_environment_identity_facts(
+    app: &App,
+    plan: &factory_native::planning::environment::EnvironmentPlan,
+    spec: &factory_native::planning::environment::EnvironmentSpec,
+) -> Result<
+    (
+        factory_native::planning::identity_facts::IdentityFactsChallenge,
+        factory_native::planning::identity_facts::VerifiedIdentityFacts,
+    ),
+    factory_native::planning::environment::EnvironmentError,
+> {
+    use factory_native::planning::identity_facts::{
+        IdentityFactsChallenge, IdentityFactsMode, OperationRoot,
+    };
+    let marker = uuid::Uuid::new_v4().simple().to_string();
+    let challenge = IdentityFactsChallenge {
+        operation_id: format!("environment-identity:{marker}"),
+        runtime_id: spec.builder_image_digest.clone(),
+        nonce: format!("identity-facts:{marker}"),
+        pin: plan.nix.nixpkgs.clone(),
+        plan_sha256: plan.plan_sha256.clone(),
+        spec_sha256: spec.spec_sha256.clone(),
+        mode: IdentityFactsMode::Enumerate,
+        root: OperationRoot::Operation,
+        questions: Vec::new(),
+    };
+    app.db
+        .issue_identity_facts_challenge(
+            &challenge,
+            Some(&plan.request_id),
+            &plan.plan_id,
+            3_600,
+        )
+        .await
+        .map_err(|error| {
+            factory_native::planning::environment::EnvironmentError::new(
+                factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentIdentityEvidenceAbsent,
+                format!("the identity-facts challenge could not be persisted: {error}"),
+            )
+        })?;
+    let receipt = app
+        .environment_builder()
+        .identity_facts(&challenge, plan, spec)
+        .await?;
+    Ok((challenge, receipt))
+}
+
+async fn consume_environment_identity_facts(
+    app: &App,
+    challenge: &factory_native::planning::identity_facts::IdentityFactsChallenge,
+    bound: &factory_native::planning::identity_facts::BoundIdentityFacts,
+) -> Result<(), factory_native::planning::environment::EnvironmentError> {
+    app.db
+        .consume_identity_facts(challenge, bound)
+        .await
+        .map_err(|error| {
+            factory_native::planning::environment::EnvironmentError::new(
+                factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentIdentityFactsRefused,
+                format!("the identity-facts receipt was refused: {error}"),
+            )
+        })?;
+    Ok(())
+}
+
 async fn build_environment_before_freeze(
     app: &App,
     plan: &factory_native::planning::environment::EnvironmentPlan,
@@ -12777,10 +13041,20 @@ async fn build_environment_before_freeze(
     builder.refresh().await;
     let descriptor = builder.descriptor();
     if !descriptor.is_available() || descriptor.status == EnvironmentBuilderStatus::Unavailable {
-        return Ok(None);
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the realised environment cannot be observed without an available builder; identity evidence is absent",
+                "code": "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT",
+            })),
+        )
+            .into_response());
     }
-    let receipt = builder
-        .build(spec, plan, workspace)
+    // The build may refuse at the licence gate. Observe and persist identity
+    // facts from the same spec-keyed realised store first, so a licence refusal
+    // keeps its identity receipt and leaves the environment blocked.
+    let build = builder.build(spec, plan, workspace).await;
+    let (challenge, identity) = prepare_environment_identity_facts(app, plan, spec)
         .await
         .map_err(|error| {
             (
@@ -12792,6 +13066,60 @@ async fn build_environment_before_freeze(
             )
                 .into_response()
         })?;
+    // A successful build receipt may only be bound after its own validation and
+    // exact root equality. Anything else is explicitly a spec-cache observation,
+    // so a durable BUILD_RECEIPT can never describe a failed or mismatched build.
+    let bound = match &build {
+        Ok(receipt) => {
+            factory_native::planning::identity_facts::BoundIdentityFacts::bind_build_receipt(
+                identity.clone(),
+                receipt,
+                spec,
+            )
+            .unwrap_or_else(|_| {
+                factory_native::planning::identity_facts::BoundIdentityFacts::spec_cache_observation(
+                    identity.clone(),
+                )
+            })
+        }
+        _ => factory_native::planning::identity_facts::BoundIdentityFacts::spec_cache_observation(
+            identity.clone(),
+        ),
+    };
+    consume_environment_identity_facts(app, &challenge, &bound)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.message,
+                    "code": error.code_str(),
+                })),
+            )
+                .into_response()
+        })?;
+    let receipt = build.map_err(|error| {
+        (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": error.message,
+                "code": error.code_str(),
+            })),
+        )
+            .into_response()
+    })?;
+    if receipt.store_path.is_empty()
+        || receipt.store_path != bound.receipt().envelope.manifest.observed_root
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the observed identity root does not match the realised build root",
+                "code": "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+            })),
+        )
+            .into_response());
+    }
     receipt.validate_for(spec).map_err(|error| {
         (
             StatusCode::CONFLICT,
@@ -12802,6 +13130,23 @@ async fn build_environment_before_freeze(
         )
             .into_response()
     })?;
+    // Licence origins are consumed only after the authenticated identity-facts
+    // receipt exists: every origin must equal a signed fact of this exact
+    // environment, so the receipt anchors store path, derivation and NAR hash.
+    if let Some(resolution) = plan.resolution.as_ref() {
+        resolution
+            .validate_source_license_identity(bound.verified())
+            .map_err(|error| {
+                (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": error.message,
+                        "code": error.code_str(),
+                    })),
+                )
+                    .into_response()
+            })?;
+    }
     Ok(Some(receipt))
 }
 
@@ -20845,11 +21190,6 @@ async fn create_intake_subscription_admission(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if !input.extra_usage_disabled {
-        return api_error(Error::Forbidden(
-            "Owner must confirm Extra Usage is disabled".into(),
-        ));
-    }
     if input.test_profile_id.trim().is_empty() {
         return api_error(Error::Forbidden(
             "subscription admission requires an admission profile".into(),
@@ -20863,6 +21203,44 @@ async fn create_intake_subscription_admission(
     };
     if record.campaign_id.is_some() {
         return api_error(Error::Conflict("intake request already has a Campaign"));
+    }
+    // Exact replay of the original request is stable across revocation and
+    // unrelated settings changes; any changed client payload or frozen profile
+    // identity under the same key is refused.
+    let request_fingerprint = factory_native::db::subscription_request_fingerprint(
+        &input.assumption_id,
+        &input.confirmed_by,
+        input.confirmed_at_ms,
+        input.valid_until_ms,
+        input.extra_usage_disabled,
+        &input.statement,
+        &input.test_profile_id,
+        &input.idempotency_key,
+        &record.profile_revision_id,
+        &record.profile_hash,
+        &record.id,
+        &record.lead_request_id,
+        &record.profile_id,
+    );
+    let existing = match app
+        .db
+        .subscription_scope_admission_by_key(&input.idempotency_key)
+        .await
+    {
+        Ok(existing) => existing,
+        Err(error) => return api_error(error),
+    };
+    if let Some(existing) = existing {
+        if existing.request_fingerprint == request_fingerprint
+            && existing.intake_request_id == record.id
+            && existing.lead_request_id == record.lead_request_id
+            && existing.execution_profile_id == record.profile_id
+        {
+            return Json(existing).into_response();
+        }
+        return api_error(Error::Conflict(
+            "subscription admission idempotency key was used for different evidence",
+        ));
     }
     let profile = match app
         .db
@@ -20952,13 +21330,14 @@ async fn create_intake_subscription_admission(
         },
     ];
     let reviewer = &content.roles.semantic_reviewer;
+    let mut reviewer_settings: Option<factory_native::db::ProviderSettingsRecord> = None;
     if reviewer.provider == "opencode-go" {
         let Some(reviewer_transport) = test_transport_for_provider(&reviewer.provider) else {
             return api_error(Error::Forbidden(
                 "semantic reviewer provider is outside the automated acceptance allowlist".into(),
             ));
         };
-        let reviewer_settings = match app.db.provider_settings(&reviewer.provider).await {
+        let settings = match app.db.provider_settings(&reviewer.provider).await {
             Ok(settings) if settings.enabled && !settings.credential_ciphertext.is_empty() => {
                 settings
             }
@@ -20969,21 +21348,100 @@ async fn create_intake_subscription_admission(
             }
             Err(error) => return api_error(error),
         };
+        reviewer_settings = Some(settings.clone());
         routes.push(factory_native::subscription_admission::TestRouteBinding {
             role: factory_native::subscription_admission::TestModelRole::SemanticReviewer,
             provider: reviewer.provider.clone(),
             model: reviewer.model.clone(),
-            settings_revision: reviewer_settings.revision.to_string(),
+            settings_revision: settings.revision.to_string(),
             transport: reviewer_transport.to_owned(),
         });
     }
+    // Resolve the durable Owner declaration for every OpenCode Go route. A
+    // declaration is factual provider configuration evidence: it removes the
+    // repeated confirmation, but the admission still passes every route,
+    // settings and funding check and keeps its own bounded time window.
+    let mut opencode_settings: Vec<&factory_native::db::ProviderSettingsRecord> = Vec::new();
+    if assessment_provider == "opencode-go" {
+        opencode_settings.push(&assessment_settings);
+    }
+    if implementer.provider == "opencode-go" {
+        opencode_settings.push(&implementer_settings);
+    }
+    if let Some(settings) = reviewer_settings.as_ref() {
+        opencode_settings.push(settings);
+    }
+    let mut declarations = Vec::new();
+    let mut covered = true;
+    let mut seen = std::collections::BTreeSet::new();
+    for settings in &opencode_settings {
+        if !seen.insert((
+            settings.base_url.clone(),
+            settings.credential_fingerprint.clone(),
+        )) {
+            continue;
+        }
+        match app
+            .db
+            .active_provider_extra_usage_declaration(
+                "opencode-go",
+                &settings.base_url,
+                &settings.credential_fingerprint,
+            )
+            .await
+        {
+            Ok(Some(declaration)) => declarations.push(declaration),
+            Ok(None) => covered = false,
+            Err(error) => return api_error(error),
+        }
+    }
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if covered
+        && declarations.iter().any(|declaration| {
+            declaration.principal_id != declarations[0].principal_id
+                || declaration.statement != declarations[0].statement
+        })
+    {
+        return api_error(Error::Conflict(
+            "the Owner Extra Usage declarations disagree on author or statement",
+        ));
+    }
+    let (confirmed_by, confirmed_at_ms, valid_until_ms, statement) =
+        if covered && !declarations.is_empty() {
+            let first = &declarations[0];
+            let declared_at_ms = chrono::DateTime::parse_from_rfc3339(&first.declared_at)
+                .map(|value| value.timestamp_millis())
+                .unwrap_or(0);
+            if declared_at_ms <= 0 {
+                return api_error(Error::Invalid(
+                    "the persisted Owner Extra Usage declaration is invalid",
+                ));
+            }
+            (
+                format!("{}:persisted-owner-declaration", first.principal_id),
+                declared_at_ms,
+                now_ms + 24 * 60 * 60 * 1_000,
+                first.statement.clone(),
+            )
+        } else if input.extra_usage_disabled {
+            (
+                format!("{principal_id}:{}", input.confirmed_by),
+                input.confirmed_at_ms,
+                input.valid_until_ms,
+                input.statement,
+            )
+        } else {
+            return api_error(Error::Forbidden(
+                "Owner must confirm Extra Usage is disabled for this provider configuration".into(),
+            ));
+        };
     let assumption = factory_native::execution_policy::OwnerBillingAssumption {
         assumption_id: input.assumption_id,
-        confirmed_by: format!("{principal_id}:{}", input.confirmed_by),
-        confirmed_at_ms: input.confirmed_at_ms,
-        valid_until_ms: input.valid_until_ms,
+        confirmed_by,
+        confirmed_at_ms,
+        valid_until_ms,
         extra_usage: factory_native::execution_policy::OwnerControlledExtraUsage::Disabled,
-        statement: input.statement,
+        statement,
     };
     if assumption
         .validate_at(chrono::Utc::now().timestamp_millis())
@@ -20992,6 +21450,39 @@ async fn create_intake_subscription_admission(
         return api_error(Error::Invalid(
             "Owner billing assumption is invalid or expired",
         ));
+    }
+    let mut owner_extra_usage_declarations = Vec::new();
+    if covered && !declarations.is_empty() {
+        for route in &routes {
+            if route.provider != "opencode-go" {
+                continue;
+            }
+            let Some(settings) = opencode_settings
+                .iter()
+                .find(|settings| settings.revision.to_string() == route.settings_revision)
+            else {
+                return api_error(Error::Conflict(
+                    "an OpenCode Go route has no current provider settings",
+                ));
+            };
+            let Some(declaration) = declarations.iter().find(|declaration| {
+                declaration.base_url == settings.base_url
+                    && declaration.credential_fingerprint == settings.credential_fingerprint
+            }) else {
+                return api_error(Error::Conflict(
+                    "an OpenCode Go route has no active Owner declaration",
+                ));
+            };
+            owner_extra_usage_declarations.push(factory_native::db::OwnerExtraUsageBinding {
+                role: route.role.as_str().to_owned(),
+                provider: route.provider.clone(),
+                model: route.model.clone(),
+                settings_revision: route.settings_revision.clone(),
+                base_url: settings.base_url.clone(),
+                credential_fingerprint: settings.credential_fingerprint.clone(),
+                declaration_id: declaration.declaration_id.clone(),
+            });
+        }
     }
     let write = factory_native::db::ScopeAdmissionWrite {
         intake_request_id: record.id.clone(),
@@ -21005,6 +21496,8 @@ async fn create_intake_subscription_admission(
         profile_hash: record.profile_hash.clone(),
         assumption,
         routes,
+        owner_extra_usage_declarations,
+        request_fingerprint,
         idempotency_key: input.idempotency_key,
     };
     match app.db.create_subscription_scope_admission(&write).await {
@@ -29851,6 +30344,16 @@ mod tests {
             ) -> factory_native::planning::environment::EnvironmentBuilderFuture<'a> {
                 self.inner.build(spec, plan, workspace)
             }
+
+            fn identity_facts<'a>(
+                &'a self,
+                challenge: &'a factory_native::planning::identity_facts::IdentityFactsChallenge,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                spec: &'a factory_native::planning::environment::EnvironmentSpec,
+            ) -> factory_native::planning::environment::EnvironmentIdentityFactsFuture<'a>
+            {
+                self.inner.identity_facts(challenge, plan, spec)
+            }
         }
 
         #[cfg(feature = "test-support")]
@@ -34182,6 +34685,257 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn provider_extra_usage_declaration_is_persisted_and_reused() {
+            // The declaration binds the exact provider configuration; a
+            // loopback test upstream keeps the canonical-endpoint guard active
+            // without any network call.
+            unsafe {
+                std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1");
+            }
+            let master_key = structured_lead_master_key();
+            let fixture = setup_with(
+                Some(&master_key),
+                "http://127.0.0.1:9/v1",
+                "http://127.0.0.1:9/v1",
+                profile_content(),
+            )
+            .await;
+            let (status, state) = send(
+                &fixture.router,
+                "PUT",
+                "/settings/providers/opencode-go/extra-usage",
+                Some(json!({
+                    "extra_usage_disabled": true,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this provider configuration.",
+                    "idempotency_key": "extra-usage-declaration-1",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{state}");
+            assert_eq!(state["active"], true);
+            assert_eq!(state["credentialBound"], true);
+            assert_eq!(
+                state["declaration"]["declaredBy"], "operator-token",
+                "{state}"
+            );
+
+            // The confirmation is persisted and returned without a new write.
+            let (status, state) = send(
+                &fixture.router,
+                "GET",
+                "/settings/providers/opencode-go/extra-usage",
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(state["active"], true);
+
+            let (status, policy) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED, "{policy}");
+            let (status, created) =
+                create_intake_with_amount(&fixture, "request-extra-usage-1", None).await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let now = chrono::Utc::now().timestamp_millis();
+            let (status, admission) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/subscription-admission"),
+                Some(json!({
+                    "assumption_id": "owner-extra-usage-1",
+                    "confirmed_by": "Product Owner",
+                    "confirmed_at_ms": now - 1_000,
+                    "valid_until_ms": now + 60_000,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this subscription route.",
+                    "test_profile_id": "opencode-go-subscription",
+                    "idempotency_key": "extra-usage-admission-1",
+                })),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "the persisted declaration must remove the repeated confirmation: {admission}"
+            );
+            assert_eq!(admission["state"], "ACTIVE");
+            assert!(
+                admission["ownerExtraUsageDeclarations"]
+                    .as_array()
+                    .is_some_and(|ids| !ids.is_empty()),
+                "the admission must persist every Owner declaration it used: {admission}"
+            );
+
+            // An exact replay of the recorded admission is not cancelled by a
+            // later revocation; a changed payload under the same key is refused.
+            let (status, replay) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/subscription-admission"),
+                Some(json!({
+                    "assumption_id": "owner-extra-usage-1",
+                    "confirmed_by": "Product Owner",
+                    "confirmed_at_ms": now - 1_000,
+                    "valid_until_ms": now + 60_000,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this subscription route.",
+                    "test_profile_id": "opencode-go-subscription",
+                    "idempotency_key": "extra-usage-admission-1",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{replay}");
+            assert_eq!(replay["admissionId"], admission["admissionId"]);
+            let bindings = replay["ownerExtraUsageDeclarations"].as_array().unwrap();
+            let roles: std::collections::BTreeSet<String> = bindings
+                .iter()
+                .map(|binding| binding["role"].as_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(
+                roles,
+                ["lead", "implementer", "semanticReviewer"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                "one binding per OpenCode Go role: {replay}"
+            );
+
+            // A changed payload under the same key is refused for every
+            // evidence field, not only the statement.
+            for changed in [
+                json!({"statement": "A different statement for the same key"}),
+                json!({"valid_until_ms": now + 120_000}),
+                json!({"confirmed_by": "Another principal"}),
+                json!({"confirmed_at_ms": now - 5_000}),
+            ] {
+                let mut payload = json!({
+                    "assumption_id": "owner-extra-usage-1",
+                    "confirmed_by": "Product Owner",
+                    "confirmed_at_ms": now - 1_000,
+                    "valid_until_ms": now + 60_000,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this subscription route.",
+                    "test_profile_id": "opencode-go-subscription",
+                    "idempotency_key": "extra-usage-admission-1",
+                });
+                for (key, value) in changed.as_object().unwrap() {
+                    payload[key] = value.clone();
+                }
+                let (status, conflict) = send(
+                    &fixture.router,
+                    "POST",
+                    &format!("/intake/requests/{intake_id}/subscription-admission"),
+                    Some(payload),
+                )
+                .await;
+                assert_eq!(status, StatusCode::CONFLICT, "{changed}: {conflict}");
+            }
+
+            // Revocation invalidates reuse immediately.
+            let (status, revoked) = send(
+                &fixture.router,
+                "DELETE",
+                "/settings/providers/opencode-go/extra-usage",
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{revoked}");
+            assert_eq!(revoked["active"], false);
+            let (status, created) =
+                create_intake_with_amount(&fixture, "request-extra-usage-2", None).await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let second_id = created["id"].as_str().unwrap().to_owned();
+            let (status, refused) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{second_id}/subscription-admission"),
+                Some(json!({
+                    "assumption_id": "owner-extra-usage-2",
+                    "confirmed_by": "Product Owner",
+                    "confirmed_at_ms": now - 1_000,
+                    "valid_until_ms": now + 60_000,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this subscription route.",
+                    "test_profile_id": "opencode-go-subscription",
+                    "idempotency_key": "extra-usage-admission-2",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+
+            // The legacy explicit per-request confirmation still works.
+            let (status, legacy) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{second_id}/subscription-admission"),
+                Some(json!({
+                    "assumption_id": "owner-extra-usage-legacy",
+                    "confirmed_by": "Product Owner",
+                    "confirmed_at_ms": now - 1_000,
+                    "valid_until_ms": now + 60_000,
+                    "extra_usage_disabled": true,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this subscription route.",
+                    "test_profile_id": "opencode-go-subscription",
+                    "idempotency_key": "extra-usage-admission-legacy",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{legacy}");
+            assert!(
+                legacy["ownerExtraUsageDeclarations"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty(),
+                "the legacy path carries no durable bindings: {legacy}"
+            );
+
+            // Reusing the same key on another request is refused even with the
+            // same payload/profile.
+            let (status, other) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{second_id}/subscription-admission"),
+                Some(json!({
+                    "assumption_id": "owner-extra-usage-1",
+                    "confirmed_by": "Product Owner",
+                    "confirmed_at_ms": now - 1_000,
+                    "valid_until_ms": now + 60_000,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this subscription route.",
+                    "test_profile_id": "opencode-go-subscription",
+                    "idempotency_key": "extra-usage-admission-1",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{other}");
+
+            let (status, replay) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/subscription-admission"),
+                Some(json!({
+                    "assumption_id": "owner-extra-usage-1",
+                    "confirmed_by": "Product Owner",
+                    "confirmed_at_ms": now - 1_000,
+                    "valid_until_ms": now + 60_000,
+                    "statement":
+                        "I confirm OpenCode Go Extra Usage is disabled for this subscription route.",
+                    "test_profile_id": "opencode-go-subscription",
+                    "idempotency_key": "extra-usage-admission-1",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{replay}");
+            assert_eq!(replay["admissionId"], admission["admissionId"]);
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(&fixture.path);
+            let _ = std::fs::remove_dir_all(&fixture.repository);
+        }
+
+        #[tokio::test]
         async fn autopilot_preparation_failure_creates_no_campaign_or_approval() {
             use factory_native::db::ScopeAdmissionWrite;
             use factory_native::execution_policy::{
@@ -34249,6 +35003,8 @@ mod tests {
                             transport: "OPENCODE_GO_SUBSCRIPTION".into(),
                         },
                     ],
+                    owner_extra_usage_declarations: Vec::new(),
+                    request_fingerprint: String::new(),
                     idempotency_key: "autopilot-funding-only-admission".into(),
                 })
                 .await
@@ -35938,8 +36694,11 @@ mod tests {
                             path: format!("/nix/store/{}-bash-5.2", "b".repeat(32)),
                             name: "bash".into(),
                             version: "5.2".into(),
+                            version_state:
+                                factory_native::planning::environment::LicenseVersionState::Known,
                             license: "GPL-3.0-or-later".into(),
                             unfree: false,
+                            source_origin: None,
                         }],
                     })
                 })
@@ -35948,7 +36707,7 @@ mod tests {
             fn build<'a>(
                 &'a self,
                 spec: &'a factory_native::planning::environment::EnvironmentSpec,
-                _plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
                 _workspace: Option<&'a std::path::Path>,
             ) -> factory_native::planning::environment::EnvironmentBuilderFuture<'a> {
                 Box::pin(async move {
@@ -35965,7 +36724,9 @@ mod tests {
                         builder_image_digest: spec.builder_image_digest.clone(),
                         builder_policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
                         status: EnvironmentBuilderStatus::Succeeded,
-                        store_path: "/nix/store/fake".into(),
+                        store_path: factory_native::planning::identity_facts::fixture_store_path(
+                            &plan.plan_sha256,
+                        ),
                         output_sha256: "b".repeat(64),
                         sbom_sha256: spec.sbom_sha256.clone(),
                         log_ref: "evidence/fake.log".into(),
@@ -35983,6 +36744,23 @@ mod tests {
                         duration_ms: 1,
                         created_at: chrono::Utc::now().to_rfc3339(),
                     })
+                })
+            }
+
+            fn identity_facts<'a>(
+                &'a self,
+                challenge: &'a factory_native::planning::identity_facts::IdentityFactsChallenge,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _spec: &'a factory_native::planning::environment::EnvironmentSpec,
+            ) -> factory_native::planning::environment::EnvironmentIdentityFactsFuture<'a>
+            {
+                Box::pin(async move {
+                    Ok(
+                        factory_native::planning::identity_facts::fixture_verified_receipt(
+                            challenge,
+                            &plan.plan_sha256,
+                        ),
+                    )
                 })
             }
         }
@@ -36036,6 +36814,92 @@ mod tests {
                         "the fixture builder cannot build",
                     ))
                 })
+            }
+
+            fn identity_facts<'a>(
+                &'a self,
+                challenge: &'a factory_native::planning::identity_facts::IdentityFactsChallenge,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _spec: &'a factory_native::planning::environment::EnvironmentSpec,
+            ) -> factory_native::planning::environment::EnvironmentIdentityFactsFuture<'a>
+            {
+                Box::pin(async move {
+                    Ok(
+                        factory_native::planning::identity_facts::fixture_verified_receipt(
+                            challenge,
+                            &plan.plan_sha256,
+                        ),
+                    )
+                })
+            }
+        }
+
+        #[cfg(feature = "test-support")]
+        #[derive(Clone, Copy, Debug)]
+        enum ReceiptDefect {
+            EmptyRoot,
+            MismatchedRoot,
+            InvalidReceipt,
+            WrongSpecBinding,
+            FailedStatus,
+        }
+
+        #[cfg(feature = "test-support")]
+        struct ReceiptDefectEnvironmentBuilder {
+            inner: factory_native::planning::environment::SharedEnvironmentBuilder,
+            defect: ReceiptDefect,
+        }
+
+        #[cfg(feature = "test-support")]
+        impl factory_native::planning::environment::EnvironmentBuilder for ReceiptDefectEnvironmentBuilder {
+            fn descriptor(
+                &self,
+            ) -> factory_native::planning::environment::EnvironmentBuilderDescriptor {
+                self.inner.descriptor()
+            }
+
+            fn resolve<'a>(
+                &'a self,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                workspace: Option<&'a std::path::Path>,
+            ) -> factory_native::planning::environment::EnvironmentResolutionFuture<'a>
+            {
+                self.inner.resolve(plan, workspace)
+            }
+
+            fn build<'a>(
+                &'a self,
+                spec: &'a factory_native::planning::environment::EnvironmentSpec,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                workspace: Option<&'a std::path::Path>,
+            ) -> factory_native::planning::environment::EnvironmentBuilderFuture<'a> {
+                Box::pin(async move {
+                    let mut receipt = self.inner.build(spec, plan, workspace).await?;
+                    match self.defect {
+                        ReceiptDefect::EmptyRoot => receipt.store_path.clear(),
+                        ReceiptDefect::MismatchedRoot => {
+                            receipt.store_path =
+                                factory_native::planning::identity_facts::fixture_store_path(
+                                    "different-build-root",
+                                )
+                        }
+                        ReceiptDefect::InvalidReceipt => receipt.output_sha256.clear(),
+                        ReceiptDefect::WrongSpecBinding => receipt.spec_sha256 = "d".repeat(64),
+                        ReceiptDefect::FailedStatus => receipt.status =
+                            factory_native::planning::environment::EnvironmentBuilderStatus::Failed,
+                    }
+                    Ok(receipt)
+                })
+            }
+
+            fn identity_facts<'a>(
+                &'a self,
+                challenge: &'a factory_native::planning::identity_facts::IdentityFactsChallenge,
+                plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                spec: &'a factory_native::planning::environment::EnvironmentSpec,
+            ) -> factory_native::planning::environment::EnvironmentIdentityFactsFuture<'a>
+            {
+                self.inner.identity_facts(challenge, plan, spec)
             }
         }
 
@@ -37204,6 +38068,180 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::CONFLICT);
             assert_eq!(stale["code"], "ENVIRONMENT_HASH_MISMATCH");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        /// Routing/freeze/DB evidence with a fixture builder. The fixture
+        /// receipt is a test-support type-state value, not an authenticated
+        /// broker observation; the real Podman self-test covers authenticity.
+        #[tokio::test]
+        async fn committed_environment_observes_identity_facts_before_the_license_gate() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert!(matches!(status, StatusCode::CREATED | StatusCode::OK));
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FakeEnvironmentBuilder));
+            let (status, intake) = create_intake(&fixture, "identity-facts-committed").await;
+            assert_eq!(status, StatusCode::CREATED, "{intake}");
+            let intake_id = intake["id"].as_str().unwrap().to_string();
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&record.project_id)
+                .await
+                .unwrap();
+            let mut plan =
+                compile_environment_for_request(&fixture.app, &record, &config, 1, "R0", None)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                plan.source,
+                factory_native::planning::environment::EnvironmentPlanSource::ProjectCommitted
+            );
+            assert!(plan.packages.is_empty());
+            assert!(
+                plan.files
+                    .iter()
+                    .any(|file| file.path.eq_ignore_ascii_case("devenv.lock"))
+            );
+            let model_review =
+                factory_native::planning::environment::EnvironmentLeadReviewModel {
+                    schema_version: 1,
+                    request_id: record.id.clone(),
+                    action_id: record.action_id.clone(),
+                    plan_sha256: plan.plan_sha256.clone(),
+                    plan_revision: plan.revision,
+                    risk_class: plan.risk_class.clone(),
+                    decision: factory_native::planning::environment::EnvironmentLeadReviewModelDecision::Approve,
+                    rationale: "The committed environment is exact and has no blocker.".into(),
+                    constraints: Vec::new(),
+                };
+            model_review
+                .validate_for(&plan, chrono::Utc::now())
+                .unwrap();
+            let review = factory_native::planning::environment::record_lead_review(
+                &mut plan,
+                factory_native::planning::environment::RecordLeadReviewInput {
+                    review_id: "review-identity-facts".into(),
+                    principal_id: &format!("lead:{}", record.lead_request_id),
+                    recorded_by: "core:lead-environment-review",
+                    decision: factory_native::planning::environment::LeadReviewDecision::Approved,
+                    rationale: &model_review.rationale,
+                    constraints: Vec::new(),
+                    evidence_refs: Vec::new(),
+                    model_call: factory_native::planning::environment::EnvironmentReviewModelCall {
+                        mechanism: "MODEL".into(),
+                        provider: "opencode-go".into(),
+                        model: "deepseek-v4.1-flash".into(),
+                        reservation_id: "reservation-identity-facts".into(),
+                        request_sha256: "d".repeat(64),
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        total_tokens: 2,
+                        cost_micros: 1,
+                        usage_known: true,
+                    },
+                    now: chrono::Utc::now(),
+                },
+            )
+            .unwrap();
+            let spec = factory_native::planning::environment::freeze_environment_spec(
+                &plan,
+                &review,
+                factory_native::planning::environment::FreezeEnvironmentInput {
+                    spec_id: "spec-identity-facts".into(),
+                    nix_version: "2.28.3",
+                    devenv_version: "1.11.2",
+                    now: chrono::Utc::now(),
+                },
+            )
+            .unwrap();
+            let plan_sha256 = plan.plan_sha256.clone();
+            let receipt = build_environment_before_freeze(&fixture.app, &plan, &spec, None)
+                .await
+                .unwrap()
+                .expect("the fake builder must produce a build receipt");
+            assert_eq!(receipt.spec_sha256, spec.spec_sha256);
+            let stored = fixture
+                .app
+                .db
+                .latest_identity_facts_receipt(&plan_sha256)
+                .await
+                .expect("the committed path must persist an identity receipt");
+            assert_eq!(stored.plan_sha256, plan_sha256);
+            assert!(stored.fact_count >= 1);
+            assert_eq!(
+                stored.runtime_id, plan.builder.digest,
+                "the runtime binding is the exact builder digest"
+            );
+            assert_eq!(
+                stored.root_binding,
+                factory_native::planning::identity_facts::IdentityFactsRootBinding::BuildReceipt,
+                "a validated successful build binds the identity root to its exact store path"
+            );
+
+            // A build that reports success but whose receipt is empty, rooted
+            // elsewhere, or otherwise invalid must never persist BUILD_RECEIPT.
+            for defect in [
+                ReceiptDefect::EmptyRoot,
+                ReceiptDefect::MismatchedRoot,
+                ReceiptDefect::InvalidReceipt,
+                ReceiptDefect::WrongSpecBinding,
+                ReceiptDefect::FailedStatus,
+            ] {
+                fixture.app.set_environment_builder(std::sync::Arc::new(
+                    ReceiptDefectEnvironmentBuilder {
+                        inner: std::sync::Arc::new(FakeEnvironmentBuilder),
+                        defect,
+                    },
+                ));
+                let refused =
+                    build_environment_before_freeze(&fixture.app, &plan, &spec, None).await;
+                assert!(refused.is_err(), "{defect:?} must be refused");
+                let latest = fixture
+                    .app
+                    .db
+                    .latest_identity_facts_receipt(&plan_sha256)
+                    .await
+                    .expect("the refused build still observed its realised environment");
+                assert_eq!(
+                    latest.root_binding,
+                    factory_native::planning::identity_facts::IdentityFactsRootBinding::SpecCacheObservation,
+                    "{defect:?} must not persist BUILD_RECEIPT"
+                );
+            }
+
+            // A licence refusal still runs the build call and returns an error,
+            // but the identity receipt is already durable and stays there.
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(FailingEnvironmentBuilder));
+            let refused = build_environment_before_freeze(&fixture.app, &plan, &spec, None).await;
+            assert!(refused.is_err(), "the failing licence gate must refuse");
+            let preserved = fixture
+                .app
+                .db
+                .identity_facts_receipt(&stored.nonce)
+                .await
+                .expect("a licence refusal must keep the original identity receipt");
+            assert_eq!(preserved.signature, stored.signature);
+            let latest = fixture
+                .app
+                .db
+                .latest_identity_facts_receipt(&plan_sha256)
+                .await
+                .expect("the refused operation still observed its realised environment");
+            assert_ne!(latest.nonce, stored.nonce);
+            assert_eq!(
+                latest.root_binding,
+                factory_native::planning::identity_facts::IdentityFactsRootBinding::SpecCacheObservation,
+                "a refused build keeps an operation-scoped receipt, never an accepted build binding"
+            );
 
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);

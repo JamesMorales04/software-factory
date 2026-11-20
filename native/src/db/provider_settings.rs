@@ -105,7 +105,27 @@ impl super::Database {
         .await?
         .map(|row| provider_settings_from_row(&row))
         .transpose()?;
-        let revision = existing.map(|record| record.revision + 1).unwrap_or(1);
+        let revision = existing
+            .as_ref()
+            .map(|record| record.revision + 1)
+            .unwrap_or(1);
+        // A real credential or endpoint change must invalidate the old Owner
+        // declaration irreversibly; model, timeout, pricing and display changes
+        // must not, because they do not change the upstream Extra Usage setting.
+        if let Some(previous) = existing.as_ref()
+            && (previous.base_url != input.base_url
+                || previous.credential_fingerprint != input.credential_fingerprint)
+        {
+            super::provider_extra_usage::revoke_configuration_in(
+                &mut transaction,
+                &input.provider,
+                &previous.base_url,
+                &previous.credential_fingerprint,
+                actor,
+                "provider configuration changed",
+            )
+            .await?;
+        }
         let now = Utc::now().to_rfc3339();
         if input.is_default {
             sqlx::query::query("UPDATE provider_settings SET is_default=0 WHERE is_default=1")
@@ -191,6 +211,15 @@ impl super::Database {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         let existing = load_provider_settings(&mut transaction, provider).await?;
+        super::provider_extra_usage::revoke_configuration_in(
+            &mut transaction,
+            provider,
+            &existing.base_url,
+            &existing.credential_fingerprint,
+            actor,
+            "credential cleared",
+        )
+        .await?;
         sqlx::query::query(
             "UPDATE provider_settings
              SET credential_ciphertext='', credential_nonce='', credential_fingerprint='',

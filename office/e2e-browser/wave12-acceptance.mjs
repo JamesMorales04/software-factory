@@ -385,6 +385,265 @@ try {
   const seeded = await seed();
   assert.equal(seeded.seeded, true);
 
+  const extraUsage = seeded.requests?.extraUsageSubmitted;
+  assert.ok(Array.isArray(extraUsage) && extraUsage.length === 2, JSON.stringify(seeded.requests));
+  const [extraUsageFirst, extraUsageSecond] = extraUsage;
+  const openSubscription = async () => {
+    await page
+      .locator("details.request-subscription")
+      .evaluate((element) => {
+        element.open = true;
+      });
+  };
+  await check(
+    "WP10-EU-000",
+    "Seeded request state",
+    "the extra-usage fixture projects SUBMITTED",
+    async () => {
+      const state = await page.evaluate(async (id) => {
+        const response = await fetch(
+          `/core-api/intake/requests/${encodeURIComponent(id)}`,
+          { credentials: "include" },
+        );
+        return { status: response.status, body: await response.json() };
+      }, extraUsageFirst);
+      assert.equal(state.status, 200);
+      assert.equal(
+        state.body.state,
+        "SUBMITTED",
+        JSON.stringify({
+          state: state.body.state,
+          mode: state.body.mode,
+          authorization: state.body.authorization,
+        }),
+      );
+    },
+  );
+  await check(
+    "WP10-EU-001",
+    "Owner Extra Usage inactive",
+    "the one-time confirmation checkbox is shown",
+    async () => {
+      await page.goto(
+        `${viteUrl}/#/requests/${encodeURIComponent(extraUsageFirst)}`,
+      );
+      await page
+        .getByRole("heading", { name: "Next step", exact: true })
+        .waitFor();
+      await openSubscription();
+      await page
+        .getByRole("checkbox", { name: /I confirm Extra Usage is OFF/ })
+        .waitFor();
+      assert.equal(
+        await page
+          .getByText(/Extra Usage is confirmed OFF/)
+          .count(),
+        0,
+      );
+    },
+  );
+  await check(
+    "WP10-EU-002",
+    "Save the Owner confirmation once",
+    "the checkbox is replaced by the persisted state",
+    async () => {
+      await page
+        .getByRole("checkbox", { name: /I confirm Extra Usage is OFF/ })
+        .check();
+      await page
+        .getByRole("button", { name: "Confirm once and save" })
+        .click();
+      await page
+        .getByText(/Extra Usage confirmation saved/)
+        .waitFor();
+      await page.getByText(/Extra Usage is confirmed OFF/).waitFor();
+      assert.equal(
+        await page
+          .getByRole("checkbox", { name: /I confirm Extra Usage is OFF/ })
+          .count(),
+        0,
+      );
+    },
+  );
+  await check(
+    "WP10-EU-003",
+    "Reload the request",
+    "the persisted confirmation survives reload without the checkbox",
+    async () => {
+      await page.reload();
+      await page
+        .getByRole("heading", { name: "Next step", exact: true })
+        .waitFor();
+      await openSubscription();
+      await page.getByText(/Extra Usage is confirmed OFF/).waitFor();
+      assert.equal(
+        await page
+          .getByRole("checkbox", { name: /I confirm Extra Usage is OFF/ })
+          .count(),
+        0,
+      );
+    },
+  );
+  await check(
+    "WP10-EU-004",
+    "Second request reuses the confirmation",
+    "no checkbox is shown and the admission is recorded",
+    async () => {
+      await page.goto(
+        `${viteUrl}/#/requests/${encodeURIComponent(extraUsageSecond)}`,
+      );
+      await page
+        .getByRole("heading", { name: "Next step", exact: true })
+        .waitFor();
+      await openSubscription();
+      await page.getByText(/Extra Usage is confirmed OFF/).waitFor();
+      assert.equal(
+        await page
+          .getByRole("checkbox", { name: /I confirm Extra Usage is OFF/ })
+          .count(),
+        0,
+      );
+      const [admissionResponse] = await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.url().includes(
+              `/requests/${extraUsageSecond}/subscription-admission`,
+            ),
+          { timeout: 20_000 },
+        ),
+        page.getByRole("button", { name: "Confirm subscription" }).click(),
+      ]);
+      const admissionBody = await admissionResponse.text();
+      assert.equal(
+        admissionResponse.status(),
+        200,
+        `admission ${admissionResponse.status()}: ${admissionBody}`,
+      );
+      await page
+        .getByText(/Subscription confirmation recorded/)
+        .waitFor();
+    },
+  );
+  await check(
+    "WP10-EU-005",
+    "Revoke the persisted confirmation",
+    "the checkbox returns and the persisted state is gone",
+    async () => {
+      await page.goto(
+        `${viteUrl}/#/requests/${encodeURIComponent(extraUsageFirst)}`,
+      );
+      await page
+        .getByRole("heading", { name: "Next step", exact: true })
+        .waitFor();
+      await openSubscription();
+      await page
+        .getByRole("button", { name: "Revoke Extra Usage confirmation" })
+        .click();
+      await page
+        .getByText(/Extra Usage confirmation revoked/)
+        .waitFor();
+      await page
+        .getByRole("checkbox", { name: /I confirm Extra Usage is OFF/ })
+        .waitFor();
+      assert.equal(
+        await page
+          .getByText(/Extra Usage is confirmed OFF/)
+          .count(),
+        0,
+      );
+    },
+  );
+  expectHttpFailure(/\/settings\/providers\/opencode-go\/extra-usage$/, 401);
+  await check(
+    "WP10-EU-006",
+    "Unauthenticated declaration write",
+    "Core rejects the declaration without the device session",
+    async () => {
+      const status = await page.evaluate(async () => {
+        const response = await fetch(
+          "/core-api/settings/providers/opencode-go/extra-usage",
+          {
+            method: "PUT",
+            credentials: "omit",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              extra_usage_disabled: true,
+              statement:
+                "I confirm OpenCode Go Extra Usage is disabled for this provider configuration.",
+              idempotency_key: "unauthorized-extra-usage",
+            }),
+          },
+        );
+        return response.status;
+      });
+      assert.equal(status, 401);
+    },
+  );
+  await check(
+    "WP10-EU-007",
+    "Keyboard and narrow layout",
+    "the confirmation control is focusable and 390 px has no horizontal overflow",
+    async () => {
+      await page.setViewportSize({ width: 390, height: 900 });
+      await page.goto(
+        `${viteUrl}/#/requests/${encodeURIComponent(extraUsageFirst)}`,
+      );
+      await page
+        .getByRole("heading", { name: "Next step", exact: true })
+        .waitFor();
+      await openSubscription();
+      const checkbox = page.getByRole("checkbox", {
+        name: /I confirm Extra Usage is OFF/,
+      });
+      await checkbox.focus();
+      assert.equal(
+        await checkbox.evaluate((element) => element === document.activeElement),
+        true,
+      );
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      );
+      assert.equal(overflow, true);
+      await page.setViewportSize({ width: 1440, height: 1000 });
+    },
+  );
+  if (process.env.EXTRA_USAGE_ONLY === "1") {
+    writeFileSync(
+      join(evidenceDir, "extra-usage-only-results.json"),
+      JSON.stringify(
+        {
+          candidate: process.env.FACTORY_SOURCE_SHA || null,
+          consoleErrors: consoleErrors.map((entry) =>
+            entry.text.includes("401") &&
+            entry.url.includes("extra-usage")
+              ? { ...entry, expected: true }
+              : entry,
+          ),
+          pageErrors,
+          httpFailures,
+          results,
+        },
+        null,
+        2,
+      ),
+    );
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {
+        // Bounded cleanup; the result file is already written.
+      }
+    }
+    for (const process of processes) {
+      try {
+        process.kill("SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
+    process.exit(results.every((result) => result.result === "PASS") ? 0 : 1);
+  }
+
   await check(
     "WP10-UI-042",
     "Unauthorized Core read",

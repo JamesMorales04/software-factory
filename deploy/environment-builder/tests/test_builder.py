@@ -372,6 +372,159 @@ class PolicyTests(unittest.TestCase):
         finally:
             log.close()
 
+    # Exact deriver-less identities observed in the Run8 closure inventory
+    # (sha256 6a355fcc…97c50): 14 paths, of which move-docs.sh and strip.sh are
+    # the two legacy reviewed helpers and the other twelve are unauthorized.
+    REAL_DERIVERLESS_HELPERS = [
+        ("/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh", "sha256-LFXKr+/5UKMCEYyEpyotSs23Xr0Vwhzlv6YGyO/dqzI=", 816),
+        ("/nix/store/cickvswrvann041nqxb0rxilc46svw1n-prune-libtool-files.sh", "sha256-0DC4P4/oI7F2AJ/9K6MUMNP818Ol4i+fvpJt3D2HyJs=", 1072),
+        ("/nix/store/cmzya9irvxzlkh7lfy6i82gbp0saxqj3-multiple-outputs.sh", "sha256-9xd9l6/GeN1DX0xqIZtdJltbBaUBOAJAuFIlvdduqRc=", 8432),
+        ("/nix/store/fyaryjvghbkpfnsyw97hb3lyb37s1pd6-move-lib64.sh", "sha256-SDQRJiS2AfWlONR8W8dEGuNPeLET7IuPLOm5vQBh2C0=", 904),
+        ("/nix/store/h9lc1dpi14z7is86ffhl3ld569138595-audit-tmpdir.sh", "sha256-tMYdNz2xetDsQK1FEy3126+UqdkB8cXN4l/Zgbv3tm0=", 1520),
+        ("/nix/store/hxv896faph0rqxjq2ycxpcrbnngc95sz-patch-shebangs.sh", "sha256-TRd6N2KO74qqyBQxi1ihprZTMcgR6eAw5Z+HxpwF9Tc=", 5248),
+        ("/nix/store/jjhw2phnaip4kg0qjas3x3fsaifi8y0w-no-broken-symlinks.sh", "sha256-/t5eWNc5nQI9BbgQQFRVf4dy5Ph0lNq7fK24H8Pmjxc=", 3104),
+        ("/nix/store/kd4xwxjpjxi71jkm6ka0np72if9rm3y0-move-sbin.sh", "sha256-exQDue2oXLDKVrh7CiPpj7WjA5qhZfskrLzpYkAFiy0=", 664),
+        ("/nix/store/m54bmrhj6fqz8nds5zcj97w9s9bckc9v-compress-man-pages.sh", "sha256-nvkpux1XBRA6JnXeEphB25xVbHKTz1bkBF3/K7HGbU0=", 1088),
+        ("/nix/store/pag6l61paj1dc9sv15l7bm5c17xn5kyk-move-systemd-user-units.sh", "sha256-ApvZCwlSSuSA6bGuBQGi+EIncpLHju2Uhro27Mb8wMA=", 880),
+        ("/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh", "sha256-/kocrQCaIGEh7zh26MuHLTtmIp5yJylHriY/yVFhPk4=", 4616),
+        ("/nix/store/wgrbkkaldkrlrni33ccvm3b6vbxzb656-make-symlinks-relative.sh", "sha256-M5wxSjy928eIoBBePFKFPVHxbvVNJaOSHGej8zueD0A=", 1280),
+        ("/nix/store/xyff06pkhki3qy1ls77w10s0v79c9il0-reproducible-builds.sh", "sha256-9TquSNTf3+sENOwMmBFmniGPTzbIX9Sn2PFfuJ4i0UA=", 608),
+        ("/nix/store/z7k98578dfzi6l3hsvbivzm7hfqlk0zc-set-source-date-epoch-to-latest.sh", "sha256-O6Gjn5FQzTLFmOLmXU5J4i6ei4gvLK7fo6vA+C0lmn0=", 1696),
+    ]
+    LEGACY_DERIVERLESS_HELPERS = {
+        "/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh",
+        "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
+    }
+
+    # Real referrers observed for all fourteen helpers in the same inventory.
+    STDENV = "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux"
+    NIX_SHELL_ENV = "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+
+    def _real_deriverless_manifest(self) -> list[dict]:
+        helpers = [path for path, _, _ in self.REAL_DERIVERLESS_HELPERS]
+        return [
+            {
+                "path": self.STDENV,
+                "deriver": "/nix/store/nsvrknrqxdf2lxcfbqkr0p05897ww5lx-stdenv-linux.drv",
+                "narHash": "sha256-7uyA5WT1X+9o1QV/Dqs7GsmWtellurWH5ipGyZK8Szk=",
+                "narSize": 1,
+                "references": helpers,
+            },
+            {
+                "path": self.NIX_SHELL_ENV,
+                "deriver": "/nix/store/gkp675qsx7wg4rij541kzmi49skfzsnv-nix-shell-env.drv",
+                "narHash": "sha256-lH0a8hOLzQfqRQDAP8xrNxGxwVW7EcjXyDOakbb+MCw=",
+                "narSize": 1,
+                "references": helpers,
+            },
+            *[
+                {
+                    "path": path,
+                    "deriver": "",
+                    "narHash": nar_hash,
+                    "narSize": nar_size,
+                    "references": [],
+                }
+                for path, nar_hash, nar_size in self.REAL_DERIVERLESS_HELPERS
+            ],
+        ]
+
+    def test_real_inventory_reports_the_twelve_unauthorized_helpers(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        manifest = self._real_deriverless_manifest()
+        expected = {
+            path for path, _, _ in self.REAL_DERIVERLESS_HELPERS
+        } - self.LEGACY_DERIVERLESS_HELPERS
+        self.assertEqual(len(self.REAL_DERIVERLESS_HELPERS), 14)
+        self.assertEqual(len(expected), 12)
+
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "closure.log")
+        try:
+            with mock.patch("environment_builder.cli.nix_eval_json", return_value=[]):
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(
+                        {"nix": {"nixpkgs": pin}}, manifest, {}, 30, log
+                    )
+            message = raised.exception.message
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+            self.assertIn("total=12", message)
+            self.assertIn("captured=closure-license-inventory.json", message)
+            self.assertIn("truncated=true", message)
+            self.assertLessEqual(len(message), 1_000)
+
+            captured = json.loads(
+                (workspace / "closure-license-inventory.json").read_text()
+            )
+            self.assertEqual(captured["source"], "builder-deriver-less-helpers")
+            self.assertEqual(captured["total"], 12)
+            self.assertTrue(captured["captureComplete"])
+            self.assertEqual(captured["captureReason"], "")
+            reported = {candidate["storePath"] for candidate in captured["candidates"]}
+            self.assertEqual(reported, expected)
+            self.assertFalse(reported & self.LEGACY_DERIVERLESS_HELPERS)
+            self.assertEqual(
+                captured["sha256"],
+                cli.sha256_text(cli.canonical_json(captured["candidates"])),
+            )
+            expected_referrers_sha256 = cli.sha256_text(
+                cli.canonical_json(sorted([self.STDENV, self.NIX_SHELL_ENV]))
+            )
+            for candidate in captured["candidates"]:
+                self.assertTrue(candidate["storePath"].startswith("/nix/store/"))
+                self.assertTrue(candidate["narHash"].startswith("sha256-"))
+                self.assertEqual(
+                    candidate["referrerSetSha256"], expected_referrers_sha256
+                )
+                self.assertIn("regularFile", candidate)
+        finally:
+            log.close()
+
+    def test_plan_supplied_exception_fields_never_authorize(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        path, nar_hash, nar_size = next(
+            row
+            for row in self.REAL_DERIVERLESS_HELPERS
+            if row[0] not in self.LEGACY_DERIVERLESS_HELPERS
+        )
+        entry = {
+            "path": path,
+            "deriver": "",
+            "narHash": nar_hash,
+            "narSize": nar_size,
+            "references": [],
+        }
+        manifest = [entry]
+        crafted_plan = {
+            "nix": {"nixpkgs": pin},
+            "planSha256": "a" * 64,
+            "licenseInventory": {
+                "helperExceptions": [
+                    {
+                        "storePath": entry["path"],
+                        "narHash": entry["narHash"],
+                        "name": "helper-0.sh",
+                        "referrerSetSha256": cli.sha256_text(cli.canonical_json([])),
+                        "regularFile": True,
+                        "ruleSha256": "b" * 64,
+                        "planSha256": "a" * 64,
+                    }
+                ],
+                "sbomSha256": "c" * 64,
+            },
+        }
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "closure.log")
+        try:
+            with mock.patch("environment_builder.cli.nix_eval_json", return_value=[]):
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(crafted_plan, manifest, {}, 30, log)
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+            self.assertIn("total=1", raised.exception.message)
+            self.assertIn(entry["path"], raised.exception.message)
+        finally:
+            log.close()
+
     def test_committed_environment_uses_the_devenv_package_profile(self) -> None:
         workspace = Path(tempfile.mkdtemp())
         (workspace / ".devenv").mkdir()
@@ -755,6 +908,168 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(BuilderError) as raised:
                 validate_closure_licenses([entry])
             self.assertEqual(raised.exception.code, code, change)
+
+    def test_exact_source_license_origin_accepts_unversioned_identities(self) -> None:
+        pin = next(iter(cli.SOURCE_LICENSE_ORIGINS))
+        for (deriver, path), origin in cli.SOURCE_LICENSE_ORIGINS[pin].items():
+            entry = {"path": path, "version": "", **origin}
+            validated = validate_closure_licenses([entry])[0]
+            self.assertEqual(validated["name"], origin["name"])
+            self.assertEqual(validated["version"], "")
+            self.assertEqual(validated["versionState"], "unversioned")
+            self.assertEqual(validated["license"], "MIT")
+            self.assertEqual(
+                validated["sourceOrigin"]["deriver"], deriver
+            )
+            self.assertEqual(
+                validated["sourceOrigin"]["storePath"], path
+            )
+            self.assertEqual(
+                len(validated["sourceOrigin"]["inputSources"]),
+                16 if origin["name"] == "stdenv-linux" else 3,
+            )
+
+        base = {"path": path, "version": "", **origin}
+        mutations = [
+            ("pin", "github:NixOS/nixpkgs/" + "b" * 40),
+            ("deriver", "/nix/store/" + "b" * 32 + "-other.drv"),
+            ("storePath", "/nix/store/" + "b" * 32 + "-other"),
+            ("narHash", "sha256-" + "A" * 43 + "="),
+            ("sourceStorePath", "/nix/store/" + "b" * 32 + "-source"),
+            ("sourceNarSha256", "sha256-" + "A" * 43 + "="),
+            ("licenseFile", "LICENSE"),
+            ("licenseFileSha256", "b" * 64),
+            ("compositionNarSha256", "sha256-" + "A" * 43 + "="),
+            ("compositionNarSize", 0),
+        ]
+        for field, value in mutations:
+            entry = json.loads(json.dumps(base))
+            entry["sourceOrigin"][field] = value
+            with self.assertRaises(BuilderError) as raised:
+                validate_closure_licenses([entry])
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN", field)
+
+        # The output composition NAR must be the exact output NAR itself.
+        entry = json.loads(json.dumps(base))
+        entry["sourceOrigin"]["compositionNarSha256"] = "sha256-" + "A" * 43 + "="
+        with self.assertRaises(BuilderError) as raised:
+            validate_closure_licenses([entry])
+        self.assertIn("inconsistent", raised.exception.message)
+        # The explicit version state is refused when it disagrees with the
+        # exact origin: no empty-version or origin-carrying "known" exception.
+        entry = json.loads(json.dumps(base))
+        entry["versionState"] = "known"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        entry["version"] = "1.0"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        entry["sourceOrigin"]["extra"] = "value"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        entry["sourceOrigin"]["inputSources"][0]["extra"] = "value"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+
+        entry = json.loads(json.dumps(base))
+        entry["sourceOrigin"]["inputSources"][0]["sha256"] = "b" * 64
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        entry["version"] = "1.0"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        del entry["sourceOrigin"]
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        # A name-only or wildcard origin is not enough; the exact key is
+        # required and ordinary transitive entries keep their separate policy.
+        ordinary = {
+            "path": "/nix/store/" + "c" * 32 + "-gnu-config",
+            "name": "gnu-config",
+            "version": "2024-01-01",
+            "license": "GPL-3.0-or-later",
+            "unfree": False,
+        }
+        validated_ordinary = validate_closure_licenses([ordinary])[0]
+        self.assertEqual(validated_ordinary["name"], "gnu-config")
+        self.assertEqual(validated_ordinary["versionState"], "known")
+        # A known identity with no version, or a known identity carrying a
+        # source origin, is not an unversioned exception.
+        empty_version = {**ordinary, "version": ""}
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([empty_version])
+        known_with_origin = {**base, "versionState": "known"}
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([known_with_origin])
+        # The reviewed substrate lookup returns the exact origin only for the
+        # exact (pin, deriver, store path) key.
+        for (deriver, path), table_entry in cli.SOURCE_LICENSE_ORIGINS[pin].items():
+            reviewed = cli._reviewed_substrate_identity(pin, path, deriver)
+            self.assertIsNotNone(reviewed)
+            self.assertEqual(reviewed["path"], path)
+            self.assertEqual(reviewed["sourceOrigin"], table_entry["sourceOrigin"])
+            self.assertEqual(reviewed["versionState"], "unversioned")
+            self.assertIsNone(cli._reviewed_substrate_identity(pin + "0", path, deriver))
+            self.assertIsNone(cli._reviewed_substrate_identity(pin, path + "-other", deriver))
+            self.assertIsNone(cli._reviewed_substrate_identity(pin, path, deriver + "x"))
+
+    def test_reviewed_source_license_origins_require_exact_evidence(self) -> None:
+        import tempfile
+
+        from environment_builder import policy
+
+        document = json.loads(Path(policy.SOURCE_LICENSE_ORIGINS_FILE).read_text())
+        self.assertEqual(
+            set(document["evidence"]),
+            {
+                "compositionAuditCanonicalVerifyLogSha256",
+                "compositionAuditSha256Sums",
+                "independentReconstructionSha256Sums",
+                "licenseEvidenceV2Sha256",
+            },
+        )
+        self.assertTrue(
+            all(len(value) == 64 for value in document["evidence"].values())
+        )
+        mutations = [
+            lambda changed: changed["evidence"].__setitem__("extraKey", "a" * 64),
+            lambda changed: changed["evidence"].pop(
+                "independentReconstructionSha256Sums"
+            ),
+            lambda changed: changed["evidence"].__setitem__(
+                "licenseEvidenceV2Sha256", "not-a-hash"
+            ),
+            lambda changed: changed["identities"].append(
+                json.loads(json.dumps(changed["identities"][0]))
+            ),
+        ]
+        original = policy.SOURCE_LICENSE_ORIGINS_FILE
+        try:
+            for mutate in mutations:
+                changed = json.loads(json.dumps(document))
+                mutate(changed)
+                with tempfile.NamedTemporaryFile(
+                    "w", suffix=".json", delete=False
+                ) as handle:
+                    json.dump(changed, handle)
+                    path = Path(handle.name)
+                try:
+                    policy.SOURCE_LICENSE_ORIGINS_FILE = path
+                    with self.assertRaises(BuilderError) as raised:
+                        policy._load_source_license_origins()
+                    self.assertEqual(
+                        raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN"
+                    )
+                finally:
+                    path.unlink()
+        finally:
+            policy.SOURCE_LICENSE_ORIGINS_FILE = original
+        self.assertEqual(len(policy._load_source_license_origins()), 1)
 
     def test_missing_command_executable_is_rejected(self) -> None:
         plan = {"commands": {"test": {"argv": ["cargo", "test"]}}}

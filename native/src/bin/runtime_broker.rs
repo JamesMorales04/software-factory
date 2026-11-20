@@ -44,16 +44,23 @@ use tokio::{
     time,
 };
 
+use factory_native::planning::identity_facts::{
+    IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION, IdentityFactsChallenge,
+    IdentityFactsEnvelope, IdentityFactsManifest, IdentityFactsReceipt, validate_manifest,
+};
+#[cfg(test)]
+use factory_native::planning::identity_facts::{IdentityFactsMode, OperationRoot};
 use factory_native::runtime_broker::{
     ENVIRONMENT_BUILD_ROUTE, ENVIRONMENT_CHECK_CANCEL_ROUTE, ENVIRONMENT_CHECK_ROUTE,
-    ENVIRONMENT_RESOLVE_ROUTE, EnvironmentBrokerOperation, EnvironmentBrokerRequest,
-    EnvironmentCheckRequest, EnvironmentCheckStatus, MAX_ENVIRONMENT_REQUEST_BYTES,
-    MAX_ENVIRONMENT_WORKSPACE_BYTES, MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES,
-    MAX_ENVIRONMENT_WORKSPACE_FILES, MAX_RESOURCE_INVENTORY_BYTES, ManagedResources, ResourceOwner,
-    is_valid_check_token, is_valid_container_name, is_valid_exec_container_name,
-    is_valid_provider_container_name, is_valid_volume_name, legacy_workspace_identity_matches,
-    parse_container_inventory, parse_container_labels, parse_volume_inventory, parse_volume_labels,
-    resource_owner_matches, volume_identity_matches,
+    ENVIRONMENT_IDENTITY_FACTS_ROUTE, ENVIRONMENT_RESOLVE_ROUTE, EnvironmentBrokerOperation,
+    EnvironmentBrokerRequest, EnvironmentCheckRequest, EnvironmentCheckStatus,
+    MAX_ENVIRONMENT_REQUEST_BYTES, MAX_ENVIRONMENT_WORKSPACE_BYTES,
+    MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES, MAX_ENVIRONMENT_WORKSPACE_FILES,
+    MAX_RESOURCE_INVENTORY_BYTES, ManagedResources, ResourceOwner, is_valid_check_token,
+    is_valid_container_name, is_valid_exec_container_name, is_valid_provider_container_name,
+    is_valid_volume_name, legacy_workspace_identity_matches, parse_container_inventory,
+    parse_container_labels, parse_volume_inventory, parse_volume_labels, resource_owner_matches,
+    volume_identity_matches,
 };
 
 const MAX_JSON_BYTES: usize = 2 * 1024 * 1024;
@@ -800,6 +807,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             &format!("/{ENVIRONMENT_RESOLVE_ROUTE}"),
             post(resolve_environment).layer(DefaultBodyLimit::max(MAX_ENVIRONMENT_REQUEST_BYTES)),
+        )
+        .route(
+            &format!("/{ENVIRONMENT_IDENTITY_FACTS_ROUTE}"),
+            post(identity_facts_environment)
+                .layer(DefaultBodyLimit::max(MAX_ENVIRONMENT_REQUEST_BYTES)),
         )
         .route(
             &format!("/{ENVIRONMENT_CHECK_ROUTE}"),
@@ -3453,6 +3465,20 @@ async fn resolve_environment(
     environment_operation(app, headers, input, EnvironmentBrokerOperation::Resolve).await
 }
 
+async fn identity_facts_environment(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<EnvironmentBrokerRequest>,
+) -> Response {
+    environment_operation(
+        app,
+        headers,
+        input,
+        EnvironmentBrokerOperation::IdentityFacts,
+    )
+    .await
+}
+
 const ENVIRONMENT_CHECK_SETUP_GRACE_SECS: u64 = 180;
 
 async fn check_environment(
@@ -4231,6 +4257,36 @@ async fn validate_environment_request(
             "build operations require a frozen environment spec",
         ));
     }
+    if input.operation == EnvironmentBrokerOperation::IdentityFacts {
+        // Observation never stages a workspace or runs a builder phase. It
+        // reads only the persistent store and the exact spec-keyed cache
+        // written by the preceding resolve/build operation.
+        let Some(challenge) = &input.identity_facts else {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+                "the identity-facts operation has no challenge",
+            ));
+        };
+        if challenge.runtime_id != input.digest {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+                "the identity-facts challenge binds a different runtime",
+            ));
+        }
+        if challenge.plan_sha256 != input.plan.plan_sha256
+            || challenge.pin != input.plan.nix.nixpkgs
+        {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+                "the identity-facts challenge binds a different plan or pin",
+            ));
+        }
+        return Ok(ValidatedEnvironmentRequest {
+            image_id,
+            workspace: Vec::new(),
+            fetch_hosts: BTreeSet::new(),
+        });
+    }
     let workspace = decode_environment_workspace(&input.workspace_files)?;
     let present: BTreeSet<&str> = workspace.iter().map(|(path, _)| path.as_str()).collect();
     for file in &input.plan.files {
@@ -4803,6 +4859,9 @@ async fn execute_environment_operation(
     input: EnvironmentBrokerRequest,
     validated: ValidatedEnvironmentRequest,
 ) -> Result<factory_native::runtime_broker::EnvironmentBrokerResult, EnvironmentBrokerFailure> {
+    if input.operation == EnvironmentBrokerOperation::IdentityFacts {
+        return execute_identity_facts_operation(app, input, validated).await;
+    }
     let started = Instant::now();
     // `timeoutSecs` is the builder's per-operation timeout. It is not a run
     // deadline: a resolve/build may perform many bounded operations, and the
@@ -4841,6 +4900,7 @@ async fn execute_environment_operation(
                     .unwrap_or_default(),
                 resolution,
                 receipt,
+                identity_facts: None,
                 logs,
                 logs_truncated,
                 cleanup_confirmed,
@@ -4858,6 +4918,129 @@ async fn execute_environment_operation(
             }
         }
     }
+}
+
+async fn execute_identity_facts_operation(
+    app: Arc<App>,
+    input: EnvironmentBrokerRequest,
+    validated: ValidatedEnvironmentRequest,
+) -> Result<factory_native::runtime_broker::EnvironmentBrokerResult, EnvironmentBrokerFailure> {
+    let started = Instant::now();
+    let Some(spec) = input.spec.as_ref() else {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+            "an identity-facts operation requires the frozen environment spec",
+        ));
+    };
+    let Some(challenge) = input.identity_facts.as_ref() else {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+            "an identity-facts operation requires a Core-issued challenge",
+        ));
+    };
+    let mut resources = EnvironmentRunResources::for_spec(Arc::clone(&app), &spec.spec_sha256);
+    let result = async {
+        ensure_environment_store(&app, &validated.image_id).await?;
+        create_environment_volume(
+            &app,
+            &resources.workspace_volume,
+            &resources.workspace_volume,
+            false,
+        )
+        .await?;
+        create_environment_volume(&app, &resources.cache_volume, &spec.spec_sha256, true).await?;
+        let manifest = observe_identity_facts(
+            &app,
+            &validated.image_id,
+            &resources.cache_volume,
+            challenge,
+        )
+        .await?;
+        validate_manifest(challenge, &manifest).map_err(|error| {
+            EnvironmentBrokerFailure::new("ENVIRONMENT_IDENTITY_FACTS_REFUSED", error.to_string())
+        })?;
+        let Some(token) = app.tokens.token(ResourceOwner::Environment) else {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+                "the environment owner token is unavailable for signing",
+            ));
+        };
+        let envelope = IdentityFactsEnvelope {
+            schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
+            context: IDENTITY_FACTS_CONTEXT.into(),
+            challenge: challenge.clone(),
+            manifest,
+        };
+        let signature = factory_native::planning::identity_facts::sign(&envelope, token.as_bytes())
+            .map_err(|error| {
+                EnvironmentBrokerFailure::new(
+                    "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+                    error.to_string(),
+                )
+            })?;
+        Ok(IdentityFactsReceipt {
+            envelope,
+            signature,
+        })
+    }
+    .await;
+    let cleanup_confirmed = resources.cleanup().await;
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    match result {
+        Ok(identity_facts) => Ok(factory_native::runtime_broker::EnvironmentBrokerResult {
+            schema_version: 1,
+            operation: input.operation,
+            phase: factory_native::runtime_broker::EnvironmentBuildPhase::IdentityFacts,
+            spec_sha256: spec.spec_sha256.clone(),
+            resolution: None,
+            receipt: None,
+            identity_facts: Some(identity_facts),
+            logs: String::new(),
+            logs_truncated: false,
+            cleanup_confirmed,
+            duration_ms,
+        }),
+        Err(failure) => Err(failure),
+    }
+}
+
+struct AppIdentityFactsRunner<'a>(&'a Arc<App>);
+
+impl factory_native::runtime_broker::IdentityFactsCommandRunner for AppIdentityFactsRunner<'_> {
+    fn run_identity_command<'a>(
+        &'a self,
+        args: Vec<String>,
+        operation: &'a str,
+        limit: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+    {
+        Box::pin(async move { self.0.run_bounded(args, operation, limit).await })
+    }
+}
+
+async fn observe_identity_facts(
+    app: &Arc<App>,
+    image_id: &str,
+    cache_volume: &str,
+    challenge: &IdentityFactsChallenge,
+) -> Result<IdentityFactsManifest, EnvironmentBrokerFailure> {
+    let runner = AppIdentityFactsRunner(app);
+    factory_native::runtime_broker::observe_identity_facts_with(
+        &runner,
+        image_id,
+        cache_volume,
+        ENVIRONMENT_NIX_STORE_VOLUME,
+        challenge,
+    )
+    .await
+    .map_err(|message| {
+        let code = if message.contains("no realised store root") {
+            "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT"
+        } else {
+            "ENVIRONMENT_IDENTITY_FACTS_REFUSED"
+        };
+        EnvironmentBrokerFailure::new(code, message)
+    })
 }
 
 async fn execute_environment_inner(
@@ -4955,6 +5138,12 @@ async fn execute_environment_inner(
                         "cannot encode the environment build request",
                     )
                 })?,
+            ));
+        }
+        EnvironmentBrokerOperation::IdentityFacts => {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+                "an identity-facts operation never runs a builder phase",
             ));
         }
     }
@@ -5160,6 +5349,10 @@ async fn execute_environment_inner(
                 logs_truncated,
             ))
         }
+        EnvironmentBrokerOperation::IdentityFacts => Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+            "an identity-facts operation never runs a builder phase",
+        )),
     }
 }
 
@@ -8285,12 +8478,20 @@ exit 1
                 EnvironmentBrokerOperation::Build => {
                     factory_native::runtime_broker::EnvironmentBuildPhase::Build
                 }
+                EnvironmentBrokerOperation::IdentityFacts => {
+                    factory_native::runtime_broker::EnvironmentBuildPhase::IdentityFacts
+                }
             }),
             image: TEST_BUILDER_IMAGE.into(),
             digest: TEST_BUILDER_DIGEST.into(),
             plan,
-            spec: (operation == EnvironmentBrokerOperation::Build).then_some(spec),
+            spec: matches!(
+                operation,
+                EnvironmentBrokerOperation::Build | EnvironmentBrokerOperation::IdentityFacts
+            )
+            .then_some(spec),
             workspace_files: Vec::new(),
+            identity_facts: None,
         }
     }
 
@@ -9143,6 +9344,131 @@ exit 0
             log.contains("/cache/closure-license-inventory.json"),
             "{log}"
         );
+    }
+
+    #[tokio::test]
+    async fn identity_facts_are_observed_with_fixed_nix_queries_and_signed() {
+        let directory = std::env::temp_dir().join(format!(
+            "factory-env-identity-facts-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log_path = directory.join("podman.log");
+        let root = format!("/nix/store/{}-fixture-root", "c".repeat(32));
+        let drv = format!("/nix/store/{}-fixture.drv", "d".repeat(32));
+        let helper = format!("/nix/store/{}-helper.sh", "e".repeat(32));
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  image)
+    if [ "$2" = "inspect" ]; then
+      case "$4" in
+        *source-digest*) printf '%s\t%s\t%s\n' "{}" "{}" "nix-devenv-environment-v1" ;;
+        *) printf '%s\n' "{}" ;;
+      esac
+      exit 0
+    fi
+    ;;
+  volume)
+    case "$2" in
+      create|import|rm) if [ "$2" = "import" ]; then cat >/dev/null; fi; exit 0 ;;
+      exists) exit 1 ;;
+      inspect) exit 1 ;;
+    esac
+    ;;
+  run)
+    case " $* " in
+      *"readlink -f"*) printf '%s' "{}"; exit 0 ;;
+      *"nix path-info --json --recursive --offline"*)
+        printf '%s' '{{"{}":{{"narHash":"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","deriver":"{}"}},"{}":{{"narHash":"sha256-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=","deriver":null}}}}'
+        exit 0
+        ;;
+      *"nix derivation show --offline"*)
+        printf '%s' '{{"{}":{{"outputs":{{"out":{{"path":"{}"}}}}}}}}'
+        exit 0
+        ;;
+    esac
+    exit 0
+    ;;
+  container) [ "$2" = "exists" ] && exit 1 ;;
+esac
+exit 0
+"#,
+            log_path.display(),
+            TEST_BUILDER_IMAGE_ID,
+            TEST_BUILDER_DIGEST,
+            TEST_BUILDER_IMAGE_ID,
+            root,
+            root,
+            drv,
+            helper,
+            drv,
+            root,
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        app.set_environment_builder(EnvironmentBuilderRuntime::ready(
+            TEST_BUILDER_IMAGE.into(),
+            TEST_BUILDER_DIGEST.into(),
+            TEST_BUILDER_IMAGE_ID.into(),
+            "x86_64-linux".into(),
+            "nix-devenv-environment-v1".into(),
+        ));
+        let mut request = environment_request(EnvironmentBrokerOperation::IdentityFacts);
+        let challenge = IdentityFactsChallenge {
+            operation_id: "identity-operation".into(),
+            runtime_id: TEST_BUILDER_DIGEST.into(),
+            nonce: "identity-nonce".into(),
+            pin: request.plan.nix.nixpkgs.clone(),
+            plan_sha256: request.plan.plan_sha256.clone(),
+            spec_sha256: request
+                .spec
+                .as_ref()
+                .expect("the identity request carries the frozen spec")
+                .spec_sha256
+                .clone(),
+            mode: IdentityFactsMode::Enumerate,
+            root: OperationRoot::Operation,
+            questions: Vec::new(),
+        };
+        request.identity_facts = Some(challenge.clone());
+        let response = identity_facts_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(request),
+        )
+        .await;
+        let body = environment_response_body(response).await;
+        assert_eq!(body["phase"], "IDENTITY_FACTS", "{body}");
+        assert_eq!(body["cleanupConfirmed"], true);
+        let receipt: IdentityFactsReceipt =
+            serde_json::from_value(body["identityFacts"].clone()).unwrap();
+        assert_eq!(receipt.envelope.manifest.fact_count, 2);
+        assert_eq!(receipt.envelope.manifest.observed_root, root);
+        assert_eq!(
+            receipt.envelope.manifest.facts[0].deriver.as_deref(),
+            Some(drv.as_str())
+        );
+        assert_eq!(receipt.envelope.manifest.facts[1].deriver, None);
+        assert_eq!(
+            receipt.envelope.manifest.facts[1].outputs,
+            vec![helper.clone()]
+        );
+        factory_native::planning::identity_facts::verify(
+            &receipt,
+            TEST_ENVIRONMENT_TOKEN.as_bytes(),
+            &challenge,
+        )
+        .expect("the broker receipt verifies with the environment bearer");
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert!(
+            log.contains("nix path-info --json --recursive --offline"),
+            "{log}"
+        );
+        assert!(log.contains("nix derivation show --offline"), "{log}");
+        assert!(!log.contains("--privileged"), "{log}");
+        assert!(!log.contains("--network=host"), "{log}");
     }
 
     #[tokio::test]

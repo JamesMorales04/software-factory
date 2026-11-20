@@ -5043,6 +5043,7 @@ async fn owner_confirmed_campaign_admission_enables_subscription_mode() {
     };
     let admission = ScopeAdmissionRecord {
         admission_id: "admission-1".into(),
+        request_fingerprint: String::new(),
         intake_request_id: "intake-1".into(),
         lead_request_id: "lead-1".into(),
         test_profile_id: WAVE3_TEST_PROFILE_ID.into(),
@@ -5060,6 +5061,7 @@ async fn owner_confirmed_campaign_admission_enables_subscription_mode() {
             settings_revision: "1".into(),
             transport: "OPENCODE_GO_SUBSCRIPTION".into(),
         }],
+        owner_extra_usage_declarations: Vec::new(),
         state: "ACTIVE".into(),
         campaign_id: None,
         created_at_ms: Utc::now().timestamp_millis(),

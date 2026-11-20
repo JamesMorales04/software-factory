@@ -36,6 +36,9 @@ pub const TRACE_REJECTED_REQUEST: &str = "99999999-9999-4999-8999-999999999999";
 pub const TRACE_DUPLICATE_REQUEST: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 pub const TRACE_RETRY_REQUEST: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 pub const TRACE_GAP_REQUEST: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+/// Explicit SUBMITTED requests for the Owner Extra Usage once-only journey.
+pub const EXTRA_USAGE_REQUEST_1: &str = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+pub const EXTRA_USAGE_REQUEST_2: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
 fn sha256_hex(value: &str) -> String {
     let digest = Sha256::digest(value.as_bytes());
@@ -112,6 +115,25 @@ impl Database {
         )
         .await?;
 
+        // A plain SUBMITTED request pair with no plan: the browser exercises the
+        // Owner Extra Usage confirmation panel and its cross-request reuse.
+        for request_id in [EXTRA_USAGE_REQUEST_1, EXTRA_USAGE_REQUEST_2] {
+            self.insert_request_base(
+                request_id,
+                "Confirm OpenCode Go Extra Usage once for this provider configuration",
+                PROFILE_ID,
+                &format!("{PROFILE_ID}-r1"),
+                &sha256_hex(PROFILE_ID),
+                &now,
+            )
+            .await?;
+            // A plain new request: the Lead has not assessed or frozen a plan.
+            sqlx::query::query("UPDATE lead_requests SET state='SUBMITTED' WHERE id=?1")
+                .bind(format!("lead-{request_id}"))
+                .execute(&self.pool)
+                .await?;
+        }
+
         self.seed_wave12_traces(&now).await?;
         self.seed_wave12_skills(&now).await?;
 
@@ -125,6 +147,7 @@ impl Database {
                 "planReject": REJECT_REQUEST,
                 "planStale": STALE_REQUEST,
                 "reviewMismatch": MISMATCH_REQUEST,
+                "extraUsageSubmitted": [EXTRA_USAGE_REQUEST_1, EXTRA_USAGE_REQUEST_2],
                 "tracePopulated": TRACE_POPULATED_REQUEST,
                 "traceEmpty": TRACE_EMPTY_REQUEST,
                 "traceLong": TRACE_LONG_REQUEST,

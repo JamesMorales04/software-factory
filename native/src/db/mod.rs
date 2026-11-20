@@ -1213,6 +1213,7 @@ pub use environment::{
     apply_test_environment_binding_if_enabled, test_environment_binding,
     test_environment_binding_opt_in,
 };
+mod provider_extra_usage;
 mod provider_sessions;
 mod provider_settings;
 mod subscription_admissions;
@@ -1231,8 +1232,14 @@ pub use agentic_plans::{
     AgenticSpecIssueRecord, AgenticSpecPublicationRecord, AgenticSpecRecord,
     AgenticWorkGraphRecord, NewAgenticSpecDraft, NewAgenticSpecPublication, NewAgenticWorkGraph,
 };
+pub use provider_extra_usage::{
+    DeclareProviderExtraUsage, DeclaredProviderExtraUsage, ProviderExtraUsageDeclaration,
+};
 pub use provider_settings::{ProviderSettingsAudit, ProviderSettingsRecord, ProviderSettingsWrite};
-pub use subscription_admissions::{ScopeAdmissionRecord, ScopeAdmissionWrite};
+pub use subscription_admissions::{
+    OwnerExtraUsageBinding, ScopeAdmissionRecord, ScopeAdmissionWrite,
+    subscription_request_fingerprint,
+};
 mod runtime_settings;
 pub use project_configs::NewProjectConfig;
 pub use runtime_settings::FactorySettings;

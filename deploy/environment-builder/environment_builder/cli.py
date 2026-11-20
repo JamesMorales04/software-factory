@@ -41,6 +41,7 @@ from .nix import (
 from .policy import (
     MAX_ENVIRONMENT_FILE_BYTES,
     NIXPKGS_PREFIX,
+    SOURCE_LICENSE_ORIGINS,
     reject_computed_nixpkgs_import,
     reject_dynamic_config_ast,
     validate_check,
@@ -914,6 +915,11 @@ REVIEWED_SUBSTRATE_IDENTITIES: dict[
         ): {"name": "nix", "version": "2.28.3", "license": "LGPL-2.1-only"},
     }
 }
+# Merge the exact source-licence origins into the existing reviewed substrate
+# map. Keys are exact (pin, deriver, store_path); no name or wildcard match.
+for _origin_pin, _origin_entries in SOURCE_LICENSE_ORIGINS.items():
+    REVIEWED_SUBSTRATE_IDENTITIES.setdefault(_origin_pin, {}).update(_origin_entries)
+
 # Exact approved deriver-less helper identities, scoped to one nixpkgs pin.
 # Each non-legacy identity binds the full store path, NAR hash and the
 # sorted referrer-set hash observed in the reviewed inventory. Legacy
@@ -1088,6 +1094,7 @@ def _closure_license_violation(
                     "path": _closure_license_value(entry.get("path")),
                     "name": _closure_license_value(entry.get("name")),
                     "version": _closure_license_value(entry.get("version")),
+                    "versionState": entry.get("versionState", "known"),
                     "license": _closure_license_value(entry.get("license")),
                     "unfree": entry.get("unfree"),
                 }
@@ -1106,6 +1113,7 @@ def _closure_license_inventory_entry(entry: Any, index: int) -> dict[str, Any]:
         "path": _closure_license_value(entry.get("path")),
         "name": _closure_license_value(entry.get("name")),
         "version": _closure_license_value(entry.get("version")),
+        "versionState": entry.get("versionState", "known"),
         "license": _closure_license_value(entry.get("license")),
         "unfree": entry.get("unfree"),
     }
