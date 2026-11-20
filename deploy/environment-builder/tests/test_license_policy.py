@@ -104,6 +104,18 @@ class LicensePolicyTests(unittest.TestCase):
             self.decision("GFDL-1.3-or-later", lp.LicenseContext.CLOSURE),
             "unknown",
         )
+        self.assertEqual(
+            self.decision("MIT WITH LLVM-exception", lp.LicenseContext.CLOSURE),
+            "allowed",
+        )
+        self.assertEqual(
+            self.decision("MIT WITH Classpath-exception-2.0", lp.LicenseContext.CLOSURE),
+            "unknown",
+        )
+        self.assertEqual(
+            self.decision("MIT WITH", lp.LicenseContext.CLOSURE),
+            "unknown",
+        )
 
     def test_public_domain_is_a_documented_alias_not_a_new_id(self) -> None:
         self.assertNotIn("Public Domain", self.catalog.entries)

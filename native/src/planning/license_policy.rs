@@ -360,10 +360,6 @@ fn tokenize(value: &str) -> Vec<String> {
     if !current.is_empty() {
         tokens.push(current);
     }
-    // SPDX `WITH` is an exception conjunction. The maintained exception
-    // handling below admits LLVM-exception; dropping the operator makes the
-    // exception an adjacent (AND) atom without adding an OR parser here.
-    tokens.retain(|token| token != "WITH");
     tokens
 }
 
@@ -421,6 +417,11 @@ impl ExpressionParser {
                     self.position += 1;
                     factors.push(self.parse_atom()?);
                 }
+                Some("WITH") => {
+                    self.position += 1;
+                    // A WITH exception is a conjunction, never an ignored token.
+                    factors.push(self.parse_atom()?);
+                }
                 Some("OR") | Some(")") | None => break,
                 // Adjacent SPDX atoms (and a WITH exception) are implicitly AND.
                 Some(_) => factors.push(self.parse_atom()?),
@@ -456,8 +457,12 @@ fn atom_decision(
     profile: &LicenseProfile,
     policy: &ContextPolicy,
 ) -> LicenseDecision {
-    if atom.starts_with("LLVM-exception") {
+    if atom == "LLVM-exception" {
         return LicenseDecision::Allowed;
+    }
+    if atom.ends_with("-exception") || atom.ends_with("-exception-2.0") {
+        // Unrecognised SPDX exceptions are not silently ignored.
+        return LicenseDecision::Unknown;
     }
     let identifier = catalog
         .alias_index
@@ -889,6 +894,28 @@ mod tests {
                 catalog,
                 profile
             ),
+            LicenseDecision::Unknown
+        );
+        assert_eq!(
+            evaluate(
+                "MIT WITH LLVM-exception",
+                LicenseContext::Closure,
+                catalog,
+                profile
+            ),
+            LicenseDecision::Allowed
+        );
+        assert_eq!(
+            evaluate(
+                "MIT WITH Classpath-exception-2.0",
+                LicenseContext::Closure,
+                catalog,
+                profile
+            ),
+            LicenseDecision::Unknown
+        );
+        assert_eq!(
+            evaluate("MIT WITH", LicenseContext::Closure, catalog, profile),
             LicenseDecision::Unknown
         );
     }

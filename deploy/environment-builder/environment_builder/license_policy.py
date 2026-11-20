@@ -290,9 +290,7 @@ def _tokenize(expression: str) -> list[str]:
             current.append(character)
     if current:
         tokens.append("".join(current))
-    # `WITH` is an exception conjunction; the exception becomes an adjacent
-    # (implicit AND) atom, preserving the existing LLVM-exception handling.
-    return [token for token in tokens if token != "WITH"]
+    return tokens
 
 
 class _ExpressionParser:
@@ -329,6 +327,10 @@ class _ExpressionParser:
             if token == "AND":
                 self.position += 1
                 factors.append(self.parse_atom())
+            elif token == "WITH":
+                self.position += 1
+                # A WITH exception is a conjunction, never an ignored token.
+                factors.append(self.parse_atom())
             elif token in (None, "OR", ")"):
                 break
             else:
@@ -354,8 +356,11 @@ def _atom_decision(
     profile: LicenseProfile,
     config: dict[str, Any],
 ) -> LicenseDecision:
-    if atom.startswith("LLVM-exception"):
+    if atom == "LLVM-exception":
         return LicenseDecision.ALLOWED
+    if atom.endswith("-exception") or atom.endswith("-exception-2.0"):
+        # Unrecognised SPDX exceptions are not silently ignored.
+        return LicenseDecision.UNKNOWN
     identifier = catalog.alias_index.get(atom, atom)
     if identifier in profile.denied_ids:
         return LicenseDecision.DENIED
