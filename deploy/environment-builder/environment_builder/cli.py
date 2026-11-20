@@ -63,6 +63,7 @@ from .policy import (
     validate_workspace_paths,
 )
 from .receipt import build_receipt, observe_attestation
+from .license_decision import LicenseDecisionError, validate_license_decision_receipt
 from .sbom import build_sbom, license_inventory_copy, sbom_sha256, sbom_text
 from .util import (
     canonical_json,
@@ -1575,6 +1576,20 @@ def _closure_license_entries(
         for entry in manifest
         if isinstance(entry, dict)
     }
+    decision_by_path: dict[str, dict[str, Any]] = {}
+    raw_decisions = plan.get("licenseDecisions")
+    if isinstance(raw_decisions, dict):
+        raw_decisions = [raw_decisions]
+    if isinstance(raw_decisions, list):
+        for candidate in raw_decisions:
+            if not isinstance(candidate, dict):
+                fail("ENVIRONMENT_LICENSE_DECISION_INVALID", "a licence decision receipt is not an object")
+            identity = candidate.get("identity")
+            if not isinstance(identity, dict):
+                fail("ENVIRONMENT_LICENSE_DECISION_INVALID", "a licence decision receipt has no identity")
+            path = identity.get("outputStorePath")
+            if isinstance(path, str) and path:
+                decision_by_path[path] = candidate
     resolved: list[dict[str, Any]] = []
     for path in ordered_paths:
         observed_entry = by_path.get(path)
@@ -1586,6 +1601,22 @@ def _closure_license_entries(
             observed_entry = by_deriver.get(deriver)
         if observed_entry is None:
             deriver = str(manifest_by_path.get(path, {}).get("deriver", "")).strip()
+            decision = decision_by_path.get(path)
+            if decision is not None:
+                try:
+                    identity = validate_license_decision_receipt(decision, plan)
+                except LicenseDecisionError as error:
+                    fail(error.code, error.message)
+                resolved.append(
+                    {
+                        "path": path,
+                        "name": str(identity.get("name", "")),
+                        "version": str(identity.get("version", "")),
+                        "license": str(identity.get("license", "")),
+                        "unfree": False,
+                    }
+                )
+                continue
             reviewed = _reviewed_internal_closure_license(pin, path, deriver)
             if reviewed is not None:
                 resolved.append(reviewed)
