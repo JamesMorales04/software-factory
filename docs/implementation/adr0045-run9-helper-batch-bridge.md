@@ -73,3 +73,13 @@ Result required before any build/GO: **108/108 OK**, `py_compile` OK, offline.
 - No environment-builder image build; no runtime image build.
 - No Run9, model call, admission, stack change, Run7/Run8 cleanup or 8893 access.
 - No push, merge or deploy.
+
+
+## Owner authorization update (2026-11-20)
+
+The Owner authorized integrating and testing the existing base, including a
+real isolated image build and a canonical Compose E2E, on top of base
+`853f7c7b`. This supersedes only the earlier "no integration/no image build/no
+Run9" operational freeze in this bridge; ADR-0045 remains **proposed** and no
+policy, allowlist, catalogue or authority is promoted. The approved helper
+table is unchanged.
