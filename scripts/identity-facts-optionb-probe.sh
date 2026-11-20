@@ -28,12 +28,21 @@ STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 WORK=${FACTORY_OPTIONB_WORK:-/tmp/opencode/identity-facts-optionb-$STAMP}
 VOLUME=${FACTORY_OPTIONB_VOLUME:-factory-optionb-probe-$STAMP}
 mkdir -p "$WORK"
-chmod 777 "$WORK"
+chmod 700 "$WORK"
 
 STDENV_PATH=/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux
 STDENV_SRI=sha256-7uyA5WT1X+9o1QV/Dqs7GsmWtellurWH5ipGyZK8Szk=
 HOOK_PATH=/nix/store/f244pq7qm9ga22jpa4l0vca2ys4q7wh7-update-autotools-gnu-config-scripts-hook
 HOOK_SRI=sha256-wIte/PovG1/aVE3yV/TmEf9bQKvXYDVlNJB+wcOZP8w=
+# The five references with no validity row and no bytes in the seeded closure or
+# the retained store. Only these exact paths are checked in the full image store.
+FIVE_PATHS=(
+  /nix/store/4zpfjm2r6chc8b10c1xa1d6asy100sqv-file-5.45
+  /nix/store/5wf9wpdkxs30811kfgkicn9i3nz9jhsh-patchelf-0.15.0
+  /nix/store/jangxddrzycnc2rl1wc1sqhqp26yrx4k-patch-2.7.6
+  /nix/store/xpsgmdsqym0ydx6hkvpxrp6174s4fwbl-gnumake-4.4.1
+  /nix/store/rwyj9q50lxgg2krci51hr7afiql2p8km-gnu-config-2024-01-01
+)
 
 KEEP=${FACTORY_OPTIONB_KEEP:-0}
 cleanup() {
@@ -121,10 +130,10 @@ echo "stdenv_refs=$(wc -l <"$WORK/stdenv-refs.txt") hook_refs=$(wc -l <"$WORK/ho
 # 6. Validity rows in the seeded database and the Run10 database. The image has
 #    no host Python, so the two databases are copied read-only and queried on
 #    the host; neither database is modified.
-"$PODMAN" run --rm --network=none --read-only -v "$VOLUME:/target:ro" \
+"$PODMAN" run --rm --network=none --read-only --userns=keep-id --user=0:0 -v "$VOLUME:/target:ro" \
   -v "$WORK:/out:rw" --entrypoint=/bin/sh "$IMAGE" \
   -c 'cp /target/var/nix/db/db.sqlite /out/volume-db.sqlite'
-"$PODMAN" run --rm --network=none --read-only -v "$RUN10:/run10:ro" \
+"$PODMAN" run --rm --network=none --read-only --userns=keep-id --user=0:0 -v "$RUN10:/run10:ro" \
   -v "$WORK:/out:rw" --entrypoint=/bin/sh "$IMAGE" \
   -c 'cp /run10/var/nix/db/db.sqlite /out/run10-db.sqlite'
 python3 - "$WORK" <<'PY' >"$WORK/rows.txt"
@@ -155,9 +164,41 @@ while IFS= read -r p; do
   printf '%s :: %s\n' "$p" "$err" >>"$WORK/nix-errors.txt"
 done <"$WORK/missing-refs.txt"
 
+# 7b. Exact five-path check in the image's full /nix/store. This is the only
+#     full-image byte check: exactly the five references that have no validity
+#     row and no bytes in the seeded closure or the retained store. No crawl.
+: >"$WORK/five-path-image-check.txt"
+five_absent=0
+index=0
+for path in "${FIVE_PATHS[@]}"; do
+  index=$((index + 1))
+  result=$("$PODMAN" run --rm --network=none --read-only --entrypoint=/bin/sh "$IMAGE" -c "
+    if [ -e '$path' ]; then
+      kind=file
+      [ -d '$path' ] && kind=dir
+      [ -L '$path' ] && kind=symlink
+      printf 'PRESENT type=%s' \"\$kind\"
+    else
+      printf 'ABSENT'
+    fi" 2>&1)
+  printf 'utc=%s path=%s result=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$path" "$result" \
+    >>"$WORK/five-path-image-check.txt"
+  if [ "$result" = "ABSENT" ]; then
+    five_absent=$((five_absent + 1))
+    continue
+  fi
+  # Bytes exist: capture the real NAR hash and size on the host.
+  "$PODMAN" run --rm --network=none --read-only --entrypoint=/bin/sh "$IMAGE" \
+    -c "nix-store --dump '$path'" 2>/dev/null >"$WORK/five-$index.nar"
+  printf 'utc=%s path=%s nar_size=%s nar_sha256=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$path" "$(stat -c%s "$WORK/five-$index.nar")" \
+    "$(sha256sum "$WORK/five-$index.nar" | cut -d' ' -f1)" \
+    >>"$WORK/five-path-image-check.txt"
+done
+
 # 8. Verdict: a truthful registration requires real bytes plus a validity row
 #    for every reference. If any is absent, stop without registering anything.
-if [ -s "$WORK/missing-refs.txt" ]; then
+if [ -s "$WORK/missing-refs.txt" ] || [ "$five_absent" -gt 0 ]; then
   status=BLOCKED_MISSING_REFERENCES
 else
   status=REFERENCES_AVAILABLE
@@ -177,6 +218,9 @@ print(json.dumps({
     "hookNarSha256Hex": hook_hex,
     "missingReferences": lines("missing-refs.txt"),
     "nixInvalidPathErrors": lines("nix-errors.txt"),
+    "fivePathImageCheck": lines("five-path-image-check.txt"),
+    "fivePathImageAbsent": sum(1 for line in lines("five-path-image-check.txt") if line.endswith("result=ABSENT")),
+    "blockedSources": ["pinned image full store and database", "retained Run10 store and database", "frozen composition trees"],
     "availability": lines("bytes.txt") + lines("rows.txt"),
 }, indent=2, sort_keys=True))
 PY
