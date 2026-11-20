@@ -39,15 +39,16 @@ def receipt() -> dict:
         for item in identity["outputFiles"]
         if item.get("purpose") == "documentation" and item.get("license") == "GFDL-1.3-or-later"
     ]
+    fdl = next(
+        entry for entry in identity["licenseEvidence"] if entry["path"] == "doc/fdl.texi"
+    )
     documentation = [
         {
             "path": item["path"],
             "license": item["license"],
-            "licenseTextSha256": next(
-                entry["sha256"]
-                for entry in identity["licenseEvidence"]
-                if entry["path"] == "doc/fdl.texi"
-            ),
+            "outputSha256": item["sha256"],
+            "licenseTextPath": fdl["path"],
+            "licenseTextSha256": fdl["sha256"],
             "obligations": list(catalog.entries[item["license"]].obligations),
             "verdict": "UNKNOWN_CLASSIFIED",
         }

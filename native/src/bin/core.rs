@@ -13077,6 +13077,7 @@ async fn build_environment_before_freeze(
     plan: &factory_native::planning::environment::EnvironmentPlan,
     spec: &factory_native::planning::environment::EnvironmentSpec,
     workspace: Option<&std::path::Path>,
+    license_decisions: &[serde_json::Value],
 ) -> Result<Option<factory_native::planning::environment::EnvironmentBuildReceipt>, Response> {
     use factory_native::planning::environment::EnvironmentBuilderStatus;
     let builder = app.environment_builder();
@@ -13098,7 +13099,9 @@ async fn build_environment_before_freeze(
     // The build may refuse at the licence gate. Observe and persist identity
     // facts from the same spec-keyed realised store first, so a licence refusal
     // keeps its identity receipt and leaves the environment blocked.
-    let build = builder.build(spec, plan, workspace).await;
+    let build = builder
+        .build_with_license_decisions(spec, plan, workspace, license_decisions)
+        .await;
     let (challenge, identity) = prepare_environment_identity_facts(app, plan, spec)
         .await
         .map_err(|error| {
@@ -13485,8 +13488,28 @@ async fn freeze_reviewed_environment(
         .await
         .ok()
         .map(|config| std::path::PathBuf::from(config.repository));
-    let build_receipt =
-        build_environment_before_freeze(app, &plan, &spec, repository.as_deref()).await?;
+    let license_decisions = app
+        .db
+        .license_decisions(&record.project_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|decision| {
+            decision.lead_request_id == record.lead_request_id
+                && decision.status == "ACTIVE"
+                && decision.decision == "ACCEPT"
+                && decision.revoked_at.is_none()
+        })
+        .filter_map(|decision| serde_json::to_value(decision).ok())
+        .collect::<Vec<_>>();
+    let build_receipt = build_environment_before_freeze(
+        app,
+        &plan,
+        &spec,
+        repository.as_deref(),
+        &license_decisions,
+    )
+    .await?;
     if plan.source == factory_native::planning::environment::EnvironmentPlanSource::Generated
         && build_receipt.is_none()
     {

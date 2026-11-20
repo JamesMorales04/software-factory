@@ -475,6 +475,11 @@ pub struct EnvironmentBrokerRequest {
     pub spec: Option<EnvironmentSpec>,
     #[serde(default)]
     pub workspace_files: Vec<EnvironmentWorkspaceFile>,
+    /// Exact Core licence decisions supplied to the builder for this attempt.
+    /// They are an overlay for the builder's closure licence gate; the frozen
+    /// plan hash and workspace files are unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub license_decisions: Vec<serde_json::Value>,
     /// The Core-issued identity-facts challenge. It is present exactly for an
     /// `IDENTITY_FACTS` operation; no builder phase may carry one.
     #[serde(default, skip_serializing_if = "Option::is_none")]

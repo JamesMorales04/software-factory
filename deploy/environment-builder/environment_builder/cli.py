@@ -229,6 +229,13 @@ def _write_failure(
         )
 
 
+def _with_license_decisions(request: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    decisions = request.get("licenseDecisions")
+    if isinstance(decisions, list) and decisions:
+        return {**plan, "licenseDecisions": decisions}
+    return plan
+
+
 def build(args: argparse.Namespace) -> int:
     started = time.monotonic()
     request = _load_request(args.request)
@@ -242,6 +249,7 @@ def build(args: argparse.Namespace) -> int:
         spec, plan, files, resources, actual_nix, digest, frozen_sbom_sha256 = _validate_request(
             request, source_workspace
         )
+        plan = _with_license_decisions(request, plan)
         phase = args.phase
         if phase not in ("fetch", "build"):
             fail("ENVIRONMENT_SPEC_INVALID", "phase must be fetch or build")
@@ -1587,7 +1595,8 @@ def _closure_license_entries(
             identity = candidate.get("identity")
             if not isinstance(identity, dict):
                 fail("ENVIRONMENT_LICENSE_DECISION_INVALID", "a licence decision receipt has no identity")
-            path = identity.get("outputStorePath")
+            output = identity.get("output") if isinstance(identity.get("output"), dict) else {}
+            path = identity.get("outputStorePath") or output.get("storePath")
             if isinstance(path, str) and path:
                 decision_by_path[path] = candidate
     resolved: list[dict[str, Any]] = []
@@ -1838,6 +1847,7 @@ def check(args: argparse.Namespace) -> int:
         spec, plan, files, resources, _actual_nix, _digest, frozen_sbom_sha256 = _validate_request(
             request, source_workspace
         )
+        plan = _with_license_decisions(request, plan)
         validate_fetch_policy(request, plan, "check")
         receipt = _validate_receipt(spec, request.get("receipt"))
         check_spec = validate_check(request.get("check"))

@@ -234,18 +234,27 @@ def validate_license_decision_receipt(
                 "ENVIRONMENT_LICENSE_DECISION_INVALID",
                 "the documentation verdict is missing or not accepted",
             )
+        if item.get("outputSha256") != output.get("sha256"):
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                "the documentation output digest does not match the exact output",
+            )
         text_entry = next(
             (
                 evidence_entry
                 for evidence_entry in identity.get("licenseEvidence", [])
-                if evidence_entry.get("path") == "doc/fdl.texi"
+                if evidence_entry.get("path") == item.get("licenseTextPath")
             ),
             None,
         )
-        if text_entry is not None and item.get("licenseTextSha256") != text_entry.get("sha256"):
+        if (
+            text_entry is None
+            or text_entry.get("sha256") != item.get("licenseTextSha256")
+            or text_entry.get("license") != item.get("license")
+        ):
             raise LicenseDecisionError(
                 "ENVIRONMENT_LICENSE_DECISION_INVALID",
-                "the documentation text digest does not match the exact source",
+                "the documentation text path/licence/digest does not match the exact source",
             )
         obligations = _exact_list(item.get("obligations"), "documentation obligations")
         doc_entry = catalog.entries.get(item["license"])

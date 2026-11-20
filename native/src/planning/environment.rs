@@ -3596,6 +3596,19 @@ pub trait EnvironmentBuilder {
         workspace: Option<&'a std::path::Path>,
     ) -> EnvironmentBuilderFuture<'a>;
 
+    /// Build with an exact Core licence-decision overlay. The default keeps
+    /// existing builders source-compatible and ignores no decision: a builder
+    /// that does not implement the overlay must use its normal fail-closed path.
+    fn build_with_license_decisions<'a>(
+        &'a self,
+        spec: &'a EnvironmentSpec,
+        plan: &'a EnvironmentPlan,
+        workspace: Option<&'a std::path::Path>,
+        _license_decisions: &'a [serde_json::Value],
+    ) -> EnvironmentBuilderFuture<'a> {
+        self.build(spec, plan, workspace)
+    }
+
     /// Observe the exact realised environment for one Core-issued
     /// identity-facts challenge and return the authenticated receipt. The
     /// broker owns the fixed Nix queries; a builder cannot supply a manifest.
@@ -4029,6 +4042,7 @@ impl RuntimeBrokerEnvironmentBuilder {
         plan: &EnvironmentPlan,
         spec: Option<&EnvironmentSpec>,
         workspace: Option<&std::path::Path>,
+        license_decisions: &[serde_json::Value],
     ) -> Result<crate::runtime_broker::EnvironmentBrokerRequest, EnvironmentError> {
         let workspace_files = crate::runtime_broker::environment_workspace_files(plan, workspace)
             .map_err(|message| {
@@ -4048,6 +4062,7 @@ impl RuntimeBrokerEnvironmentBuilder {
             plan: plan.clone(),
             spec: spec.cloned(),
             workspace_files,
+            license_decisions: license_decisions.to_vec(),
             identity_facts: None,
         })
     }
@@ -4067,6 +4082,49 @@ impl RuntimeBrokerEnvironmentBuilder {
                 Err(environment_error_from_broker(error))
             }
         }
+    }
+}
+
+impl RuntimeBrokerEnvironmentBuilder {
+    fn build_with_decisions<'a>(
+        &'a self,
+        spec: &'a EnvironmentSpec,
+        plan: &'a EnvironmentPlan,
+        workspace: Option<&'a std::path::Path>,
+        license_decisions: &'a [serde_json::Value],
+    ) -> EnvironmentBuilderFuture<'a> {
+        Box::pin(async move {
+            if self.status() == EnvironmentBuilderStatus::Unavailable {
+                let _ = self.refresh_status().await;
+            }
+            if self.status() == EnvironmentBuilderStatus::Unavailable {
+                return Err(EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
+                    "the runtime environment builder is not available",
+                ));
+            }
+            let request = self.request(
+                crate::runtime_broker::EnvironmentBrokerOperation::Build,
+                Some(crate::runtime_broker::EnvironmentBuildPhase::Build),
+                plan,
+                Some(spec),
+                workspace,
+                license_decisions,
+            )?;
+            self.set_status(EnvironmentBuilderStatus::Building);
+            let result = self.call(&request, None).await;
+            let result = result?;
+            let receipt = result.receipt.ok_or_else(|| {
+                EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentBuildFailed,
+                    "the environment builder returned no receipt",
+                )
+            })?;
+            if let Some(blocker) = receipt.blockers.first() {
+                return Err(EnvironmentError::new(blocker.code, blocker.message.clone()));
+            }
+            Ok(receipt)
+        })
     }
 }
 
@@ -4106,6 +4164,7 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
                 plan,
                 None,
                 workspace,
+                &[],
             )?;
             self.set_status(EnvironmentBuilderStatus::Building);
             let result = self.call(&request, None).await;
@@ -4127,37 +4186,17 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
         plan: &'a EnvironmentPlan,
         workspace: Option<&'a std::path::Path>,
     ) -> EnvironmentBuilderFuture<'a> {
-        Box::pin(async move {
-            if self.status() == EnvironmentBuilderStatus::Unavailable {
-                let _ = self.refresh_status().await;
-            }
-            if self.status() == EnvironmentBuilderStatus::Unavailable {
-                return Err(EnvironmentError::new(
-                    EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
-                    "the runtime environment builder is not available",
-                ));
-            }
-            let request = self.request(
-                crate::runtime_broker::EnvironmentBrokerOperation::Build,
-                Some(crate::runtime_broker::EnvironmentBuildPhase::Build),
-                plan,
-                Some(spec),
-                workspace,
-            )?;
-            self.set_status(EnvironmentBuilderStatus::Building);
-            let result = self.call(&request, None).await;
-            let result = result?;
-            let receipt = result.receipt.ok_or_else(|| {
-                EnvironmentError::new(
-                    EnvironmentBlockerCode::EnvironmentBuildFailed,
-                    "the environment builder returned no receipt",
-                )
-            })?;
-            if let Some(blocker) = receipt.blockers.first() {
-                return Err(EnvironmentError::new(blocker.code, blocker.message.clone()));
-            }
-            Ok(receipt)
-        })
+        self.build_with_decisions(spec, plan, workspace, &[])
+    }
+
+    fn build_with_license_decisions<'a>(
+        &'a self,
+        spec: &'a EnvironmentSpec,
+        plan: &'a EnvironmentPlan,
+        workspace: Option<&'a std::path::Path>,
+        license_decisions: &'a [serde_json::Value],
+    ) -> EnvironmentBuilderFuture<'a> {
+        self.build_with_decisions(spec, plan, workspace, license_decisions)
     }
 
     fn identity_facts<'a>(
@@ -4185,6 +4224,7 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
                 plan: plan.clone(),
                 spec: Some(spec.clone()),
                 workspace_files: Vec::new(),
+                license_decisions: Vec::new(),
                 identity_facts: Some(challenge.clone()),
             };
             let result = self
