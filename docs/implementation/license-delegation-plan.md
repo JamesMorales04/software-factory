@@ -112,13 +112,16 @@ place.
 
 ## Policy candidate
 
-The current candidate adds only `GFDL-1.3-or-later` to the catalogue and the
-`closure` allowed set; `build`/`devTest` inherit `closure`; `selected` and
-`runtimeDistributed` are unchanged. The exact hashes and evidence are in
-`ADR-0047`, `versioned_source_evidence.json`, and the evidence bundle
+The catalogue classifies only `GFDL-1.3-or-later`; the global profile does not
+allow it and its hash is unchanged. The allow is the exact Core
+`license_decision` for the exact identity/evidence/use context/revision under
+the active Owner delegation; `build`/`devTest` do not inherit a GFDL allow,
+`selected`/`runtimeDistributed` are unchanged, and there is no global allow.
+The exact hashes and evidence are in `ADR-0047`,
+`versioned_source_evidence.json`, and the evidence bundle
 `uat-ed-source-0fa4990e` (`OWNER-DECISION.md`, `CORRECTIONS.md`,
 `PROPOSED.patch`, policy patches, raw `.drv` ATerm bytes, source/cache hashes).
-This is a delegated decision, not a static manual per-licence approval.
+This is a delegated exact decision, not a static manual per-licence approval.
 
 ## Core/builder changes
 

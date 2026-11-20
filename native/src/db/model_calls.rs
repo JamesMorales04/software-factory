@@ -1453,6 +1453,7 @@ impl Database {
                         | "agentic_spec_manager"
                         | "lead_environment_review"
                         | "lead_stack_selection"
+                        | "license_evidence_review"
                 );
                 if state != "ASSESSING" && !bounded_agentic_purpose {
                     return Err(Error::Forbidden(

@@ -1175,7 +1175,7 @@ class PolicyTests(unittest.TestCase):
 
         catalog, profile = policy_data.load_default()
         self.assertEqual(catalog.revision, "spdx-catalog-2026-11-16")
-        self.assertEqual(len(catalog.entries), 35)
+        self.assertEqual(len(catalog.entries), 36)
         self.assertEqual(profile.mode, "legacy-current")
         self.assertFalse(policy_data.b_active(profile))
         selected = set(profile.contexts["selected"]["allowedIds"])

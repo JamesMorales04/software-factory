@@ -273,15 +273,149 @@ def _resolve_context(
     return config
 
 
-def _atoms(expression: str) -> list[str]:
-    normalized = (
-        expression.replace("(", " ")
-        .replace(")", " ")
-        .replace(" AND ", " ")
-        .replace(" OR ", " ")
-        .replace(" WITH ", " ")
-    )
-    return normalized.split()
+def _tokenize(expression: str) -> list[str]:
+    tokens: list[str] = []
+    current: list[str] = []
+    for character in expression:
+        if character in "()":
+            if current:
+                tokens.append("".join(current))
+                current = []
+            tokens.append(character)
+        elif character.isspace():
+            if current:
+                tokens.append("".join(current))
+                current = []
+        else:
+            current.append(character)
+    if current:
+        tokens.append("".join(current))
+    # `WITH` is an exception conjunction; the exception becomes an adjacent
+    # (implicit AND) atom, preserving the existing LLVM-exception handling.
+    return [token for token in tokens if token != "WITH"]
+
+
+class _ExpressionParser:
+    def __init__(self, value: str) -> None:
+        self.tokens = _tokenize(value)
+        self.position = 0
+
+    def peek(self) -> str | None:
+        return self.tokens[self.position] if self.position < len(self.tokens) else None
+
+    def take(self) -> str | None:
+        token = self.peek()
+        if token is not None:
+            self.position += 1
+        return token
+
+    def parse(self) -> tuple:
+        expression = self.parse_or()
+        if self.position != len(self.tokens):
+            raise ValueError("trailing licence expression tokens")
+        return expression
+
+    def parse_or(self) -> tuple:
+        branches = [self.parse_and()]
+        while self.peek() == "OR":
+            self.position += 1
+            branches.append(self.parse_and())
+        return branches[0] if len(branches) == 1 else ("or", branches)
+
+    def parse_and(self) -> tuple:
+        factors = [self.parse_atom()]
+        while True:
+            token = self.peek()
+            if token == "AND":
+                self.position += 1
+                factors.append(self.parse_atom())
+            elif token in (None, "OR", ")"):
+                break
+            else:
+                # Adjacent SPDX atoms are implicitly AND.
+                factors.append(self.parse_atom())
+        return factors[0] if len(factors) == 1 else ("and", factors)
+
+    def parse_atom(self) -> tuple:
+        token = self.take()
+        if token == "(":
+            expression = self.parse_or()
+            if self.take() != ")":
+                raise ValueError("unbalanced licence expression parentheses")
+            return expression
+        if token in (None, ")", "AND", "OR"):
+            raise ValueError("invalid licence expression atom")
+        return ("atom", token)
+
+
+def _atom_decision(
+    atom: str,
+    catalog: LicenseCatalog,
+    profile: LicenseProfile,
+    config: dict[str, Any],
+) -> LicenseDecision:
+    if atom.startswith("LLVM-exception"):
+        return LicenseDecision.ALLOWED
+    identifier = catalog.alias_index.get(atom, atom)
+    if identifier in profile.denied_ids:
+        return LicenseDecision.DENIED
+    if identifier in set(config.get("allowedIds", [])):
+        return LicenseDecision.ALLOWED
+    entry = catalog.entries.get(identifier)
+    if entry is None or entry.state != "active":
+        return LicenseDecision.UNKNOWN
+    if entry.family in set(config.get("acceptedFamilies", [])):
+        return LicenseDecision.ALLOWED
+    return LicenseDecision.UNKNOWN
+
+
+def _evaluate_expression(
+    expression: tuple,
+    catalog: LicenseCatalog,
+    profile: LicenseProfile,
+    config: dict[str, Any],
+) -> LicenseDecision:
+    kind = expression[0]
+    if kind == "atom":
+        return _atom_decision(expression[1], catalog, profile, config)
+    if kind == "and":
+        unknown = False
+        not_evaluated = False
+        for factor in expression[1]:
+            decision = _evaluate_expression(factor, catalog, profile, config)
+            if decision is LicenseDecision.DENIED:
+                return LicenseDecision.DENIED
+            if decision is LicenseDecision.UNKNOWN:
+                unknown = True
+            elif decision is LicenseDecision.NOT_EVALUATED:
+                not_evaluated = True
+        if unknown:
+            return LicenseDecision.UNKNOWN
+        if not_evaluated:
+            return LicenseDecision.NOT_EVALUATED
+        return LicenseDecision.ALLOWED
+    if kind == "or":
+        denied = False
+        unknown = False
+        not_evaluated = False
+        for branch in expression[1]:
+            decision = _evaluate_expression(branch, catalog, profile, config)
+            if decision is LicenseDecision.ALLOWED:
+                return LicenseDecision.ALLOWED
+            if decision is LicenseDecision.DENIED:
+                denied = True
+            elif decision is LicenseDecision.UNKNOWN:
+                unknown = True
+            else:
+                not_evaluated = True
+        if denied:
+            return LicenseDecision.DENIED
+        if unknown:
+            return LicenseDecision.UNKNOWN
+        if not_evaluated:
+            return LicenseDecision.NOT_EVALUATED
+        return LicenseDecision.UNKNOWN
+    return LicenseDecision.UNKNOWN
 
 
 def evaluate(
@@ -299,35 +433,13 @@ def evaluate(
     config = _resolve_context(context, profile)
     if config.get("evaluated") is False:
         return LicenseDecision.NOT_EVALUATED
-    if value in profile.denied_ids:
-        return LicenseDecision.DENIED
-    allowed_ids = set(config.get("allowedIds", []))
-    accepted_families = set(config.get("acceptedFamilies", []))
-    canonical_value = catalog.alias_index.get(value, value)
-    if canonical_value in profile.denied_ids:
-        return LicenseDecision.DENIED
-    if canonical_value in allowed_ids:
-        return LicenseDecision.ALLOWED
-    atoms = _atoms(value)
-    if not atoms:
+    if value in catalog.alias_index:
+        return _atom_decision(value, catalog, profile, config)
+    try:
+        parsed = _ExpressionParser(value).parse()
+    except ValueError:
         return LicenseDecision.UNKNOWN
-    for atom in atoms:
-        identifier = catalog.alias_index.get(atom, atom)
-        if identifier in profile.denied_ids:
-            return LicenseDecision.DENIED
-    for atom in atoms:
-        if atom.startswith("LLVM-exception"):
-            continue
-        identifier = catalog.alias_index.get(atom, atom)
-        if identifier in allowed_ids:
-            continue
-        entry = catalog.entries.get(identifier)
-        if entry is None or entry.state != "active":
-            return LicenseDecision.UNKNOWN
-        if accepted_families and entry.family in accepted_families:
-            continue
-        return LicenseDecision.UNKNOWN
-    return LicenseDecision.ALLOWED
+    return _evaluate_expression(parsed, catalog, profile, config)
 
 
 def verdict_matrix(

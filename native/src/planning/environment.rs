@@ -6444,7 +6444,7 @@ mod tests {
     fn license_catalog_and_profile_are_shared_and_legacy() {
         let catalog = crate::planning::license_policy::default_catalog();
         let profile = crate::planning::license_policy::default_profile();
-        assert_eq!(catalog.entries.len(), 35);
+        assert_eq!(catalog.entries.len(), 36);
         assert_eq!(
             catalog.alias_index.get("Public Domain"),
             Some(&"publicDomain".to_owned())

@@ -69,14 +69,40 @@ class LicensePolicyTests(unittest.TestCase):
     def test_catalog_is_versioned_hashed_and_unique(self) -> None:
         self.assertEqual(self.catalog.revision, "spdx-catalog-2026-11-16")
         self.assertTrue(self.catalog.spdx_license_list_version)
-        self.assertEqual(len(self.catalog.entries), 35)
+        self.assertEqual(len(self.catalog.entries), 36)
         self.assertEqual(
             set(self.catalog.entries),
-            ALLOWED_IDS | CLOSURE_ONLY_IDS | DENIED_IDS,
+            ALLOWED_IDS | CLOSURE_ONLY_IDS | DENIED_IDS | {"GFDL-1.3-or-later"},
         )
         self.assertEqual(
             len(self.catalog.sha256),
             64,
+        )
+
+    def test_or_expression_resolves_a_valid_branch_without_implicit_and(self) -> None:
+        self.assertEqual(self.decision("MIT OR BUSL-1.1", lp.LicenseContext.CLOSURE), "allowed")
+        self.assertEqual(self.decision("AGPL-3.0-only OR MIT", lp.LicenseContext.CLOSURE), "allowed")
+        self.assertEqual(self.decision("AGPL-3.0-only AND MIT", lp.LicenseContext.CLOSURE), "denied")
+        self.assertEqual(self.decision("AGPL-3.0-only OR BUSL-1.1", lp.LicenseContext.CLOSURE), "denied")
+        self.assertEqual(
+            self.decision("(MIT OR Apache-2.0) AND BSD-3-Clause", lp.LicenseContext.CLOSURE),
+            "allowed",
+        )
+        self.assertEqual(
+            self.decision("MIT AND (Apache-2.0 OR BUSL-1.1)", lp.LicenseContext.CLOSURE),
+            "allowed",
+        )
+        self.assertEqual(
+            self.decision("MIT OR LicenseRef-Unknown", lp.LicenseContext.CLOSURE),
+            "allowed",
+        )
+        self.assertEqual(
+            self.decision("MIT AND LicenseRef-Unknown", lp.LicenseContext.CLOSURE),
+            "unknown",
+        )
+        self.assertEqual(
+            self.decision("GFDL-1.3-or-later", lp.LicenseContext.CLOSURE),
+            "unknown",
         )
 
     def test_public_domain_is_a_documented_alias_not_a_new_id(self) -> None:

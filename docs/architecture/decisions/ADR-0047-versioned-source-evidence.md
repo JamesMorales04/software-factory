@@ -104,14 +104,18 @@ are part of the record. A log entry or a model dictum is never a Core grant.
 
 ## Policy dependency
 
-The exact documentation licence is `GFDL-1.3-or-later`. The minimal policy diff
-adds only that identifier to the catalogue and the `closure` allowed set;
-`build` and `devTest` inherit `closure` by the existing schema. `selected` and
-`runtimeDistributed` are untouched. The catalogue entry uses the existing
-`strong-copyleft` family (no new family enum) and the obligations `notice` +
-`source`; it does not reduce the licence to notice-only. The data is part of the
-delegated candidate and is activated only after Reviewer70 review and the normal
-build/restart; it is not an inline per-licence Owner approval.
+The exact documentation licence is `GFDL-1.3-or-later`. The catalogue
+**classifies** that identifier so evidence can refer to it, but the global
+profile does not allow it: `closure`/`build`/`devTest` remain UNKNOWN for GFDL
+and the profile hash is unchanged. The allow is the exact Core
+`license_decision` for the exact identity, evidence, use context and revision,
+within the active Owner delegation; no global allow and no name/version
+substitution. Catalogue hash `edef68e1…`, profile hash `233c0a44…`, binding
+`157242c0…`. The catalogue entry uses the existing `strong-copyleft` family (no
+new family enum) and the obligations `notice` + `source`; it does not reduce the
+licence to notice-only. The data is part of the delegated candidate and is
+activated only after Reviewer70 review and the normal build/restart; it is not
+an inline per-licence Owner approval and not a static allowlist.
 
 ## Consequences
 

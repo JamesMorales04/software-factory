@@ -331,15 +331,215 @@ fn resolve_context(
     Err("licence profile context inheritance cycle".into())
 }
 
-fn normalized_atoms(value: &str) -> Vec<String> {
-    value
-        .replace(['(', ')'], " ")
-        .replace(" AND ", " ")
-        .replace(" OR ", " ")
-        .replace(" WITH ", " ")
-        .split_whitespace()
-        .map(str::to_owned)
-        .collect()
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Expr {
+    Atom(String),
+    And(Vec<Expr>),
+    Or(Vec<Expr>),
+}
+
+fn tokenize(value: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for character in value.chars() {
+        match character {
+            '(' | ')' => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+                tokens.push(character.to_string());
+            }
+            character if character.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            character => current.push(character),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    // SPDX `WITH` is an exception conjunction. The maintained exception
+    // handling below admits LLVM-exception; dropping the operator makes the
+    // exception an adjacent (AND) atom without adding an OR parser here.
+    tokens.retain(|token| token != "WITH");
+    tokens
+}
+
+struct ExpressionParser {
+    tokens: Vec<String>,
+    position: usize,
+}
+
+impl ExpressionParser {
+    fn new(value: &str) -> Self {
+        Self {
+            tokens: tokenize(value),
+            position: 0,
+        }
+    }
+
+    fn peek(&self) -> Option<&str> {
+        self.tokens.get(self.position).map(String::as_str)
+    }
+
+    fn take(&mut self) -> Option<String> {
+        let token = self.tokens.get(self.position).cloned();
+        if token.is_some() {
+            self.position += 1;
+        }
+        token
+    }
+
+    fn parse(&mut self) -> Result<Expr, String> {
+        let expression = self.parse_or()?;
+        if self.position != self.tokens.len() {
+            return Err("trailing licence expression tokens".into());
+        }
+        Ok(expression)
+    }
+
+    fn parse_or(&mut self) -> Result<Expr, String> {
+        let mut branches = vec![self.parse_and()?];
+        while self.peek() == Some("OR") {
+            self.position += 1;
+            branches.push(self.parse_and()?);
+        }
+        Ok(if branches.len() == 1 {
+            branches.remove(0)
+        } else {
+            Expr::Or(branches)
+        })
+    }
+
+    fn parse_and(&mut self) -> Result<Expr, String> {
+        let mut factors = vec![self.parse_atom()?];
+        loop {
+            match self.peek() {
+                Some("AND") => {
+                    self.position += 1;
+                    factors.push(self.parse_atom()?);
+                }
+                Some("OR") | Some(")") | None => break,
+                // Adjacent SPDX atoms (and a WITH exception) are implicitly AND.
+                Some(_) => factors.push(self.parse_atom()?),
+            }
+        }
+        Ok(if factors.len() == 1 {
+            factors.remove(0)
+        } else {
+            Expr::And(factors)
+        })
+    }
+
+    fn parse_atom(&mut self) -> Result<Expr, String> {
+        match self.take().as_deref() {
+            Some("(") => {
+                let expression = self.parse_or()?;
+                if self.take().as_deref() != Some(")") {
+                    return Err("unbalanced licence expression parentheses".into());
+                }
+                Ok(expression)
+            }
+            Some(")") | Some("AND") | Some("OR") | None => {
+                Err("invalid licence expression atom".into())
+            }
+            Some(atom) => Ok(Expr::Atom(atom.to_string())),
+        }
+    }
+}
+
+fn atom_decision(
+    atom: &str,
+    catalog: &LicenseCatalog,
+    profile: &LicenseProfile,
+    policy: &ContextPolicy,
+) -> LicenseDecision {
+    if atom.starts_with("LLVM-exception") {
+        return LicenseDecision::Allowed;
+    }
+    let identifier = catalog
+        .alias_index
+        .get(atom)
+        .map(String::as_str)
+        .unwrap_or(atom);
+    if profile.denied_ids.contains(identifier) {
+        return LicenseDecision::Denied;
+    }
+    if policy
+        .allowed_ids
+        .iter()
+        .any(|id| id.as_str() == identifier)
+    {
+        return LicenseDecision::Allowed;
+    }
+    let Some(entry) = catalog.entries.get(identifier) else {
+        return LicenseDecision::Unknown;
+    };
+    if entry.state != "active" {
+        return LicenseDecision::Unknown;
+    }
+    if policy
+        .accepted_families
+        .iter()
+        .any(|family| family == &entry.family)
+    {
+        return LicenseDecision::Allowed;
+    }
+    LicenseDecision::Unknown
+}
+
+fn evaluate_expression(
+    expression: &Expr,
+    catalog: &LicenseCatalog,
+    profile: &LicenseProfile,
+    policy: &ContextPolicy,
+) -> LicenseDecision {
+    match expression {
+        Expr::Atom(atom) => atom_decision(atom, catalog, profile, policy),
+        Expr::And(factors) => {
+            let mut unknown = false;
+            let mut not_evaluated = false;
+            for factor in factors {
+                match evaluate_expression(factor, catalog, profile, policy) {
+                    LicenseDecision::Denied => return LicenseDecision::Denied,
+                    LicenseDecision::Unknown => unknown = true,
+                    LicenseDecision::NotEvaluated => not_evaluated = true,
+                    LicenseDecision::Allowed => {}
+                }
+            }
+            if unknown {
+                LicenseDecision::Unknown
+            } else if not_evaluated {
+                LicenseDecision::NotEvaluated
+            } else {
+                LicenseDecision::Allowed
+            }
+        }
+        Expr::Or(branches) => {
+            let mut denied = false;
+            let mut unknown = false;
+            let mut not_evaluated = false;
+            for branch in branches {
+                match evaluate_expression(branch, catalog, profile, policy) {
+                    LicenseDecision::Allowed => return LicenseDecision::Allowed,
+                    LicenseDecision::Denied => denied = true,
+                    LicenseDecision::Unknown => unknown = true,
+                    LicenseDecision::NotEvaluated => not_evaluated = true,
+                }
+            }
+            if denied {
+                LicenseDecision::Denied
+            } else if unknown {
+                LicenseDecision::Unknown
+            } else if not_evaluated {
+                LicenseDecision::NotEvaluated
+            } else {
+                LicenseDecision::Unknown
+            }
+        }
+    }
 }
 
 /// Deterministic verdict for one context. No model input is accepted.
@@ -360,67 +560,14 @@ pub fn evaluate(
     if policy.evaluated == Some(false) {
         return LicenseDecision::NotEvaluated;
     }
-    let canonical_value = catalog
-        .alias_index
-        .get(value)
-        .map(String::as_str)
-        .unwrap_or(value);
-    if profile.denied_ids.contains(canonical_value) {
-        return LicenseDecision::Denied;
+    if let Some(identifier) = catalog.alias_index.get(value) {
+        return atom_decision(identifier, catalog, profile, policy);
     }
-    if policy
-        .allowed_ids
-        .iter()
-        .any(|id| id.as_str() == canonical_value)
-    {
-        return LicenseDecision::Allowed;
-    }
-    let atoms = normalized_atoms(value);
-    if atoms.is_empty() {
-        return LicenseDecision::Unknown;
-    }
-    for atom in &atoms {
-        let identifier = catalog
-            .alias_index
-            .get(atom)
-            .map(String::as_str)
-            .unwrap_or(atom.as_str());
-        if profile.denied_ids.contains(identifier) {
-            return LicenseDecision::Denied;
-        }
-    }
-    for atom in atoms {
-        if atom.starts_with("LLVM-exception") {
-            continue;
-        }
-        let identifier = catalog
-            .alias_index
-            .get(&atom)
-            .map(String::as_str)
-            .unwrap_or(atom.as_str());
-        if policy
-            .allowed_ids
-            .iter()
-            .any(|id| id.as_str() == identifier)
-        {
-            continue;
-        }
-        let Some(entry) = catalog.entries.get(identifier) else {
-            return LicenseDecision::Unknown;
-        };
-        if entry.state != "active" {
-            return LicenseDecision::Unknown;
-        }
-        if policy
-            .accepted_families
-            .iter()
-            .any(|family| family == &entry.family)
-        {
-            continue;
-        }
-        return LicenseDecision::Unknown;
-    }
-    LicenseDecision::Allowed
+    let expression = match ExpressionParser::new(value).parse() {
+        Ok(expression) => expression,
+        Err(_) => return LicenseDecision::Unknown,
+    };
+    evaluate_expression(&expression, catalog, profile, policy)
 }
 
 #[cfg(test)]
@@ -475,10 +622,10 @@ mod tests {
     fn shared_catalog_and_profile_are_hash_bound() {
         let catalog = default_catalog();
         let profile = default_profile();
-        assert_eq!(catalog.entries.len(), 35);
+        assert_eq!(catalog.entries.len(), 36);
         assert_eq!(
             catalog.sha256,
-            "725ba589f774e2f1415534e2ee37157ae9fa1ecacfc956a462529d167297cd36"
+            "edef68e16ad7c465eb8a263d5a74e23c361b8aa7a7eb9186197699265c1e9a49"
         );
         assert_eq!(
             profile.sha256,
@@ -486,7 +633,7 @@ mod tests {
         );
         assert_eq!(
             default_binding_sha256(),
-            "a020b9b854a4bc63cabdc61c236499f1166cd3f4fc1abed9445a0c0a15c20e65"
+            "157242c0f25a05412364dab23449c674418d1e21f6568c454521d187fa225afd"
         );
         assert_eq!(profile.mode, "legacy-current");
         assert!(!profile.b_active());
@@ -662,6 +809,88 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn or_expression_resolves_a_valid_branch_without_implicit_and() {
+        let catalog = default_catalog();
+        let profile = default_profile();
+        assert_eq!(
+            evaluate("MIT OR BUSL-1.1", LicenseContext::Closure, catalog, profile),
+            LicenseDecision::Allowed
+        );
+        assert_eq!(
+            evaluate(
+                "AGPL-3.0-only OR MIT",
+                LicenseContext::Closure,
+                catalog,
+                profile
+            ),
+            LicenseDecision::Allowed
+        );
+        assert_eq!(
+            evaluate(
+                "AGPL-3.0-only AND MIT",
+                LicenseContext::Closure,
+                catalog,
+                profile
+            ),
+            LicenseDecision::Denied
+        );
+        assert_eq!(
+            evaluate(
+                "AGPL-3.0-only OR BUSL-1.1",
+                LicenseContext::Closure,
+                catalog,
+                profile
+            ),
+            LicenseDecision::Denied
+        );
+        assert_eq!(
+            evaluate(
+                "(MIT OR Apache-2.0) AND BSD-3-Clause",
+                LicenseContext::Closure,
+                catalog,
+                profile
+            ),
+            LicenseDecision::Allowed
+        );
+        assert_eq!(
+            evaluate(
+                "MIT AND (Apache-2.0 OR BUSL-1.1)",
+                LicenseContext::Closure,
+                catalog,
+                profile
+            ),
+            LicenseDecision::Allowed
+        );
+        assert_eq!(
+            evaluate(
+                "MIT OR LicenseRef-Unknown",
+                LicenseContext::Closure,
+                catalog,
+                profile
+            ),
+            LicenseDecision::Allowed
+        );
+        assert_eq!(
+            evaluate(
+                "MIT AND LicenseRef-Unknown",
+                LicenseContext::Closure,
+                catalog,
+                profile
+            ),
+            LicenseDecision::Unknown
+        );
+        assert_eq!(
+            evaluate(
+                "GFDL-1.3-or-later",
+                LicenseContext::Closure,
+                catalog,
+                profile
+            ),
+            LicenseDecision::Unknown
+        );
     }
 
     #[test]
