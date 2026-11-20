@@ -406,19 +406,29 @@ Rules:
   origin. No other combination is tolerated, so an empty version is never an
   implicit exception.
 - **Identity-facts anchor.** Origins are consumed only after the authenticated
-  identity-facts receipt exists. Each origin's `storePath`, `deriver` and
-  `narHash` must equal one signed manifest fact of that exact environment
+  identity-facts receipt exists. The origin `pin` must equal the signed
+  challenge pin, and its `storePath`, `deriver` and `narHash` must equal one
+  signed manifest fact of that exact environment
   ([identity-facts](identity-facts.md)); an origin without a matching signed
   fact fails closed. Only the broker produces and signs those facts, so a
-  caller, builder or model cannot mint one.
+  caller, builder or model cannot mint one. The acceptance test uses the real
+  `sign`/`verify` HMAC path, not a fixture constructor.
+- **Output identity.** `compositionNarSha256` must equal the identity's
+  `narHash`: the reconstructed composition is the signed output, never a
+  different NAR that merely has the right shape.
 - **Bounded scope.** These MIT records cover only the exact scripts and outputs
   of the two reviewed identities. Transitive components (`gnu-config`,
   `gcc-wrapper`, `bash`, and the `inputDrvs`) keep their separate frozen
   inventory entries; the `COPYING` file is never extrapolated to them.
-- **Provenance.** The data asset records the digests of the licence evidence,
-  the composition audit and the independent reconstruction it was derived from.
-  Changing any byte of evidence invalidates the binding rather than silently
-  widening it.
+- **Provenance.** The data asset carries exactly four evidence digests, each
+  with one role: `licenseEvidenceV2Sha256` (the v2 licence evidence),
+  `compositionAuditSha256Sums` (the author composition-audit `SHA256SUMS`),
+  `compositionAuditCanonicalVerifyLogSha256` (the author canonical verification
+  log) and `independentReconstructionSha256Sums` (the independent
+  reconstruction `SHA256SUMS`). The independent digest is that artifact's
+  `SHA256SUMS`, not the canonical log; extra, missing, duplicated or
+  non-hex bindings are refused by both the builder and Core. Changing any byte
+  of evidence invalidates the binding rather than silently widening it.
 - **Office impact.** None: this is internal evidence and provenance plumbing.
   Existing environment blockers still surface through the same typed
   `ENVIRONMENT_LICENSE_*` errors, so no user-facing control, route or label

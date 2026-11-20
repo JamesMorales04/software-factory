@@ -934,12 +934,12 @@ class PolicyTests(unittest.TestCase):
             ("pin", "github:NixOS/nixpkgs/" + "b" * 40),
             ("deriver", "/nix/store/" + "b" * 32 + "-other.drv"),
             ("storePath", "/nix/store/" + "b" * 32 + "-other"),
-            ("narHash", "sha256-" + "B" * 43 + "="),
+            ("narHash", "sha256-" + "A" * 43 + "="),
             ("sourceStorePath", "/nix/store/" + "b" * 32 + "-source"),
-            ("sourceNarSha256", "sha256-" + "B" * 43 + "="),
+            ("sourceNarSha256", "sha256-" + "A" * 43 + "="),
             ("licenseFile", "LICENSE"),
             ("licenseFileSha256", "b" * 64),
-            ("compositionNarSha256", "sha256-" + "B" * 43 + "="),
+            ("compositionNarSha256", "sha256-" + "A" * 43 + "="),
             ("compositionNarSize", 0),
         ]
         for field, value in mutations:
@@ -949,6 +949,12 @@ class PolicyTests(unittest.TestCase):
                 validate_closure_licenses([entry])
             self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN", field)
 
+        # The output composition NAR must be the exact output NAR itself.
+        entry = json.loads(json.dumps(base))
+        entry["sourceOrigin"]["compositionNarSha256"] = "sha256-" + "A" * 43 + "="
+        with self.assertRaises(BuilderError) as raised:
+            validate_closure_licenses([entry])
+        self.assertIn("inconsistent", raised.exception.message)
         # The explicit version state is refused when it disagrees with the
         # exact origin: no empty-version or origin-carrying "known" exception.
         entry = json.loads(json.dumps(base))
@@ -1011,6 +1017,59 @@ class PolicyTests(unittest.TestCase):
             self.assertIsNone(cli._reviewed_substrate_identity(pin + "0", path, deriver))
             self.assertIsNone(cli._reviewed_substrate_identity(pin, path + "-other", deriver))
             self.assertIsNone(cli._reviewed_substrate_identity(pin, path, deriver + "x"))
+
+    def test_reviewed_source_license_origins_require_exact_evidence(self) -> None:
+        import tempfile
+
+        from environment_builder import policy
+
+        document = json.loads(Path(policy.SOURCE_LICENSE_ORIGINS_FILE).read_text())
+        self.assertEqual(
+            set(document["evidence"]),
+            {
+                "compositionAuditCanonicalVerifyLogSha256",
+                "compositionAuditSha256Sums",
+                "independentReconstructionSha256Sums",
+                "licenseEvidenceV2Sha256",
+            },
+        )
+        self.assertTrue(
+            all(len(value) == 64 for value in document["evidence"].values())
+        )
+        mutations = [
+            lambda changed: changed["evidence"].__setitem__("extraKey", "a" * 64),
+            lambda changed: changed["evidence"].pop(
+                "independentReconstructionSha256Sums"
+            ),
+            lambda changed: changed["evidence"].__setitem__(
+                "licenseEvidenceV2Sha256", "not-a-hash"
+            ),
+            lambda changed: changed["identities"].append(
+                json.loads(json.dumps(changed["identities"][0]))
+            ),
+        ]
+        original = policy.SOURCE_LICENSE_ORIGINS_FILE
+        try:
+            for mutate in mutations:
+                changed = json.loads(json.dumps(document))
+                mutate(changed)
+                with tempfile.NamedTemporaryFile(
+                    "w", suffix=".json", delete=False
+                ) as handle:
+                    json.dump(changed, handle)
+                    path = Path(handle.name)
+                try:
+                    policy.SOURCE_LICENSE_ORIGINS_FILE = path
+                    with self.assertRaises(BuilderError) as raised:
+                        policy._load_source_license_origins()
+                    self.assertEqual(
+                        raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN"
+                    )
+                finally:
+                    path.unlink()
+        finally:
+            policy.SOURCE_LICENSE_ORIGINS_FILE = original
+        self.assertEqual(len(policy._load_source_license_origins()), 1)
 
     def test_missing_command_executable_is_rejected(self) -> None:
         plan = {"commands": {"test": {"argv": ["cargo", "test"]}}}

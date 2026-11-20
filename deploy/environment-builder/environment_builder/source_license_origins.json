@@ -1,9 +1,10 @@
 {
   "schemaVersion": 1,
   "evidence": {
-    "licenseEvidenceV2Sha256": "aaaeaf3a78d8338840bace2174410afd8eb6bb4cfb95d706cb35f93010faa55c",
+    "compositionAuditCanonicalVerifyLogSha256": "69cd133c91e9e0c28a1362a7e64420337c0d1e66018a6ba111f358c50eb51904",
     "compositionAuditSha256Sums": "71e4ea4b243092ba0d26b6b30a320f37a9ecb04b6c90ef80b788657e07ce51e8",
-    "independentReconstructionSha256": "cd4dbace2c0facc48dae2be6078d23bd156bbcaad06d51dcd1c2e859265b1b42"
+    "independentReconstructionSha256Sums": "cd4dbace2c0facc48dae2be6078d23bd156bbcaad06d51dcd1c2e859265b1b42",
+    "licenseEvidenceV2Sha256": "aaaeaf3a78d8338840bace2174410afd8eb6bb4cfb95d706cb35f93010faa55c"
   },
   "identities": [
     {

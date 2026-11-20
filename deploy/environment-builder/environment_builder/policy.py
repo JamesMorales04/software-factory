@@ -1028,6 +1028,16 @@ def validate_license_expression(value: str) -> None:
 SOURCE_LICENSE_ORIGINS_FILE: Final[Path] = Path(__file__).with_name(
     "source_license_origins.json"
 )
+#: Exact provenance keys the asset must carry. They are documentation of the
+#: reviewed evidence, not runtime authorization.
+REQUIRED_SOURCE_LICENSE_EVIDENCE: Final[frozenset[str]] = frozenset(
+    {
+        "compositionAuditCanonicalVerifyLogSha256",
+        "compositionAuditSha256Sums",
+        "independentReconstructionSha256Sums",
+        "licenseEvidenceV2Sha256",
+    }
+)
 
 
 def _load_source_license_origins() -> dict[str, dict[tuple[str, str], dict[str, Any]]]:
@@ -1048,6 +1058,18 @@ def _load_source_license_origins() -> dict[str, dict[tuple[str, str], dict[str, 
         fail(
             "ENVIRONMENT_LICENSE_UNKNOWN",
             "the reviewed source license origins file is malformed",
+        )
+    evidence = document["evidence"]
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != REQUIRED_SOURCE_LICENSE_EVIDENCE
+        or not all(
+            isinstance(value, str) and is_sha256(value) for value in evidence.values()
+        )
+    ):
+        fail(
+            "ENVIRONMENT_LICENSE_UNKNOWN",
+            "the reviewed source license evidence binding is malformed",
         )
     table: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
     for entry in document["identities"]:
@@ -1148,6 +1170,7 @@ def _validate_source_license_origin(
         or origin_license != "MIT"
         or license_value != "MIT"
         or not _is_nar_hash(composition_sha)
+        or composition_sha != nar_hash
         or not isinstance(composition_size, int)
         or composition_size <= 0
         or composition_size > 256 * 1024 * 1024

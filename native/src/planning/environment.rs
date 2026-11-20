@@ -4341,6 +4341,7 @@ impl SourceLicenseOrigin {
             || self.license != "MIT"
             || license != "MIT"
             || !is_nar_hash(&self.composition_nar_sha256)
+            || self.composition_nar_sha256 != self.nar_hash
             || self.composition_nar_size == 0
             || self.composition_nar_size > 256 * 1024 * 1024
             || self.input_sources.is_empty()
@@ -4403,6 +4404,12 @@ impl SourceLicenseOrigin {
         &self,
         verified: &VerifiedIdentityFacts,
     ) -> Result<(), EnvironmentError> {
+        if self.pin != verified.receipt().envelope.challenge.pin {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "a source license origin pin differs from the signed challenge pin",
+            ));
+        }
         let facts = &verified.receipt().envelope.manifest.facts;
         let Some(fact) = facts.iter().find(|fact| fact.store_path == self.store_path) else {
             return Err(EnvironmentError::new(
@@ -4453,34 +4460,57 @@ struct ReviewedSourceLicenseOrigins {
 
 type ReviewedOriginKey = (String, String, String);
 
+/// Exact provenance keys the asset must carry. They document the reviewed
+/// evidence; they grant no runtime authority.
+const REQUIRED_SOURCE_LICENSE_EVIDENCE: [&str; 4] = [
+    "compositionAuditCanonicalVerifyLogSha256",
+    "compositionAuditSha256Sums",
+    "independentReconstructionSha256Sums",
+    "licenseEvidenceV2Sha256",
+];
+
+fn parse_reviewed_source_license_origins(
+    json: &str,
+) -> Result<BTreeMap<ReviewedOriginKey, ReviewedSourceLicenseEntry>, &'static str> {
+    let document: ReviewedSourceLicenseOrigins = serde_json::from_str(json)
+        .map_err(|_| "the reviewed source license origins are not valid JSON")?;
+    if document.schema_version != 1 {
+        return Err("unsupported reviewed source license origins schema");
+    }
+    if document.evidence.len() != REQUIRED_SOURCE_LICENSE_EVIDENCE.len()
+        || !REQUIRED_SOURCE_LICENSE_EVIDENCE.iter().all(|key| {
+            document
+                .evidence
+                .get(*key)
+                .is_some_and(|value| is_sha256(value))
+        })
+    {
+        return Err("the reviewed source license evidence binding is malformed");
+    }
+    let mut origins: BTreeMap<ReviewedOriginKey, ReviewedSourceLicenseEntry> = BTreeMap::new();
+    for entry in document.identities {
+        let key = (
+            entry.source_origin.pin.clone(),
+            entry.source_origin.deriver.clone(),
+            entry.source_origin.store_path.clone(),
+        );
+        if origins.insert(key, entry).is_some() {
+            return Err("a reviewed source license origin is duplicated");
+        }
+    }
+    if origins.is_empty() {
+        return Err("the reviewed source license origins are empty");
+    }
+    Ok(origins)
+}
+
 fn reviewed_source_license_origins()
 -> &'static BTreeMap<ReviewedOriginKey, ReviewedSourceLicenseEntry> {
     static ORIGINS: OnceLock<BTreeMap<ReviewedOriginKey, ReviewedSourceLicenseEntry>> =
         OnceLock::new();
     ORIGINS.get_or_init(|| {
-        let document: ReviewedSourceLicenseOrigins =
-            serde_json::from_str(SOURCE_LICENSE_ORIGINS_JSON)
-                .expect("the reviewed source license origins are valid JSON");
-        assert_eq!(
-            document.schema_version, 1,
-            "the reviewed source license origins schema version"
-        );
-        assert!(
-            !document.evidence.is_empty(),
-            "the reviewed source license origins bind evidence"
-        );
-        document
-            .identities
-            .into_iter()
-            .map(|entry| {
-                let key = (
-                    entry.source_origin.pin.clone(),
-                    entry.source_origin.deriver.clone(),
-                    entry.source_origin.store_path.clone(),
-                );
-                (key, entry)
-            })
-            .collect()
+        parse_reviewed_source_license_origins(SOURCE_LICENSE_ORIGINS_JSON)
+            .expect("the reviewed source license origins are valid")
     })
 }
 
@@ -6090,12 +6120,20 @@ mod tests {
         );
     }
 
-    fn identity_facts_for_origins(
+    const IDENTITY_TEST_BEARER: &[u8] = b"scoped-environment-bearer-0123456789abcdef";
+
+    /// Build a genuinely signed and verified identity-facts receipt over facts
+    /// derived from the reviewed origins. The receipt goes through the real
+    /// `sign`/`verify` HMAC path, never a fixture constructor.
+    fn signed_identity_facts(
+        pin: &str,
         mutate: impl FnOnce(&mut Vec<crate::planning::identity_facts::IdentityFact>),
     ) -> VerifiedIdentityFacts {
         use crate::planning::identity_facts::{
-            IdentityFact, IdentityFactsChallenge, IdentityFactsMode, OperationRoot,
-            fixture_verified_receipt_with_facts,
+            IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION, IdentityFact,
+            IdentityFactsChallenge, IdentityFactsEnvelope, IdentityFactsManifest,
+            IdentityFactsMode, IdentityFactsReceipt, OperationRoot, closure_manifest_sha256, sign,
+            verify,
         };
         let mut facts: Vec<IdentityFact> = reviewed_source_license_origins()
             .values()
@@ -6111,18 +6149,51 @@ mod tests {
             operation_id: "operation".into(),
             runtime_id: "sha256:runtime".into(),
             nonce: "nonce".into(),
-            pin: "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d".into(),
+            pin: pin.into(),
             plan_sha256: "a".repeat(64),
             spec_sha256: "b".repeat(64),
             mode: IdentityFactsMode::Enumerate,
             root: OperationRoot::Operation,
             questions: Vec::new(),
         };
-        fixture_verified_receipt_with_facts(&challenge, facts)
+        let observed_root = facts
+            .first()
+            .expect("the reviewed receipt has facts")
+            .store_path
+            .clone();
+        let manifest = IdentityFactsManifest {
+            observed_root,
+            fact_count: facts.len(),
+            closure_manifest_sha256: closure_manifest_sha256(&facts),
+            truncated: false,
+            facts,
+        };
+        let envelope = IdentityFactsEnvelope {
+            schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
+            context: IDENTITY_FACTS_CONTEXT.into(),
+            challenge: challenge.clone(),
+            manifest,
+        };
+        let receipt = IdentityFactsReceipt {
+            signature: sign(&envelope, IDENTITY_TEST_BEARER).expect("the test signs the envelope"),
+            envelope,
+        };
+        verify(&receipt, IDENTITY_TEST_BEARER, &challenge)
+            .expect("the real verifier accepts the signed receipt")
+    }
+
+    fn reviewed_pin() -> String {
+        reviewed_source_license_origins()
+            .values()
+            .next()
+            .expect("the reviewed origins exist")
+            .source_origin
+            .pin
+            .clone()
     }
 
     #[test]
-    fn source_license_origin_must_match_the_authenticated_identity_facts() {
+    fn source_license_origin_must_match_the_signed_identity_facts() {
         let mut resolution = source_license_resolution();
         resolution.closure_licenses.push(reviewed_closure_license(
             "update-autotools-gnu-config-scripts-hook",
@@ -6130,62 +6201,125 @@ mod tests {
         resolution
             .closure_licenses
             .sort_by(|left, right| left.path.cmp(&right.path));
-        let verified = identity_facts_for_origins(|_| {});
+        resolution
+            .validate()
+            .expect("the reviewed origins are consistent");
+        let verified = signed_identity_facts(&reviewed_pin(), |_| {});
         resolution
             .validate_source_license_identity(&verified)
-            .expect("the origins bind to the authenticated facts");
+            .expect("the origins bind to the signed facts");
 
+        // The origin pin differs from the signed challenge pin.
         let mut tampered = resolution.clone();
         tampered.closure_licenses[0]
             .source_origin
             .as_mut()
             .unwrap()
-            .nar_hash = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into();
+            .pin = format!("github:NixOS/nixpkgs/{}", "b".repeat(40));
         assert!(
             tampered
                 .validate_source_license_identity(&verified)
                 .is_err()
         );
-        let mut tampered = resolution.clone();
-        tampered.closure_licenses[0]
-            .source_origin
-            .as_mut()
-            .unwrap()
-            .deriver = format!("/nix/store/{}-other.drv", "b".repeat(32));
+        // The same facts under a different signed challenge pin must not bind.
+        let other_pin =
+            signed_identity_facts(&format!("github:NixOS/nixpkgs/{}", "b".repeat(40)), |_| {});
         assert!(
-            tampered
-                .validate_source_license_identity(&verified)
-                .is_err()
-        );
-        let mut tampered = resolution.clone();
-        tampered.closure_licenses[0]
-            .source_origin
-            .as_mut()
-            .unwrap()
-            .store_path = format!("/nix/store/{}-other", "b".repeat(32));
-        assert!(
-            tampered
-                .validate_source_license_identity(&verified)
+            resolution
+                .validate_source_license_identity(&other_pin)
                 .is_err()
         );
 
-        // Tampering the signed fact, not the origin, must also fail closed.
-        let tampered_facts = identity_facts_for_origins(|facts| {
-            facts[0].nar_hash = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into();
-        });
-        assert!(
-            resolution
-                .validate_source_license_identity(&tampered_facts)
-                .is_err()
+        type FactMutation =
+            Box<dyn FnOnce(&mut Vec<crate::planning::identity_facts::IdentityFact>)>;
+        let first_path = resolution.closure_licenses[0].path.clone();
+        let fact_mutations: Vec<FactMutation> = vec![
+            Box::new(|facts| {
+                facts[0].nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into();
+            }),
+            Box::new(|facts| {
+                facts[0].deriver = Some(format!("/nix/store/{}-other.drv", "b".repeat(32)));
+            }),
+            Box::new(move |facts| {
+                facts.retain(|fact| fact.store_path != first_path);
+            }),
+        ];
+        for mutate in fact_mutations {
+            let changed = signed_identity_facts(&reviewed_pin(), mutate);
+            assert!(
+                resolution
+                    .validate_source_license_identity(&changed)
+                    .is_err(),
+                "a changed signed fact must be refused"
+            );
+        }
+
+        // The output composition NAR is the signed output NAR, and the licence
+        // evidence fields must stay exact.
+        for mutate in [
+            (|origin: &mut SourceLicenseOrigin| {
+                origin.composition_nar_sha256 =
+                    "sha256-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=".into();
+            }) as fn(&mut SourceLicenseOrigin),
+            |origin: &mut SourceLicenseOrigin| {
+                origin.source_nar_sha256 =
+                    "sha256-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=".into();
+            },
+            |origin: &mut SourceLicenseOrigin| origin.license = "Apache-2.0".into(),
+            |origin: &mut SourceLicenseOrigin| {
+                origin.input_sources[0].sha256 = "b".repeat(64);
+                origin.input_sources[0].source_sha256 = "b".repeat(64);
+            },
+        ] {
+            let mut changed = resolution.clone();
+            mutate(changed.closure_licenses[0].source_origin.as_mut().unwrap());
+            let error = changed.validate().expect_err("a changed origin must fail");
+            assert_eq!(
+                error.code,
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown
+            );
+        }
+    }
+
+    #[test]
+    fn reviewed_source_license_origins_reject_bad_evidence_and_duplicates() {
+        assert_eq!(
+            reviewed_source_license_origins().len(),
+            2,
+            "the compiled reviewed table has exactly two origins"
         );
-        let missing_fact = identity_facts_for_origins(|facts| {
-            facts.retain(|fact| fact.store_path != resolution.closure_licenses[0].path);
-        });
-        assert!(
-            resolution
-                .validate_source_license_identity(&missing_fact)
-                .is_err()
+        let document: serde_json::Value =
+            serde_json::from_str(SOURCE_LICENSE_ORIGINS_JSON).expect("the asset is JSON");
+        assert_eq!(
+            document["evidence"].as_object().expect("evidence").len(),
+            4,
+            "the asset declares exactly four evidence bindings"
         );
+        let render = |value: &serde_json::Value| serde_json::to_string(value).expect("render");
+        assert!(
+            parse_reviewed_source_license_origins(&render(&document)).is_ok(),
+            "the compiled asset parses"
+        );
+
+        let mut extra = document.clone();
+        extra["evidence"]["extraKey"] = "a".repeat(64).into();
+        assert!(parse_reviewed_source_license_origins(&render(&extra)).is_err());
+        let mut missing = document.clone();
+        missing["evidence"]
+            .as_object_mut()
+            .expect("evidence")
+            .remove("independentReconstructionSha256Sums");
+        assert!(parse_reviewed_source_license_origins(&render(&missing)).is_err());
+        let mut wrong = document.clone();
+        wrong["evidence"]["licenseEvidenceV2Sha256"] = "not-a-hash".into();
+        assert!(parse_reviewed_source_license_origins(&render(&wrong)).is_err());
+        let mut duplicate = document.clone();
+        let repeated = duplicate["identities"][0].clone();
+        duplicate["identities"]
+            .as_array_mut()
+            .expect("identities")
+            .push(repeated);
+        assert!(parse_reviewed_source_license_origins(&render(&duplicate)).is_err());
     }
 
     #[test]
@@ -6244,7 +6378,7 @@ mod tests {
             }),
             Box::new(|entry| {
                 entry.source_origin.as_mut().unwrap().nar_hash =
-                    "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into()
+                    "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into()
             }),
             Box::new(|entry| {
                 entry.source_origin.as_mut().unwrap().source_store_path =
@@ -6252,7 +6386,7 @@ mod tests {
             }),
             Box::new(|entry| {
                 entry.source_origin.as_mut().unwrap().source_nar_sha256 =
-                    "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into()
+                    "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into()
             }),
             Box::new(|entry| entry.source_origin.as_mut().unwrap().license_file = "LICENSE".into()),
             Box::new(|entry| {

@@ -307,9 +307,10 @@ Their factual origin comes from the reviewed data asset
 `environment_builder/source_license_origins.json`, which the builder loads and
 Core compiles in; the builder is transport/capture, Core remains the authority.
 The asset binds the exact derivation, store path, NAR hash, pinned source,
-`COPYING` bytes, per-input source pairs and reconstructed output NAR, and its
-entries are admitted only when they equal a signed identity-facts fact of the
-same environment. See
+`COPYING` bytes, per-input source pairs and reconstructed output NAR (which must
+equal the output NAR itself), and its entries are admitted only when they equal
+a signed identity-facts fact of the same environment under the same signed
+challenge pin. See
 [environment-plan §7.5](../contracts/environment-plan.md). It is evidence
 binding, never an allowlist or a licence grant; transitive components keep their
 separate inventory entries.
