@@ -3028,6 +3028,14 @@ export interface AgenticOwnerDecision {
   resolvedAt: string | null;
 }
 
+export interface LicenseDecisionDocumentation {
+  path: string;
+  license: string;
+  licenseTextSha256: string;
+  obligations: string[];
+  verdict: string;
+}
+
 export interface LicenseDecisionRecord {
   id: string;
   delegationId: string;
@@ -3035,21 +3043,43 @@ export interface LicenseDecisionRecord {
   leadRequestId: string;
   leadReservationId: string;
   leadActorSha256: string;
+  leadRequestSha256: string;
+  leadOutputSha256: string;
+  leadPrincipal: string;
+  delegationMatter: string;
+  delegationOption: string;
+  delegationRevision: number;
+  delegationPin: string;
+  delegationUseContext: string;
+  delegationCriterion: string;
+  delegationDeadline: string;
   identity: Record<string, unknown>;
   licenseExpression: string;
   selectedBranch: string;
-  documentationLicense: string | null;
+  softwareObligations: string[];
+  documentation: LicenseDecisionDocumentation[];
+  documentationObligations: string[];
+  softwareVerdict: string;
   evidenceSha256: string;
+  identityFactsReceiptDigest: string;
+  contentSha256: string;
   provenance: Record<string, unknown>;
   useContext: string;
   commercialUse: boolean;
   paymentRequired: boolean;
-  obligations: string[];
-  decision: "ACCEPT" | "NEEDS_EVIDENCE" | "DENY" | "STALE" | "UNKNOWN";
+  catalogSha256: string;
+  profileSha256: string;
+  policySha256: string;
+  specArtifact: Record<string, unknown>;
+  inventoryArtifact: Record<string, unknown>;
+  candidateArtifact: Record<string, unknown>;
+  decision: "ACCEPT" | "NEEDS_EVIDENCE" | "DENY";
   revision: number;
+  status: "ACTIVE" | "REVOKED";
   createdAt: string;
   revokedAt: string | null;
   revocationReason: string | null;
+  revokedBy: string | null;
 }
 
 export interface AgenticKnowledgeSource {

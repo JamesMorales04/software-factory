@@ -328,15 +328,27 @@ export function LicenseDecisions() {
                     </td>
                     <td className="mono">{decision.licenseExpression}</td>
                     <td className="mono">{decision.selectedBranch}</td>
-                    <td>{decision.obligations.join(", ")}</td>
+                    <td>
+                      {decision.softwareObligations.join(", ")}
+                      {decision.documentation.length > 0
+                        ? ` · ${decision.documentation
+                            .map(
+                              (item) =>
+                                `${item.path}: ${item.license} (${item.obligations.join(", ")})`,
+                            )
+                            .join("; ")}`
+                        : ""}
+                    </td>
                     <td>{decision.useContext}</td>
                     <td>
-                      <Badge tone={decisionTone(decision.decision)}>
-                        {decision.revokedAt ? "REVOKED" : decision.decision}
+                      <Badge tone={decisionTone(decision.status === "REVOKED" ? "DENY" : decision.decision)}>
+                        {decision.status === "REVOKED"
+                          ? "REVOKED"
+                          : decision.decision}
                       </Badge>
                     </td>
                     <td>
-                      {decision.revokedAt ? null : (
+                      {decision.status === "REVOKED" ? null : (
                         <div className="stack-xs">
                           <Input
                             label={t("licenses.reason")}
