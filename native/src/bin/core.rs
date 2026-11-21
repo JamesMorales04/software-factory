@@ -40409,7 +40409,8 @@ mod pinned_source_proof_tests {
 mod failure_identity_facts_tests {
     use super::*;
     use factory_native::planning::identity_facts::{
-        IdentityFactsChallenge, IdentityFactsMode, IdentityFactsRootBinding, OperationRoot,
+        IdentityFactsChallenge, IdentityFactsMode, IdentityFactsRootBinding, IdentityFactsStage,
+        OperationRoot,
     };
 
     fn challenge() -> IdentityFactsChallenge {
@@ -40424,6 +40425,8 @@ mod failure_identity_facts_tests {
             mode: IdentityFactsMode::Enumerate,
             root: OperationRoot::Operation,
             questions: Vec::new(),
+            stage: IdentityFactsStage::Spec,
+            resolution_key: String::new(),
         }
     }
 
