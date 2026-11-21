@@ -29330,6 +29330,66 @@ mod tests {
                 ),
                 "{body}"
             );
+            let wrong_evidence = serde_json::json!({
+                "domain": "licenses-identity-evidence",
+                "pin": "github:NixOS/nixpkgs/0000000000000000000000000000000000000000",
+                "useContext": "commercial-development",
+                "economicCriterion": "no-mandatory-fee-commercial-use",
+                "revision": 1,
+            });
+            let wrong = fixture
+                .app
+                .db
+                .create_agentic_owner_decision(&factory_native::db::NewAgenticOwnerDecision {
+                    project_id: &fixture.project_id,
+                    request_id: Some(&record.id),
+                    campaign_id: None,
+                    matter: "LICENSE_IDENTITY_EVIDENCE_DELEGATION",
+                    risk: factory_native::lead::RiskClass::R0,
+                    options: &options,
+                    evidence: &wrong_evidence,
+                    recommendation: "delegate the exact decision",
+                    deadline: &(chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339(),
+                })
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .resolve_agentic_owner_decision(
+                    &wrong.id,
+                    "APPROVE_DELEGATION",
+                    "owner delegate",
+                    "operator-token",
+                )
+                .await
+                .unwrap();
+            let wrong_request = axum::http::Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/agentic/requests/{}/license-evidence-review",
+                    record.id
+                ))
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer operator-token")
+                .body(axum::body::Body::from(
+                    serde_json::json!({
+                        "delegation_id": wrong.id,
+                        "idempotency_key": "license-review-wrong-pin",
+                    })
+                    .to_string(),
+                ))
+                .unwrap();
+            let wrong_response = fixture.router.clone().oneshot(wrong_request).await.unwrap();
+            assert_eq!(wrong_response.status(), StatusCode::CONFLICT);
+            let wrong_body = axum::body::to_bytes(wrong_response.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            let wrong_body: serde_json::Value = serde_json::from_slice(&wrong_body).unwrap();
+            assert_eq!(
+                wrong_body.get("code").and_then(serde_json::Value::as_str),
+                Some("LICENSE_DELEGATION_REQUIRED")
+            );
         }
 
         #[tokio::test]
