@@ -28,6 +28,25 @@ function decisionTone(decision: string): BadgeTone {
   return "attention";
 }
 
+function shortHash(value: unknown): string {
+  return typeof value === "string" && value.length > 0
+    ? value.slice(0, 12)
+    : "—";
+}
+
+function decisionStage(provenance: Record<string, unknown>): string {
+  const stage = provenance.stage;
+  if (!stage || typeof stage !== "object") return "—";
+  const record = stage as { stage?: unknown; planSha256?: unknown };
+  return [record.stage, shortHash(record.planSha256)]
+    .filter((part) => typeof part === "string" && part !== "—")
+    .join(" · ") || "—";
+}
+
+function sourceProof(provenance: Record<string, unknown>): string {
+  return shortHash(provenance.sourceEvidenceSha256);
+}
+
 function defaultExpiry(): string {
   return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     .toISOString()
@@ -315,6 +334,8 @@ export function LicenseDecisions() {
                   <th>{t("licenses.branch")}</th>
                   <th>{t("licenses.obligations")}</th>
                   <th>{t("licenses.useContext")}</th>
+                  <th>{t("licenses.stage")}</th>
+                  <th>{t("licenses.sourceProof")}</th>
                   <th>{t("licenses.status")}</th>
                   <th />
                 </tr>
@@ -340,12 +361,19 @@ export function LicenseDecisions() {
                         : ""}
                     </td>
                     <td>{decision.useContext}</td>
+                    <td className="mono">{decisionStage(decision.provenance)}</td>
+                    <td className="mono">{sourceProof(decision.provenance)}</td>
                     <td>
                       <Badge tone={decisionTone(decision.status === "REVOKED" ? "DENY" : decision.decision)}>
                         {decision.status === "REVOKED"
                           ? "REVOKED"
                           : decision.decision}
                       </Badge>
+                      {decision.status === "REVOKED" && decision.revocationReason ? (
+                        <div className="muted small">
+                          {decision.revocationReason}
+                        </div>
+                      ) : null}
                     </td>
                     <td>
                       {decision.status === "REVOKED" ? null : (

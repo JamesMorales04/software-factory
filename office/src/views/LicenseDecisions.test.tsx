@@ -237,7 +237,13 @@ describe("LicenseDecisions", () => {
           evidenceSha256: "b".repeat(64),
           identityFactsReceiptDigest: "f".repeat(64),
           contentSha256: "1".repeat(64),
-          provenance: {},
+          provenance: {
+            sourceEvidenceSha256: "9".repeat(64),
+            stage: {
+              stage: "PlanInventoryEvidence",
+              planSha256: "8".repeat(64),
+            },
+          },
           useContext: "commercial-development",
           commercialUse: true,
           paymentRequired: false,
@@ -260,5 +266,8 @@ describe("LicenseDecisions", () => {
     renderView();
     expect(await screen.findByText("REVOKED")).toBeTruthy();
     expect(screen.queryByText("Revoke")).toBeNull();
+    expect(screen.getByText("PlanInventoryEvidence · 888888888888")).toBeTruthy();
+    expect(screen.getByText("999999999999")).toBeTruthy();
+    expect(screen.getByText("superseded")).toBeTruthy();
   });
 });

@@ -4222,6 +4222,8 @@ export const es: Catalog = {
   "licenses.project": "Proyecto",
   "licenses.pin": "Fuente fijada",
   "licenses.useContext": "Contexto de uso",
+  "licenses.sourceProof": "Prueba de origen",
+  "licenses.stage": "Etapa",
   "licenses.expiry": "Caducidad",
   "licenses.reason": "Motivo",
   "licenses.revoke": "Revocar",

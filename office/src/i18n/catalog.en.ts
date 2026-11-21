@@ -4074,6 +4074,8 @@ export const en = {
   "licenses.project": "Project",
   "licenses.pin": "Pinned source",
   "licenses.useContext": "Use context",
+  "licenses.sourceProof": "Source proof",
+  "licenses.stage": "Stage",
   "licenses.expiry": "Expiry",
   "licenses.reason": "Reason",
   "licenses.revoke": "Revoke",
