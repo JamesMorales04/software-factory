@@ -22,6 +22,7 @@ COPY deploy/environment-builder/environment_builder/license_catalog.json /build/
 COPY deploy/environment-builder/environment_builder/license_profile.json /build/deploy/environment-builder/environment_builder/
 COPY deploy/environment-builder/environment_builder/source_license_origins.json /build/deploy/environment-builder/environment_builder/
 COPY deploy/environment-builder/environment_builder/versioned_source_evidence.json /build/deploy/environment-builder/environment_builder/
+COPY deploy/evidence deploy/evidence
 COPY xtask/Cargo.toml xtask/Cargo.toml
 COPY xtask/src xtask/src
 COPY migrations migrations
