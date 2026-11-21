@@ -48,3 +48,19 @@ Resolution after the backend/build is ready, without mutating the frozen plan:
 No decision is executed until the new plan stage exists. The decision endpoint
 must surface `LICENSE_PLAN_STALE`/blocked, not accept the old plan or the static
 asset.
+
+## Runtime source-proof artifact
+
+The exact recovery is retained at
+`deploy/evidence/ed-1.21.1-source-proof.json` (see
+`deploy/evidence/README.md`). It carries the source/output store and
+derivation paths, flat SHA-256, NAR SRI/nix32/size, cache signature,
+fingerprint, CA and the source/output derivation ATerms.
+
+The Core loader verifies the Ed25519 `cache.nixos.org-1` signature over the
+exact fingerprint, the flat/NAR/CA/size relationship and the source-drv
+membership in the exact output derivation before constructing a
+`SourceEvidenceProof`. The artifact is exact recovery evidence, not a licence
+approval; the Lead review and Core decision remain separate. The decision
+persists only `sourceEvidenceSha256`; the builder recomputes the same object
+from the signed identity asset and requires the digest.
