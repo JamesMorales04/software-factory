@@ -355,7 +355,6 @@ pub enum BrokerError {
         status: u16,
         code: String,
         message: String,
-        evidence: Option<serde_json::Value>,
     },
     #[error("runtime broker returned an invalid response: {0}")]
     InvalidResponse(String),
@@ -1525,7 +1524,6 @@ impl RuntimeBrokerClient {
                 status: status.as_u16(),
                 code: code.chars().take(128).collect(),
                 message: message.chars().take(MAX_ERROR_BYTES).collect(),
-                evidence: value.get("identityFactsManifest").cloned(),
             };
         }
         BrokerError::Refused(format!("HTTP {status}: {bounded}"))
@@ -1613,8 +1611,51 @@ pub async fn observe_identity_facts_with(
     store_volume: &str,
     challenge: &IdentityFactsChallenge,
 ) -> Result<IdentityFactsManifest, String> {
-    let root = resolve_realized_environment_root_with(runner, image_id, cache_volume, store_volume)
-        .await?;
+    observe_identity_facts_at(
+        runner,
+        image_id,
+        cache_volume,
+        store_volume,
+        challenge,
+        None,
+    )
+    .await
+}
+
+pub async fn observe_identity_facts_with_root(
+    runner: &dyn IdentityFactsCommandRunner,
+    image_id: &str,
+    cache_volume: &str,
+    store_volume: &str,
+    challenge: &IdentityFactsChallenge,
+    root: &str,
+) -> Result<IdentityFactsManifest, String> {
+    observe_identity_facts_at(
+        runner,
+        image_id,
+        cache_volume,
+        store_volume,
+        challenge,
+        Some(root),
+    )
+    .await
+}
+
+async fn observe_identity_facts_at(
+    runner: &dyn IdentityFactsCommandRunner,
+    image_id: &str,
+    cache_volume: &str,
+    store_volume: &str,
+    challenge: &IdentityFactsChallenge,
+    root: Option<&str>,
+) -> Result<IdentityFactsManifest, String> {
+    let root = match root {
+        Some(root) => root.to_owned(),
+        None => {
+            resolve_realized_environment_root_with(runner, image_id, cache_volume, store_volume)
+                .await?
+        }
+    };
     let path_info = nix_path_info_with(runner, image_id, cache_volume, store_volume, &root).await?;
     if path_info.is_empty() {
         return Err("the broker observed an empty environment closure".into());

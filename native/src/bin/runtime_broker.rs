@@ -3417,7 +3417,6 @@ struct EnvironmentBrokerFailure {
     code: String,
     message: String,
     status: StatusCode,
-    evidence: Option<Value>,
 }
 
 impl EnvironmentBrokerFailure {
@@ -3432,13 +3431,7 @@ impl EnvironmentBrokerFailure {
             code: code.to_owned(),
             message: message.into().chars().take(2_000).collect(),
             status,
-            evidence: None,
         }
-    }
-
-    fn with_evidence(mut self, evidence: Option<Value>) -> Self {
-        self.evidence = evidence;
-        self
     }
 
     fn response(self) -> Response {
@@ -3447,7 +3440,6 @@ impl EnvironmentBrokerFailure {
             Json(json!({
                 "code": self.code,
                 "error": self.message,
-                "identityFactsManifest": self.evidence,
             })),
         )
             .into_response()
@@ -4960,13 +4952,55 @@ async fn execute_identity_facts_operation(
         )
         .await?;
         create_environment_volume(&app, &resources.cache_volume, &spec.spec_sha256, true).await?;
-        let manifest = observe_identity_facts(
+        let manifest = match observe_identity_facts(
             &app,
             &validated.image_id,
             &resources.cache_volume,
             challenge,
         )
-        .await?;
+        .await
+        {
+            Ok(manifest) => manifest,
+            Err(failure) if failure.code == "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT" => {
+                let bytes = read_environment_output(
+                    &app,
+                    &validated.image_id,
+                    &resources.cache_volume,
+                    "realisation.json",
+                    64 * 1024,
+                )
+                .await?;
+                let observation: factory_native::planning::identity_facts::RealisationObservation =
+                    serde_json::from_slice(&bytes).map_err(|_| {
+                        EnvironmentBrokerFailure::new(
+                            "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT",
+                            "the builder realisation pointer is malformed",
+                        )
+                    })?;
+                observation
+                    .validate_for(&challenge.plan_sha256, Some(&spec.spec_sha256))
+                    .map_err(|error| {
+                        EnvironmentBrokerFailure::new(
+                            "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT",
+                            error.to_string(),
+                        )
+                    })?;
+                let runner = AppIdentityFactsRunner(&app);
+                factory_native::runtime_broker::observe_identity_facts_with_root(
+                    &runner,
+                    &validated.image_id,
+                    &resources.cache_volume,
+                    ENVIRONMENT_NIX_STORE_VOLUME,
+                    challenge,
+                    &observation.store_path,
+                )
+                .await
+                .map_err(|message| {
+                    EnvironmentBrokerFailure::new("ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT", message)
+                })?
+            }
+            Err(failure) => return Err(failure),
+        };
         validate_manifest(challenge, &manifest).map_err(|error| {
             EnvironmentBrokerFailure::new("ENVIRONMENT_IDENTITY_FACTS_REFUSED", error.to_string())
         })?;
@@ -6171,19 +6205,7 @@ async fn run_environment_container(
             }
         }
         let message: String = message.chars().take(8_000).collect();
-        let evidence = match read_environment_output(
-            app,
-            image_id,
-            cache_volume,
-            "identity-facts-manifest.json",
-            1024 * 1024,
-        )
-        .await
-        {
-            Ok(bytes) => serde_json::from_slice::<Value>(&bytes).ok(),
-            Err(_) => None,
-        };
-        return Err(EnvironmentBrokerFailure::new(&code, message).with_evidence(evidence));
+        return Err(EnvironmentBrokerFailure::new(&code, message));
     }
     Ok(ChildOutput {
         exit_code: status.code(),

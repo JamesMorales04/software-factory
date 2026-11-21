@@ -1024,18 +1024,9 @@ fn broker_error_response(error: BrokerError) -> Response {
             status,
             code,
             message,
-            evidence,
         } => {
             let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
-            (
-                status,
-                Json(json!({
-                    "code": code,
-                    "error": message,
-                    "identityFactsManifest": evidence,
-                })),
-            )
-                .into_response()
+            (status, Json(json!({"code": code, "error": message}))).into_response()
         }
         error => (
             StatusCode::BAD_GATEWAY,
