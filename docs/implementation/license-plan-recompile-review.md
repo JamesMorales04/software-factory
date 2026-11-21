@@ -64,3 +64,28 @@ new plan revision is mandatory; the old plan/static asset cannot be accepted.
 
 No call is made in this document. The calls require the backend final SHA,
 review, fresh Core authority/admission and the normal runtime checks.
+
+## Receipt sequencing blocker (reported, unresolved)
+
+`record_license_decision` requires `latest_identity_facts_receipt` for the
+current plan hash. A new plan revision has a new hash and therefore no receipt.
+The receipt is produced by `build_environment_before_freeze`, which runs inside
+`freeze_reviewed_environment` after the environment review; the builder's
+licence gate is exactly what needs the decision overlay. The naive
+recompile -> licence review -> decision -> environment review order is
+therefore circular.
+
+Supported candidates under review with Core98/Reviewer70:
+
+1. First new environment review builds without a decision; the builder refuses
+   at the licence gate but still persists exact new plan/spec identity facts;
+   the licence review and decision follow; a retry of the environment review
+   reuses the recorded approved review and freezes with the overlay. This must
+   not leave the plan terminally blocked and must not add a third model call.
+2. An explicit pre-decision identity-facts rebind/spec-cache observation for the
+   new plan/spec from the already-realised environment.
+3. Bind the decision to the exact realised environment/spec instead of the plan
+   hash with an explicit stage rule.
+
+No option is implemented by bypassing the receipt or fabricating facts. The
+final sequence and two-new-call count depend on the reviewed answer.
