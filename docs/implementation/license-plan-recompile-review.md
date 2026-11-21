@@ -25,7 +25,12 @@ review remains bound to the old plan hash and is not reused. Therefore:
   new call/count, not a reuse of the two settled calls;
 - a spec cannot freeze from the new plan without that review.
 
-## Required order for the same intake
+## Required order for the same intake (Owner-confirmed)
+
+Preconditions before any live call: backend final reviewed, integrated candidate
+checks green, the relevant serial build completed, and the own stack started on
+`18893` with the browser/API authorization lane. No live call is made against the
+old plan or an unbuilt candidate.
 
 1. Recompile a new environment plan revision with the current catalogue/profile
    and real inventory (no model call).
@@ -42,10 +47,14 @@ review remains bound to the old plan hash and is not reused. Therefore:
    forced onto the new plan.
 
 Honest call count: two new Lead-route model calls after the two already settled
-(`license_evidence_review` and `lead_environment_review`), unless the backend
-later provides a deterministic rebind that Reviewer70 accepts. The source
-metadata itself needs no provider call. The exact count/purpose must be recorded
-in the independent evidence; no claim of "still 2".
+(`license_evidence_review` and `lead_environment_review`). The source metadata
+itself needs no provider call. The exact count/purpose and costs must be recorded
+in the independent evidence; if both execute, the real total is four, but do not
+claim four before they actually run. No deterministic rebind is implemented to
+save calls; Reviewer70 evaluates correctness, not authority or a bypass.
+
+The old review, old plan hash, intake, admission and Owner declaration are
+preserved. No SQL write, no old-plan grant and no static-asset acceptance.
 
 ## Plan STALE
 
