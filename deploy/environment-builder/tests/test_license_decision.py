@@ -15,6 +15,9 @@ EV = Path(
 )
 
 
+ENTRIES = [{"path": "/nix/store/example", "license": "MIT"}]
+
+
 def plan() -> dict:
     return {
         "planSha256": "c" * 64,
@@ -23,6 +26,7 @@ def plan() -> dict:
         "licenseInventory": {
             "inventorySha256": "1" * 64,
             "sbomSha256": "2" * 64,
+            "entries": ENTRIES,
         },
         "baseCommit": "4fdf1b15f862b2564642443a71ef3e25a2785013",
     }
@@ -80,7 +84,7 @@ def receipt() -> dict:
             "planSha256": "c" * 64,
             "planRevision": 1,
             "inventorySha256": "1" * 64,
-            "evidenceBundleSha256": "2" * 64,
+            "evidenceBundleSha256": license_decision._sha_value({"entries": ENTRIES}),
             "identityFactsReceiptDigest": "f" * 64,
             "candidate": {
                 "kind": "base",

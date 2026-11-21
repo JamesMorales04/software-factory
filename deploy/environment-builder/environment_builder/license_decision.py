@@ -100,7 +100,9 @@ def _plan_stage(plan: dict[str, Any]) -> dict[str, Any]:
         "planRevision": plan.get("revision"),
         "inventorySha256": plan.get("licenseInventorySha256")
         or inventory.get("inventorySha256"),
-        "evidenceBundleSha256": inventory.get("sbomSha256"),
+        "evidenceBundleSha256": _sha_value(
+            {"entries": inventory.get("entries", [])}
+        ),
         "baseCommit": plan.get("baseCommit"),
     }
 

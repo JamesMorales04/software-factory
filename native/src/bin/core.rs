@@ -18866,8 +18866,7 @@ async fn record_license_decision(
 ) -> Response {
     use factory_native::planning::license_decision::{
         CandidateBinding, LicenseDecisionContext, LicenseDecisionReview, PolicyBinding,
-        StageBinding, identity_facts_receipt_digest, verify_license_evidence_review,
-        verify_stored_identity_facts,
+        verify_license_evidence_review, verify_stored_identity_facts,
     };
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -18933,17 +18932,12 @@ async fn record_license_decision(
         }
         Err(error) => return api_error(error),
     };
-    let inventory_sha256 = plan.plan.license_inventory_sha256.clone();
-    let evidence_bundle_sha256 = plan.plan.license_inventory.sbom_sha256.clone();
-    if inventory_sha256.len() != 64
-        || evidence_bundle_sha256.len() != 64
-        || inventory_sha256 == evidence_bundle_sha256
-    {
-        return api_error(Error::IntakeConflict {
-            code: "LICENSE_INVENTORY_INCOMPLETE",
-            message: "the plan does not carry a real, distinct inventory/evidence bundle".into(),
-        });
-    }
+    let evidence_bundle = match serde_json::to_value(&plan.plan.license_inventory.entries) {
+        Ok(entries) => serde_json::json!({"entries": entries}),
+        Err(_) => {
+            return api_error(Error::Invalid("environment licence inventory encoding"));
+        }
+    };
     let stored_receipt = match app
         .db
         .latest_identity_facts_receipt(&plan.plan_sha256)
@@ -18976,7 +18970,6 @@ async fn record_license_decision(
             });
         }
     };
-    let receipt_digest = identity_facts_receipt_digest(&identity_facts);
     let candidate = match CandidateBinding::base(&config.base_commit) {
         Ok(candidate) => candidate,
         Err(error) => {
@@ -18986,41 +18979,29 @@ async fn record_license_decision(
             });
         }
     };
-    let stage = match app.db.environment_spec_for_request(&id).await {
-        Ok(spec) => StageBinding::spec_inventory_evidence(
-            plan.plan_sha256.clone(),
-            plan.revision,
-            spec.spec_sha256.clone(),
-            inventory_sha256.clone(),
-            evidence_bundle_sha256.clone(),
-            receipt_digest.clone(),
-            candidate.clone(),
-        ),
-        Err(Error::NotFound) => StageBinding::plan_inventory_evidence(
-            plan.plan_sha256.clone(),
-            plan.revision,
-            inventory_sha256.clone(),
-            evidence_bundle_sha256.clone(),
-            receipt_digest.clone(),
+    let binding = match app.db.environment_spec_for_request(&id).await {
+        Ok(spec) => PolicyBinding::from_spec_inventory_evidence(
+            factory_native::planning::license_policy::default_catalog_sha256(),
+            factory_native::planning::license_policy::default_profile_sha256(),
+            factory_native::planning::license_policy::default_binding_sha256(),
+            &plan,
+            &spec,
+            &evidence_bundle,
             candidate,
+            &identity_facts,
+        ),
+        Err(Error::NotFound) => PolicyBinding::from_plan_inventory_evidence(
+            factory_native::planning::license_policy::default_catalog_sha256(),
+            factory_native::planning::license_policy::default_profile_sha256(),
+            factory_native::planning::license_policy::default_binding_sha256(),
+            &plan,
+            &evidence_bundle,
+            candidate,
+            &identity_facts,
         ),
         Err(error) => return api_error(error),
     };
-    let stage = match stage {
-        Ok(stage) => stage,
-        Err(error) => {
-            return api_error(Error::IntakeConflict {
-                code: "LICENSE_STAGE_INVALID",
-                message: error.to_string(),
-            });
-        }
-    };
-    let binding = match PolicyBinding::new(
-        factory_native::planning::license_policy::default_catalog_sha256(),
-        factory_native::planning::license_policy::default_profile_sha256(),
-        factory_native::planning::license_policy::default_binding_sha256(),
-        stage,
-    ) {
+    let binding = match binding {
         Ok(binding) => binding,
         Err(error) => {
             return api_error(Error::IntakeConflict {
