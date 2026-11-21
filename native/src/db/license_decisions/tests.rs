@@ -5,8 +5,9 @@ use crate::planning::identity_facts::{
     closure_manifest_sha256, sign, verify,
 };
 use crate::planning::license_decision::{
-    CandidateBinding, LicenseDecisionContext, LicenseDecisionReview, PolicyBinding,
-    SourceEvidenceProof, identity_facts_receipt_digest, verify_license_evidence_review,
+    CandidateBinding, LicenseDecisionContext, LicenseDecisionOverlayContext,
+    LicenseDecisionRefusal, LicenseDecisionReview, PolicyBinding, SourceEvidenceProof,
+    identity_facts_receipt_digest, verify_license_decision_overlay, verify_license_evidence_review,
 };
 
 const BEARER: &[u8] = b"scoped-environment-bearer-0123456789abcdef";
@@ -85,6 +86,8 @@ fn receipt() -> IdentityFactsReceipt {
                 outputs: vec![SOURCE_PATH.into()],
             },
         ],
+        stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+        resolution_key: String::new(),
     };
     let facts = vec![
         IdentityFact {
@@ -629,4 +632,113 @@ fn applied_0084_migration_is_byte_identical_to_the_checkpoint() {
         include_str!("../../../../migrations/0087_license_decision_constraints.sql")
             .contains("license_decisions_grant_identity_idx")
     );
+}
+
+#[tokio::test]
+async fn the_builder_overlay_is_reverified_and_carries_the_exact_source_proof() {
+    let fixture = fixture().await;
+    let db = &fixture.db;
+    let record = db
+        .create_license_decision(&fixture.decision, "decision-overlay")
+        .await
+        .unwrap();
+    let now = chrono::Utc::now();
+    let context = |now: chrono::DateTime<chrono::Utc>| LicenseDecisionOverlayContext {
+        project_id: "project-1",
+        plan_sha256: PLAN,
+        plan_revision: 1,
+        spec_sha256: None,
+        inventory_sha256: INVENTORY,
+        evidence_bundle_sha256: EVIDENCE_BUNDLE,
+        base_commit: BASE,
+        delegation_revoked: false,
+        now,
+    };
+    let overlay = verify_license_decision_overlay(&record, &context(now))
+        .expect("the exact active decision is deliverable");
+    let json = overlay.to_json();
+    assert_eq!(json["decision"], "ACCEPT");
+    assert_eq!(json["status"], "ACTIVE");
+    assert_eq!(json["planSha256"], PLAN);
+    assert_eq!(json["identity"]["pin"], PIN);
+    let expected_source = source_evidence();
+    assert_eq!(json["sourceEvidence"], expected_source.to_json());
+    assert_eq!(
+        json["sourceEvidenceSha256"],
+        expected_source.canonical_sha256()
+    );
+
+    // A different plan, spec, policy, source digest or lifetime refuses.
+    assert!(matches!(
+        verify_license_decision_overlay(
+            &record,
+            &LicenseDecisionOverlayContext {
+                plan_sha256: &"f".repeat(64),
+                ..context(now)
+            }
+        ),
+        Err(LicenseDecisionRefusal::PlanBindingMismatch)
+    ));
+    assert!(matches!(
+        verify_license_decision_overlay(
+            &record,
+            &LicenseDecisionOverlayContext {
+                spec_sha256: Some(OBSERVED_SPEC),
+                ..context(now)
+            }
+        ),
+        Err(LicenseDecisionRefusal::SpecBindingMismatch)
+    ));
+    assert!(matches!(
+        verify_license_decision_overlay(
+            &record,
+            &LicenseDecisionOverlayContext {
+                delegation_revoked: true,
+                ..context(now)
+            }
+        ),
+        Err(LicenseDecisionRefusal::DelegationMismatch)
+    ));
+    let mut stale = record.clone();
+    stale.delegation_deadline = (now - chrono::Duration::hours(1)).to_rfc3339();
+    assert!(matches!(
+        verify_license_decision_overlay(&stale, &context(now)),
+        Err(LicenseDecisionRefusal::DelegationMismatch)
+    ));
+    let mut stale_policy = record.clone();
+    stale_policy.catalog_sha256 = "f".repeat(64);
+    assert!(matches!(
+        verify_license_decision_overlay(&stale_policy, &context(now)),
+        Err(LicenseDecisionRefusal::PolicyMismatch)
+    ));
+    let mut stale_source = record.clone();
+    stale_source.provenance["sourceEvidenceSha256"] = serde_json::json!("f".repeat(64));
+    assert!(matches!(
+        verify_license_decision_overlay(&stale_source, &context(now)),
+        Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
+    ));
+    let mut candidate = record.clone();
+    candidate.candidate = serde_json::json!({
+        "kind": "candidate",
+        "candidateSha256": "f".repeat(64)
+    });
+    assert!(matches!(
+        verify_license_decision_overlay(&candidate, &context(now)),
+        Err(LicenseDecisionRefusal::CandidateUnverified)
+    ));
+    let revoked = db
+        .revoke_license_decision(
+            &record.id,
+            "project-1",
+            "operator",
+            "Owner revoked the decision.",
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        verify_license_decision_overlay(&revoked, &context(now)),
+        Err(LicenseDecisionRefusal::DelegationMismatch)
+    ));
+    db.close().await;
+    let _ = std::fs::remove_file(fixture.path);
 }

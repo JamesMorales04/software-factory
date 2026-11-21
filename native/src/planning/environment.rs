@@ -6211,6 +6211,8 @@ mod tests {
             mode: IdentityFactsMode::Enumerate,
             root: OperationRoot::Operation,
             questions: Vec::new(),
+            stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+            resolution_key: String::new(),
         };
         let observed_root = facts
             .first()

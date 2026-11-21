@@ -22,7 +22,7 @@ use factory_native::planning::environment::{SourceLicenseInput, SourceLicenseOri
 use factory_native::planning::identity_facts::{
     BoundIdentityFacts, IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION,
     IdentityFactsChallenge, IdentityFactsEnvelope, IdentityFactsMode, IdentityFactsReceipt,
-    OperationRoot, closure_manifest_sha256, sign,
+    IdentityFactsStage, OperationRoot, closure_manifest_sha256, sign,
 };
 use factory_native::runtime_broker::{
     IdentityFactsCommandRunner, ResourceOwner, RuntimeBrokerClient, observe_identity_facts_with,
@@ -295,6 +295,8 @@ chown -R 10001:10001 /target
         mode: IdentityFactsMode::Enumerate,
         root: OperationRoot::Operation,
         questions: Vec::new(),
+        stage: IdentityFactsStage::Spec,
+        resolution_key: String::new(),
     };
     let manifest =
         observe_identity_facts_with(&runner, &image, &cache_volume, &store_volume, &challenge)

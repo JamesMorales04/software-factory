@@ -80,6 +80,8 @@ fn challenge(nar_hash: &str) -> IdentityFactsChallenge {
                 outputs: vec![SOURCE_PATH.into()],
             },
         ],
+        stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+        resolution_key: String::new(),
     }
 }
 
@@ -937,6 +939,8 @@ fn a_stored_receipt_is_reverified_with_the_broker_bearer() {
         pin: PIN.into(),
         observed_root: OUTPUT_PATH.into(),
         root_binding: IdentityFactsRootBinding::SpecCacheObservation,
+        stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+        resolution_key: String::new(),
         fact_count: facts(OUTPUT_NAR).len() as u32,
         closure_manifest_sha256: receipt.envelope.manifest.closure_manifest_sha256.clone(),
         manifest_json: serde_json::to_string(&receipt.envelope.manifest).unwrap(),
@@ -1012,6 +1016,8 @@ fn challenge_for(plan_sha: &str, spec_sha: &str, nar_hash: &str) -> IdentityFact
                 outputs: vec![SOURCE_PATH.into()],
             },
         ],
+        stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+        resolution_key: String::new(),
     }
 }
 
@@ -1244,6 +1250,8 @@ fn verified_output_only() -> VerifiedIdentityFacts {
             nar_hash: OUTPUT_NAR.into(),
             outputs: vec![OUTPUT_PATH.into()],
         }],
+        stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+        resolution_key: String::new(),
     };
     let facts = vec![IdentityFact {
         store_path: OUTPUT_PATH.into(),
@@ -1279,5 +1287,56 @@ fn a_plan_wide_receipt_without_a_source_fact_uses_the_separate_source_proof() {
     assert!(
         fixture.verified_with(&review()).is_ok(),
         "the source is proven by the separate fixed-output proof, not by inventing a manifest fact"
+    );
+}
+
+#[test]
+fn the_shared_source_proof_vector_is_the_single_canonical_representation() {
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../deploy/environment-builder/environment_builder/source_evidence_proof_vector.json"
+    ))
+    .expect("the shared source-proof vector is valid JSON");
+    assert_eq!(vector["schemaVersion"], 1);
+    let selector = &vector["identity"];
+    let identity = source_asset()
+        .get("identities")
+        .and_then(serde_json::Value::as_array)
+        .expect("the shared asset has identities")
+        .iter()
+        .find(|entry| {
+            exact(entry, "pin") == selector["pin"].as_str()
+                && exact(entry, "name") == selector["name"].as_str()
+                && exact(entry, "version") == selector["version"].as_str()
+        })
+        .expect("the vector names one shared identity");
+    let proof = source_proof_from_identity(identity).expect("the exact proof derives");
+    let verified = VerifiedSourceEvidence::verify(&proof).expect("the pinned signature verifies");
+
+    // One canonical representation, byte-identical to the builder's vector.
+    assert_eq!(verified.to_json(), vector["sourceProof"]);
+    let digest = vector["canonicalSha256"]
+        .as_str()
+        .expect("the vector carries its digest");
+    assert_eq!(verified.canonical_sha256(), digest);
+    assert_eq!(canonical_json_sha256(&verified.to_json()), digest);
+    assert_eq!(
+        crate::planning::lead_classification::sha256_hex(
+            vector["canonicalJson"]
+                .as_str()
+                .expect("the vector carries canonical bytes")
+                .as_bytes()
+        ),
+        digest
+    );
+    assert!(
+        !verified.to_json().to_string().contains("signatureValid"),
+        "a derived proof carries no caller validity boolean"
+    );
+    assert!(
+        !verified
+            .to_json()
+            .to_string()
+            .contains("sourceInOutputInputDrvs"),
+        "the input-membership fact is verified, not restated as a boolean"
     );
 }

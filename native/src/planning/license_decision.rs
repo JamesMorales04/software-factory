@@ -26,7 +26,7 @@ use std::sync::OnceLock;
 use super::identity_facts::{
     self, BoundIdentityFacts, IDENTITY_FACTS_CONTEXT, IdentityFactsReceipt, VerifiedIdentityFacts,
 };
-use crate::db::{StoredEnvironmentPlan, StoredEnvironmentSpec};
+use crate::db::{LicenseDecisionRecord, StoredEnvironmentPlan, StoredEnvironmentSpec};
 use crate::planning::environment::{EnvironmentPlanStatus, EnvironmentSpecStatus};
 
 use super::lead_classification::{
@@ -138,7 +138,10 @@ impl InventoryEvidenceBundle {
         Ok(())
     }
 
-    fn canonical_sha256(&self) -> Result<String, LicenseDecisionRefusal> {
+    /// Canonical digest of the exact inventory entries. Public so Core can
+    /// rebuild the same evidence-bundle binding when it verifies a persisted
+    /// decision overlay.
+    pub fn canonical_sha256(&self) -> Result<String, LicenseDecisionRefusal> {
         self.validate()?;
         let value = serde_json::to_value(self)
             .map_err(|_| LicenseDecisionRefusal::EvidenceBundleMismatch)?;
@@ -1594,7 +1597,6 @@ impl VerifiedSourceEvidence {
             "ca": self.ca,
             "outputDrvPath": self.output_drv_path,
             "outputStorePath": self.output_store_path,
-            "sourceInOutputInputDrvs": true,
         })
     }
 
@@ -2247,6 +2249,265 @@ fn verify_against_source_asset(
         delegation_criterion: "no-mandatory-fee-commercial-use".into(),
         delegation_deadline: context.delegation.deadline.clone(),
     })
+}
+
+/// Exact context a persisted decision must still satisfy before it can be
+/// delivered to the builder's license overlay. Core supplies the current plan
+/// and, when it exists, the frozen spec.
+pub struct LicenseDecisionOverlayContext<'a> {
+    pub project_id: &'a str,
+    pub plan_sha256: &'a str,
+    pub plan_revision: u32,
+    pub spec_sha256: Option<&'a str>,
+    pub inventory_sha256: &'a str,
+    pub evidence_bundle_sha256: &'a str,
+    pub base_commit: &'a str,
+    pub delegation_revoked: bool,
+    pub now: chrono::DateTime<chrono::Utc>,
+}
+
+/// A persisted ACCEPT decision re-verified against the exact current plan,
+/// policy, delegation lifetime, source proof and identity. Its field is
+/// private: only [`verify_license_decision_overlay`] constructs it, and the
+/// broker overlay is emitted from the verified value rather than from raw DB
+/// JSON. This is an execution overlay, never a second approval path.
+pub struct VerifiedLicenseDecisionOverlay {
+    receipt: serde_json::Value,
+}
+
+impl VerifiedLicenseDecisionOverlay {
+    pub fn to_json(&self) -> &serde_json::Value {
+        &self.receipt
+    }
+}
+
+fn source_proof_from_identity(
+    identity: &serde_json::Value,
+) -> Result<SourceEvidenceProof, LicenseDecisionRefusal> {
+    let source = identity
+        .get("source")
+        .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
+    let output = identity
+        .get("output")
+        .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
+    let evidence = source_asset()
+        .get("evidence")
+        .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
+    let source_drv_path = exact(source, "drvPath")
+        .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
+        .to_owned();
+    Ok(SourceEvidenceProof {
+        source_store_path: exact(source, "storePath")
+            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
+            .to_owned(),
+        source_drv_path: source_drv_path.clone(),
+        flat_sha256: exact(evidence, "sourceFlatSha256")
+            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
+            .to_owned(),
+        nar_sri: exact(source, "narHash")
+            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
+            .to_owned(),
+        nar_size: source
+            .get("narSize")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?,
+        signature: exact(source, "signature")
+            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
+            .to_owned(),
+        output_drv_path: exact(output, "drvPath")
+            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
+            .to_owned(),
+        output_store_path: exact(output, "storePath")
+            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
+            .to_owned(),
+        output_drv_input_drvs: vec![source_drv_path],
+        nar_nix32: None,
+        fingerprint: None,
+        ca: None,
+    })
+}
+
+/// Re-verify one persisted decision for the exact plan/spec and emit the
+/// existing builder overlay. A stale, revoked, expired or differently-bound
+/// decision is refused; it never reaches the builder.
+pub fn verify_license_decision_overlay(
+    record: &LicenseDecisionRecord,
+    context: &LicenseDecisionOverlayContext<'_>,
+) -> Result<VerifiedLicenseDecisionOverlay, LicenseDecisionRefusal> {
+    if record.project_id != context.project_id {
+        return Err(LicenseDecisionRefusal::ProjectMismatch);
+    }
+    if record.status != "ACTIVE" || record.decision != "ACCEPT" || record.revoked_at.is_some() {
+        return Err(LicenseDecisionRefusal::DelegationMismatch);
+    }
+    if context.delegation_revoked {
+        return Err(LicenseDecisionRefusal::DelegationMismatch);
+    }
+    if chrono::DateTime::parse_from_rfc3339(&record.delegation_deadline)
+        .map(|deadline| deadline <= context.now)
+        .unwrap_or(true)
+    {
+        return Err(LicenseDecisionRefusal::DelegationMismatch);
+    }
+    if record.delegation_criterion != "no-mandatory-fee-commercial-use"
+        || record.delegation_matter != "LICENSE_IDENTITY_EVIDENCE_DELEGATION"
+    {
+        return Err(LicenseDecisionRefusal::DelegationMismatch);
+    }
+    if record.plan_sha256 != context.plan_sha256 || record.plan_revision != context.plan_revision {
+        return Err(LicenseDecisionRefusal::PlanBindingMismatch);
+    }
+    if record.spec_sha256.as_deref() != context.spec_sha256 {
+        return Err(LicenseDecisionRefusal::SpecBindingMismatch);
+    }
+    if record.inventory_sha256 != context.inventory_sha256
+        || record.evidence_bundle_sha256 != context.evidence_bundle_sha256
+    {
+        return Err(LicenseDecisionRefusal::EvidenceBundleMismatch);
+    }
+    if record.catalog_sha256 != default_catalog_sha256()
+        || record.profile_sha256 != default_profile_sha256()
+        || record.policy_sha256 != default_binding_sha256()
+    {
+        return Err(LicenseDecisionRefusal::PolicyMismatch);
+    }
+    let candidate: CandidateBinding = serde_json::from_value(record.candidate.clone())
+        .map_err(|_| LicenseDecisionRefusal::CandidateUnverified)?;
+    if candidate.base_commit() != Some(context.base_commit) {
+        return Err(LicenseDecisionRefusal::CandidateUnverified);
+    }
+    let expected_stage = if context.spec_sha256.is_some() {
+        "specInventoryEvidence"
+    } else {
+        "planInventoryEvidence"
+    };
+    if record
+        .stage
+        .get("stage")
+        .and_then(serde_json::Value::as_str)
+        != Some(expected_stage)
+        || record
+            .stage
+            .get("planSha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(context.plan_sha256)
+        || record
+            .stage
+            .get("planRevision")
+            .and_then(serde_json::Value::as_u64)
+            != Some(u64::from(context.plan_revision))
+        || record
+            .stage
+            .get("inventorySha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(context.inventory_sha256)
+        || record
+            .stage
+            .get("evidenceBundleSha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(context.evidence_bundle_sha256)
+        || record
+            .stage
+            .get("specSha256")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            != context.spec_sha256.map(str::to_owned)
+    {
+        return Err(LicenseDecisionRefusal::PlanBindingMismatch);
+    }
+
+    // The stored identity must still be the exact shared asset identity.
+    let identity = &record.identity;
+    let identities = source_asset()
+        .get("identities")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(LicenseDecisionRefusal::UnknownIdentity)?;
+    let expected = identities
+        .iter()
+        .find(|entry| {
+            exact(entry, "pin") == exact(identity, "pin")
+                && exact(entry, "name") == exact(identity, "name")
+                && exact(entry, "version") == exact(identity, "version")
+                && exact(
+                    entry.get("output").unwrap_or(&serde_json::Value::Null),
+                    "storePath",
+                ) == exact(
+                    identity.get("output").unwrap_or(&serde_json::Value::Null),
+                    "storePath",
+                )
+                && exact(
+                    entry.get("output").unwrap_or(&serde_json::Value::Null),
+                    "narHash",
+                ) == exact(
+                    identity.get("output").unwrap_or(&serde_json::Value::Null),
+                    "narHash",
+                )
+        })
+        .ok_or(LicenseDecisionRefusal::UnknownIdentity)?;
+    if canonical_json_sha256(expected) != canonical_json_sha256(identity) {
+        return Err(LicenseDecisionRefusal::IdentityMismatch);
+    }
+    let asset_evidence = source_asset()
+        .get("evidence")
+        .ok_or(LicenseDecisionRefusal::AssetCanonicalHashMissing)?;
+    if record.evidence_sha256
+        != exact(asset_evidence, "licenseEvidenceCanonicalSha256")
+            .ok_or(LicenseDecisionRefusal::AssetCanonicalHashMissing)?
+        || record.delegation_pin != exact(identity, "pin").unwrap_or_default()
+        || record.delegation_use_context != record.use_context
+        || record.license_expression != exact(identity, "license").unwrap_or_default()
+    {
+        return Err(LicenseDecisionRefusal::EvidenceBundleMismatch);
+    }
+
+    // The decision carries a source proof, but only the pinned cryptographic
+    // verification can produce the value delivered to the builder.
+    let proof = source_proof_from_identity(identity)?;
+    let source = VerifiedSourceEvidence::verify(&proof)?;
+    let source_digest = source.canonical_sha256();
+    if record
+        .provenance
+        .get("sourceEvidenceSha256")
+        .and_then(serde_json::Value::as_str)
+        != Some(source_digest.as_str())
+    {
+        return Err(LicenseDecisionRefusal::SourceEvidenceMismatch);
+    }
+
+    let receipt = serde_json::json!({
+        "id": record.id,
+        "projectId": record.project_id,
+        "planSha256": record.plan_sha256,
+        "planRevision": record.plan_revision,
+        "specSha256": record.spec_sha256,
+        "inventorySha256": record.inventory_sha256,
+        "evidenceBundleSha256": record.evidence_bundle_sha256,
+        "candidate": record.candidate,
+        "identity": identity,
+        "licenseExpression": record.license_expression,
+        "selectedBranch": record.selected_branch,
+        "softwareObligations": record.software_obligations,
+        "documentation": record.documentation,
+        "documentationObligations": record.documentation_obligations,
+        "softwareVerdict": record.software_verdict,
+        "evidenceSha256": record.evidence_sha256,
+        "identityFactsReceiptDigest": record.identity_facts_receipt_digest,
+        "catalogSha256": record.catalog_sha256,
+        "profileSha256": record.profile_sha256,
+        "policySha256": record.policy_sha256,
+        "stage": record.stage,
+        "useContext": record.use_context,
+        "commercialUse": record.commercial_use,
+        "paymentRequired": record.payment_required,
+        "decision": record.decision,
+        "revision": record.revision,
+        "status": record.status,
+        "revokedAt": record.revoked_at,
+        "delegationDeadline": record.delegation_deadline,
+        "sourceEvidence": source.to_json(),
+        "sourceEvidenceSha256": source_digest,
+    });
+    Ok(VerifiedLicenseDecisionOverlay { receipt })
 }
 
 #[cfg(test)]

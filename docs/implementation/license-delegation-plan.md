@@ -110,6 +110,21 @@ place.
   receipt and root-binding guard runs before `gateway.call`. A refusal therefore
   spends zero model calls and creates zero reservations; the producer's tests
   assert the 0/1 call boundary with a fake dispatcher.
+- The source proof has one canonical representation shared with the builder:
+  `deploy/environment-builder/environment_builder/source_evidence_proof_vector.json`.
+  Core and the builder hash the same sorted compact JSON plus LF to the same
+  digest; there is no `signatureValid` or caller membership boolean, and a Rust
+  test plus a builder test consume the same vector. A drift in either
+  representation fails both suites.
+- Execution receives the existing builder `licenseDecisions` overlay, never a
+  second approval path. Core re-verifies the persisted decision with
+  `verify_license_decision_overlay` against the exact current project, plan,
+  spec, inventory, evidence bundle, candidate base, catalogue/profile/policy,
+  delegation deadline and revocation, identity and pinned source proof before
+  emitting the overlay. The same verified overlay is delivered to the resolve
+  and build operations; a stale, revoked or expired decision refuses and the
+  environment stays `FAILED`. A failed realisation is observed as a
+  `RESOLUTION`-stage identity receipt and never as an accepted build.
 - The call reuses the frozen Lead route and the request-scoped subscription
   admission already active for `fc7e7311`; no new provider configuration,
   credential or monetary envelope. Token/cost telemetry is recorded, not used

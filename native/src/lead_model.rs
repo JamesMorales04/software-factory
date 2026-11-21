@@ -958,6 +958,8 @@ mod tests {
                         outputs: vec![SOURCE_PATH.into()],
                     },
                 ],
+                stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+                resolution_key: String::new(),
             };
             let facts = vec![
                 IdentityFact {

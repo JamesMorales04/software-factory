@@ -2205,6 +2205,8 @@ mod tests {
             mode: crate::planning::identity_facts::IdentityFactsMode::Questions,
             root: crate::planning::identity_facts::OperationRoot::Operation,
             questions,
+            stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+            resolution_key: String::new(),
         }
     }
 

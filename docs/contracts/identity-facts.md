@@ -42,6 +42,16 @@ Core-owned identities and the producer answers exactly those identities in the
 issued order. Empty `questions` therefore means discovery, never an empty
 manifest; a reordered `QUESTIONS` answer is refused.
 
+`stage` is explicit since migration `0088`:
+
+- `SPEC` (the default, omitted on the wire) binds `specSha256` and is the
+  normal build/check observation.
+- `RESOLUTION` binds a failed realisation before any frozen spec exists:
+  `specSha256` is empty and `resolutionKey` is the canonical digest of the
+  exact `RealisationObservation`. It can only be persisted with
+  `SPEC_CACHE_OBSERVATION`, never with `BUILD_RECEIPT`. No plan hash is ever
+  written into `specSha256` and no spec is fabricated.
+
 `root` is `OPERATION` in this cut. The producer refuses `PLAN` or `RUNTIME`
 instead of silently treating them as the operation root.
 
@@ -156,12 +166,11 @@ transitive licence). In that case:
   environment stays blocked, and the delegated `license_evidence_review` can
   run against the exact plan/context receipt it previously could not obtain.
 
-The resolve phase currently uses a disposable cache (`EnvironmentRunResources::new`,
-no frozen spec), so a post-resolve observation needs a persistent plan-keyed
-cache and a plan-stage challenge binding. That producer change is required
-before a resolve-phase licence refusal can yield a receipt; the domain type and
-its validation are implemented here, while the broker/Core wiring is owned by
-the broker/Core implementation.
+The `RESOLUTION` stage and migration `0088` are implemented in this repository;
+the remaining broker/Core wiring is: a persistent plan-keyed cache
+(`EnvironmentRunResources::for_plan`), the broker fallback that reads
+`realisation.json` when the live profile marker is gone, and Core issuing and
+consuming the resolution challenge before returning the licence blocker.
 
 After an ACCEPT decision, the same realised path still has to pass the
 builder's deterministic closure gate. Accepting the reviewed identity in the

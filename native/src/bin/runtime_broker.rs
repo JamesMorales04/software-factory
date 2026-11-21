@@ -9454,6 +9454,8 @@ exit 0
             mode: IdentityFactsMode::Enumerate,
             root: OperationRoot::Operation,
             questions: Vec::new(),
+            stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+            resolution_key: String::new(),
         };
         request.identity_facts = Some(challenge.clone());
         let response = identity_facts_environment(

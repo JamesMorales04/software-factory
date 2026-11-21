@@ -19,7 +19,7 @@ use crate::planning::environment::{
 use crate::planning::environment::{EnvironmentPlanStatus, EnvironmentSpecStatus};
 use crate::planning::identity_facts::{
     BoundIdentityFacts, IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION,
-    IdentityFactsChallenge, IdentityFactsRootBinding, validate_manifest,
+    IdentityFactsChallenge, IdentityFactsRootBinding, IdentityFactsStage, validate_manifest,
 };
 
 const MAX_ENVIRONMENT_JSON_BYTES: usize = 4 * 1024 * 1024;
@@ -89,6 +89,8 @@ type IdentityFactsReceiptRow = (
     String,
     String,
     String,
+    String,
+    String,
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +145,8 @@ pub struct StoredIdentityFactsReceipt {
     pub pin: String,
     pub observed_root: String,
     pub root_binding: IdentityFactsRootBinding,
+    pub stage: IdentityFactsStage,
+    pub resolution_key: String,
     pub fact_count: u32,
     pub closure_manifest_sha256: String,
     pub manifest_json: String,
@@ -1023,8 +1027,8 @@ impl Database {
             "INSERT INTO identity_facts_challenges
              (nonce,operation_id,runtime_id,plan_sha256,spec_sha256,pin,mode,root,
               questions_json,challenge_json,request_id,plan_id,state,created_at,
-              expires_at,consumed_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'PENDING',?13,?14,NULL)",
+              expires_at,consumed_at,stage,resolution_key)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'PENDING',?13,?14,NULL,?15,?16)",
         )
         .bind(&challenge.nonce)
         .bind(&challenge.operation_id)
@@ -1040,6 +1044,8 @@ impl Database {
         .bind(plan_id)
         .bind(&now)
         .bind(&expires_at)
+        .bind(challenge.stage.as_db_value())
+        .bind(&challenge.resolution_key)
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
@@ -1066,6 +1072,13 @@ impl Database {
         {
             return Err(Error::Validation(
                 "identity-facts receipt is not bound to the issued challenge".into(),
+            ));
+        }
+        if challenge.stage == IdentityFactsStage::Resolution
+            && root_binding != IdentityFactsRootBinding::SpecCacheObservation
+        {
+            return Err(Error::Validation(
+                "a resolution-stage observation cannot bind a build receipt".into(),
             ));
         }
         validate_manifest(challenge, &receipt.envelope.manifest)
@@ -1146,8 +1159,8 @@ impl Database {
             "INSERT INTO environment_identity_facts_receipts
              (nonce,operation_id,runtime_id,plan_sha256,spec_sha256,pin,observed_root,
               root_binding,fact_count,closure_manifest_sha256,manifest_json,
-              envelope_json,signature,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+              envelope_json,signature,created_at,stage,resolution_key)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
         )
         .bind(&challenge.nonce)
         .bind(&challenge.operation_id)
@@ -1163,6 +1176,8 @@ impl Database {
         .bind(&envelope_json)
         .bind(&receipt.signature)
         .bind(&now)
+        .bind(challenge.stage.as_db_value())
+        .bind(&challenge.resolution_key)
         .execute(&mut *transaction)
         .await
         {
@@ -1182,6 +1197,8 @@ impl Database {
             pin: challenge.pin.clone(),
             observed_root: manifest.observed_root.clone(),
             root_binding,
+            stage: challenge.stage,
+            resolution_key: challenge.resolution_key.clone(),
             fact_count: u32::try_from(manifest.fact_count).unwrap_or(u32::MAX),
             closure_manifest_sha256: manifest.closure_manifest_sha256.clone(),
             manifest_json,
@@ -1198,7 +1215,7 @@ impl Database {
         let row: Option<IdentityFactsReceiptRow> = sqlx::query_as::query_as(
             "SELECT nonce,operation_id,runtime_id,plan_sha256,spec_sha256,pin,
                     observed_root,root_binding,fact_count,closure_manifest_sha256,
-                    manifest_json,envelope_json,signature,created_at
+                    manifest_json,envelope_json,signature,created_at,stage,resolution_key
              FROM environment_identity_facts_receipts WHERE nonce=?1",
         )
         .bind(nonce)
@@ -1219,6 +1236,8 @@ impl Database {
             envelope_json,
             signature,
             created_at,
+            stage,
+            resolution_key,
         )) = row
         else {
             return Err(Error::NotFound);
@@ -1240,6 +1259,10 @@ impl Database {
                     ));
                 }
             },
+            stage: IdentityFactsStage::from_db_value(&stage).ok_or_else(|| {
+                Error::Validation("stored identity-facts stage is invalid".into())
+            })?,
+            resolution_key,
             fact_count: u32::try_from(fact_count).unwrap_or(u32::MAX),
             closure_manifest_sha256,
             manifest_json,
@@ -1816,7 +1839,8 @@ impl Database {
 mod identity_facts_tests {
     use super::*;
     use crate::planning::identity_facts::{
-        IdentityFactsChallenge, IdentityFactsMode, OperationRoot, fixture_verified_receipt,
+        BoundIdentityFacts, IdentityFactsChallenge, IdentityFactsMode, IdentityFactsRootBinding,
+        IdentityFactsStage, OperationRoot, fixture_verified_receipt,
     };
 
     fn challenge(nonce: &str) -> IdentityFactsChallenge {
@@ -1830,6 +1854,8 @@ mod identity_facts_tests {
             mode: IdentityFactsMode::Enumerate,
             root: OperationRoot::Operation,
             questions: Vec::new(),
+            stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+            resolution_key: String::new(),
         }
     }
 
@@ -1964,6 +1990,66 @@ mod identity_facts_tests {
             db.identity_facts_receipt(&foreign.nonce).await,
             Err(Error::NotFound)
         ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn resolution_challenge(nonce: &str) -> IdentityFactsChallenge {
+        let mut challenge = challenge(nonce);
+        challenge.stage = IdentityFactsStage::Resolution;
+        challenge.spec_sha256 = String::new();
+        challenge.resolution_key = "d".repeat(64);
+        challenge
+    }
+
+    #[tokio::test]
+    async fn a_resolution_observation_needs_no_spec_and_never_binds_a_build_receipt() {
+        let (db, path) = database().await;
+        let challenge = resolution_challenge("nonce-resolution");
+        db.issue_identity_facts_challenge(&challenge, None, "plan-1", 900)
+            .await
+            .unwrap();
+        let receipt = BoundIdentityFacts::spec_cache_observation(fixture_verified_receipt(
+            &challenge,
+            "seed-resolution",
+        ));
+        let stored = db
+            .consume_identity_facts(&challenge, &receipt)
+            .await
+            .expect("a resolution observation is consumed without a spec");
+        assert_eq!(stored.stage, IdentityFactsStage::Resolution);
+        assert_eq!(stored.spec_sha256, "");
+        assert_eq!(stored.resolution_key, "d".repeat(64));
+        assert_eq!(
+            stored.root_binding,
+            IdentityFactsRootBinding::SpecCacheObservation
+        );
+        let reread = db.identity_facts_receipt("nonce-resolution").await.unwrap();
+        assert_eq!(reread.stage, IdentityFactsStage::Resolution);
+        assert_eq!(reread.resolution_key, stored.resolution_key);
+        assert_eq!(reread.envelope_json, stored.envelope_json);
+
+        // A failed realisation can never be elevated to a build receipt.
+        let elevated = resolution_challenge("nonce-resolution-elevated");
+        db.issue_identity_facts_challenge(&elevated, None, "plan-1", 900)
+            .await
+            .unwrap();
+        let bound = BoundIdentityFacts::fixture_bound(
+            fixture_verified_receipt(&elevated, "seed-elevated"),
+            IdentityFactsRootBinding::BuildReceipt,
+        );
+        assert!(matches!(
+            db.consume_identity_facts(&elevated, &bound).await,
+            Err(Error::Validation(_))
+        ));
+        assert!(matches!(
+            db.identity_facts_receipt("nonce-resolution-elevated").await,
+            Err(Error::NotFound)
+        ));
+        // The refusal preserved the pending challenge.
+        db.issue_identity_facts_challenge(&elevated, None, "plan-1", 900)
+            .await
+            .expect("the refused challenge stays pending");
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

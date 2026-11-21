@@ -82,6 +82,39 @@ pub struct IdentityFactsManifest {
     pub truncated: bool,
 }
 
+/// What a signed observation is bound to. `SPEC` is the frozen environment
+/// spec (normal build/check path). `RESOLUTION` is an exact failed-realisation
+/// observation before any spec exists: it binds the plan and the canonical
+/// `resolutionKey` of one `RealisationObservation`, never a fabricated spec.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum IdentityFactsStage {
+    #[default]
+    Spec,
+    Resolution,
+}
+
+fn stage_is_spec(stage: &IdentityFactsStage) -> bool {
+    *stage == IdentityFactsStage::Spec
+}
+
+impl IdentityFactsStage {
+    pub fn as_db_value(self) -> &'static str {
+        match self {
+            Self::Spec => "SPEC",
+            Self::Resolution => "RESOLUTION",
+        }
+    }
+
+    pub fn from_db_value(value: &str) -> Option<Self> {
+        match value {
+            "SPEC" => Some(Self::Spec),
+            "RESOLUTION" => Some(Self::Resolution),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct IdentityFactsChallenge {
@@ -94,6 +127,14 @@ pub struct IdentityFactsChallenge {
     pub mode: IdentityFactsMode,
     pub root: OperationRoot,
     pub questions: Vec<IdentityQuestion>,
+    /// Defaults to `SPEC`; omitted on the wire for the spec stage so existing
+    /// pending challenges keep byte-identical JSON.
+    #[serde(default, skip_serializing_if = "stage_is_spec")]
+    pub stage: IdentityFactsStage,
+    /// Canonical digest of the exact failed-realisation observation. Empty for
+    /// the spec stage.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resolution_key: String,
 }
 
 /// Exact builder evidence for one realisation that refused at the licence
@@ -120,6 +161,17 @@ pub struct RealisationObservation {
 impl RealisationObservation {
     pub const SCHEMA_VERSION: u32 = 1;
     pub const STATUS: &'static str = "REALISED";
+
+    /// Canonical digest of this exact observation. Core binds it into a
+    /// `RESOLUTION` challenge so a receipt cannot be replayed for another
+    /// realisation of the same plan.
+    pub fn resolution_key(&self) -> String {
+        let bytes = serde_json::to_vec(self).expect("a realisation observation serialises");
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
 
     /// Validate the observation against the exact plan and, when supplied, the
     /// exact frozen spec. A resolve-phase observation must not claim a spec and
@@ -160,10 +212,21 @@ impl IdentityFactsChallenge {
             || !bounded(&self.nonce, 200, false)
             || !bounded(&self.pin, 300, false)
             || !is_sha256(&self.plan_sha256)
-            || !is_sha256(&self.spec_sha256)
             || self.questions.len() > MAX_IDENTITY_QUESTIONS
         {
             return Err(IdentityFactsError::InvalidChallenge);
+        }
+        match self.stage {
+            IdentityFactsStage::Spec => {
+                if !is_sha256(&self.spec_sha256) || !self.resolution_key.is_empty() {
+                    return Err(IdentityFactsError::InvalidChallenge);
+                }
+            }
+            IdentityFactsStage::Resolution => {
+                if !self.spec_sha256.is_empty() || !is_sha256(&self.resolution_key) {
+                    return Err(IdentityFactsError::InvalidChallenge);
+                }
+            }
         }
         let mut paths = std::collections::BTreeSet::new();
         for question in &self.questions {
@@ -319,6 +382,17 @@ impl BoundIdentityFacts {
 
     pub fn binding(&self) -> IdentityFactsRootBinding {
         self.binding
+    }
+
+    /// Feature-gated constructor for tests that must exercise a refused
+    /// binding. Production only uses the validating constructors above.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fixture_bound(
+        verified: VerifiedIdentityFacts,
+        binding: IdentityFactsRootBinding,
+    ) -> Self {
+        Self { verified, binding }
     }
 
     pub fn receipt(&self) -> &IdentityFactsReceipt {
@@ -727,6 +801,8 @@ mod tests {
             mode,
             root: OperationRoot::Operation,
             questions,
+            stage: IdentityFactsStage::Spec,
+            resolution_key: String::new(),
         }
     }
 
@@ -1147,5 +1223,53 @@ mod tests {
             serde_json::from_value::<RealisationObservation>(unknown).is_err(),
             "builder evidence is closed and cannot carry authority"
         );
+    }
+
+    #[test]
+    fn a_resolution_challenge_binds_a_plan_and_realisation_key_not_a_fabricated_spec() {
+        let mut observation = realisation_observation();
+        observation.spec_sha256 = String::new();
+        let key = observation.resolution_key();
+        assert_eq!(
+            key,
+            observation.resolution_key(),
+            "the key is deterministic"
+        );
+        assert_eq!(key.len(), 64);
+
+        let mut resolution = challenge(IdentityFactsMode::Enumerate, Vec::new());
+        resolution.stage = IdentityFactsStage::Resolution;
+        resolution.spec_sha256 = String::new();
+        resolution.resolution_key = key.clone();
+        resolution
+            .validate_shape()
+            .expect("a plan-stage challenge needs no spec");
+
+        // A resolution challenge must not smuggle a spec or an empty key.
+        let mut smuggled = resolution.clone();
+        smuggled.spec_sha256 = "c".repeat(64);
+        assert_eq!(
+            smuggled.validate_shape(),
+            Err(IdentityFactsError::InvalidChallenge)
+        );
+        let mut empty_key = resolution.clone();
+        empty_key.resolution_key = String::new();
+        assert_eq!(
+            empty_key.validate_shape(),
+            Err(IdentityFactsError::InvalidChallenge)
+        );
+        // A spec challenge must not carry a resolution key.
+        let mut mixed = challenge(IdentityFactsMode::Enumerate, Vec::new());
+        mixed.resolution_key = key;
+        assert_eq!(
+            mixed.validate_shape(),
+            Err(IdentityFactsError::InvalidChallenge)
+        );
+
+        // A different realisation produces a different key, so a receipt
+        // cannot be replayed for another root of the same plan.
+        let mut other = observation.clone();
+        other.store_path = "/nix/store/ffffffffffffffffffffffffffffffff-ed-1.21.1".into();
+        assert_ne!(other.resolution_key(), observation.resolution_key());
     }
 }
