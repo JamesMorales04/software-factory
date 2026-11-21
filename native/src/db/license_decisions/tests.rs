@@ -4,7 +4,7 @@ use crate::planning::identity_facts::{
     IdentityFactsMode, IdentityFactsReceipt, OperationRoot, closure_manifest_sha256, sign, verify,
 };
 use crate::planning::license_decision::{
-    CandidateBinding, LicenseDecisionContext, LicenseDecisionReview, PolicyBinding, StageBinding,
+    CandidateBinding, LicenseDecisionContext, LicenseDecisionReview, PolicyBinding,
     identity_facts_receipt_digest, verify_license_evidence_review,
 };
 
@@ -21,6 +21,7 @@ const OUTPUT_NAR: &str = "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=";
 const SOURCE_DRV: &str = "/nix/store/j151nb5vh176kdrrh1rkilxkdkmvm47w-ed-1.21.1.tar.lz.drv";
 const SOURCE_PATH: &str = "/nix/store/wa88qds9615j2r5imfryzbyg86c97iga-ed-1.21.1.tar.lz";
 const SOURCE_HASH: &str = "sha256-1tDHGSsCsFGckCqTcZBT6GWt5aeEo7Mn2T2IhFeyPEs=";
+const SOURCE_NAR: &str = "sha256-dEsPDHFVSahejFEnqz5gAMxx+ls+idLXQ6qOovYOecE=";
 const REQUEST_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const RESPONSE: &str = r#"{"decision":"ACCEPT"}"#;
 const PROJECT_CONFIG: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -42,19 +43,35 @@ fn receipt() -> IdentityFactsReceipt {
         spec_sha256: OBSERVED_SPEC.into(),
         mode: IdentityFactsMode::Questions,
         root: OperationRoot::Operation,
-        questions: vec![crate::planning::identity_facts::IdentityQuestion {
+        questions: vec![
+            crate::planning::identity_facts::IdentityQuestion {
+                store_path: OUTPUT_PATH.into(),
+                deriver: Some(OUTPUT_DRV.into()),
+                nar_hash: OUTPUT_NAR.into(),
+                outputs: vec![OUTPUT_PATH.into()],
+            },
+            crate::planning::identity_facts::IdentityQuestion {
+                store_path: SOURCE_PATH.into(),
+                deriver: Some(SOURCE_DRV.into()),
+                nar_hash: SOURCE_NAR.into(),
+                outputs: vec![SOURCE_PATH.into()],
+            },
+        ],
+    };
+    let facts = vec![
+        IdentityFact {
             store_path: OUTPUT_PATH.into(),
             deriver: Some(OUTPUT_DRV.into()),
             nar_hash: OUTPUT_NAR.into(),
             outputs: vec![OUTPUT_PATH.into()],
-        }],
-    };
-    let facts = vec![IdentityFact {
-        store_path: OUTPUT_PATH.into(),
-        deriver: Some(OUTPUT_DRV.into()),
-        nar_hash: OUTPUT_NAR.into(),
-        outputs: vec![OUTPUT_PATH.into()],
-    }];
+        },
+        IdentityFact {
+            store_path: SOURCE_PATH.into(),
+            deriver: Some(SOURCE_DRV.into()),
+            nar_hash: SOURCE_NAR.into(),
+            outputs: vec![SOURCE_PATH.into()],
+        },
+    ];
     let envelope = IdentityFactsEnvelope {
         schema_version: 1,
         context: crate::planning::identity_facts::IDENTITY_FACTS_CONTEXT.into(),
@@ -94,6 +111,9 @@ fn review() -> LicenseDecisionReview {
             crate::planning::license_decision::DocumentationReview {
                 path: "share/info/ed.info".into(),
                 license: "GFDL-1.3-or-later".into(),
+                output_sha256: "3618c355d1fd6b5ae66048499735d14a0dd0c438b29e5c2e41040f76fd03d19b"
+                    .into(),
+                license_text_path: "doc/fdl.texi".into(),
                 license_text_sha256:
                     "a7e43ea88ee8fc4722d38482fd1a14c12bfbe2f0512d61980c810627b19cdce5".into(),
                 obligations: vec!["notice".into(), "source".into()],
@@ -101,6 +121,9 @@ fn review() -> LicenseDecisionReview {
             crate::planning::license_decision::DocumentationReview {
                 path: "share/man/man1/ed.1.gz".into(),
                 license: "GPL-2.0-or-later".into(),
+                output_sha256: "891a6ac40cfdd4e3b58ef59444cd7544d2304feb986752a033270f69ec0a11c2"
+                    .into(),
+                license_text_path: "ed.h".into(),
                 license_text_sha256:
                     "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58".into(),
                 obligations: vec!["notice".into(), "source".into()],
@@ -165,6 +188,23 @@ async fn fixture() -> Fixture {
     .await
     .unwrap();
     sqlx::query::query(
+        "INSERT INTO environment_plans
+         (id,plan_id,project_id,request_id,action_id,campaign_id,revision,base_commit,risk_class,
+          conventions_sha256,plan_sha256,status,source,builder_image,builder_image_digest,
+          license_inventory_sha256,sbom_sha256,lead_review_id,content_json,created_at,updated_at)
+         VALUES ('plan-row','plan-1','project-1',NULL,'action-1',NULL,1,?1,'R0',?2,?3,
+                 'CORE_VALIDATED','GENERATED','','',?4,?5,NULL,'{}',?6,?6)",
+    )
+    .bind(BASE)
+    .bind("c".repeat(64))
+    .bind(PLAN)
+    .bind(INVENTORY)
+    .bind(EVIDENCE_BUNDLE)
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
         "INSERT INTO model_call_reservations
          (reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,model,
           purpose,request_sha256,max_input_tokens,max_output_tokens,max_total_tokens,
@@ -210,22 +250,15 @@ async fn fixture() -> Fixture {
 
     let receipt = receipt();
     let facts = verify(&receipt, BEARER, &receipt.envelope.challenge.clone()).unwrap();
-    let stage = StageBinding::plan_inventory_evidence(
+    let binding = PolicyBinding::test_binding(
         PLAN,
         1,
+        None,
         INVENTORY,
         EVIDENCE_BUNDLE,
-        identity_facts_receipt_digest(&facts),
         CandidateBinding::base(BASE).unwrap(),
-    )
-    .unwrap();
-    let binding = PolicyBinding::new(
-        crate::planning::license_policy::default_catalog_sha256(),
-        crate::planning::license_policy::default_profile_sha256(),
-        crate::planning::license_policy::default_binding_sha256(),
-        stage,
-    )
-    .unwrap();
+        &identity_facts_receipt_digest(&facts),
+    );
     let reservation = db
         .lead_license_evidence_reservation("lead-1")
         .await
@@ -297,22 +330,15 @@ async fn a_verified_decision_is_durable_idempotent_and_revocable() {
             .unwrap();
         let delegation = db.agentic_owner_decision(&fixture.owner_id).await.unwrap();
         let facts = verify(&receipt(), BEARER, &receipt().envelope.challenge.clone()).unwrap();
-        let stage = StageBinding::plan_inventory_evidence(
+        let binding = PolicyBinding::test_binding(
             PLAN,
             1,
+            None,
             INVENTORY,
             EVIDENCE_BUNDLE,
-            identity_facts_receipt_digest(&facts),
             CandidateBinding::base(BASE).unwrap(),
-        )
-        .unwrap();
-        let binding = PolicyBinding::new(
-            crate::planning::license_policy::default_catalog_sha256(),
-            crate::planning::license_policy::default_profile_sha256(),
-            crate::planning::license_policy::default_binding_sha256(),
-            stage,
-        )
-        .unwrap();
+            &identity_facts_receipt_digest(&facts),
+        );
         let context = LicenseDecisionContext {
             project_id: "project-1",
             lead_request_id: "lead-1",
@@ -393,6 +419,162 @@ async fn revocation_between_verification_and_persistence_is_refused() {
             .await,
         Err(Error::Conflict(_))
     ));
+    db.close().await;
+    let _ = std::fs::remove_file(&fixture.path);
+}
+
+#[tokio::test]
+async fn delegation_evidence_lead_state_and_grant_identity_are_revalidated() {
+    let grant_fixture = fixture().await;
+    let first = grant_fixture
+        .db
+        .create_license_decision(&grant_fixture.decision, "grant-key-1")
+        .await
+        .unwrap();
+    // A retry with a different key spelling must not duplicate the grant.
+    let same = grant_fixture
+        .db
+        .create_license_decision(&grant_fixture.decision, "grant-key-2")
+        .await
+        .unwrap();
+    assert_eq!(same.id, first.id);
+    assert_eq!(
+        grant_fixture
+            .db
+            .license_decisions("project-1")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    grant_fixture.db.close().await;
+    let _ = std::fs::remove_file(&grant_fixture.path);
+
+    // A stage plan that is not the exact persisted Lead request plan is refused.
+    let fake_stage_fixture = fixture().await;
+    let mut fake_stage = fake_stage_fixture.decision.clone();
+    let digest = fake_stage.identity_facts_receipt_digest().to_owned();
+    fake_stage.binding = PolicyBinding::test_binding(
+        &"f".repeat(64),
+        1,
+        None,
+        INVENTORY,
+        EVIDENCE_BUNDLE,
+        CandidateBinding::base(BASE).unwrap(),
+        &digest,
+    );
+    assert!(matches!(
+        fake_stage_fixture
+            .db
+            .create_license_decision(&fake_stage, "fake-stage")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    fake_stage_fixture.db.close().await;
+    let _ = std::fs::remove_file(&fake_stage_fixture.path);
+
+    // Delegation evidence changes after verification are refused transactionally.
+    let evidence_fixture = fixture().await;
+    sqlx::query::query("UPDATE agentic_owner_decisions SET evidence_json=?1 WHERE id=?2")
+        .bind(
+            serde_json::json!({
+                "domain": "licenses-identity-evidence",
+                "pin": PIN,
+                "useContext": "commercial-development",
+                "economicCriterion": "no-mandatory-fee-commercial-use",
+                "revision": 8,
+            })
+            .to_string(),
+        )
+        .bind(&evidence_fixture.owner_id)
+        .execute(&evidence_fixture.db.pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        evidence_fixture
+            .db
+            .create_license_decision(&evidence_fixture.decision, "evidence-change")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    evidence_fixture.db.close().await;
+    let _ = std::fs::remove_file(&evidence_fixture.path);
+
+    // A terminal lead cannot receive a new decision.
+    let terminal_fixture = fixture().await;
+    sqlx::query::query("UPDATE lead_requests SET state='FAILED' WHERE id='lead-1'")
+        .execute(&terminal_fixture.db.pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        terminal_fixture
+            .db
+            .create_license_decision(&terminal_fixture.decision, "lead-failed")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    terminal_fixture.db.close().await;
+    let _ = std::fs::remove_file(&terminal_fixture.path);
+
+    // A withdrawal is also terminal even if the state still says RUNNING.
+    let withdrawn_fixture = fixture().await;
+    sqlx::query::query(
+        "INSERT INTO lead_withdrawals(request_id,principal_id,principal_label,reason,created_at)
+         VALUES ('lead-1','operator','operator','withdrawn',?1)",
+    )
+    .bind(Utc::now().to_rfc3339())
+    .execute(&withdrawn_fixture.db.pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        withdrawn_fixture
+            .db
+            .create_license_decision(&withdrawn_fixture.decision, "lead-withdrawn")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    withdrawn_fixture.db.close().await;
+    let _ = std::fs::remove_file(&withdrawn_fixture.path);
+}
+
+#[tokio::test]
+async fn revocation_audit_rows_are_appended_once_and_never_removed() {
+    let fixture = fixture().await;
+    let db = &fixture.db;
+    let decision = db
+        .create_license_decision(&fixture.decision, "audit-key")
+        .await
+        .unwrap();
+    db.revoke_license_decision(&decision.id, "project-1", "operator", "superseded")
+        .await
+        .unwrap();
+    assert!(
+        sqlx::query::query("DELETE FROM license_decision_revocations WHERE decision_id=?1")
+            .bind(&decision.id)
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query::query(
+            "UPDATE license_decisions SET revocation_reason='rewritten' WHERE id=?1"
+        )
+        .bind(&decision.id)
+        .execute(&db.pool)
+        .await
+        .is_err()
+    );
+
+    db.revoke_license_delegation(&fixture.owner_id, "project-1", "operator", "owner revoke")
+        .await
+        .unwrap();
+    assert!(
+        sqlx::query::query("DELETE FROM license_delegation_revocations WHERE delegation_id=?1")
+            .bind(&fixture.owner_id)
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
     db.close().await;
     let _ = std::fs::remove_file(&fixture.path);
 }

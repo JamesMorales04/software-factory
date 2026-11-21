@@ -6,7 +6,9 @@
 //! immutable except for one append-only, actor/project-bound revocation.
 
 use super::*;
-use crate::planning::license_decision::{DocumentationDecision, VerifiedLicenseDecision};
+use crate::planning::license_decision::{
+    CandidateBinding, DocumentationDecision, VerifiedLicenseDecision,
+};
 use chrono::Utc;
 use sqlx::row::Row;
 use uuid::Uuid;
@@ -267,7 +269,7 @@ impl Database {
         let mut transaction = self.pool.begin().await?;
 
         let delegation = sqlx::query::query(
-            "SELECT project_id,matter,status,selected_option,options_json,deadline
+            "SELECT project_id,matter,status,selected_option,options_json,evidence_json,deadline
              FROM agentic_owner_decisions WHERE id=?1",
         )
         .bind(decision.delegation_id())
@@ -282,6 +284,24 @@ impl Database {
             serde_json::from_str(&delegation.try_get::<String, _>("options_json")?)
                 .map_err(|_| Error::Invalid("licence delegation options"))?;
         let delegation_deadline: String = delegation.try_get("deadline")?;
+        let delegation_evidence: serde_json::Value =
+            serde_json::from_str(&delegation.try_get::<String, _>("evidence_json")?)
+                .map_err(|_| Error::Invalid("licence delegation evidence"))?;
+        let evidence_revision = delegation_evidence
+            .get("revision")
+            .and_then(serde_json::Value::as_u64);
+        let evidence_pin = delegation_evidence
+            .get("pin")
+            .and_then(serde_json::Value::as_str);
+        let evidence_use_context = delegation_evidence
+            .get("useContext")
+            .and_then(serde_json::Value::as_str);
+        let evidence_criterion = delegation_evidence
+            .get("economicCriterion")
+            .and_then(serde_json::Value::as_str);
+        let evidence_domain = delegation_evidence
+            .get("domain")
+            .and_then(serde_json::Value::as_str);
         let expected_option_sha256 =
             crate::planning::license_decision::canonical_json_sha256(&serde_json::json!({
                 "matter": delegation_matter,
@@ -299,6 +319,11 @@ impl Database {
                 .any(|option| option == LICENSE_DELEGATION_OPTION)
             || delegation_deadline != decision.delegation_deadline()
             || expected_option_sha256 != decision.delegation_option_sha256()
+            || evidence_domain != Some("licenses-identity-evidence")
+            || evidence_pin != Some(decision.delegation_pin())
+            || evidence_use_context != Some(decision.delegation_use_context())
+            || evidence_criterion != Some(decision.delegation_criterion())
+            || evidence_revision != Some(decision.delegation_revision())
         {
             transaction.rollback().await?;
             return Err(Error::Conflict(
@@ -346,7 +371,17 @@ impl Database {
                 .bind(decision.lead_request_id())
                 .fetch_optional(&mut *transaction)
                 .await?;
+        let lead_state: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT state FROM lead_requests WHERE id=?1")
+                .bind(decision.lead_request_id())
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let lead_state = lead_state.map(|(state,)| state);
         if role != "LEAD"
+            || !matches!(
+                lead_state.as_deref(),
+                Some("SUBMITTED" | "ASSESSING" | "PLANNED" | "FROZEN" | "READY" | "RUNNING")
+            )
             || purpose != "license_evidence_review"
             || state != "SETTLED"
             || withdrawn.is_some()
@@ -361,6 +396,70 @@ impl Database {
             return Err(Error::Conflict(
                 "licence evidence reservation changed before persistence",
             ));
+        }
+
+        let plan = sqlx::query::query(
+            "SELECT p.project_id,p.action_id,p.revision,p.base_commit,p.license_inventory_sha256,p.status
+             FROM environment_plans p
+             JOIN lead_requests l ON l.action_id=p.action_id
+             WHERE p.plan_sha256=?1 AND l.id=?2",
+        )
+        .bind(decision.binding().stage().plan_sha256())
+        .bind(decision.lead_request_id())
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or_else(|| Error::Conflict("licence stage plan is not the exact Lead request plan"))?;
+        let plan_project: String = plan.try_get("project_id")?;
+        let plan_revision: i64 = plan.try_get("revision")?;
+        let plan_base: String = plan.try_get("base_commit")?;
+        let plan_inventory: String = plan.try_get("license_inventory_sha256")?;
+        let plan_status: String = plan.try_get("status")?;
+        if plan_project != decision.project_id()
+            || plan_revision != decision.binding().stage().plan_revision() as i64
+            || plan_inventory != decision.binding().stage().inventory_sha256()
+            || !matches!(
+                plan_status.as_str(),
+                "CORE_VALIDATED" | "LEAD_APPROVED" | "FROZEN"
+            )
+        {
+            transaction.rollback().await?;
+            return Err(Error::Conflict(
+                "licence stage plan changed before persistence",
+            ));
+        }
+        if let CandidateBinding::Base { base_commit } = decision.binding().candidate()
+            && base_commit != &plan_base
+        {
+            transaction.rollback().await?;
+            return Err(Error::Conflict(
+                "licence stage candidate base differs from the plan",
+            ));
+        }
+        if let Some(spec_sha256) = decision.binding().stage().spec_sha256() {
+            let spec = sqlx::query::query(
+                "SELECT project_id,plan_sha256,base_commit,license_inventory_sha256,status
+                 FROM environment_specs WHERE spec_sha256=?1",
+            )
+            .bind(spec_sha256)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .ok_or_else(|| Error::Conflict("licence stage spec is not persisted"))?;
+            let spec_project: String = spec.try_get("project_id")?;
+            let spec_plan: String = spec.try_get("plan_sha256")?;
+            let spec_base: String = spec.try_get("base_commit")?;
+            let spec_inventory: String = spec.try_get("license_inventory_sha256")?;
+            let spec_status: String = spec.try_get("status")?;
+            if spec_project != decision.project_id()
+                || spec_plan != decision.binding().stage().plan_sha256()
+                || spec_base != plan_base
+                || spec_inventory != decision.binding().stage().inventory_sha256()
+                || spec_status != "FROZEN"
+            {
+                transaction.rollback().await?;
+                return Err(Error::Conflict(
+                    "licence stage spec changed before persistence",
+                ));
+            }
         }
 
         if let Some(existing) = sqlx::query::query(&format!(
@@ -381,6 +480,23 @@ impl Database {
             return Err(Error::Conflict(
                 "licence decision idempotency key was used for different evidence",
             ));
+        }
+
+        if let Some(existing) = sqlx::query::query(&format!(
+            "SELECT {COLUMNS} FROM license_decisions
+             WHERE project_id=?1 AND delegation_id=?2 AND lead_request_id=?3 AND content_sha256=?4
+             LIMIT 1"
+        ))
+        .bind(decision.project_id())
+        .bind(decision.delegation_id())
+        .bind(decision.lead_request_id())
+        .bind(decision.content_sha256())
+        .fetch_optional(&mut *transaction)
+        .await?
+        {
+            let existing = decision_from_row(&existing)?;
+            transaction.commit().await?;
+            return Ok(existing);
         }
 
         let id = Uuid::new_v4().to_string();
@@ -446,17 +562,27 @@ impl Database {
             {
                 transaction.rollback().await?;
                 let existing = sqlx::query::query(&format!(
-                    "SELECT {COLUMNS} FROM license_decisions WHERE idempotency_key=?1"
+                    "SELECT {COLUMNS} FROM license_decisions
+                     WHERE idempotency_key=?1
+                        OR (project_id=?2 AND delegation_id=?3 AND lead_request_id=?4
+                            AND content_sha256=?5)
+                     LIMIT 1"
                 ))
                 .bind(idempotency_key)
-                .fetch_one(&self.pool)
+                .bind(decision.project_id())
+                .bind(decision.delegation_id())
+                .bind(decision.lead_request_id())
+                .bind(decision.content_sha256())
+                .fetch_optional(&self.pool)
                 .await?;
-                let existing = decision_from_row(&existing)?;
-                if existing.content_sha256 == decision.content_sha256()
-                    && existing.project_id == decision.project_id()
-                    && existing.delegation_id == decision.delegation_id()
-                {
-                    return Ok(existing);
+                if let Some(existing) = existing {
+                    let existing = decision_from_row(&existing)?;
+                    if existing.content_sha256 == decision.content_sha256()
+                        && existing.project_id == decision.project_id()
+                        && existing.delegation_id == decision.delegation_id()
+                    {
+                        return Ok(existing);
+                    }
                 }
                 return Err(Error::Conflict(
                     "licence decision idempotency key was used for different evidence",

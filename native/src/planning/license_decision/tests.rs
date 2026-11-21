@@ -19,7 +19,9 @@ const OUTPUT_NAR: &str = "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=";
 const SOURCE_DRV: &str = "/nix/store/j151nb5vh176kdrrh1rkilxkdkmvm47w-ed-1.21.1.tar.lz.drv";
 const SOURCE_PATH: &str = "/nix/store/wa88qds9615j2r5imfryzbyg86c97iga-ed-1.21.1.tar.lz";
 const SOURCE_HASH: &str = "sha256-1tDHGSsCsFGckCqTcZBT6GWt5aeEo7Mn2T2IhFeyPEs=";
+const SOURCE_NAR: &str = "sha256-dEsPDHFVSahejFEnqz5gAMxx+ls+idLXQ6qOovYOecE=";
 const REQUEST_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const PROJECT_CONFIG: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const RESPONSE: &str = r#"{"decision":"ACCEPT"}"#;
 
 fn challenge(nar_hash: &str) -> IdentityFactsChallenge {
@@ -32,22 +34,38 @@ fn challenge(nar_hash: &str) -> IdentityFactsChallenge {
         spec_sha256: OBSERVED_SPEC.into(),
         mode: IdentityFactsMode::Questions,
         root: OperationRoot::Operation,
-        questions: vec![crate::planning::identity_facts::IdentityQuestion {
-            store_path: OUTPUT_PATH.into(),
-            deriver: Some(OUTPUT_DRV.into()),
-            nar_hash: nar_hash.into(),
-            outputs: vec![OUTPUT_PATH.into()],
-        }],
+        questions: vec![
+            crate::planning::identity_facts::IdentityQuestion {
+                store_path: OUTPUT_PATH.into(),
+                deriver: Some(OUTPUT_DRV.into()),
+                nar_hash: nar_hash.into(),
+                outputs: vec![OUTPUT_PATH.into()],
+            },
+            crate::planning::identity_facts::IdentityQuestion {
+                store_path: SOURCE_PATH.into(),
+                deriver: Some(SOURCE_DRV.into()),
+                nar_hash: SOURCE_NAR.into(),
+                outputs: vec![SOURCE_PATH.into()],
+            },
+        ],
     }
 }
 
 fn facts(nar_hash: &str) -> Vec<IdentityFact> {
-    vec![IdentityFact {
-        store_path: OUTPUT_PATH.into(),
-        deriver: Some(OUTPUT_DRV.into()),
-        nar_hash: nar_hash.into(),
-        outputs: vec![OUTPUT_PATH.into()],
-    }]
+    vec![
+        IdentityFact {
+            store_path: OUTPUT_PATH.into(),
+            deriver: Some(OUTPUT_DRV.into()),
+            nar_hash: nar_hash.into(),
+            outputs: vec![OUTPUT_PATH.into()],
+        },
+        IdentityFact {
+            store_path: SOURCE_PATH.into(),
+            deriver: Some(SOURCE_DRV.into()),
+            nar_hash: SOURCE_NAR.into(),
+            outputs: vec![SOURCE_PATH.into()],
+        },
+    ]
 }
 
 fn receipt(nar_hash: &str) -> IdentityFactsReceipt {
@@ -98,6 +116,9 @@ fn review() -> LicenseDecisionReview {
             DocumentationReview {
                 path: "share/info/ed.info".into(),
                 license: "GFDL-1.3-or-later".into(),
+                output_sha256: "3618c355d1fd6b5ae66048499735d14a0dd0c438b29e5c2e41040f76fd03d19b"
+                    .into(),
+                license_text_path: "doc/fdl.texi".into(),
                 license_text_sha256:
                     "a7e43ea88ee8fc4722d38482fd1a14c12bfbe2f0512d61980c810627b19cdce5".into(),
                 obligations: vec!["notice".into(), "source".into()],
@@ -105,6 +126,9 @@ fn review() -> LicenseDecisionReview {
             DocumentationReview {
                 path: "share/man/man1/ed.1.gz".into(),
                 license: "GPL-2.0-or-later".into(),
+                output_sha256: "891a6ac40cfdd4e3b58ef59444cd7544d2304feb986752a033270f69ec0a11c2"
+                    .into(),
+                license_text_path: "ed.h".into(),
                 license_text_sha256:
                     "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58".into(),
                 obligations: vec!["notice".into(), "source".into()],
@@ -171,22 +195,15 @@ fn delegation() -> crate::db::AgenticOwnerDecisionRecord {
 }
 
 fn binding(facts: &VerifiedIdentityFacts) -> PolicyBinding {
-    let stage = StageBinding::plan_inventory_evidence(
+    PolicyBinding::test_binding(
         PLAN,
         1,
+        None,
         INVENTORY,
         EVIDENCE_BUNDLE,
-        identity_facts_receipt_digest(facts),
         CandidateBinding::base(BASE).expect("base candidate"),
+        &identity_facts_receipt_digest(facts),
     )
-    .expect("plan stage");
-    PolicyBinding::new(
-        default_catalog_sha256(),
-        default_profile_sha256(),
-        default_binding_sha256(),
-        stage,
-    )
-    .expect("policy binding")
 }
 
 struct Fixture {
@@ -208,24 +225,27 @@ impl Fixture {
         }
     }
 
-    fn verified_with(
-        &self,
-        review: &LicenseDecisionReview,
-    ) -> Result<VerifiedLicenseDecision, LicenseDecisionRefusal> {
-        let context = LicenseDecisionContext {
+    fn context(&self) -> LicenseDecisionContext<'_> {
+        LicenseDecisionContext {
             project_id: "project-1",
             lead_request_id: "lead-1",
             principal: "operator",
             request_sha256: REQUEST_SHA,
-            project_config_hash: &"e".repeat(64),
+            project_config_hash: PROJECT_CONFIG,
             base_commit: BASE,
             reservation: &self.reservation,
             delegation: &self.delegation,
             delegation_revoked: false,
             identity_facts: &self.facts,
             binding: &self.binding,
-        };
-        verify_license_evidence_review(review, &context)
+        }
+    }
+
+    fn verified_with(
+        &self,
+        review: &LicenseDecisionReview,
+    ) -> Result<VerifiedLicenseDecision, LicenseDecisionRefusal> {
+        verify_license_evidence_review(review, &self.context())
     }
 }
 
@@ -276,14 +296,30 @@ fn a_selected_branch_outside_the_expression_ast_is_refused() {
         Err(LicenseDecisionRefusal::BranchNotInExpression)
     );
     assert_eq!(
-        expression_branches("MIT OR Apache-2.0").unwrap(),
+        selectable_branches("MIT OR Apache-2.0").unwrap(),
         ["MIT", "Apache-2.0"]
     );
     assert_eq!(
-        expression_branches("GPL-2.0-only WITH Classpath-exception-2.0").unwrap(),
+        selectable_branches("GPL-2.0-only WITH Classpath-exception-2.0").unwrap(),
         ["GPL-2.0-only WITH Classpath-exception-2.0"]
     );
-    assert!(expression_branches("MIT AND").is_err());
+    assert!(selectable_branches("MIT AND").is_err());
+    assert_eq!(
+        selectable_branches("GPL-2.0-or-later AND MIT").unwrap(),
+        ["GPL-2.0-or-later AND MIT"]
+    );
+    assert_eq!(
+        selectable_branches("(MIT OR Apache-2.0) AND GPL-2.0-only").unwrap(),
+        ["MIT AND GPL-2.0-only", "Apache-2.0 AND GPL-2.0-only"]
+    );
+    assert_eq!(
+        exact_software_obligations("GPL-2.0-or-later AND MIT", "MIT"),
+        Err(LicenseDecisionRefusal::BranchNotInExpression)
+    );
+    assert_eq!(
+        branch_obligations("GPL-2.0-or-later AND MIT").unwrap(),
+        ["notice", "source"]
+    );
 }
 
 #[test]
@@ -315,10 +351,24 @@ fn documentation_is_never_ignored_and_obligations_are_exact() {
         fixture.verified_with(&no_text),
         Err(LicenseDecisionRefusal::DocumentationTextMissing)
     );
+    let mut wrong_output = review();
+    wrong_output.documentation[0].output_sha256 = "f".repeat(64);
+    assert_eq!(
+        fixture.verified_with(&wrong_output),
+        Err(LicenseDecisionRefusal::DocumentationMismatch)
+    );
+    let mut wrong_text_path = review();
+    wrong_text_path.documentation[1].license_text_path = "main.c".into();
+    assert_eq!(
+        fixture.verified_with(&wrong_text_path),
+        Err(LicenseDecisionRefusal::DocumentationTextMissing)
+    );
     let mut extra = review();
     extra.documentation.push(DocumentationReview {
         path: "share/extra".into(),
         license: "GFDL-1.3-or-later".into(),
+        output_sha256: "f".repeat(64),
+        license_text_path: "doc/fdl.texi".into(),
         license_text_sha256: "a7e43ea88ee8fc4722d38482fd1a14c12bfbe2f0512d61980c810627b19cdce5"
             .into(),
         obligations: vec!["notice".into(), "source".into()],
@@ -384,33 +434,108 @@ fn a_copyleft_prior_deny_needs_evidence_but_source_available_nc_and_paid_stay_de
         ),
         Err(LicenseDecisionRefusal::SoftwareDenied)
     );
+    assert!(
+        reconcile_prior_deny(
+            "(AGPL-3.0-only AND MIT)",
+            "AGPL-3.0-only AND MIT",
+            "(AGPL-3.0-only AND MIT)",
+            true,
+            true,
+            true,
+            false
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn an_and_expression_keeps_every_conjunct_and_rejects_a_single_atom() {
+    let fixture = Fixture::new();
+    let mut asset = source_asset().clone();
+    let mut identity = asset["identities"][0].clone();
+    identity["name"] = serde_json::json!("ed-and");
+    identity["version"] = serde_json::json!("1.21.1-and");
+    identity["license"] = serde_json::json!("GPL-2.0-or-later AND MIT");
+    identity
+        .as_object_mut()
+        .expect("identity object")
+        .remove("documentationLicense");
+    let license_evidence = serde_json::json!([
+        {
+            "path": "COPYING",
+            "purpose": "license-text",
+            "role": "license-text",
+            "license": "GPL-2.0-only",
+            "sha256": "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6"
+        },
+        {
+            "path": "ed.h",
+            "purpose": "header",
+            "role": "licensing",
+            "license": "GPL-2.0-or-later",
+            "sha256": "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58"
+        }
+    ]);
+    identity["licenseEvidence"] = license_evidence.clone();
+    identity["outputFiles"] = serde_json::json!([]);
+    asset["evidence"]["licenseEvidenceCanonicalSha256"] =
+        serde_json::json!(canonical_json_sha256(&license_evidence));
+    asset["evidence"]["outputFilesCanonicalSha256"] =
+        serde_json::json!(canonical_json_sha256(&serde_json::json!([])));
+    asset["identities"]
+        .as_array_mut()
+        .expect("identities array")
+        .push(identity);
+
+    let mut and_review = review();
+    and_review.name = "ed-and".into();
+    and_review.version = "1.21.1-and".into();
+    and_review.license_expression = "GPL-2.0-or-later AND MIT".into();
+    and_review.selected_branch = "GPL-2.0-or-later AND MIT".into();
+    and_review.software_obligations = vec!["notice".into(), "source".into()];
+    and_review.documentation.clear();
+    and_review.documentation_obligations.clear();
+    let context = fixture.context();
+    assert!(
+        verify_against_source_asset(&and_review, &context, &asset).is_ok(),
+        "the full AND selection keeps all conjuncts and obligations"
+    );
+
+    let mut atom_only = and_review.clone();
+    atom_only.selected_branch = "MIT".into();
+    atom_only.software_obligations = vec!["notice".into()];
+    assert_eq!(
+        verify_against_source_asset(&atom_only, &context, &asset),
+        Err(LicenseDecisionRefusal::BranchNotInExpression)
+    );
+
+    let mut missing_gpl_obligations = and_review;
+    missing_gpl_obligations.software_obligations = vec!["notice".into()];
+    assert_eq!(
+        verify_against_source_asset(&missing_gpl_obligations, &context, &asset),
+        Err(LicenseDecisionRefusal::ObligationsMismatch)
+    );
 }
 
 #[test]
 fn the_binding_is_a_tagged_real_stage_and_config_hashes_cannot_stand_in() {
     // D1: a project-config hash is not a spec/inventory/plan.
     let fixture = Fixture::new();
-    let forged = PolicyBinding::new(
-        default_catalog_sha256(),
-        default_profile_sha256(),
-        default_binding_sha256(),
-        StageBinding::plan_inventory_evidence(
-            "e".repeat(64),
-            1,
-            INVENTORY,
-            EVIDENCE_BUNDLE,
-            identity_facts_receipt_digest(&fixture.facts),
-            CandidateBinding::base(BASE).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
+    let forged = PolicyBinding::test_binding(
+        &"e".repeat(64),
+        1,
+        None,
+        INVENTORY,
+        EVIDENCE_BUNDLE,
+        CandidateBinding::base(BASE).unwrap(),
+        &identity_facts_receipt_digest(&fixture.facts),
+    );
     let context = LicenseDecisionContext {
         project_id: "project-1",
         lead_request_id: "lead-1",
         principal: "operator",
         request_sha256: REQUEST_SHA,
-        project_config_hash: &"e".repeat(64),
+        project_config_hash: PROJECT_CONFIG,
         base_commit: BASE,
         reservation: &fixture.reservation,
         delegation: &fixture.delegation,
@@ -423,38 +548,17 @@ fn the_binding_is_a_tagged_real_stage_and_config_hashes_cannot_stand_in() {
         Err(LicenseDecisionRefusal::PolicyBindingForged)
     );
 
-    // A spec stage must be real and distinct from the plan inventory.
-    assert!(
-        StageBinding::spec_inventory_evidence(
-            PLAN,
-            1,
-            INVENTORY,
-            INVENTORY,
-            EVIDENCE_BUNDLE,
-            identity_facts_receipt_digest(&fixture.facts),
-            CandidateBinding::base(BASE).unwrap(),
-        )
-        .is_err()
-    );
-
     // A hashed base commit is never a candidate.
     let hashed_base = sha256_hex(BASE.as_bytes());
-    let hashed = StageBinding::plan_inventory_evidence(
+    let binding = PolicyBinding::test_binding(
         PLAN,
         1,
+        None,
         INVENTORY,
         EVIDENCE_BUNDLE,
-        identity_facts_receipt_digest(&fixture.facts),
         CandidateBinding::candidate(hashed_base).unwrap(),
-    )
-    .unwrap();
-    let binding = PolicyBinding::new(
-        default_catalog_sha256(),
-        default_profile_sha256(),
-        default_binding_sha256(),
-        hashed,
-    )
-    .unwrap();
+        &identity_facts_receipt_digest(&fixture.facts),
+    );
     let context = LicenseDecisionContext {
         binding: &binding,
         ..context
@@ -466,29 +570,21 @@ fn the_binding_is_a_tagged_real_stage_and_config_hashes_cannot_stand_in() {
 
     // Renaming the stage to a runtime spec with a foreign plan is refused.
     let fixture = Fixture::new();
-    let foreign_spec = StageBinding::spec_inventory_evidence(
+    let binding = PolicyBinding::test_binding(
         PLAN,
         1,
-        "9".repeat(64).as_str(),
+        Some(&"9".repeat(64)),
         INVENTORY,
         EVIDENCE_BUNDLE,
-        identity_facts_receipt_digest(&fixture.facts),
         CandidateBinding::base(BASE).unwrap(),
-    )
-    .unwrap();
-    let binding = PolicyBinding::new(
-        default_catalog_sha256(),
-        default_profile_sha256(),
-        default_binding_sha256(),
-        foreign_spec,
-    )
-    .unwrap();
+        &identity_facts_receipt_digest(&fixture.facts),
+    );
     let context = LicenseDecisionContext {
         project_id: "project-1",
         lead_request_id: "lead-1",
         principal: "operator",
         request_sha256: REQUEST_SHA,
-        project_config_hash: &"e".repeat(64),
+        project_config_hash: PROJECT_CONFIG,
         base_commit: BASE,
         reservation: &fixture.reservation,
         delegation: &fixture.delegation,
@@ -535,10 +631,101 @@ fn text_digests_request_response_and_receipt_are_tamper_evident() {
     let foreign = verified("sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
     let mut tampered = Fixture::new();
     tampered.facts = foreign;
+    // Rebuild the binding for the foreign receipt: the digest now matches, so
+    // the refusal must come from exact output/source fact membership.
+    tampered.binding = binding(&tampered.facts);
     assert_eq!(
         tampered.verified_with(&review()),
-        Err(LicenseDecisionRefusal::ReceiptDigestMismatch)
+        Err(LicenseDecisionRefusal::ReceiptMismatch)
     );
+
+    let source_missing = verified_output_only();
+    let mut missing_source = Fixture::new();
+    missing_source.facts = source_missing;
+    missing_source.binding = binding(&missing_source.facts);
+    assert_eq!(
+        missing_source.verified_with(&review()),
+        Err(LicenseDecisionRefusal::ReceiptMismatch)
+    );
+
+    let plan_root = verified_with_root("/nix/store/cccccccccccccccccccccccccccccccc-plan-root");
+    let mut wide = Fixture::new();
+    wide.facts = plan_root;
+    wide.binding = binding(&wide.facts);
+    assert!(
+        wide.verified_with(&review()).is_ok(),
+        "a plan-wide receipt with a legitimate plan observed root must pass exact membership"
+    );
+}
+
+fn output_only_facts() -> Vec<IdentityFact> {
+    vec![IdentityFact {
+        store_path: OUTPUT_PATH.into(),
+        deriver: Some(OUTPUT_DRV.into()),
+        nar_hash: OUTPUT_NAR.into(),
+        outputs: vec![OUTPUT_PATH.into()],
+    }]
+}
+
+fn verified_output_only() -> VerifiedIdentityFacts {
+    let challenge = IdentityFactsChallenge {
+        operation_id: "operation-1".into(),
+        runtime_id: "runtime-1".into(),
+        nonce: "identity-facts:test".into(),
+        pin: PIN.into(),
+        plan_sha256: PLAN.into(),
+        spec_sha256: OBSERVED_SPEC.into(),
+        mode: IdentityFactsMode::Questions,
+        root: OperationRoot::Operation,
+        questions: vec![crate::planning::identity_facts::IdentityQuestion {
+            store_path: OUTPUT_PATH.into(),
+            deriver: Some(OUTPUT_DRV.into()),
+            nar_hash: OUTPUT_NAR.into(),
+            outputs: vec![OUTPUT_PATH.into()],
+        }],
+    };
+    let facts = output_only_facts();
+    let envelope = IdentityFactsEnvelope {
+        schema_version: 1,
+        context: IDENTITY_FACTS_CONTEXT.into(),
+        challenge: challenge.clone(),
+        manifest: IdentityFactsManifest {
+            observed_root: OUTPUT_PATH.into(),
+            fact_count: facts.len(),
+            closure_manifest_sha256: closure_manifest_sha256(&facts),
+            facts,
+            truncated: false,
+        },
+    };
+    let signature = sign(&envelope, BEARER).expect("the fixture receipt signs");
+    let receipt = IdentityFactsReceipt {
+        envelope,
+        signature,
+    };
+    verify(&receipt, BEARER, &challenge).expect("the fixture receipt verifies")
+}
+
+fn verified_with_root(root: &str) -> VerifiedIdentityFacts {
+    let challenge = challenge(OUTPUT_NAR);
+    let facts = facts(OUTPUT_NAR);
+    let envelope = IdentityFactsEnvelope {
+        schema_version: 1,
+        context: IDENTITY_FACTS_CONTEXT.into(),
+        challenge: challenge.clone(),
+        manifest: IdentityFactsManifest {
+            observed_root: root.into(),
+            fact_count: facts.len(),
+            closure_manifest_sha256: closure_manifest_sha256(&facts),
+            facts,
+            truncated: false,
+        },
+    };
+    let signature = sign(&envelope, BEARER).expect("the fixture receipt signs");
+    let receipt = IdentityFactsReceipt {
+        envelope,
+        signature,
+    };
+    verify(&receipt, BEARER, &challenge).expect("the fixture receipt verifies")
 }
 
 #[test]
@@ -571,7 +758,7 @@ fn actor_delegation_project_and_terminal_states_fail_closed() {
         lead_request_id: "lead-1",
         principal: "operator",
         request_sha256: REQUEST_SHA,
-        project_config_hash: &"e".repeat(64),
+        project_config_hash: PROJECT_CONFIG,
         base_commit: BASE,
         reservation: &revoked.reservation,
         delegation: &revoked.delegation,
@@ -586,7 +773,7 @@ fn actor_delegation_project_and_terminal_states_fail_closed() {
         lead_request_id: "lead-1",
         principal: "operator",
         request_sha256: REQUEST_SHA,
-        project_config_hash: &"e".repeat(64),
+        project_config_hash: PROJECT_CONFIG,
         base_commit: BASE,
         reservation: &fixture.reservation,
         delegation: &fixture.delegation,
@@ -660,7 +847,7 @@ fn a_stored_receipt_is_reverified_with_the_broker_bearer() {
         pin: PIN.into(),
         observed_root: OUTPUT_PATH.into(),
         root_binding: IdentityFactsRootBinding::SpecCacheObservation,
-        fact_count: 1,
+        fact_count: facts(OUTPUT_NAR).len() as u32,
         closure_manifest_sha256: receipt.envelope.manifest.closure_manifest_sha256.clone(),
         manifest_json: serde_json::to_string(&receipt.envelope.manifest).unwrap(),
         envelope_json: serde_json::to_string(&receipt.envelope).unwrap(),

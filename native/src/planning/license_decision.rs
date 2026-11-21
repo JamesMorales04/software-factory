@@ -26,6 +26,9 @@ use std::sync::OnceLock;
 use super::identity_facts::{
     self, IDENTITY_FACTS_CONTEXT, IdentityFactsReceipt, VerifiedIdentityFacts,
 };
+use crate::db::{StoredEnvironmentPlan, StoredEnvironmentSpec};
+use crate::planning::environment::{EnvironmentPlanStatus, EnvironmentSpecStatus};
+
 use super::lead_classification::{
     ClassificationRefusal, VerifiedLicenseMandate, is_sha256, sha256_hex,
 };
@@ -95,170 +98,197 @@ impl CandidateBinding {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StageKind {
+    PlanInventoryEvidence,
+    SpecInventoryEvidence,
+}
+
 /// The exact real stage of the environment at decision time.
 ///
-/// Before the environment spec exists, the only real artefacts are the retained
-/// plan, its real licence inventory and the evidence snapshot. A plan hash is
-/// never presented as a spec hash, and a spec-required consumer stays BLOCKED
-/// until a real spec row exists. When the spec materialises the decision may be
-/// REBOUND to the same verdict only if plan/inventory/evidence/policy/receipt
-/// are unchanged; any change is STALE.
+/// The hashes are computed by [`PolicyBinding::from_plan_inventory_evidence`] or
+/// [`PolicyBinding::from_spec_inventory_evidence`] from the actual loaded
+/// `StoredEnvironmentPlan`/`StoredEnvironmentSpec`, the real evidence bundle and
+/// the verified identity-facts receipt. No caller-supplied hash string can
+/// create this value on the authority path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "stage",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum StageBinding {
-    PlanInventoryEvidence {
-        plan_sha256: String,
-        plan_revision: u32,
-        inventory_sha256: String,
-        evidence_bundle_sha256: String,
-        identity_facts_receipt_digest: String,
-        candidate: CandidateBinding,
-    },
-    SpecInventoryEvidence {
-        plan_sha256: String,
-        plan_revision: u32,
-        spec_sha256: String,
-        inventory_sha256: String,
-        evidence_bundle_sha256: String,
-        identity_facts_receipt_digest: String,
-        candidate: CandidateBinding,
-    },
+#[serde(rename_all = "camelCase")]
+pub struct StageBinding {
+    stage: StageKind,
+    plan_sha256: String,
+    plan_revision: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spec_sha256: Option<String>,
+    inventory_sha256: String,
+    evidence_bundle_sha256: String,
+    identity_facts_receipt_digest: String,
+    candidate: CandidateBinding,
 }
 
 impl StageBinding {
-    #[allow(clippy::too_many_arguments)]
-    pub fn plan_inventory_evidence(
-        plan_sha256: impl Into<String>,
-        plan_revision: u32,
-        inventory_sha256: impl Into<String>,
-        evidence_bundle_sha256: impl Into<String>,
-        identity_facts_receipt_digest: impl Into<String>,
-        candidate: CandidateBinding,
-    ) -> Result<Self, LicenseDecisionRefusal> {
-        let stage = Self::PlanInventoryEvidence {
-            plan_sha256: plan_sha256.into(),
-            plan_revision,
-            inventory_sha256: inventory_sha256.into(),
-            evidence_bundle_sha256: evidence_bundle_sha256.into(),
-            identity_facts_receipt_digest: identity_facts_receipt_digest.into(),
-            candidate,
-        };
-        stage.validate()?;
-        Ok(stage)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn spec_inventory_evidence(
-        plan_sha256: impl Into<String>,
-        plan_revision: u32,
-        spec_sha256: impl Into<String>,
-        inventory_sha256: impl Into<String>,
-        evidence_bundle_sha256: impl Into<String>,
-        identity_facts_receipt_digest: impl Into<String>,
-        candidate: CandidateBinding,
-    ) -> Result<Self, LicenseDecisionRefusal> {
-        let stage = Self::SpecInventoryEvidence {
-            plan_sha256: plan_sha256.into(),
-            plan_revision,
-            spec_sha256: spec_sha256.into(),
-            inventory_sha256: inventory_sha256.into(),
-            evidence_bundle_sha256: evidence_bundle_sha256.into(),
-            identity_facts_receipt_digest: identity_facts_receipt_digest.into(),
-            candidate,
-        };
-        stage.validate()?;
-        Ok(stage)
+    pub fn stage(&self) -> StageKind {
+        self.stage
     }
 
     pub fn plan_sha256(&self) -> &str {
-        match self {
-            Self::PlanInventoryEvidence { plan_sha256, .. }
-            | Self::SpecInventoryEvidence { plan_sha256, .. } => plan_sha256,
-        }
+        &self.plan_sha256
     }
 
     pub fn plan_revision(&self) -> u32 {
-        match self {
-            Self::PlanInventoryEvidence { plan_revision, .. }
-            | Self::SpecInventoryEvidence { plan_revision, .. } => *plan_revision,
-        }
-    }
-
-    pub fn inventory_sha256(&self) -> &str {
-        match self {
-            Self::PlanInventoryEvidence {
-                inventory_sha256, ..
-            }
-            | Self::SpecInventoryEvidence {
-                inventory_sha256, ..
-            } => inventory_sha256,
-        }
+        self.plan_revision
     }
 
     pub fn spec_sha256(&self) -> Option<&str> {
-        match self {
-            Self::SpecInventoryEvidence { spec_sha256, .. } => Some(spec_sha256),
-            Self::PlanInventoryEvidence { .. } => None,
-        }
+        self.spec_sha256.as_deref()
+    }
+
+    pub fn inventory_sha256(&self) -> &str {
+        &self.inventory_sha256
     }
 
     pub fn evidence_bundle_sha256(&self) -> &str {
-        match self {
-            Self::PlanInventoryEvidence {
-                evidence_bundle_sha256,
-                ..
-            }
-            | Self::SpecInventoryEvidence {
-                evidence_bundle_sha256,
-                ..
-            } => evidence_bundle_sha256,
-        }
+        &self.evidence_bundle_sha256
     }
 
     pub fn identity_facts_receipt_digest(&self) -> &str {
-        match self {
-            Self::PlanInventoryEvidence {
-                identity_facts_receipt_digest,
-                ..
-            }
-            | Self::SpecInventoryEvidence {
-                identity_facts_receipt_digest,
-                ..
-            } => identity_facts_receipt_digest,
-        }
+        &self.identity_facts_receipt_digest
     }
 
     pub fn candidate(&self) -> &CandidateBinding {
-        match self {
-            Self::PlanInventoryEvidence { candidate, .. }
-            | Self::SpecInventoryEvidence { candidate, .. } => candidate,
-        }
+        &self.candidate
     }
 
-    fn validate(&self) -> Result<(), LicenseDecisionRefusal> {
-        if !is_sha256(self.plan_sha256())
-            || !is_sha256(self.inventory_sha256())
-            || !is_sha256(self.evidence_bundle_sha256())
-            || !is_sha256(self.identity_facts_receipt_digest())
-            || self.plan_revision() == 0
-            || self.plan_sha256() == self.inventory_sha256()
-            || self.plan_sha256() == self.evidence_bundle_sha256()
-            || self.inventory_sha256() == self.evidence_bundle_sha256()
+    fn from_plan(
+        plan: &StoredEnvironmentPlan,
+        evidence_bundle: &serde_json::Value,
+        candidate: CandidateBinding,
+        identity_facts: &VerifiedIdentityFacts,
+    ) -> Result<Self, LicenseDecisionRefusal> {
+        let plan_sha256 = plan.plan_sha256.clone();
+        let plan_revision = plan.revision;
+        let inventory_sha256 = plan.plan.license_inventory_sha256.clone();
+        if !is_sha256(&plan_sha256)
+            || plan_revision == 0
+            || !is_sha256(&inventory_sha256)
+            || plan.plan.license_inventory.inventory_sha256 != inventory_sha256
+            || plan.plan.base_commit.trim().is_empty()
+            || !is_commit(&plan.plan.base_commit)
+            || !matches!(
+                plan.plan.status,
+                EnvironmentPlanStatus::CoreValidated
+                    | EnvironmentPlanStatus::LeadApproved
+                    | EnvironmentPlanStatus::Frozen
+            )
         {
             return Err(LicenseDecisionRefusal::PolicyBindingIncomplete);
         }
-        self.candidate().validate()?;
-        if let Some(spec_sha256) = self.spec_sha256()
-            && (!is_sha256(spec_sha256) || spec_sha256 == self.inventory_sha256())
+        if plan.plan.license_inventory.catalog_sha256 != default_catalog_sha256()
+            || plan.plan.license_inventory.profile_sha256 != default_profile_sha256()
+        {
+            return Err(LicenseDecisionRefusal::PolicyMismatch);
+        }
+        let evidence_bundle_sha256 = canonical_json_sha256(evidence_bundle);
+        if evidence_bundle
+            .as_object()
+            .is_none_or(|object| object.is_empty())
+            || evidence_bundle_sha256 == plan_sha256
+            || evidence_bundle_sha256 == inventory_sha256
         {
             return Err(LicenseDecisionRefusal::PolicyBindingIncomplete);
         }
-        Ok(())
+        validate_candidate(&candidate, &plan.plan.base_commit)?;
+        if identity_facts.receipt().envelope.challenge.plan_sha256 != plan_sha256 {
+            return Err(LicenseDecisionRefusal::PlanBindingMismatch);
+        }
+        let receipt_digest = identity_facts_receipt_digest(identity_facts);
+        Ok(Self {
+            stage: StageKind::PlanInventoryEvidence,
+            plan_sha256,
+            plan_revision,
+            spec_sha256: None,
+            inventory_sha256,
+            evidence_bundle_sha256,
+            identity_facts_receipt_digest: receipt_digest,
+            candidate,
+        })
+    }
+
+    fn from_spec(
+        plan: &StoredEnvironmentPlan,
+        spec: &StoredEnvironmentSpec,
+        evidence_bundle: &serde_json::Value,
+        candidate: CandidateBinding,
+        identity_facts: &VerifiedIdentityFacts,
+    ) -> Result<Self, LicenseDecisionRefusal> {
+        let plan_sha256 = plan.plan_sha256.clone();
+        let plan_revision = plan.revision;
+        let spec_sha256 = spec.spec_sha256.clone();
+        let inventory_sha256 = plan.plan.license_inventory_sha256.clone();
+        if !is_sha256(&plan_sha256)
+            || plan_revision == 0
+            || !is_sha256(&inventory_sha256)
+            || !is_sha256(&spec_sha256)
+            || plan.plan.license_inventory.inventory_sha256 != inventory_sha256
+            || spec.spec.plan_sha256 != plan_sha256
+            || spec.spec.license_inventory_sha256 != inventory_sha256
+            || spec.spec.base_commit != plan.plan.base_commit
+            || spec.spec.status != EnvironmentSpecStatus::Frozen
+            || spec_sha256 == inventory_sha256
+            || spec_sha256 == plan_sha256
+        {
+            return Err(LicenseDecisionRefusal::PolicyBindingIncomplete);
+        }
+        if plan.plan.license_inventory.catalog_sha256 != default_catalog_sha256()
+            || plan.plan.license_inventory.profile_sha256 != default_profile_sha256()
+        {
+            return Err(LicenseDecisionRefusal::PolicyMismatch);
+        }
+        let evidence_bundle_sha256 = canonical_json_sha256(evidence_bundle);
+        if evidence_bundle
+            .as_object()
+            .is_none_or(|object| object.is_empty())
+            || evidence_bundle_sha256 == plan_sha256
+            || evidence_bundle_sha256 == inventory_sha256
+            || evidence_bundle_sha256 == spec_sha256
+        {
+            return Err(LicenseDecisionRefusal::PolicyBindingIncomplete);
+        }
+        validate_candidate(&candidate, &plan.plan.base_commit)?;
+        let receipt = identity_facts.receipt();
+        if receipt.envelope.challenge.plan_sha256 != plan_sha256
+            || receipt.envelope.challenge.spec_sha256 != spec_sha256
+        {
+            return Err(LicenseDecisionRefusal::SpecBindingMismatch);
+        }
+        Ok(Self {
+            stage: StageKind::SpecInventoryEvidence,
+            plan_sha256,
+            plan_revision,
+            spec_sha256: Some(spec_sha256),
+            inventory_sha256,
+            evidence_bundle_sha256,
+            identity_facts_receipt_digest: identity_facts_receipt_digest(identity_facts),
+            candidate,
+        })
+    }
+}
+
+fn validate_candidate(
+    candidate: &CandidateBinding,
+    plan_base_commit: &str,
+) -> Result<(), LicenseDecisionRefusal> {
+    candidate.validate()?;
+    match candidate {
+        CandidateBinding::Base { base_commit } if base_commit == plan_base_commit => Ok(()),
+        CandidateBinding::Base { .. } => Err(LicenseDecisionRefusal::PolicyBindingIncomplete),
+        CandidateBinding::Candidate { candidate_sha256 } => {
+            if candidate_sha256 == &sha256_hex(plan_base_commit.as_bytes()) {
+                Err(LicenseDecisionRefusal::PolicyBindingForged)
+            } else {
+                Ok(())
+            }
+        }
     }
 }
 
@@ -272,12 +302,41 @@ pub struct PolicyBinding {
 }
 
 impl PolicyBinding {
-    /// Construct a binding from Core-owned real artefacts.
-    ///
-    /// Catalogue/profile must be the current shared policy; the policy digest is
-    /// the builder-policy digest Core loaded; the stage is a real plan or spec
-    /// inventory stage with its signed identity-facts receipt digest.
-    pub fn new(
+    /// Bind a pre-spec decision to the real retained plan, its real licence
+    /// inventory, the real evidence bundle and the HMAC-verified receipt.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_plan_inventory_evidence(
+        catalog_sha256: impl Into<String>,
+        profile_sha256: impl Into<String>,
+        policy_sha256: impl Into<String>,
+        plan: &StoredEnvironmentPlan,
+        evidence_bundle: &serde_json::Value,
+        candidate: CandidateBinding,
+        identity_facts: &VerifiedIdentityFacts,
+    ) -> Result<Self, LicenseDecisionRefusal> {
+        let stage = StageBinding::from_plan(plan, evidence_bundle, candidate, identity_facts)?;
+        Self::from_stage(catalog_sha256, profile_sha256, policy_sha256, stage)
+    }
+
+    /// Bind a decision to a real frozen spec and its real inventory. A
+    /// spec-required consumer must not use this before a spec row exists.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_spec_inventory_evidence(
+        catalog_sha256: impl Into<String>,
+        profile_sha256: impl Into<String>,
+        policy_sha256: impl Into<String>,
+        plan: &StoredEnvironmentPlan,
+        spec: &StoredEnvironmentSpec,
+        evidence_bundle: &serde_json::Value,
+        candidate: CandidateBinding,
+        identity_facts: &VerifiedIdentityFacts,
+    ) -> Result<Self, LicenseDecisionRefusal> {
+        let stage =
+            StageBinding::from_spec(plan, spec, evidence_bundle, candidate, identity_facts)?;
+        Self::from_stage(catalog_sha256, profile_sha256, policy_sha256, stage)
+    }
+
+    fn from_stage(
         catalog_sha256: impl Into<String>,
         profile_sha256: impl Into<String>,
         policy_sha256: impl Into<String>,
@@ -290,16 +349,46 @@ impl PolicyBinding {
         {
             return Err(LicenseDecisionRefusal::PolicyMismatch);
         }
-        if !is_sha256(&policy_sha256) {
-            return Err(LicenseDecisionRefusal::PolicyBindingIncomplete);
+        if policy_sha256 != default_binding_sha256() {
+            return Err(LicenseDecisionRefusal::PolicyMismatch);
         }
-        stage.validate()?;
         Ok(Self {
             catalog_sha256,
             profile_sha256,
             policy_sha256,
             stage,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_binding(
+        plan_sha256: &str,
+        plan_revision: u32,
+        spec_sha256: Option<&str>,
+        inventory_sha256: &str,
+        evidence_bundle_sha256: &str,
+        candidate: CandidateBinding,
+        identity_facts_receipt_digest: &str,
+    ) -> Self {
+        Self {
+            catalog_sha256: default_catalog_sha256().to_owned(),
+            profile_sha256: default_profile_sha256().to_owned(),
+            policy_sha256: default_binding_sha256().to_owned(),
+            stage: StageBinding {
+                stage: if spec_sha256.is_some() {
+                    StageKind::SpecInventoryEvidence
+                } else {
+                    StageKind::PlanInventoryEvidence
+                },
+                plan_sha256: plan_sha256.to_owned(),
+                plan_revision,
+                spec_sha256: spec_sha256.map(str::to_owned),
+                inventory_sha256: inventory_sha256.to_owned(),
+                evidence_bundle_sha256: evidence_bundle_sha256.to_owned(),
+                identity_facts_receipt_digest: identity_facts_receipt_digest.to_owned(),
+                candidate,
+            },
+        }
     }
 
     pub fn catalog_sha256(&self) -> &str {
@@ -326,7 +415,6 @@ impl PolicyBinding {
         self.stage.identity_facts_receipt_digest()
     }
 
-    /// Serialized stage for durable storage (`stage_json`).
     pub fn stage_json(&self) -> String {
         serde_json::to_string(&self.stage).expect("binding stage is serializable")
     }
@@ -338,6 +426,10 @@ impl PolicyBinding {
 pub struct DocumentationReview {
     pub path: String,
     pub license: String,
+    /// SHA-256 of the exact delivered documentation output file.
+    pub output_sha256: String,
+    /// Explicit path of the licensing text used for this document.
+    pub license_text_path: String,
     pub license_text_sha256: String,
     pub obligations: Vec<String>,
 }
@@ -379,6 +471,8 @@ pub struct LicenseDecisionReview {
 pub struct DocumentationDecision {
     pub path: String,
     pub license: String,
+    pub output_sha256: String,
+    pub license_text_path: String,
     pub license_text_sha256: String,
     pub obligations: Vec<String>,
     pub verdict: String,
@@ -725,6 +819,25 @@ fn is_commit(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn receipt_fact(
+    facts: &[super::identity_facts::IdentityFact],
+    store_path: &str,
+    deriver: &str,
+    nar_hash: &str,
+) -> Result<(), LicenseDecisionRefusal> {
+    let fact = facts
+        .iter()
+        .find(|fact| fact.store_path == store_path)
+        .ok_or(LicenseDecisionRefusal::ReceiptMismatch)?;
+    if fact.deriver.as_deref() != Some(deriver)
+        || fact.nar_hash != nar_hash
+        || !fact.outputs.iter().any(|output| output == store_path)
+    {
+        return Err(LicenseDecisionRefusal::ReceiptMismatch);
+    }
+    Ok(())
+}
+
 fn exact<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(serde_json::Value::as_str)
 }
@@ -820,35 +933,37 @@ pub fn verify_stored_identity_facts(
         .map_err(|_| LicenseDecisionRefusal::ReceiptMismatch)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Expr {
+    Atom(String),
+    With(String, String),
+    And(Vec<Expr>),
+    Or(Vec<Expr>),
+}
+
 fn tokenize_expression(expression: &str) -> Result<Vec<String>, LicenseDecisionRefusal> {
-    if expression.trim().is_empty() {
-        return Err(LicenseDecisionRefusal::InvalidExpression);
-    }
     let mut tokens = Vec::new();
-    let mut depth = 0i32;
-    for raw in expression.split_whitespace() {
-        let mut token = raw;
-        while let Some(rest) = token.strip_prefix('(') {
-            depth += 1;
-            token = rest;
-        }
-        if token.is_empty() {
-            continue;
-        }
-        let mut trailing = 0;
-        while let Some(rest) = token.strip_suffix(')') {
-            trailing += 1;
-            token = rest;
-        }
-        if !token.is_empty() {
-            tokens.push(token.to_string());
-        }
-        depth -= trailing;
-        if depth < 0 || trailing > 0 && token.is_empty() {
-            return Err(LicenseDecisionRefusal::InvalidExpression);
+    let mut current = String::new();
+    for character in expression.chars() {
+        match character {
+            '(' | ')' => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+                tokens.push(character.to_string());
+            }
+            character if character.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            character => current.push(character),
         }
     }
-    if depth != 0 {
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    if tokens.is_empty() {
         return Err(LicenseDecisionRefusal::InvalidExpression);
     }
     Ok(tokens)
@@ -858,46 +973,210 @@ fn is_operator(token: &str) -> bool {
     matches!(token.to_ascii_uppercase().as_str(), "AND" | "OR" | "WITH")
 }
 
-/// Collect the selectable atom branches of an SPDX `AND`/`OR`/`WITH` expression.
-pub fn expression_branches(expression: &str) -> Result<Vec<String>, LicenseDecisionRefusal> {
-    let tokens = tokenize_expression(expression)?;
-    let mut branches = Vec::new();
-    let mut index = 0usize;
-    while index < tokens.len() {
-        let atom = &tokens[index];
-        if is_operator(atom) {
+struct ExpressionParser {
+    tokens: Vec<String>,
+    position: usize,
+}
+
+impl ExpressionParser {
+    fn new(expression: &str) -> Result<Self, LicenseDecisionRefusal> {
+        Ok(Self {
+            tokens: tokenize_expression(expression)?,
+            position: 0,
+        })
+    }
+
+    fn parse(mut self) -> Result<Expr, LicenseDecisionRefusal> {
+        let expression = self.parse_or()?;
+        if self.position != self.tokens.len() {
             return Err(LicenseDecisionRefusal::InvalidExpression);
         }
-        index += 1;
-        let mut branch = atom.clone();
-        if tokens
-            .get(index)
-            .is_some_and(|value| value.eq_ignore_ascii_case("WITH"))
+        Ok(expression)
+    }
+
+    fn peek(&self) -> Option<&str> {
+        self.tokens.get(self.position).map(String::as_str)
+    }
+
+    fn take(&mut self, expected: &str) -> bool {
+        if self
+            .peek()
+            .is_some_and(|token| token.eq_ignore_ascii_case(expected))
         {
-            let exception = tokens
-                .get(index + 1)
-                .filter(|value| !is_operator(value))
-                .ok_or(LicenseDecisionRefusal::InvalidExpression)?;
-            branch = format!("{} WITH {}", atom, exception);
-            index += 2;
-        }
-        branches.push(branch);
-        if index == tokens.len() {
-            break;
-        }
-        let operator = &tokens[index];
-        if !operator.eq_ignore_ascii_case("AND") && !operator.eq_ignore_ascii_case("OR") {
-            return Err(LicenseDecisionRefusal::InvalidExpression);
-        }
-        index += 1;
-        if index == tokens.len() {
-            return Err(LicenseDecisionRefusal::InvalidExpression);
+            self.position += 1;
+            true
+        } else {
+            false
         }
     }
+
+    fn parse_or(&mut self) -> Result<Expr, LicenseDecisionRefusal> {
+        let mut parts = vec![self.parse_and()?];
+        while self.take("OR") {
+            parts.push(self.parse_and()?);
+        }
+        Ok(if parts.len() == 1 {
+            parts.remove(0)
+        } else {
+            Expr::Or(parts)
+        })
+    }
+
+    fn parse_and(&mut self) -> Result<Expr, LicenseDecisionRefusal> {
+        let mut parts = vec![self.parse_with()?];
+        while self.take("AND") {
+            parts.push(self.parse_with()?);
+        }
+        Ok(if parts.len() == 1 {
+            parts.remove(0)
+        } else {
+            Expr::And(parts)
+        })
+    }
+
+    fn parse_with(&mut self) -> Result<Expr, LicenseDecisionRefusal> {
+        let base = self.parse_atom()?;
+        if self.take("WITH") {
+            let exception = self.parse_atom()?;
+            let Expr::Atom(exception) = exception else {
+                return Err(LicenseDecisionRefusal::InvalidExpression);
+            };
+            let Expr::Atom(base) = base else {
+                return Err(LicenseDecisionRefusal::InvalidExpression);
+            };
+            Ok(Expr::With(base, exception))
+        } else {
+            Ok(base)
+        }
+    }
+
+    fn parse_atom(&mut self) -> Result<Expr, LicenseDecisionRefusal> {
+        if self.take("(") {
+            let expression = self.parse_or()?;
+            if !self.take(")") {
+                return Err(LicenseDecisionRefusal::InvalidExpression);
+            }
+            return Ok(expression);
+        }
+        let Some(token) = self.peek().map(str::to_owned) else {
+            return Err(LicenseDecisionRefusal::InvalidExpression);
+        };
+        if is_operator(&token) || token == ")" {
+            return Err(LicenseDecisionRefusal::InvalidExpression);
+        }
+        self.position += 1;
+        Ok(Expr::Atom(token))
+    }
+}
+
+fn select_branches(expression: &Expr) -> Vec<String> {
+    match expression {
+        Expr::Atom(atom) => vec![atom.clone()],
+        Expr::With(base, exception) => vec![format!("{base} WITH {exception}")],
+        Expr::Or(parts) => parts.iter().flat_map(select_branches).collect(),
+        Expr::And(parts) => {
+            let mut branches = vec![String::new()];
+            for part in parts {
+                let alternatives = select_branches(part);
+                let mut next = Vec::new();
+                for prefix in &branches {
+                    for alternative in &alternatives {
+                        if prefix.is_empty() {
+                            next.push(alternative.clone());
+                        } else {
+                            next.push(format!("{prefix} AND {alternative}"));
+                        }
+                    }
+                }
+                branches = next;
+            }
+            branches
+        }
+    }
+}
+
+/// Selectable branches of a real SPDX `AND`/`OR`/`WITH` expression.
+///
+/// `OR` yields alternatives. `AND` keeps every conjunct in each branch, so
+/// choosing one atom of a conjunction is never a valid branch. `WITH` is one
+/// branch of its base plus exception.
+pub fn selectable_branches(expression: &str) -> Result<Vec<String>, LicenseDecisionRefusal> {
+    let parsed = ExpressionParser::new(expression)?.parse()?;
+    let branches = select_branches(&parsed);
     if branches.is_empty() {
         return Err(LicenseDecisionRefusal::InvalidExpression);
     }
     Ok(branches)
+}
+
+fn branch_atoms(branch: &str) -> Result<Vec<String>, LicenseDecisionRefusal> {
+    let parsed = ExpressionParser::new(branch)?.parse()?;
+    if matches!(parsed, Expr::Or(_)) {
+        return Err(LicenseDecisionRefusal::InvalidExpression);
+    }
+    let mut atoms = Vec::new();
+    fn collect(expression: &Expr, atoms: &mut Vec<String>) -> Result<(), LicenseDecisionRefusal> {
+        match expression {
+            Expr::Atom(atom) => {
+                atoms.push(atom.clone());
+                Ok(())
+            }
+            Expr::With(base, _) => {
+                atoms.push(base.clone());
+                Ok(())
+            }
+            Expr::And(parts) => {
+                for part in parts {
+                    collect(part, atoms)?;
+                }
+                Ok(())
+            }
+            Expr::Or(_) => Err(LicenseDecisionRefusal::InvalidExpression),
+        }
+    }
+    collect(&parsed, &mut atoms)?;
+    Ok(atoms)
+}
+
+/// Exact obligations for one selected branch: the union of every conjunct's
+/// catalogue obligations, preserving first occurrence.
+pub fn branch_obligations(branch: &str) -> Result<Vec<String>, LicenseDecisionRefusal> {
+    let atoms = branch_atoms(branch)?;
+    let mut obligations = Vec::new();
+    for atom in atoms {
+        let atom_obligations =
+            catalogue_obligations(&atom).ok_or(LicenseDecisionRefusal::SoftwareUnknown)?;
+        for obligation in atom_obligations {
+            if !obligations.contains(&obligation) {
+                obligations.push(obligation);
+            }
+        }
+    }
+    if obligations.is_empty() {
+        return Err(LicenseDecisionRefusal::SoftwareUnknown);
+    }
+    Ok(obligations)
+}
+
+fn branch_permits_commercial_no_fee(branch: &str) -> Result<bool, LicenseDecisionRefusal> {
+    for atom in branch_atoms(branch)? {
+        let entry = catalogue_entry(&atom).ok_or(LicenseDecisionRefusal::SoftwareUnknown)?;
+        if !family_permits_commercial_no_fee(&entry.family) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn exact_software_obligations(
+    expression: &str,
+    selected_branch: &str,
+) -> Result<Vec<String>, LicenseDecisionRefusal> {
+    let branches = selectable_branches(expression)?;
+    if !branches.iter().any(|branch| branch == selected_branch) {
+        return Err(LicenseDecisionRefusal::BranchNotInExpression);
+    }
+    branch_obligations(selected_branch)
 }
 
 fn base_atom(branch: &str) -> &str {
@@ -960,8 +1239,14 @@ pub(crate) fn reconcile_prior_deny(
     commercial_use: bool,
     payment_required: bool,
 ) -> Result<(), LicenseDecisionRefusal> {
-    if expression != selected_branch || expression != identity_license {
+    if expression != identity_license {
         return Err(LicenseDecisionRefusal::SoftwareDenied);
+    }
+    if !selectable_branches(expression)?
+        .iter()
+        .any(|branch| branch == selected_branch)
+    {
+        return Err(LicenseDecisionRefusal::BranchNotInExpression);
     }
     if payment_required {
         return Err(LicenseDecisionRefusal::PaymentRequired);
@@ -972,12 +1257,23 @@ pub(crate) fn reconcile_prior_deny(
     if !trusted_text || !obligations_exact {
         return Err(LicenseDecisionRefusal::SoftwareDenied);
     }
-    let entry = catalogue_entry(base_atom(selected_branch))
-        .ok_or(LicenseDecisionRefusal::SoftwareUnknown)?;
-    if entry.family == "source-available" || !family_is_copyleft(&entry.family) {
-        return Err(LicenseDecisionRefusal::SoftwareDenied);
+    let atoms = branch_atoms(selected_branch)?;
+    let mut saw_copyleft = false;
+    for atom in atoms {
+        let entry = catalogue_entry(&atom).ok_or(LicenseDecisionRefusal::SoftwareUnknown)?;
+        if entry.state != "active" || entry.obligations.is_empty() {
+            return Err(LicenseDecisionRefusal::SoftwareDenied);
+        }
+        if entry.family == "source-available" {
+            return Err(LicenseDecisionRefusal::SoftwareDenied);
+        }
+        if family_is_copyleft(&entry.family) {
+            saw_copyleft = true;
+        } else if !family_permits_commercial_no_fee(&entry.family) {
+            return Err(LicenseDecisionRefusal::SoftwareDenied);
+        }
     }
-    if entry.state != "active" || entry.obligations.is_empty() {
+    if !saw_copyleft {
         return Err(LicenseDecisionRefusal::SoftwareDenied);
     }
     Ok(())
@@ -1004,6 +1300,14 @@ pub struct LicenseDecisionContext<'a> {
 pub fn verify_license_evidence_review(
     review: &LicenseDecisionReview,
     context: &LicenseDecisionContext<'_>,
+) -> Result<VerifiedLicenseDecision, LicenseDecisionRefusal> {
+    verify_against_source_asset(review, context, source_asset())
+}
+
+fn verify_against_source_asset(
+    review: &LicenseDecisionReview,
+    context: &LicenseDecisionContext<'_>,
+    asset: &serde_json::Value,
 ) -> Result<VerifiedLicenseDecision, LicenseDecisionRefusal> {
     if review.pin.trim().is_empty()
         || review.name.trim().is_empty()
@@ -1131,7 +1435,6 @@ pub fn verify_license_evidence_review(
     }
 
     // Exact identity and canonical shared asset.
-    let asset = source_asset();
     let identities = asset
         .get("identities")
         .and_then(serde_json::Value::as_array)
@@ -1198,6 +1501,26 @@ pub fn verify_license_evidence_review(
             return Err(LicenseDecisionRefusal::IdentityMismatch);
         }
     }
+    // The HMAC receipt must contain the exact reviewed output and source
+    // facts. A plan-wide receipt may contain many facts and its observed root
+    // may be the plan root; only exact membership is required here.
+    let source_nar_hash = identity
+        .get("source")
+        .and_then(|source| exact(source, "narHash"))
+        .ok_or(LicenseDecisionRefusal::IdentityMismatch)?;
+    receipt_fact(
+        &receipt.envelope.manifest.facts,
+        &review.output_store_path,
+        &review.output_drv_path,
+        &review.output_nar_hash,
+    )?;
+    receipt_fact(
+        &receipt.envelope.manifest.facts,
+        &review.source_store_path,
+        &review.source_drv_path,
+        source_nar_hash,
+    )?;
+
     let evidence = asset
         .get("evidence")
         .ok_or(LicenseDecisionRefusal::AssetCanonicalHashMissing)?;
@@ -1228,10 +1551,18 @@ pub fn verify_license_evidence_review(
     if exact(identity, "license") != Some(review.license_expression.as_str()) {
         return Err(LicenseDecisionRefusal::LicenseExpressionMismatch);
     }
+    // Validate the AST selection and exact obligations before reading text
+    // evidence, so an invalid branch cannot be disguised as a text mismatch.
+    let software_obligations =
+        exact_software_obligations(&review.license_expression, &review.selected_branch)?;
+    if review.software_obligations != software_obligations {
+        return Err(LicenseDecisionRefusal::ObligationsMismatch);
+    }
 
     let license_entries = license_evidence
         .as_array()
         .ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+    let selected_atoms = branch_atoms(&review.selected_branch).unwrap_or_default();
     let mut text_by_license: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     let mut trusted_text = false;
     for entry in license_entries {
@@ -1244,8 +1575,12 @@ pub fn verify_license_evidence_review(
         }
         if exact(entry, "purpose") == Some("license-text")
             && sha == review.software_text_sha256
-            && exact(entry, "license")
-                .is_some_and(|license| text_license_matches(license, &review.license_expression))
+            && exact(entry, "license").is_some_and(|license| {
+                text_license_matches(license, &review.license_expression)
+                    || selected_atoms
+                        .iter()
+                        .any(|atom| text_license_matches(license, atom))
+            })
         {
             trusted_text = true;
         }
@@ -1255,30 +1590,24 @@ pub fn verify_license_evidence_review(
     }
     let licensing_fact = license_entries.iter().any(|entry| {
         exact(entry, "role") == Some("licensing")
-            && exact(entry, "license") == Some(review.license_expression.as_str())
+            && exact(entry, "license").is_some_and(|license| {
+                license == review.license_expression
+                    || selected_atoms.iter().any(|atom| atom == license)
+            })
     });
     if !licensing_fact {
         return Err(LicenseDecisionRefusal::MissingLicensingFact);
     }
 
-    // Selected branch must be an atom of the expression AST.
-    let branches = expression_branches(&review.license_expression)?;
-    if !branches
-        .iter()
-        .any(|branch| branch == &review.selected_branch)
-    {
-        return Err(LicenseDecisionRefusal::BranchNotInExpression);
-    }
-    let software_obligations = catalogue_obligations(base_atom(&review.selected_branch))
-        .ok_or(LicenseDecisionRefusal::SoftwareUnknown)?;
-    if review.software_obligations != software_obligations {
-        return Err(LicenseDecisionRefusal::ObligationsMismatch);
-    }
-    let selected_entry = catalogue_entry(base_atom(&review.selected_branch))
-        .ok_or(LicenseDecisionRefusal::SoftwareUnknown)?;
     let commercial_ok = review.commercial_use
         && !review.payment_required
-        && family_permits_commercial_no_fee(&selected_entry.family);
+        && branch_permits_commercial_no_fee(&review.selected_branch)?;
+    let expression_decision = evaluate(
+        &review.license_expression,
+        LicenseContext::Closure,
+        default_catalog(),
+        default_profile(),
+    );
     let software_verdict = match evaluate(
         &review.selected_branch,
         LicenseContext::Closure,
@@ -1288,6 +1617,9 @@ pub fn verify_license_evidence_review(
         LicenseDecision::Allowed => "ALLOWED",
         LicenseDecision::Unknown => "UNKNOWN_CLASSIFIED",
         LicenseDecision::Denied => {
+            if expression_decision != LicenseDecision::Denied {
+                return Err(LicenseDecisionRefusal::SoftwareDenied);
+            }
             reconcile_prior_deny(
                 &review.license_expression,
                 &review.selected_branch,
@@ -1301,17 +1633,6 @@ pub fn verify_license_evidence_review(
         }
         LicenseDecision::NotEvaluated => return Err(LicenseDecisionRefusal::PolicyNotEvaluated),
     };
-    let expression_decision = evaluate(
-        &review.license_expression,
-        LicenseContext::Closure,
-        default_catalog(),
-        default_profile(),
-    );
-    if expression_decision == LicenseDecision::Denied
-        && review.license_expression != review.selected_branch
-    {
-        return Err(LicenseDecisionRefusal::SoftwareDenied);
-    }
     if expression_decision == LicenseDecision::NotEvaluated {
         return Err(LicenseDecisionRefusal::PolicyNotEvaluated);
     }
@@ -1326,14 +1647,31 @@ pub fn verify_license_evidence_review(
             (
                 exact(entry, "path").unwrap_or_default().to_owned(),
                 exact(entry, "license").unwrap_or_default().to_owned(),
+                exact(entry, "sha256").unwrap_or_default().to_owned(),
             )
         })
         .collect::<BTreeSet<_>>();
+    let evidence_by_path = license_entries
+        .iter()
+        .filter_map(|entry| {
+            Some((
+                exact(entry, "path")?,
+                (
+                    exact(entry, "license").unwrap_or_default(),
+                    exact(entry, "sha256").unwrap_or_default(),
+                ),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut actual_docs = BTreeSet::new();
     let mut documentation = Vec::new();
     let mut documentation_obligation_set = BTreeSet::new();
     for document in &review.documentation {
-        if !actual_docs.insert((document.path.clone(), document.license.clone())) {
+        if !actual_docs.insert((
+            document.path.clone(),
+            document.license.clone(),
+            document.output_sha256.clone(),
+        )) {
             return Err(LicenseDecisionRefusal::DocumentationMismatch);
         }
         let obligations = catalogue_obligations(&document.license)
@@ -1346,9 +1684,11 @@ pub fn verify_license_evidence_review(
         if !family_permits_commercial_no_fee(&entry.family) {
             return Err(LicenseDecisionRefusal::DocumentationDenied);
         }
-        let trusted = text_by_license
-            .get(document.license.as_str())
-            .is_some_and(|digests| digests.contains(document.license_text_sha256.as_str()));
+        let trusted = evidence_by_path
+            .get(document.license_text_path.as_str())
+            .is_some_and(|(license, digest)| {
+                *license == document.license && *digest == document.license_text_sha256
+            });
         if !trusted {
             return Err(LicenseDecisionRefusal::DocumentationTextMissing);
         }
@@ -1369,6 +1709,8 @@ pub fn verify_license_evidence_review(
         documentation.push(DocumentationDecision {
             path: document.path.clone(),
             license: document.license.clone(),
+            output_sha256: document.output_sha256.clone(),
+            license_text_path: document.license_text_path.clone(),
             license_text_sha256: document.license_text_sha256.clone(),
             obligations: document.obligations.clone(),
             verdict: verdict.to_owned(),
@@ -1383,6 +1725,11 @@ pub fn verify_license_evidence_review(
     }
     documentation.sort_by(|left, right| left.path.cmp(&right.path));
 
+    // HYBRID decision: the Lead asserts the commercial/no-mandatory-fee reading
+    // of the exact authenticated licence text, while Core deterministically
+    // enforces the current catalogue family, exact obligations, denied IDs,
+    // stage, actor, delegation and expiry limits. This is not a legal opinion or
+    // a deterministic proof of the text's legal interpretation.
     if review.decision == "ACCEPT" {
         if review.use_context != "commercial-development" {
             return Err(LicenseDecisionRefusal::CommercialCriterion);

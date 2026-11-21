@@ -61,6 +61,11 @@ CREATE INDEX IF NOT EXISTS license_decisions_project_idx
 CREATE INDEX IF NOT EXISTS license_decisions_delegation_idx
   ON license_decisions(delegation_id, revoked_at);
 
+-- One exact decision content is one grant, regardless of the idempotency key
+-- spelling used by a retrying caller.
+CREATE UNIQUE INDEX IF NOT EXISTS license_decisions_grant_identity_idx
+  ON license_decisions(project_id, delegation_id, lead_request_id, content_sha256);
+
 -- Append-only revocation audit. The decision row only carries the first
 -- revocation marker; this table is the durable evidence of who revoked it, for
 -- which project and why. A second, different revocation is refused.
@@ -115,7 +120,9 @@ WHEN OLD.id != NEW.id
   OR OLD.revision != NEW.revision
   OR OLD.idempotency_key != NEW.idempotency_key
   OR OLD.created_at != NEW.created_at
-  OR (OLD.revoked_at IS NOT NULL AND OLD.revoked_at != NEW.revoked_at)
+  OR (OLD.revoked_at IS NOT NULL AND OLD.revoked_at IS NOT NEW.revoked_at)
+  OR (OLD.revoked_at IS NOT NULL AND OLD.revocation_reason IS NOT NEW.revocation_reason)
+  OR (OLD.revoked_at IS NOT NULL AND OLD.revoked_by IS NOT NEW.revoked_by)
 BEGIN
   SELECT RAISE(ABORT, 'licence decision content is immutable');
 END;
@@ -124,4 +131,18 @@ CREATE TRIGGER IF NOT EXISTS license_decisions_immutable_delete
 BEFORE DELETE ON license_decisions
 BEGIN
   SELECT RAISE(ABORT, 'licence decisions are immutable');
+END;
+
+-- The append-only revocation records are immutable too; deleting a delegation
+-- revocation would silently re-enable the delegation.
+CREATE TRIGGER IF NOT EXISTS license_decision_revocations_immutable_update
+BEFORE UPDATE ON license_decision_revocations
+BEGIN
+  SELECT RAISE(ABORT, 'licence decision revocation is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS license_decision_revocations_immutable_delete
+BEFORE DELETE ON license_decision_revocations
+BEGIN
+  SELECT RAISE(ABORT, 'licence decision revocation is immutable');
 END;
