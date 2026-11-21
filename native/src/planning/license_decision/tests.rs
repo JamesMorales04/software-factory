@@ -381,17 +381,31 @@ fn documentation_is_never_ignored_and_obligations_are_exact() {
         fixture.verified_with(&missing),
         Err(LicenseDecisionRefusal::DocumentationMismatch)
     );
+    // Model-authored obligations are diagnostic only. Core derives the exact
+    // catalogue tokens; prose, a partial list or an empty list is not mapped.
     let mut blanket = review();
-    blanket.documentation[0].obligations = vec!["notice".into()];
-    assert_eq!(
-        fixture.verified_with(&blanket),
-        Err(LicenseDecisionRefusal::ObligationsMismatch)
-    );
+    blanket.documentation[0].obligations = vec!["include the GFDL text".into()];
+    let decision = fixture
+        .verified_with(&blanket)
+        .expect("Core derives the exact documentation obligations");
+    assert_eq!(decision.documentation[0].obligations, ["notice", "source"]);
     let mut blank = review();
     blank.documentation_obligations = vec![];
+    let decision = fixture
+        .verified_with(&blank)
+        .expect("Core derives the ordered documentation obligation union");
+    assert_eq!(decision.documentation_obligations, ["notice", "source"]);
+    let mut wrong_license = review();
+    wrong_license.documentation[0].license = "MIT".into();
     assert_eq!(
-        fixture.verified_with(&blank),
-        Err(LicenseDecisionRefusal::ObligationsMismatch)
+        fixture.verified_with(&wrong_license),
+        Err(LicenseDecisionRefusal::DocumentationTextMissing)
+    );
+    let mut wrong_text = review();
+    wrong_text.documentation[0].license_text_sha256 = "f".repeat(64);
+    assert_eq!(
+        fixture.verified_with(&wrong_text),
+        Err(LicenseDecisionRefusal::DocumentationTextMissing)
     );
     let mut no_text = review();
     no_text.documentation[0].license_text_sha256 = "f".repeat(64);
@@ -592,12 +606,14 @@ fn an_and_expression_keeps_every_conjunct_and_rejects_a_single_atom() {
         Err(LicenseDecisionRefusal::LicenseTextDigest)
     );
 
-    let mut missing_gpl_obligations = and_review.clone();
-    missing_gpl_obligations.software_obligations = vec!["notice".into()];
-    assert_eq!(
-        verify_against_source_asset(&missing_gpl_obligations, &context, &asset),
-        Err(LicenseDecisionRefusal::ObligationsMismatch)
-    );
+    // The model's prose/partial obligation list is ignored; Core derives the
+    // full catalogue obligation set for the selected branch.
+    let mut prose_obligations = and_review.clone();
+    prose_obligations.software_obligations =
+        vec!["Provide the complete corresponding source code.".into()];
+    let decision = verify_against_source_asset(&prose_obligations, &context, &asset)
+        .expect("Core derives the exact branch obligations");
+    assert_eq!(decision.software_obligations, ["notice", "source"]);
 
     let mut missing_mit_licensing = asset.clone();
     missing_mit_licensing["identities"]
@@ -1416,5 +1432,47 @@ fn the_shared_source_proof_vector_is_the_single_canonical_representation() {
             .to_string()
             .contains("sourceInOutputInputDrvs"),
         "the input-membership fact is verified, not restated as a boolean"
+    );
+}
+
+#[test]
+fn model_obligation_prose_is_ignored_and_the_raw_review_is_immutable() {
+    let fixture = Fixture::new();
+    let mut live_style = review();
+    live_style.software_obligations = vec![
+        "Provide the complete corresponding source code for the software, including modifications."
+            .into(),
+        "Include a copy of the GPL-2.0 license text and preserve copyright, license, and warranty notices."
+            .into(),
+    ];
+    live_style.documentation[0].obligations =
+        vec!["Include a copy of the GFDL-1.3-or-later license text".into()];
+    live_style.documentation_obligations =
+        vec!["Include a copy of the GPL-2.0 license text".into()];
+    let raw = live_style.clone();
+
+    let decision = fixture
+        .verified_with(&live_style)
+        .expect("Core derives the mechanical obligations from the catalogue");
+
+    assert_eq!(decision.software_obligations, ["notice", "source"]);
+    assert_eq!(
+        decision
+            .documentation
+            .iter()
+            .map(|document| document.obligations.clone())
+            .collect::<Vec<_>>(),
+        vec![vec!["notice".to_string(), "source".to_string()]; 2]
+    );
+    assert_eq!(decision.documentation_obligations, ["notice", "source"]);
+    assert_eq!(decision.provenance()["obligationsSource"], "CORE_CATALOGUE");
+    assert_eq!(decision.provenance()["modelObligationsIgnored"], true);
+    assert_eq!(
+        decision.provenance()["contractRevision"],
+        "license-review-v2-core-obligations"
+    );
+    assert_eq!(
+        live_style, raw,
+        "the settled raw review is evidence and is never mutated"
     );
 }

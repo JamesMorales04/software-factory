@@ -2035,11 +2035,11 @@ fn verify_against_source_asset(
     }
     // Validate the AST selection and exact obligations before reading text
     // evidence, so an invalid branch cannot be disguised as a text mismatch.
+    // Obligations are deterministic Core-owned catalogue data, not a model
+    // enumeration. The Lead selects the semantic branch; Core derives the exact
+    // obligations and never maps model prose to tokens.
     let software_obligations =
         exact_software_obligations(&review.license_expression, &review.selected_branch)?;
-    if review.software_obligations != software_obligations {
-        return Err(LicenseDecisionRefusal::ObligationsMismatch);
-    }
 
     let license_entries = license_evidence
         .as_array()
@@ -2127,7 +2127,7 @@ fn verify_against_source_asset(
                 &review.selected_branch,
                 &review.license_expression,
                 trusted_text,
-                review.software_obligations == software_obligations,
+                true,
                 review.commercial_use,
                 review.payment_required,
             )?;
@@ -2178,9 +2178,6 @@ fn verify_against_source_asset(
         }
         let obligations = catalogue_obligations(&document.license)
             .ok_or(LicenseDecisionRefusal::DocumentationUnknown)?;
-        if document.obligations != obligations {
-            return Err(LicenseDecisionRefusal::ObligationsMismatch);
-        }
         let entry = catalogue_entry(&document.license)
             .ok_or(LicenseDecisionRefusal::DocumentationUnknown)?;
         if !family_permits_commercial_no_fee(&entry.family) {
@@ -2207,14 +2204,14 @@ fn verify_against_source_asset(
                 return Err(LicenseDecisionRefusal::PolicyNotEvaluated);
             }
         };
-        documentation_obligation_set.extend(obligations);
+        documentation_obligation_set.extend(obligations.iter().cloned());
         documentation.push(DocumentationDecision {
             path: document.path.clone(),
             license: document.license.clone(),
             output_sha256: document.output_sha256.clone(),
             license_text_path: document.license_text_path.clone(),
             license_text_sha256: document.license_text_sha256.clone(),
-            obligations: document.obligations.clone(),
+            obligations: obligations.clone(),
             verdict: verdict.to_owned(),
         });
     }
@@ -2222,9 +2219,6 @@ fn verify_against_source_asset(
         return Err(LicenseDecisionRefusal::DocumentationMismatch);
     }
     let documentation_obligations = documentation_obligation_set.into_iter().collect::<Vec<_>>();
-    if review.documentation_obligations != documentation_obligations {
-        return Err(LicenseDecisionRefusal::ObligationsMismatch);
-    }
     documentation.sort_by(|left, right| left.path.cmp(&right.path));
 
     // HYBRID decision: the Lead asserts the commercial/no-mandatory-fee reading
@@ -2269,6 +2263,9 @@ fn verify_against_source_asset(
         "identityFactsReceiptDigest": receipt_digest,
         "sourceEvidence": source.to_json(),
         "sourceEvidenceSha256": source_evidence_digest,
+        "obligationsSource": "CORE_CATALOGUE",
+        "modelObligationsIgnored": true,
+        "contractRevision": "license-review-v2-core-obligations",
         "softwareTexts": review.software_texts,
         "stage": context.binding.stage_json(),
         "candidate": context.binding.candidate(),
@@ -2305,6 +2302,9 @@ fn verify_against_source_asset(
         "identityFactsReceiptDigest": receipt_digest,
         "sourceEvidence": source.to_json(),
         "sourceEvidenceSha256": source_evidence_digest,
+        "obligationsSource": "CORE_CATALOGUE",
+        "modelObligationsIgnored": true,
+        "contractRevision": "license-review-v2-core-obligations",
         "catalogSha256": context.binding.catalog_sha256(),
         "profileSha256": context.binding.profile_sha256(),
         "policySha256": context.binding.policy_sha256(),
