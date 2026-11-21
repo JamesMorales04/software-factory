@@ -10,6 +10,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -304,6 +305,7 @@ def build(args: argparse.Namespace) -> int:
                 resources["timeoutSecs"],
                 log,
             )
+            license_root = root
             if plan.get("source") == "GENERATED":
                 license_manifest = (
                     closure_manifest(
@@ -318,20 +320,24 @@ def build(args: argparse.Namespace) -> int:
                 license_root = profile or root
                 license_manifest = closure_manifest(license_root)
                 exclude_paths = {license_root}
-            closure_licenses = _closure_license_entries(
-                plan,
-                license_manifest,
-                child_environment(
-                    build_workspace,
-                    run_dir,
-                    offline=phase == "build",
-                    resources=resources,
-                    proxy=proxy if phase == "fetch" else None,
-                ),
-                resources["timeoutSecs"],
-                log,
-                exclude=exclude_paths,
-            )
+            try:
+                closure_licenses = _closure_license_entries(
+                    plan,
+                    license_manifest,
+                    child_environment(
+                        build_workspace,
+                        run_dir,
+                        offline=phase == "build",
+                        resources=resources,
+                        proxy=proxy if phase == "fetch" else None,
+                    ),
+                    resources["timeoutSecs"],
+                    log,
+                    exclude=exclude_paths,
+                )
+            except BuilderError:
+                _write_failure_identity_facts(run_dir, license_manifest, license_root)
+                raise
             output_sha = environment_digest(
                 spec["specSha256"], spec["platform"], root, manifest, frozen_sbom_sha256
             )
@@ -1128,6 +1134,52 @@ def _closure_license_inventory_entry(entry: Any, index: int) -> dict[str, Any]:
     }
 
 
+IDENTITY_FACTS_MANIFEST_FILE = "identity-facts-manifest.json"
+
+
+def _failure_identity_facts_manifest(
+    manifest: list[dict[str, Any]], observed_root: str
+) -> dict[str, Any]:
+    """Bounded exact closure facts for a refused licence gate.
+
+    This is evidence only: it never grants a licence, freezes a spec or creates
+    a successful build receipt. The broker reads it before cleanup and Core
+    signs/consumes it as a spec-cache observation for the current plan/spec.
+    """
+    facts: list[dict[str, Any]] = []
+    for entry in manifest:
+        path = str(entry.get("path", ""))
+        if not path.startswith("/nix/store/"):
+            continue
+        facts.append(
+            {
+                "storePath": path,
+                "deriver": entry.get("deriver") or None,
+                "narHash": str(entry.get("narHash", "")),
+                "outputs": [path],
+            }
+        )
+    canonical = json.dumps(facts, separators=(",", ":"), ensure_ascii=False)
+    return {
+        "observedRoot": observed_root,
+        "facts": facts,
+        "factCount": len(facts),
+        "closureManifestSha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "truncated": False,
+    }
+
+
+def _write_failure_identity_facts(
+    run_dir: Path, manifest: list[dict[str, Any]], observed_root: str
+) -> None:
+    payload = _failure_identity_facts_manifest(manifest, observed_root)
+    if not payload["facts"] or observed_root not in {
+        fact["storePath"] for fact in payload["facts"]
+    }:
+        return
+    write_json(run_dir / IDENTITY_FACTS_MANIFEST_FILE, payload)
+
+
 def _validate_closure_licenses_reporting_all(
     entries: list[dict[str, Any]], log: BuildLog
 ) -> list[dict[str, Any]]:
@@ -1763,14 +1815,21 @@ def resolve(args: argparse.Namespace) -> int:
             # exclude only the exact profile/root wrapper path.
             profile = _environment_profile(build_workspace, run_dir)
             closure_root = profile or root
-            closure_licenses = _closure_license_entries(
-                plan,
-                closure_manifest(closure_root),
-                environment,
-                timeout,
-                log,
-                exclude={closure_root},
-            )
+            closure_manifest_value = closure_manifest(closure_root)
+            try:
+                closure_licenses = _closure_license_entries(
+                    plan,
+                    closure_manifest_value,
+                    environment,
+                    timeout,
+                    log,
+                    exclude={closure_root},
+                )
+            except BuilderError:
+                _write_failure_identity_facts(
+                    run_dir, closure_manifest_value, closure_root
+                )
+                raise
         disk_budget.check()
         resolution = {
             "schemaVersion": SCHEMA_VERSION,

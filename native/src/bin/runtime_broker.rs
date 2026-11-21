@@ -3417,6 +3417,7 @@ struct EnvironmentBrokerFailure {
     code: String,
     message: String,
     status: StatusCode,
+    evidence: Option<Value>,
 }
 
 impl EnvironmentBrokerFailure {
@@ -3431,13 +3432,23 @@ impl EnvironmentBrokerFailure {
             code: code.to_owned(),
             message: message.into().chars().take(2_000).collect(),
             status,
+            evidence: None,
         }
+    }
+
+    fn with_evidence(mut self, evidence: Option<Value>) -> Self {
+        self.evidence = evidence;
+        self
     }
 
     fn response(self) -> Response {
         (
             self.status,
-            Json(json!({"code": self.code, "error": self.message})),
+            Json(json!({
+                "code": self.code,
+                "error": self.message,
+                "identityFactsManifest": self.evidence,
+            })),
         )
             .into_response()
     }
@@ -6160,7 +6171,19 @@ async fn run_environment_container(
             }
         }
         let message: String = message.chars().take(8_000).collect();
-        return Err(EnvironmentBrokerFailure::new(&code, message));
+        let evidence = match read_environment_output(
+            app,
+            image_id,
+            cache_volume,
+            "identity-facts-manifest.json",
+            1024 * 1024,
+        )
+        .await
+        {
+            Ok(bytes) => serde_json::from_slice::<Value>(&bytes).ok(),
+            Err(_) => None,
+        };
+        return Err(EnvironmentBrokerFailure::new(&code, message).with_evidence(evidence));
     }
     Ok(ChildOutput {
         exit_code: status.code(),

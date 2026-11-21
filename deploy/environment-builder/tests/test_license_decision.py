@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from environment_builder import license_decision, license_policy
+from environment_builder import cli, license_decision, license_policy
 
 
 ENTRIES = [{"path": "/nix/store/example", "license": "MIT"}]
@@ -150,6 +150,27 @@ class LicenseDecisionTests(unittest.TestCase):
         del missing_text["documentation"][0]["licenseTextPath"]
         with self.assertRaises(license_decision.LicenseDecisionError):
             license_decision.validate_license_decision_receipt(missing_text, plan())
+
+    def test_license_gate_failure_manifest_is_bounded_exact_evidence(self) -> None:
+        manifest = [
+            {
+                "path": "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1",
+                "deriver": "/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv",
+                "narHash": "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=",
+                "references": [],
+            }
+        ]
+        payload = cli._failure_identity_facts_manifest(manifest, manifest[0]["path"])
+        self.assertEqual(payload["observedRoot"], manifest[0]["path"])
+        self.assertEqual(payload["factCount"], 1)
+        self.assertFalse(payload["truncated"])
+        self.assertEqual(payload["facts"][0]["outputs"], [manifest[0]["path"]])
+        self.assertEqual(
+            payload["closureManifestSha256"],
+            cli.hashlib.sha256(
+                b'[{"storePath":"/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1","deriver":"/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv","narHash":"sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=","outputs":["/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1"]}]'
+            ).hexdigest(),
+        )
 
     def test_source_digest_without_full_proof_is_accepted(self) -> None:
         receipt_value = receipt()

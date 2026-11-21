@@ -185,6 +185,10 @@ impl EnvironmentBlockerCode {
 pub struct EnvironmentError {
     pub code: EnvironmentBlockerCode,
     pub message: String,
+    /// Optional exact failure evidence returned by the builder (for example a
+    /// bounded identity-facts manifest from a refused licence gate). It is
+    /// evidence only and never an accepted build receipt.
+    pub failure_evidence: Option<serde_json::Value>,
 }
 
 impl EnvironmentError {
@@ -192,7 +196,13 @@ impl EnvironmentError {
         Self {
             code,
             message: bounded_error_message(message.into()),
+            failure_evidence: None,
         }
+    }
+
+    pub fn with_failure_evidence(mut self, evidence: Option<serde_json::Value>) -> Self {
+        self.failure_evidence = evidence;
+        self
     }
 
     pub const fn code_str(&self) -> &'static str {
@@ -4266,15 +4276,21 @@ pub fn environment_error_from_broker(
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("the runtime broker refused the environment operation");
                 if let Some(code) = code.and_then(EnvironmentBlockerCode::from_code) {
-                    return EnvironmentError::new(code, message);
+                    return EnvironmentError::new(code, message)
+                        .with_failure_evidence(value.get("identityFactsManifest").cloned());
                 }
             }
             EnvironmentError::new(EnvironmentBlockerCode::EnvironmentBuildFailed, body)
         }
-        BrokerError::RefusedCode { code, message, .. } => {
+        BrokerError::RefusedCode {
+            code,
+            message,
+            evidence,
+            ..
+        } => {
             let code = EnvironmentBlockerCode::from_code(&code)
                 .unwrap_or(EnvironmentBlockerCode::EnvironmentBuildFailed);
-            EnvironmentError::new(code, message)
+            EnvironmentError::new(code, message).with_failure_evidence(evidence)
         }
         BrokerError::Invalid(message) => {
             EnvironmentError::new(EnvironmentBlockerCode::EnvironmentPlanInvalid, message)

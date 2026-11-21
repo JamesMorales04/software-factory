@@ -13016,15 +13016,12 @@ async fn resolve_generated_environment(
 ///
 /// The observation is deterministic: Core owns the operation/nonce/plan/pin
 /// binding and never supplies a store hash, argv or manifest.
-async fn prepare_environment_identity_facts(
+async fn issue_environment_identity_facts_challenge(
     app: &App,
     plan: &factory_native::planning::environment::EnvironmentPlan,
     spec: &factory_native::planning::environment::EnvironmentSpec,
 ) -> Result<
-    (
-        factory_native::planning::identity_facts::IdentityFactsChallenge,
-        factory_native::planning::identity_facts::VerifiedIdentityFacts,
-    ),
+    factory_native::planning::identity_facts::IdentityFactsChallenge,
     factory_native::planning::environment::EnvironmentError,
 > {
     use factory_native::planning::identity_facts::{
@@ -13070,11 +13067,67 @@ async fn prepare_environment_identity_facts(
                 format!("the identity-facts challenge could not be persisted: {error}"),
             )
         })?;
-    let receipt = app
-        .environment_builder()
-        .identity_facts(&challenge, plan, spec)
-        .await?;
-    Ok((challenge, receipt))
+    Ok(challenge)
+}
+
+async fn observe_environment_identity_facts(
+    app: &App,
+    challenge: &factory_native::planning::identity_facts::IdentityFactsChallenge,
+    plan: &factory_native::planning::environment::EnvironmentPlan,
+    spec: &factory_native::planning::environment::EnvironmentSpec,
+) -> Result<
+    factory_native::planning::identity_facts::VerifiedIdentityFacts,
+    factory_native::planning::environment::EnvironmentError,
+> {
+    app.environment_builder()
+        .identity_facts(challenge, plan, spec)
+        .await
+}
+
+/// Sign and verify the bounded closure manifest a builder wrote before
+/// cleaning up a refused licence-gate build. This is a spec-cache observation:
+/// it proves what the refused build observed, never an accepted build receipt.
+fn sign_failure_identity_facts(
+    challenge: &factory_native::planning::identity_facts::IdentityFactsChallenge,
+    evidence: &serde_json::Value,
+    bearer: &[u8],
+) -> Result<
+    factory_native::planning::identity_facts::BoundIdentityFacts,
+    factory_native::planning::environment::EnvironmentError,
+> {
+    use factory_native::planning::identity_facts::{
+        BoundIdentityFacts, IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION,
+        IdentityFactsEnvelope, IdentityFactsManifest, IdentityFactsReceipt, sign, verify,
+    };
+    let manifest: IdentityFactsManifest = serde_json::from_value(evidence.clone()).map_err(|error| {
+        factory_native::planning::environment::EnvironmentError::new(
+            factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentIdentityFactsRefused,
+            format!("the builder failure identity manifest is malformed: {error}"),
+        )
+    })?;
+    let envelope = IdentityFactsEnvelope {
+        schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
+        context: IDENTITY_FACTS_CONTEXT.into(),
+        challenge: challenge.clone(),
+        manifest,
+    };
+    let signature = sign(&envelope, bearer).map_err(|error| {
+        factory_native::planning::environment::EnvironmentError::new(
+            factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentIdentityFactsRefused,
+            format!("the builder failure identity manifest could not be signed: {error}"),
+        )
+    })?;
+    let receipt = IdentityFactsReceipt {
+        envelope,
+        signature,
+    };
+    let verified = verify(&receipt, bearer, challenge).map_err(|error| {
+        factory_native::planning::environment::EnvironmentError::new(
+            factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentIdentityFactsRefused,
+            format!("the builder failure identity receipt was refused: {error}"),
+        )
+    })?;
+    Ok(BoundIdentityFacts::spec_cache_observation(verified))
 }
 
 async fn consume_environment_identity_facts(
@@ -13118,13 +13171,11 @@ async fn build_environment_before_freeze(
         )
             .into_response());
     }
-    // The build may refuse at the licence gate. Observe and persist identity
-    // facts from the same spec-keyed realised store first, so a licence refusal
-    // keeps its identity receipt and leaves the environment blocked.
-    let build = builder
-        .build_with_license_decisions(spec, plan, workspace, license_decisions)
-        .await;
-    let (challenge, identity) = prepare_environment_identity_facts(app, plan, spec)
+    // The build may refuse at the licence gate. Issue the exact challenge
+    // before dispatch: a successful build observes it from its own store; a
+    // refused build returns a bounded closure manifest written before cleanup,
+    // which Core signs and binds as a spec-cache observation.
+    let challenge = issue_environment_identity_facts_challenge(app, plan, spec)
         .await
         .map_err(|error| {
             (
@@ -13136,11 +13187,23 @@ async fn build_environment_before_freeze(
             )
                 .into_response()
         })?;
-    // A successful build receipt may only be bound after its own validation and
-    // exact root equality. Anything else is explicitly a spec-cache observation,
-    // so a durable BUILD_RECEIPT can never describe a failed or mismatched build.
+    let build = builder
+        .build_with_license_decisions(spec, plan, workspace, license_decisions)
+        .await;
     let bound = match &build {
         Ok(receipt) => {
+            let identity = observe_environment_identity_facts(app, &challenge, plan, spec)
+                .await
+                .map_err(|error| {
+                    (
+                        StatusCode::CONFLICT,
+                        Json(json!({
+                            "error": error.message,
+                            "code": error.code_str(),
+                        })),
+                    )
+                        .into_response()
+                })?;
             factory_native::planning::identity_facts::BoundIdentityFacts::bind_build_receipt(
                 identity.clone(),
                 receipt,
@@ -13148,13 +13211,51 @@ async fn build_environment_before_freeze(
             )
             .unwrap_or_else(|_| {
                 factory_native::planning::identity_facts::BoundIdentityFacts::spec_cache_observation(
-                    identity.clone(),
+                    identity,
                 )
             })
         }
-        _ => factory_native::planning::identity_facts::BoundIdentityFacts::spec_cache_observation(
-            identity.clone(),
-        ),
+        Err(error) => {
+            let Some(evidence) = error
+                .failure_evidence
+                .as_ref()
+                .filter(|value| !value.is_null())
+            else {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": error.message,
+                        "code": error.code_str(),
+                    })),
+                )
+                    .into_response());
+            };
+            let bearer = match factory_native::secrets::required("FACTORY_RUNTIME_BROKER_TOKEN") {
+                Ok(bearer) => bearer,
+                Err(_) => {
+                    return Err((
+                        StatusCode::CONFLICT,
+                        Json(json!({
+                            "error": "the broker bearer is not available to sign the builder failure identity facts",
+                            "code": "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT",
+                        })),
+                    )
+                        .into_response());
+                }
+            };
+            sign_failure_identity_facts(&challenge, evidence, bearer.as_bytes()).map_err(
+                |error| {
+                    (
+                        StatusCode::CONFLICT,
+                        Json(json!({
+                            "error": error.message,
+                            "code": error.code_str(),
+                        })),
+                    )
+                        .into_response()
+                },
+            )?
+        }
     };
     consume_environment_identity_facts(app, &challenge, &bound)
         .await
@@ -40299,5 +40400,64 @@ mod pinned_source_proof_tests {
         let mut value = proof();
         value.ca = "fixed:sha256:0000000000000000000000000000000000000000000000000000".into();
         assert!(!verify(&value));
+    }
+}
+
+#[cfg(test)]
+mod failure_identity_facts_tests {
+    use super::*;
+    use factory_native::planning::identity_facts::{
+        IdentityFactsChallenge, IdentityFactsMode, IdentityFactsRootBinding, OperationRoot,
+    };
+
+    fn challenge() -> IdentityFactsChallenge {
+        IdentityFactsChallenge {
+            operation_id: "environment-identity:test".into(),
+            runtime_id: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .into(),
+            nonce: "identity-facts:test".into(),
+            pin: "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d".into(),
+            plan_sha256: "a".repeat(64),
+            spec_sha256: "b".repeat(64),
+            mode: IdentityFactsMode::Enumerate,
+            root: OperationRoot::Operation,
+            questions: Vec::new(),
+        }
+    }
+
+    fn manifest() -> serde_json::Value {
+        serde_json::json!({
+            "observedRoot": "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1",
+            "facts": [{
+                "storePath": "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1",
+                "deriver": "/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv",
+                "narHash": "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=",
+                "outputs": ["/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1"],
+            }],
+            "factCount": 1,
+            "truncated": false,
+            "closureManifestSha256": "2e9fe1dfd48e1ca88751c251af062d9c3c8c9f2e586cb2a6d687db7efb88ac69",
+        })
+    }
+
+    #[test]
+    fn builder_failure_manifest_is_signed_and_bound_as_spec_cache() {
+        let bound = sign_failure_identity_facts(&challenge(), &manifest(), b"test-bearer")
+            .expect("signed failure evidence");
+        assert_eq!(
+            bound.binding(),
+            IdentityFactsRootBinding::SpecCacheObservation
+        );
+        assert_eq!(bound.receipt().envelope.manifest.fact_count, 1);
+    }
+
+    #[test]
+    fn tampered_failure_manifest_is_refused() {
+        let mut value = manifest();
+        value["closureManifestSha256"] = serde_json::json!("0".repeat(64));
+        assert!(sign_failure_identity_facts(&challenge(), &value, b"test-bearer").is_err());
+        let mut value = manifest();
+        value["facts"][0]["narHash"] = serde_json::json!("not-a-hash");
+        assert!(sign_failure_identity_facts(&challenge(), &value, b"test-bearer").is_err());
     }
 }

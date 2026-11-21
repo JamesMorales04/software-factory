@@ -355,6 +355,7 @@ pub enum BrokerError {
         status: u16,
         code: String,
         message: String,
+        evidence: Option<serde_json::Value>,
     },
     #[error("runtime broker returned an invalid response: {0}")]
     InvalidResponse(String),
@@ -1524,6 +1525,7 @@ impl RuntimeBrokerClient {
                 status: status.as_u16(),
                 code: code.chars().take(128).collect(),
                 message: message.chars().take(MAX_ERROR_BYTES).collect(),
+                evidence: value.get("identityFactsManifest").cloned(),
             };
         }
         BrokerError::Refused(format!("HTTP {status}: {bounded}"))
