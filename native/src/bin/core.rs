@@ -1326,6 +1326,10 @@ fn office_api_router(app: Arc<App>) -> Router {
             post(record_license_decision),
         )
         .route(
+            "/agentic/requests/{id}/license-evidence-review",
+            get(get_license_evidence_review).post(request_license_evidence_review),
+        )
+        .route(
             "/agentic/license-decisions/{id}/revoke",
             post(revoke_license_decision),
         )
@@ -1667,6 +1671,10 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/agentic/requests/{id}/license-decision",
             post(record_license_decision),
+        )
+        .route(
+            "/agentic/requests/{id}/license-evidence-review",
+            get(get_license_evidence_review).post(request_license_evidence_review),
         )
         .route(
             "/agentic/license-decisions/{id}/revoke",
@@ -18851,6 +18859,160 @@ async fn revoke_license_delegation(
     }
 }
 
+/// Pinned exact recovery record for the bootstrap ed source.
+///
+/// The source fixed-output path is not part of the realised environment
+/// manifest. This record is the independently verified cache.nixos.org/store
+/// recovery, not a model output and not a licence approval. Core verifies the
+/// Ed25519 cache signature, the flat/NAR/CA/size relationship and the
+/// source-drv membership in the exact output derivation before use.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct PinnedSourceEvidence {
+    source_store_path: String,
+    source_drv_path: String,
+    flat_sha256: String,
+    nar_sri: String,
+    nar_nix32: String,
+    nar_size: u64,
+    signature: String,
+    fingerprint: String,
+    ca: String,
+    output_drv_path: String,
+    output_store_path: String,
+    source_drv_aterm: String,
+    output_drv_aterm: String,
+    source_in_output_input_drvs: bool,
+    signature_valid: bool,
+}
+
+const PINNED_SOURCE_EVIDENCE_JSON: &str =
+    include_str!("../../../deploy/evidence/ed-1.21.1-source-proof.json");
+const NIX_CACHE_PUBLIC_KEY_B64: &str = "6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=";
+
+fn nix32_from_sri(value: &str) -> Result<String, String> {
+    use base64::Engine as _;
+    let (_, payload) = value
+        .split_once('-')
+        .ok_or_else(|| "NAR hash is not SRI".to_owned())?;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|_| "NAR hash is not base64".to_owned())?;
+    if raw.is_empty() {
+        return Err("NAR hash is empty".into());
+    }
+    const ALPHABET: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
+    let length = (raw.len() * 8 - 1) / 5 + 1;
+    let mut encoded = String::with_capacity(length);
+    for index in (0..length).rev() {
+        let bit = index * 5;
+        let low = bit / 8;
+        let shift = bit % 8;
+        let mut current = u16::from(raw[low]) >> shift;
+        if low + 1 < raw.len() {
+            current |= u16::from(raw[low + 1]) << (8 - shift);
+        }
+        encoded.push(ALPHABET[(current & 31) as usize] as char);
+    }
+    Ok(encoded)
+}
+
+fn hex_sha256_bytes(value: &str) -> Result<[u8; 32], String> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("flat source digest is not a SHA-256 hex value".into());
+    }
+    let mut bytes = [0u8; 32];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        bytes[index] = u8::from_str_radix(std::str::from_utf8(chunk).unwrap_or(""), 16)
+            .map_err(|_| "flat source digest is not hex".to_owned())?;
+    }
+    Ok(bytes)
+}
+
+fn verify_pinned_source_proof(proof: &PinnedSourceEvidence) -> Result<(), String> {
+    use base64::Engine as _;
+    use ring::signature::{ED25519, UnparsedPublicKey};
+
+    if !proof.signature_valid || !proof.source_in_output_input_drvs {
+        return Err("the pinned source evidence was not verified".into());
+    }
+    if !proof.source_store_path.starts_with("/nix/store/")
+        || !proof.source_drv_path.starts_with("/nix/store/")
+        || !proof.output_drv_path.starts_with("/nix/store/")
+        || !proof.output_store_path.starts_with("/nix/store/")
+        || proof.nar_size == 0
+    {
+        return Err("the pinned source evidence paths are invalid".into());
+    }
+    let expected_nix32 = nix32_from_sri(&proof.nar_sri)?;
+    if expected_nix32 != proof.nar_nix32 {
+        return Err("the pinned source NAR hash does not match its nix32 form".into());
+    }
+    let expected_fingerprint = format!(
+        "1;{};sha256:{};{};",
+        proof.source_store_path, proof.nar_nix32, proof.nar_size
+    );
+    if expected_fingerprint != proof.fingerprint {
+        return Err("the pinned source fingerprint is not exact".into());
+    }
+    let flat = hex_sha256_bytes(&proof.flat_sha256)?;
+    let flat_nix32 = {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(flat);
+        nix32_from_sri(&format!("sha256-{encoded}"))?
+    };
+    if proof.ca != format!("fixed:sha256:{flat_nix32}") {
+        return Err("the pinned source CA does not match the flat digest".into());
+    }
+    if !proof.source_drv_aterm.contains(&proof.flat_sha256)
+        || !proof.source_drv_aterm.contains(&proof.source_store_path)
+        || !proof.output_drv_aterm.contains(&proof.source_drv_path)
+        || !proof.output_drv_aterm.contains(&proof.output_store_path)
+    {
+        return Err("the pinned source derivation binding is not exact".into());
+    }
+    let (key_name, signature) = proof
+        .signature
+        .split_once(':')
+        .ok_or_else(|| "the pinned source signature has no key name".to_owned())?;
+    if key_name != "cache.nixos.org-1" {
+        return Err("the pinned source signature uses an unknown key".into());
+    }
+    let key = base64::engine::general_purpose::STANDARD
+        .decode(NIX_CACHE_PUBLIC_KEY_B64)
+        .map_err(|_| "the pinned cache key is not base64".to_owned())?;
+    let signature = base64::engine::general_purpose::STANDARD
+        .decode(signature)
+        .map_err(|_| "the pinned source signature is not base64".to_owned())?;
+    UnparsedPublicKey::new(&ED25519, key)
+        .verify(proof.fingerprint.as_bytes(), &signature)
+        .map_err(|_| "the pinned source signature is not valid".to_owned())?;
+    Ok(())
+}
+
+fn pinned_source_evidence()
+-> Result<factory_native::planning::license_decision::SourceEvidenceProof, String> {
+    let proof: PinnedSourceEvidence = serde_json::from_str(PINNED_SOURCE_EVIDENCE_JSON)
+        .map_err(|error| format!("the pinned source evidence is malformed: {error}"))?;
+    verify_pinned_source_proof(&proof)?;
+    Ok(
+        factory_native::planning::license_decision::SourceEvidenceProof {
+            source_store_path: proof.source_store_path,
+            source_drv_path: proof.source_drv_path,
+            flat_sha256: proof.flat_sha256,
+            nar_sri: proof.nar_sri,
+            nar_nix32: proof.nar_nix32,
+            nar_size: proof.nar_size,
+            signature: proof.signature,
+            fingerprint: proof.fingerprint,
+            ca: proof.ca,
+            output_drv_path: proof.output_drv_path,
+            output_store_path: proof.output_store_path,
+            source_in_output_input_drvs: true,
+            signature_valid: true,
+        },
+    )
+}
+
 /// IDs-only Lead licence-decision consumer.
 ///
 /// The HTTP caller supplies only the delegation id and idempotency key. Core
@@ -18865,8 +19027,8 @@ async fn record_license_decision(
     Json(input): Json<NewLicenseDecisionRequest>,
 ) -> Response {
     use factory_native::planning::license_decision::{
-        CandidateBinding, LicenseDecisionContext, LicenseDecisionReview, PolicyBinding,
-        verify_license_evidence_review, verify_stored_identity_facts,
+        CandidateBinding, InventoryEvidenceBundle, LicenseDecisionContext, LicenseDecisionReview,
+        PolicyBinding, verify_license_evidence_review, verify_stored_identity_facts,
     };
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -18932,10 +19094,14 @@ async fn record_license_decision(
         }
         Err(error) => return api_error(error),
     };
-    let evidence_bundle = match serde_json::to_value(&plan.plan.license_inventory.entries) {
-        Ok(entries) => serde_json::json!({"entries": entries}),
-        Err(_) => {
-            return api_error(Error::Invalid("environment licence inventory encoding"));
+    let evidence_bundle = InventoryEvidenceBundle::from_plan(&plan.plan);
+    let source_evidence = match pinned_source_evidence() {
+        Ok(proof) => proof,
+        Err(error) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_SOURCE_EVIDENCE_INVALID",
+                message: error,
+            });
         }
     };
     let stored_receipt = match app
@@ -19034,6 +19200,9 @@ async fn record_license_decision(
         delegation: &delegation,
         delegation_revoked,
         identity_facts: &identity_facts,
+        identity_facts_root_binding: stored_receipt.root_binding,
+        observed_root: &stored_receipt.observed_root,
+        source_evidence: &source_evidence,
         binding: &binding,
     };
     let verified = match verify_license_evidence_review(&review, &context) {
@@ -19053,6 +19222,352 @@ async fn record_license_decision(
         Ok(record) => Json(record).into_response(),
         Err(error) => api_error(error),
     }
+}
+
+fn license_review_projection(
+    review: &factory_native::planning::license_decision::LicenseDecisionReview,
+) -> serde_json::Value {
+    json!({
+        "decision": review.decision,
+        "pin": review.pin,
+        "name": review.name,
+        "version": review.version,
+        "licenseExpression": review.license_expression,
+        "selectedBranch": review.selected_branch,
+        "useContext": review.use_context,
+        "paymentRequired": review.payment_required,
+    })
+}
+
+async fn get_license_evidence_review(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    use factory_native::planning::license_decision::LicenseDecisionReview;
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let intake = match app.db.intake_request(&id).await {
+        Ok(intake) => intake,
+        Err(error) => return api_error(error),
+    };
+    match app
+        .db
+        .lead_license_evidence_reservation(&intake.lead_request_id)
+        .await
+    {
+        Ok(reservation) => {
+            let review: LicenseDecisionReview =
+                match serde_json::from_str(reservation.response_text()) {
+                    Ok(review) => review,
+                    Err(_) => {
+                        return api_error(Error::IntakeConflict {
+                            code: "LICENSE_EVIDENCE_INVALID",
+                            message: "the stored Lead evidence review is not a valid typed output"
+                                .into(),
+                        });
+                    }
+                };
+            Json(json!({
+                "available": true,
+                "reservationId": reservation.reservation_id(),
+                "requestSha256": reservation.request_sha256(),
+                "review": license_review_projection(&review),
+            }))
+            .into_response()
+        }
+        Err(Error::NotFound) => Json(json!({"available": false})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LicenseEvidenceReviewHttpRequest {
+    delegation_id: String,
+    idempotency_key: String,
+}
+
+async fn request_license_evidence_review(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<LicenseEvidenceReviewHttpRequest>,
+) -> Response {
+    use factory_native::planning::license_decision::{
+        CandidateBinding, InventoryEvidenceBundle, LicenseDecisionReview, PolicyBinding,
+        verify_stored_identity_facts,
+    };
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if input.idempotency_key.trim().is_empty() || input.idempotency_key.len() > 200 {
+        return api_error(Error::Invalid("licence evidence review idempotency key"));
+    }
+    let intake = match app.db.intake_request(&id).await {
+        Ok(intake) => intake,
+        Err(error) => return api_error(error),
+    };
+    let lock = agentic_request_lock(&intake.id);
+    let _guard = lock.lock().await;
+    let lead = match app.db.lead_request(&intake.lead_request_id).await {
+        Ok(lead) => lead,
+        Err(error) => return api_error(error),
+    };
+    let delegation = match app.db.agentic_owner_decision(&input.delegation_id).await {
+        Ok(delegation) => delegation,
+        Err(error) => return api_error(error),
+    };
+    if delegation.project_id != intake.project_id {
+        return api_error(Error::Forbidden(
+            "licence delegation belongs to another project".to_string(),
+        ));
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    if delegation.matter != "LICENSE_IDENTITY_EVIDENCE_DELEGATION"
+        || delegation.status != "APPROVED"
+        || delegation.selected_option.as_deref() != Some("APPROVE_DELEGATION")
+    {
+        return api_error(Error::IntakeConflict {
+            code: "LICENSE_DELEGATION_REQUIRED",
+            message: "an approved, current Owner delegation is required".into(),
+        });
+    }
+    if delegation.deadline <= now {
+        return api_error(Error::IntakeConflict {
+            code: "LICENSE_DELEGATION_EXPIRED",
+            message: "the Owner licence delegation has expired".into(),
+        });
+    }
+    match app.db.license_delegation_revoked(&delegation.id).await {
+        Ok(true) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_DELEGATION_REVOKED",
+                message: "the Owner licence delegation was revoked".into(),
+            });
+        }
+        Ok(false) => {}
+        Err(error) => return api_error(error),
+    }
+    if let Ok(existing) = app.db.lead_license_evidence_reservation(&lead.id).await {
+        let review: LicenseDecisionReview = match serde_json::from_str(existing.response_text()) {
+            Ok(review) => review,
+            Err(_) => {
+                return api_error(Error::IntakeConflict {
+                    code: "LICENSE_EVIDENCE_INVALID",
+                    message: "the stored Lead evidence review is not a valid typed output".into(),
+                });
+            }
+        };
+        return Json(json!({
+            "reservationId": existing.reservation_id(),
+            "provider": "",
+            "model": "",
+            "requestSha256": existing.request_sha256(),
+            "review": license_review_projection(&review),
+        }))
+        .into_response();
+    }
+    let plan = match app.db.latest_environment_plan(&id).await {
+        Ok(plan) => plan,
+        Err(Error::NotFound) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_PLAN_REQUIRED",
+                message: "a real EnvironmentPlan is required for the exact stage binding".into(),
+            });
+        }
+        Err(error) => return api_error(error),
+    };
+    let spec = app.db.environment_spec_for_request(&id).await.ok();
+    let evidence_bundle = InventoryEvidenceBundle::from_plan(&plan.plan);
+    let stored_receipt = match app
+        .db
+        .latest_identity_facts_receipt(&plan.plan_sha256)
+        .await
+    {
+        Ok(receipt) => receipt,
+        Err(Error::NotFound) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_IDENTITY_FACTS_REQUIRED",
+                message: "a signed identity-facts receipt is required for the stage".into(),
+            });
+        }
+        Err(error) => return api_error(error),
+    };
+    let bearer = match factory_native::secrets::required("FACTORY_RUNTIME_BROKER_TOKEN") {
+        Ok(bearer) => bearer,
+        Err(_) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_IDENTITY_FACTS_UNAVAILABLE",
+                message: "the broker bearer is not available to verify the receipt".into(),
+            });
+        }
+    };
+    let identity_facts = match verify_stored_identity_facts(&stored_receipt, bearer.as_bytes()) {
+        Ok(facts) => facts,
+        Err(error) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_IDENTITY_FACTS_INVALID",
+                message: error.to_string(),
+            });
+        }
+    };
+    let config = match app.db.project_config(&intake.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let candidate = match CandidateBinding::base(&config.base_commit) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_CANDIDATE_INVALID",
+                message: error.to_string(),
+            });
+        }
+    };
+    let binding = match &spec {
+        Some(spec) => PolicyBinding::from_spec_inventory_evidence(
+            factory_native::planning::license_policy::default_catalog_sha256(),
+            factory_native::planning::license_policy::default_profile_sha256(),
+            factory_native::planning::license_policy::default_binding_sha256(),
+            &plan,
+            spec,
+            &evidence_bundle,
+            candidate,
+            &identity_facts,
+        ),
+        None => PolicyBinding::from_plan_inventory_evidence(
+            factory_native::planning::license_policy::default_catalog_sha256(),
+            factory_native::planning::license_policy::default_profile_sha256(),
+            factory_native::planning::license_policy::default_binding_sha256(),
+            &plan,
+            &evidence_bundle,
+            candidate,
+            &identity_facts,
+        ),
+    };
+    if let Err(error) = binding {
+        return api_error(Error::IntakeConflict {
+            code: "LICENSE_BINDING_INVALID",
+            message: error.to_string(),
+        });
+    }
+    let source_evidence = match pinned_source_evidence() {
+        Ok(proof) => proof,
+        Err(error) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_SOURCE_EVIDENCE_INVALID",
+                message: error,
+            });
+        }
+    };
+    let profile = match app
+        .db
+        .execution_profile_revision(&intake.profile_id, &intake.profile_revision_id)
+        .await
+    {
+        Ok(profile) => profile,
+        Err(error) => return api_error(error),
+    };
+    let gateway = match app.intake_assess_gateway(&profile).await {
+        Ok(gateway) => gateway,
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": format!("the frozen Lead route is unavailable: {error}"),
+                    "code": "LICENSE_EVIDENCE_MODEL_UNAVAILABLE",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let funding = match lead_model_funding(
+        &app,
+        &intake.id,
+        &lead.id,
+        gateway.provider(),
+        gateway.model(),
+    )
+    .await
+    {
+        Ok(funding) => funding,
+        Err(error) => return api_error(error),
+    };
+    if !funding.funded() {
+        return api_error(Error::IntakeConflict {
+            code: "INFERENCE_AUTHORIZATION_REQUIRED",
+            message:
+                "the Lead licence evidence review requires an active Owner-confirmed subscription admission or an explicit request-scoped inference authorization"
+                    .into(),
+        });
+    }
+    if funding.envelope
+        && !funding.subscription
+        && let Err(error) = ensure_inference_pricing_quote(
+            &app,
+            gateway.provider(),
+            gateway.model(),
+            "license-evidence-review",
+        )
+        .await
+    {
+        return api_error(error);
+    }
+    let grant = match app.db.standing_delegation_v2(&intake.delegation_id).await {
+        Ok(grant) => grant,
+        Err(error) => return api_error(error),
+    };
+    let (review, model_result) = match factory_native::lead_model::review_license_evidence(
+        &gateway,
+        &app.db,
+        factory_native::lead_model::LicenseEvidenceReviewRequest {
+            request_id: &intake.id,
+            objective_id: &lead.id,
+            project: &config,
+            plan: &plan,
+            spec: spec.as_ref(),
+            inventory: &evidence_bundle,
+            source: &source_evidence,
+            identity_facts: &identity_facts,
+            delegation: &delegation,
+            grant: &grant,
+            now: chrono::Utc::now(),
+        },
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(factory_native::lead::LeadError::TransientAssessment(detail)) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": detail,
+                    "code": "LICENSE_EVIDENCE_MODEL_UNAVAILABLE",
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "LICENSE_EVIDENCE_REVIEW_INVALID",
+                })),
+            )
+                .into_response();
+        }
+    };
+    Json(json!({
+        "reservationId": model_result.reservation_id,
+        "provider": model_result.provider,
+        "model": model_result.model,
+        "requestSha256": model_result.request_sha256,
+        "review": license_review_projection(&review),
+    }))
+    .into_response()
 }
 
 fn reserved_matter_triggered(objective: &str, reserved: &[String]) -> Option<String> {
@@ -28557,6 +29072,246 @@ mod tests {
                 .intake_approval_context(intake_id)
                 .await
                 .unwrap()
+        }
+
+        #[tokio::test]
+        async fn license_evidence_review_fails_closed_before_any_model_call() {
+            use tower::ServiceExt;
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (record, _) = fixture
+                .app
+                .db
+                .create_intake_request(
+                    &fixture.project_id,
+                    "Review the exact ed licence evidence.",
+                    Some(&fixture.profile.id),
+                    factory_native::intake::IntakeMode::ReviewPlan,
+                    "license-review-prevalidation",
+                    "operator-token",
+                    &[],
+                )
+                .await
+                .unwrap();
+            fixture_plan(&fixture, &record.id, "FIXTURE").await;
+            let options = vec![
+                "APPROVE_DELEGATION".to_string(),
+                "DENY_DELEGATION".to_string(),
+            ];
+            let evidence = serde_json::json!({
+                "domain": "licenses-identity-evidence",
+                "pin": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+                "useContext": "commercial-development",
+                "economicCriterion": "no-mandatory-fee-commercial-use",
+                "revision": 1,
+            });
+            let delegation = fixture
+                .app
+                .db
+                .create_agentic_owner_decision(&factory_native::db::NewAgenticOwnerDecision {
+                    project_id: &fixture.project_id,
+                    request_id: Some(&record.id),
+                    campaign_id: None,
+                    matter: "LICENSE_IDENTITY_EVIDENCE_DELEGATION",
+                    risk: factory_native::lead::RiskClass::R0,
+                    options: &options,
+                    evidence: &evidence,
+                    recommendation: "delegate the exact decision",
+                    deadline: &(chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339(),
+                })
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .resolve_agentic_owner_decision(
+                    &delegation.id,
+                    "APPROVE_DELEGATION",
+                    "owner delegate",
+                    "operator-token",
+                )
+                .await
+                .unwrap();
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/agentic/requests/{}/license-evidence-review",
+                    record.id
+                ))
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer operator-token")
+                .body(axum::body::Body::from(
+                    serde_json::json!({
+                        "delegation_id": delegation.id,
+                        "idempotency_key": "license-review-prevalidation",
+                    })
+                    .to_string(),
+                ))
+                .unwrap();
+            let response = fixture.router.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(
+                matches!(
+                    body.get("code").and_then(serde_json::Value::as_str),
+                    Some("LICENSE_IDENTITY_FACTS_REQUIRED")
+                        | Some("LICENSE_BINDING_INVALID")
+                        | Some("LICENSE_SOURCE_EVIDENCE_INVALID")
+                ),
+                "{body}"
+            );
+        }
+
+        #[tokio::test]
+        async fn license_evidence_review_replays_a_settled_review_without_a_second_call() {
+            use tower::ServiceExt;
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (record, _) = fixture
+                .app
+                .db
+                .create_intake_request(
+                    &fixture.project_id,
+                    "Replay the exact ed licence evidence review.",
+                    Some(&fixture.profile.id),
+                    factory_native::intake::IntakeMode::ReviewPlan,
+                    "license-review-replay",
+                    "operator-token",
+                    &[],
+                )
+                .await
+                .unwrap();
+            let options = vec![
+                "APPROVE_DELEGATION".to_string(),
+                "DENY_DELEGATION".to_string(),
+            ];
+            let evidence = serde_json::json!({
+                "domain": "licenses-identity-evidence",
+                "pin": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+                "useContext": "commercial-development",
+                "economicCriterion": "no-mandatory-fee-commercial-use",
+                "revision": 1,
+            });
+            let delegation = fixture
+                .app
+                .db
+                .create_agentic_owner_decision(&factory_native::db::NewAgenticOwnerDecision {
+                    project_id: &fixture.project_id,
+                    request_id: Some(&record.id),
+                    campaign_id: None,
+                    matter: "LICENSE_IDENTITY_EVIDENCE_DELEGATION",
+                    risk: factory_native::lead::RiskClass::R0,
+                    options: &options,
+                    evidence: &evidence,
+                    recommendation: "delegate the exact decision",
+                    deadline: &(chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339(),
+                })
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .resolve_agentic_owner_decision(
+                    &delegation.id,
+                    "APPROVE_DELEGATION",
+                    "owner delegate",
+                    "operator-token",
+                )
+                .await
+                .unwrap();
+            let review = serde_json::json!({
+                "decision": "ACCEPT",
+                "pin": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+                "name": "ed",
+                "version": "1.21.1",
+                "outputDrvPath": "/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv",
+                "outputStorePath": "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1",
+                "outputNarHash": "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=",
+                "sourceDrvPath": "/nix/store/j151nb5vh176kdrrh1rkilxkdkmvm47w-ed-1.21.1.tar.lz.drv",
+                "sourceStorePath": "/nix/store/wa88qds9615j2r5imfryzbyg86c97iga-ed-1.21.1.tar.lz",
+                "sourceOutputHash": "sha256-1tDHGSsCsFGckCqTcZBT6GWt5aeEo7Mn2T2IhFeyPEs=",
+                "licenseExpression": "GPL-2.0-or-later",
+                "softwareTextSha256": "a".repeat(64),
+                "softwareTexts": [],
+                "selectedBranch": "GPL-2.0-or-later",
+                "documentation": [],
+                "useContext": "commercial-development",
+                "commercialUse": true,
+                "paymentRequired": false,
+                "obligationsReviewed": true,
+                "softwareObligations": ["notice", "source"],
+                "documentationObligations": [],
+            });
+            let pool = sqlx_sqlite::SqlitePool::connect_with(
+                sqlx_sqlite::SqliteConnectOptions::new()
+                    .filename(&fixture.path)
+                    .create_if_missing(false),
+            )
+            .await
+            .unwrap();
+            let now = chrono::Utc::now();
+            sqlx::query::query(
+                "INSERT INTO model_call_reservations
+                 (reservation_id,role,principal_id,project_id,objective_id,scope_id,
+                  provider,model,purpose,request_sha256,max_input_tokens,
+                  max_output_tokens,max_total_tokens,max_cost_micros,input_tokens,
+                  output_tokens,total_tokens,cost_micros,usage_known,response_text,
+                  state,error,expires_at_ms,created_at,updated_at,ledger_reservation_id,
+                  dispatched_at_ms,provider_request_id)
+                 VALUES ('reservation-license-replay','LEAD','operator-token',?1,?2,?2,
+                         'opencode-go','deepseek-v4.1-flash','license_evidence_review',
+                         ?3,1,1,2,1,1,1,2,1,1,?4,'SETTLED',NULL,?5,?6,?6,NULL,NULL,NULL)",
+            )
+            .bind(&fixture.project_id)
+            .bind(&record.lead_request_id)
+            .bind("b".repeat(64))
+            .bind(review.to_string())
+            .bind(now.timestamp_millis() + 60_000)
+            .bind(now.to_rfc3339())
+            .execute(&pool)
+            .await
+            .unwrap();
+            for _ in 0..2 {
+                let request = axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/agentic/requests/{}/license-evidence-review",
+                        record.id
+                    ))
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer operator-token")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({
+                            "delegation_id": delegation.id,
+                            "idempotency_key": "license-review-replay",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap();
+                let response = fixture.router.clone().oneshot(request).await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                    .await
+                    .unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(
+                    body.get("reservationId")
+                        .and_then(serde_json::Value::as_str),
+                    Some("reservation-license-replay")
+                );
+                assert_eq!(
+                    body.get("review")
+                        .and_then(|review| review.get("decision"))
+                        .and_then(serde_json::Value::as_str),
+                    Some("ACCEPT")
+                );
+            }
+            pool.close().await;
         }
 
         #[derive(Clone, Copy, PartialEq, Eq)]
@@ -38244,10 +38999,11 @@ mod tests {
             assert!(!spec.flake_lock_sha256.is_empty());
             assert_eq!(spec.builder_image, "factory/environment-builder");
             assert!(!spec.builder_image_digest.is_empty());
-            let receipt = build_environment_before_freeze(&fixture.app, &resolved, &spec, None)
-                .await
-                .unwrap()
-                .expect("the fake builder must produce a receipt");
+            let receipt =
+                build_environment_before_freeze(&fixture.app, &resolved, &spec, None, &[])
+                    .await
+                    .unwrap()
+                    .expect("the fake builder must produce a receipt");
             assert_eq!(receipt.spec_sha256, spec.spec_sha256);
             receipt.validate_for(&spec).unwrap();
             // A builder cached as UNAVAILABLE whose broker has recovered must
@@ -38261,7 +39017,7 @@ mod tests {
                 });
             fixture.app.set_environment_builder(stale);
             let refreshed_receipt =
-                build_environment_before_freeze(&fixture.app, &resolved, &spec, None)
+                build_environment_before_freeze(&fixture.app, &resolved, &spec, None, &[])
                     .await
                     .unwrap()
                     .expect("a refreshed builder must not be skipped");
@@ -38501,7 +39257,7 @@ mod tests {
             )
             .unwrap();
             let plan_sha256 = plan.plan_sha256.clone();
-            let receipt = build_environment_before_freeze(&fixture.app, &plan, &spec, None)
+            let receipt = build_environment_before_freeze(&fixture.app, &plan, &spec, None, &[])
                 .await
                 .unwrap()
                 .expect("the fake builder must produce a build receipt");
@@ -38540,7 +39296,7 @@ mod tests {
                     },
                 ));
                 let refused =
-                    build_environment_before_freeze(&fixture.app, &plan, &spec, None).await;
+                    build_environment_before_freeze(&fixture.app, &plan, &spec, None, &[]).await;
                 assert!(refused.is_err(), "{defect:?} must be refused");
                 let latest = fixture
                     .app
@@ -38560,7 +39316,8 @@ mod tests {
             fixture
                 .app
                 .set_environment_builder(std::sync::Arc::new(FailingEnvironmentBuilder));
-            let refused = build_environment_before_freeze(&fixture.app, &plan, &spec, None).await;
+            let refused =
+                build_environment_before_freeze(&fixture.app, &plan, &spec, None, &[]).await;
             assert!(refused.is_err(), "the failing licence gate must refuse");
             let preserved = fixture
                 .app
@@ -38940,6 +39697,40 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn license_evidence_review_routes_require_the_operator_credential() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-license-review-auth-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let router = build_router(test_app(&path).await);
+        for (method, uri, body) in [
+            (
+                "GET",
+                "/agentic/requests/missing/license-evidence-review",
+                "{}".to_string(),
+            ),
+            (
+                "POST",
+                "/agentic/requests/missing/license-evidence-review",
+                r#"{"delegation_id":"delegation","idempotency_key":"key"}"#.to_string(),
+            ),
+        ] {
+            let request = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body))
+                .unwrap();
+            assert_eq!(
+                router.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} must require the operator credential"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn p1a_seed_creates_v2_proposal_and_projection_states() {
         use tower::ServiceExt;
         let path = std::env::temp_dir().join(format!(
@@ -39291,5 +40082,57 @@ mod tests {
             router.oneshot(request).await.unwrap().status(),
             StatusCode::UNAUTHORIZED
         );
+    }
+}
+
+#[cfg(test)]
+mod pinned_source_proof_tests {
+    use super::*;
+
+    fn proof() -> PinnedSourceEvidence {
+        serde_json::from_str(PINNED_SOURCE_EVIDENCE_JSON).expect("pinned proof")
+    }
+
+    #[test]
+    fn exact_pinned_source_proof_is_accepted() {
+        assert!(verify_pinned_source_proof(&proof()).is_ok());
+        assert!(pinned_source_evidence().is_ok());
+    }
+
+    #[test]
+    fn fingerprint_without_the_hash_type_is_rejected() {
+        let mut value = proof();
+        value.fingerprint = value.fingerprint.replace(";sha256:", ";");
+        assert!(verify_pinned_source_proof(&value).is_err());
+    }
+
+    #[test]
+    fn tampered_source_path_or_size_is_rejected() {
+        let mut value = proof();
+        value.source_store_path.push('x');
+        assert!(verify_pinned_source_proof(&value).is_err());
+        let mut value = proof();
+        value.nar_size += 1;
+        assert!(verify_pinned_source_proof(&value).is_err());
+    }
+
+    #[test]
+    fn signature_from_another_path_or_key_is_rejected() {
+        let mut value = proof();
+        value.signature = "cache.nixos.org-1:W4VnH28q6+fK/k9ITu/zNJwqbXjFfO3qkAr1KbJWAz4eCMsji3j0uimkom3QngDtahbtaH7+tpjA5sxMeyaYAA==".into();
+        assert!(verify_pinned_source_proof(&value).is_err());
+        let mut value = proof();
+        value.signature = value.signature.replace("cache.nixos.org-1:", "other:");
+        assert!(verify_pinned_source_proof(&value).is_err());
+    }
+
+    #[test]
+    fn tampered_flat_or_ca_is_rejected() {
+        let mut value = proof();
+        value.flat_sha256 = "0".repeat(64);
+        assert!(verify_pinned_source_proof(&value).is_err());
+        let mut value = proof();
+        value.ca = "fixed:sha256:0000000000000000000000000000000000000000000000000000".into();
+        assert!(verify_pinned_source_proof(&value).is_err());
     }
 }
