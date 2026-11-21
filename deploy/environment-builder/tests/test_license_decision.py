@@ -25,12 +25,9 @@ def plan() -> dict:
 
 
 def source_proof(identity: dict, evidence: dict) -> dict:
-    """Derive the exact source proof from the signed identity asset.
-
-    The proof is evidence assembled from cache.nixos.org/pathinfo and the
-    retained store; it is validated by the backend, not granted here.
-    """
-    return license_decision._exact_source_proof(identity, evidence)
+    proof, _ = license_decision._source_proof_vector(identity)
+    assert proof is not None
+    return proof
 
 def receipt() -> dict:
     asset = json.loads(license_decision.ASSET_FILE.read_text(encoding="utf-8"))
@@ -58,7 +55,7 @@ def receipt() -> dict:
         }
         for item in docs
     ]
-    return {
+    payload = {
         "decision": "ACCEPT",
         "status": "ACTIVE",
         "revokedAt": None,
@@ -96,6 +93,8 @@ def receipt() -> dict:
             },
         },
     }
+    payload["contentSha256"] = license_decision._sha_value(payload)
+    return payload
 
 
 class LicenseDecisionTests(unittest.TestCase):
@@ -109,6 +108,9 @@ class LicenseDecisionTests(unittest.TestCase):
         asset = json.loads(license_decision.ASSET_FILE.read_text(encoding="utf-8"))
         record["identity"] = asset["identities"][0]
         record["stage"] = json.dumps(record["stage"], separators=(",", ":"))
+        record["contentSha256"] = license_decision._sha_value(
+            {key: value for key, value in record.items() if key != "contentSha256"}
+        )
         identity = license_decision.validate_license_decision_receipt(record, plan())
         self.assertEqual(identity["name"], "ed")
 
@@ -151,6 +153,22 @@ class LicenseDecisionTests(unittest.TestCase):
         with self.assertRaises(license_decision.LicenseDecisionError):
             license_decision.validate_license_decision_receipt(missing_text, plan())
 
+    def test_shared_resolution_observation_vector_is_canonical(self) -> None:
+        vector = json.loads(
+            (
+                license_decision.ASSET_FILE.parent
+                / "resolution_observation_vector.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            license_decision._sha_value(vector["observation"]),
+            vector["resolutionKey"],
+        )
+        self.assertEqual(
+            vector["resolutionKey"],
+            "645a31aaaa997b55cc63278c5b4f691b5ad8f87895530d98642797d6683ca199",
+        )
+
     def test_shared_source_proof_vector_is_the_single_canonical_representation(self) -> None:
         vector = json.loads(
             (
@@ -167,7 +185,9 @@ class LicenseDecisionTests(unittest.TestCase):
             and entry["name"] == selector["name"]
             and entry["version"] == selector["version"]
         )
-        proof = license_decision._exact_source_proof(identity, asset["evidence"])
+        proof, digest = license_decision._source_proof_vector(identity)
+        self.assertIsNotNone(proof)
+        self.assertIsNotNone(digest)
         self.assertEqual(proof, vector["sourceProof"])
         self.assertEqual(
             license_decision._sha_value(proof), vector["canonicalSha256"]
@@ -196,14 +216,21 @@ class LicenseDecisionTests(unittest.TestCase):
             ).hexdigest(),
         )
 
-    def test_source_digest_without_full_proof_is_accepted(self) -> None:
+    def test_missing_full_source_proof_is_stale(self) -> None:
         receipt_value = receipt()
         del receipt_value["sourceEvidence"]
-        accepted = license_decision.validate_license_decision_receipt(
-            receipt_value, plan()
+        receipt_value["contentSha256"] = license_decision._sha_value(
+            {
+                key: value
+                for key, value in receipt_value.items()
+                if key != "contentSha256"
+            }
         )
-        self.assertEqual(accepted["name"], "ed")
-        self.assertEqual(accepted["source"]["storePath"], "/nix/store/wa88qds9615j2r5imfryzbyg86c97iga-ed-1.21.1.tar.lz")
+        with self.assertRaises(license_decision.LicenseDecisionError) as caught:
+            license_decision.validate_license_decision_receipt(receipt_value, plan())
+        self.assertEqual(
+            caught.exception.code, "ENVIRONMENT_SOURCE_EVIDENCE_STALE"
+        )
 
     def test_source_proof_missing_or_tampered_is_stale(self) -> None:
         missing = receipt()

@@ -13613,20 +13613,125 @@ async fn freeze_reviewed_environment(
         .await
         .ok()
         .map(|config| std::path::PathBuf::from(config.repository));
-    let license_decisions = app
+    let has_active_license_decision = app
         .db
         .license_decisions(&record.project_id)
         .await
         .unwrap_or_default()
-        .into_iter()
-        .filter(|decision| {
+        .iter()
+        .any(|decision| {
             decision.lead_request_id == record.lead_request_id
                 && decision.status == "ACTIVE"
                 && decision.decision == "ACCEPT"
                 && decision.revoked_at.is_none()
-        })
-        .filter_map(|decision| serde_json::to_value(decision).ok())
-        .collect::<Vec<_>>();
+        });
+    let mut license_decisions = Vec::new();
+    if has_active_license_decision {
+        let stored_receipt = app
+            .db
+            .latest_identity_facts_receipt(&plan.plan_sha256)
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": format!("the exact identity-facts receipt is required before an overlay: {error}"),
+                        "code": "LICENSE_IDENTITY_FACTS_REQUIRED",
+                    })),
+                )
+                    .into_response()
+            })?;
+        let bearer =
+            factory_native::secrets::required("FACTORY_RUNTIME_BROKER_TOKEN").map_err(|_| {
+                (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "the broker bearer is not available to verify the identity-facts receipt",
+                    "code": "LICENSE_IDENTITY_FACTS_UNAVAILABLE",
+                })),
+            )
+                .into_response()
+            })?;
+        let verified_facts =
+            factory_native::planning::license_decision::verify_stored_identity_facts(
+                &stored_receipt,
+                bearer.as_bytes(),
+            )
+            .map_err(|error| {
+                (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": error.to_string(),
+                        "code": "LICENSE_IDENTITY_FACTS_INVALID",
+                    })),
+                )
+                    .into_response()
+            })?;
+        let identity_facts =
+            factory_native::planning::identity_facts::BoundIdentityFacts::spec_cache_observation(
+                verified_facts,
+            );
+        let evidence_bundle =
+            factory_native::planning::license_decision::InventoryEvidenceBundle::from_plan(&plan);
+        let evidence_bundle_sha256 = evidence_bundle.canonical_sha256().map_err(|error| {
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.to_string(),
+                    "code": "LICENSE_EVIDENCE_BUNDLE_INVALID",
+                })),
+            )
+                .into_response()
+        })?;
+        for decision in app
+            .db
+            .license_decisions(&record.project_id)
+            .await
+            .unwrap_or_default()
+        {
+            if decision.lead_request_id != record.lead_request_id
+                || decision.status != "ACTIVE"
+                || decision.decision != "ACCEPT"
+                || decision.revoked_at.is_some()
+            {
+                continue;
+            }
+            let delegation_revoked = app
+                .db
+                .license_delegation_revoked(&decision.delegation_id)
+                .await
+                .unwrap_or(true);
+            let decision_spec = decision.spec_sha256.clone();
+            let context =
+                factory_native::planning::license_decision::LicenseDecisionOverlayContext {
+                    project_id: &record.project_id,
+                    plan_sha256: &plan.plan_sha256,
+                    plan_revision: plan.revision,
+                    spec_sha256: decision_spec.as_deref(),
+                    inventory_sha256: &plan.license_inventory_sha256,
+                    evidence_bundle_sha256: &evidence_bundle_sha256,
+                    base_commit: &plan.base_commit,
+                    delegation_revoked,
+                    identity_facts: &identity_facts,
+                    now: chrono::Utc::now(),
+                };
+            let verified =
+                factory_native::planning::license_decision::verify_license_decision_overlay(
+                    &decision, &context,
+                )
+                .map_err(|error| {
+                    (
+                        StatusCode::CONFLICT,
+                        Json(json!({
+                            "error": error.to_string(),
+                            "code": "LICENSE_DECISION_STALE",
+                        })),
+                    )
+                        .into_response()
+                })?;
+            license_decisions.push(verified.to_json().clone());
+        }
+    }
     let build_receipt = build_environment_before_freeze(
         app,
         &plan,
@@ -19055,6 +19160,8 @@ struct PinnedSourceEvidence {
     output_store_path: String,
     source_drv_aterm: String,
     output_drv_aterm: String,
+    output_drv_aterm_sha256: String,
+    source_drv_aterm_sha256: String,
     output_drv_input_drvs: Vec<String>,
     source_in_output_input_drvs: bool,
     signature_valid: bool,
@@ -19096,6 +19203,8 @@ fn pinned_source_proof()
             output_drv_path: proof.output_drv_path,
             output_store_path: proof.output_store_path,
             output_drv_input_drvs: proof.output_drv_input_drvs,
+            output_drv_aterm_sha256: proof.output_drv_aterm_sha256,
+            source_drv_aterm_sha256: proof.source_drv_aterm_sha256,
             nar_nix32: Some(proof.nar_nix32),
             fingerprint: Some(proof.fingerprint),
             ca: Some(proof.ca),
@@ -40351,6 +40460,8 @@ mod pinned_source_proof_tests {
             output_drv_path: value.output_drv_path.clone(),
             output_store_path: value.output_store_path.clone(),
             output_drv_input_drvs: value.output_drv_input_drvs.clone(),
+            output_drv_aterm_sha256: value.output_drv_aterm_sha256.clone(),
+            source_drv_aterm_sha256: value.source_drv_aterm_sha256.clone(),
             nar_nix32: Some(value.nar_nix32.clone()),
             fingerprint: Some(value.fingerprint.clone()),
             ca: Some(value.ca.clone()),

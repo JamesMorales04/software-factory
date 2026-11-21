@@ -18,6 +18,7 @@ from typing import Any
 from . import license_policy as policy
 
 ASSET_FILE = Path(__file__).with_name("versioned_source_evidence.json")
+SOURCE_VECTOR_FILE = Path(__file__).with_name("source_evidence_proof_vector.json")
 
 
 class LicenseDecisionError(Exception):
@@ -134,27 +135,21 @@ def _nix32_from_sri(value: str) -> str:
     return "".join(encoded)
 
 
-def _exact_source_proof(identity: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
-    source = identity["source"]
-    output = identity["output"]
-    nar_nix32 = _nix32_from_sri(source["narHash"])
-    flat = evidence["sourceFlatSha256"]
-    ca = "fixed:sha256:" + _nix32_from_sri(
-        "sha256-" + base64.b64encode(bytes.fromhex(flat)).decode()
-    )
-    return {
-        "sourceStorePath": source["storePath"],
-        "sourceDrvPath": source["drvPath"],
-        "flatSha256": flat,
-        "narSri": source["narHash"],
-        "narNix32": nar_nix32,
-        "narSize": source["narSize"],
-        "signature": source["signature"],
-        "fingerprint": f"1;{source['storePath']};sha256:{nar_nix32};{source['narSize']};",
-        "ca": ca,
-        "outputDrvPath": output["drvPath"],
-        "outputStorePath": output["storePath"],
-    }
+def _source_proof_vector(
+    identity: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Return the single canonical source proof for this exact identity."""
+    if not SOURCE_VECTOR_FILE.is_file():
+        return None, None
+    vector = json.loads(SOURCE_VECTOR_FILE.read_text(encoding="utf-8"))
+    selector = vector.get("identity", {})
+    if (
+        selector.get("pin") != identity.get("pin")
+        or selector.get("name") != identity.get("name")
+        or selector.get("version") != identity.get("version")
+    ):
+        return None, None
+    return vector.get("sourceProof"), vector.get("canonicalSha256")
 
 
 def validate_license_decision_receipt(
@@ -316,17 +311,33 @@ def validate_license_decision_receipt(
                 "ENVIRONMENT_LICENSE_DECISION_INVALID",
                 "the documentation obligations are not exact for the identity",
             )
-    exact_source = _exact_source_proof(identity, evidence)
-    source_evidence = receipt.get("sourceEvidence")
-    if source_evidence is not None and source_evidence != exact_source:
+    expected_source, expected_source_sha = _source_proof_vector(identity)
+    if expected_source is None or expected_source_sha is None:
         raise LicenseDecisionError(
             "ENVIRONMENT_SOURCE_EVIDENCE_STALE",
-            "the source evidence proof does not match the exact identity",
+            "the decision identity has no canonical source proof vector",
         )
-    if receipt.get("sourceEvidenceSha256") != _sha_value(exact_source):
+    source_evidence = receipt.get("sourceEvidence")
+    if source_evidence != expected_source:
+        raise LicenseDecisionError(
+            "ENVIRONMENT_SOURCE_EVIDENCE_STALE",
+            "the delivered source evidence does not match the canonical identity proof",
+        )
+    if (
+        receipt.get("sourceEvidenceSha256") != expected_source_sha
+        or _sha_value(source_evidence) != expected_source_sha
+    ):
         raise LicenseDecisionError(
             "ENVIRONMENT_SOURCE_EVIDENCE_STALE",
             "the source evidence digest does not match its exact proof",
+        )
+    content = {
+        key: value for key, value in receipt.items() if key != "contentSha256"
+    }
+    if receipt.get("contentSha256") != _sha_value(content):
+        raise LicenseDecisionError(
+            "ENVIRONMENT_LICENSE_DECISION_STALE",
+            "the licence decision content digest is not exact",
         )
 
     if receipt.get("catalogSha256") != catalog.sha256 or receipt.get(

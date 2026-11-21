@@ -20,5 +20,7 @@
     "/nix/store/j151nb5vh176kdrrh1rkilxkdkmvm47w-ed-1.21.1.tar.lz.drv",
     "/nix/store/vxv9n01jpwvh83byh2q72mcf4vqlm3j5-lzip-1.25.drv",
     "/nix/store/zd1gad3l5xmc1i9hivj0l468srnsmvb2-bootstrap-stage4-stdenv-linux.drv"
-  ]
+  ],
+  "outputDrvAtermSha256": "294060511213ba226bb3687e28ad65650d8058e4b60fab50157ba19d2ad46d8c",
+  "sourceDrvAtermSha256": "5c1177a7e9a55b0e5fc1860375b211e13560ae88776e3796fee8ec105d9cf52e"
 }
