@@ -18893,7 +18893,7 @@ async fn revoke_license_delegation(
 }
 
 fn source_evidence_matches_exact_asset(
-    proof: &factory_native::planning::license_decision::SourceEvidenceProof,
+    proof: &factory_native::planning::license_decision::VerifiedSourceEvidence,
 ) -> bool {
     let Ok(asset) = serde_json::from_str::<serde_json::Value>(
         factory_native::planning::license_decision::VERSIONED_SOURCE_EVIDENCE_JSON,
@@ -18911,22 +18911,22 @@ fn source_evidence_matches_exact_asset(
         .get("source")
         .and_then(|source| source.get("storePath"))
         .and_then(serde_json::Value::as_str)
-        == Some(proof.source_store_path.as_str())
+        == Some(proof.source_store_path())
         && identity
             .get("source")
             .and_then(|source| source.get("drvPath"))
             .and_then(serde_json::Value::as_str)
-            == Some(proof.source_drv_path.as_str())
+            == Some(proof.source_drv_path())
         && identity
             .get("output")
             .and_then(|output| output.get("storePath"))
             .and_then(serde_json::Value::as_str)
-            == Some(proof.output_store_path.as_str())
+            == Some(proof.output_store_path())
         && identity
             .get("output")
             .and_then(|output| output.get("drvPath"))
             .and_then(serde_json::Value::as_str)
-            == Some(proof.output_drv_path.as_str())
+            == Some(proof.output_drv_path())
 }
 
 /// Pinned exact recovery record for the bootstrap ed source.
@@ -18959,51 +18959,11 @@ struct PinnedSourceEvidence {
 
 const PINNED_SOURCE_EVIDENCE_JSON: &str =
     include_str!("../../../deploy/evidence/ed-1.21.1-source-proof.json");
-const NIX_CACHE_PUBLIC_KEY_B64: &str = "6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=";
 
-fn nix32_from_sri(value: &str) -> Result<String, String> {
-    use base64::Engine as _;
-    let (_, payload) = value
-        .split_once('-')
-        .ok_or_else(|| "NAR hash is not SRI".to_owned())?;
-    let raw = base64::engine::general_purpose::STANDARD
-        .decode(payload)
-        .map_err(|_| "NAR hash is not base64".to_owned())?;
-    if raw.is_empty() {
-        return Err("NAR hash is empty".into());
-    }
-    const ALPHABET: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
-    let length = (raw.len() * 8 - 1) / 5 + 1;
-    let mut encoded = String::with_capacity(length);
-    for index in (0..length).rev() {
-        let bit = index * 5;
-        let low = bit / 8;
-        let shift = bit % 8;
-        let mut current = u16::from(raw[low]) >> shift;
-        if low + 1 < raw.len() {
-            current |= u16::from(raw[low + 1]) << (8 - shift);
-        }
-        encoded.push(ALPHABET[(current & 31) as usize] as char);
-    }
-    Ok(encoded)
-}
-
-fn hex_sha256_bytes(value: &str) -> Result<[u8; 32], String> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("flat source digest is not a SHA-256 hex value".into());
-    }
-    let mut bytes = [0u8; 32];
-    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
-        bytes[index] = u8::from_str_radix(std::str::from_utf8(chunk).unwrap_or(""), 16)
-            .map_err(|_| "flat source digest is not hex".to_owned())?;
-    }
-    Ok(bytes)
-}
-
-fn verify_pinned_source_proof(proof: &PinnedSourceEvidence) -> Result<(), String> {
-    use base64::Engine as _;
-    use ring::signature::{ED25519, UnparsedPublicKey};
-
+fn pinned_source_proof()
+-> Result<factory_native::planning::license_decision::SourceEvidenceProof, String> {
+    let proof: PinnedSourceEvidence = serde_json::from_str(PINNED_SOURCE_EVIDENCE_JSON)
+        .map_err(|error| format!("the pinned source evidence is malformed: {error}"))?;
     if !proof.signature_valid || !proof.source_in_output_input_drvs {
         return Err("the pinned source evidence was not verified".into());
     }
@@ -19015,33 +18975,6 @@ fn verify_pinned_source_proof(proof: &PinnedSourceEvidence) -> Result<(), String
     {
         return Err("the pinned source derivation input membership is not exact".into());
     }
-    if !proof.source_store_path.starts_with("/nix/store/")
-        || !proof.source_drv_path.starts_with("/nix/store/")
-        || !proof.output_drv_path.starts_with("/nix/store/")
-        || !proof.output_store_path.starts_with("/nix/store/")
-        || proof.nar_size == 0
-    {
-        return Err("the pinned source evidence paths are invalid".into());
-    }
-    let expected_nix32 = nix32_from_sri(&proof.nar_sri)?;
-    if expected_nix32 != proof.nar_nix32 {
-        return Err("the pinned source NAR hash does not match its nix32 form".into());
-    }
-    let expected_fingerprint = format!(
-        "1;{};sha256:{};{};",
-        proof.source_store_path, proof.nar_nix32, proof.nar_size
-    );
-    if expected_fingerprint != proof.fingerprint {
-        return Err("the pinned source fingerprint is not exact".into());
-    }
-    let flat = hex_sha256_bytes(&proof.flat_sha256)?;
-    let flat_nix32 = {
-        let encoded = base64::engine::general_purpose::STANDARD.encode(flat);
-        nix32_from_sri(&format!("sha256-{encoded}"))?
-    };
-    if proof.ca != format!("fixed:sha256:{flat_nix32}") {
-        return Err("the pinned source CA does not match the flat digest".into());
-    }
     if !proof.source_drv_aterm.contains(&proof.flat_sha256)
         || !proof.source_drv_aterm.contains(&proof.source_store_path)
         || !proof.output_drv_aterm.contains(&proof.source_drv_path)
@@ -19049,47 +18982,29 @@ fn verify_pinned_source_proof(proof: &PinnedSourceEvidence) -> Result<(), String
     {
         return Err("the pinned source derivation binding is not exact".into());
     }
-    let (key_name, signature) = proof
-        .signature
-        .split_once(':')
-        .ok_or_else(|| "the pinned source signature has no key name".to_owned())?;
-    if key_name != "cache.nixos.org-1" {
-        return Err("the pinned source signature uses an unknown key".into());
-    }
-    let key = base64::engine::general_purpose::STANDARD
-        .decode(NIX_CACHE_PUBLIC_KEY_B64)
-        .map_err(|_| "the pinned cache key is not base64".to_owned())?;
-    let signature = base64::engine::general_purpose::STANDARD
-        .decode(signature)
-        .map_err(|_| "the pinned source signature is not base64".to_owned())?;
-    UnparsedPublicKey::new(&ED25519, key)
-        .verify(proof.fingerprint.as_bytes(), &signature)
-        .map_err(|_| "the pinned source signature is not valid".to_owned())?;
-    Ok(())
-}
-
-fn pinned_source_evidence()
--> Result<factory_native::planning::license_decision::SourceEvidenceProof, String> {
-    let proof: PinnedSourceEvidence = serde_json::from_str(PINNED_SOURCE_EVIDENCE_JSON)
-        .map_err(|error| format!("the pinned source evidence is malformed: {error}"))?;
-    verify_pinned_source_proof(&proof)?;
     Ok(
         factory_native::planning::license_decision::SourceEvidenceProof {
             source_store_path: proof.source_store_path,
             source_drv_path: proof.source_drv_path,
             flat_sha256: proof.flat_sha256,
             nar_sri: proof.nar_sri,
-            nar_nix32: proof.nar_nix32,
             nar_size: proof.nar_size,
             signature: proof.signature,
-            fingerprint: proof.fingerprint,
-            ca: proof.ca,
             output_drv_path: proof.output_drv_path,
             output_store_path: proof.output_store_path,
-            source_in_output_input_drvs: true,
-            signature_valid: true,
+            output_drv_input_drvs: proof.output_drv_input_drvs,
+            nar_nix32: Some(proof.nar_nix32),
+            fingerprint: Some(proof.fingerprint),
+            ca: Some(proof.ca),
         },
     )
+}
+
+fn pinned_source_evidence()
+-> Result<factory_native::planning::license_decision::VerifiedSourceEvidence, String> {
+    let proof = pinned_source_proof()?;
+    factory_native::planning::license_decision::VerifiedSourceEvidence::verify(&proof)
+        .map_err(|error| error.to_string())
 }
 
 /// IDs-only Lead licence-decision consumer.
@@ -19215,6 +19130,10 @@ async fn record_license_decision(
             });
         }
     };
+    let identity_facts =
+        factory_native::planning::identity_facts::BoundIdentityFacts::spec_cache_observation(
+            identity_facts,
+        );
     let candidate = match CandidateBinding::base(&config.base_commit) {
         Ok(candidate) => candidate,
         Err(error) => {
@@ -19224,28 +19143,15 @@ async fn record_license_decision(
             });
         }
     };
-    let binding = match app.db.environment_spec_for_request(&id).await {
-        Ok(spec) => PolicyBinding::from_spec_inventory_evidence(
-            factory_native::planning::license_policy::default_catalog_sha256(),
-            factory_native::planning::license_policy::default_profile_sha256(),
-            factory_native::planning::license_policy::default_binding_sha256(),
-            &plan,
-            &spec,
-            &evidence_bundle,
-            candidate,
-            &identity_facts,
-        ),
-        Err(Error::NotFound) => PolicyBinding::from_plan_inventory_evidence(
-            factory_native::planning::license_policy::default_catalog_sha256(),
-            factory_native::planning::license_policy::default_profile_sha256(),
-            factory_native::planning::license_policy::default_binding_sha256(),
-            &plan,
-            &evidence_bundle,
-            candidate,
-            &identity_facts,
-        ),
-        Err(error) => return api_error(error),
-    };
+    let binding = PolicyBinding::from_plan_inventory_evidence(
+        factory_native::planning::license_policy::default_catalog_sha256(),
+        factory_native::planning::license_policy::default_profile_sha256(),
+        factory_native::planning::license_policy::default_binding_sha256(),
+        &plan,
+        &evidence_bundle,
+        candidate,
+        &identity_facts,
+    );
     let binding = match binding {
         Ok(binding) => binding,
         Err(error) => {
@@ -19279,8 +19185,6 @@ async fn record_license_decision(
         delegation: &delegation,
         delegation_revoked,
         identity_facts: &identity_facts,
-        identity_facts_root_binding: stored_receipt.root_binding,
-        observed_root: &stored_receipt.observed_root,
         source_evidence: &source_evidence,
         binding: &binding,
     };
@@ -19552,6 +19456,10 @@ async fn request_license_evidence_review(
             });
         }
     };
+    let identity_facts =
+        factory_native::planning::identity_facts::BoundIdentityFacts::spec_cache_observation(
+            identity_facts,
+        );
     let config = match app.db.project_config(&intake.project_id).await {
         Ok(config) => config,
         Err(error) => return api_error(error),
@@ -19565,27 +19473,15 @@ async fn request_license_evidence_review(
             });
         }
     };
-    let binding = match &spec {
-        Some(spec) => PolicyBinding::from_spec_inventory_evidence(
-            factory_native::planning::license_policy::default_catalog_sha256(),
-            factory_native::planning::license_policy::default_profile_sha256(),
-            factory_native::planning::license_policy::default_binding_sha256(),
-            &plan,
-            spec,
-            &evidence_bundle,
-            candidate,
-            &identity_facts,
-        ),
-        None => PolicyBinding::from_plan_inventory_evidence(
-            factory_native::planning::license_policy::default_catalog_sha256(),
-            factory_native::planning::license_policy::default_profile_sha256(),
-            factory_native::planning::license_policy::default_binding_sha256(),
-            &plan,
-            &evidence_bundle,
-            candidate,
-            &identity_facts,
-        ),
-    };
+    let binding = PolicyBinding::from_plan_inventory_evidence(
+        factory_native::planning::license_policy::default_catalog_sha256(),
+        factory_native::planning::license_policy::default_profile_sha256(),
+        factory_native::planning::license_policy::default_binding_sha256(),
+        &plan,
+        &evidence_bundle,
+        candidate,
+        &identity_facts,
+    );
     if let Err(error) = binding {
         return api_error(Error::IntakeConflict {
             code: "LICENSE_BINDING_INVALID",
@@ -19598,10 +19494,10 @@ async fn request_license_evidence_review(
         .manifest
         .facts
         .iter()
-        .find(|fact| fact.store_path == source_evidence.output_store_path);
+        .find(|fact| fact.store_path == source_evidence.output_store_path());
     if receipt_fact.is_none()
         || receipt_fact.and_then(|fact| fact.deriver.as_deref())
-            != Some(source_evidence.output_drv_path.as_str())
+            != Some(source_evidence.output_drv_path())
     {
         return api_error(Error::IntakeConflict {
             code: "LICENSE_IDENTITY_FACTS_INVALID",
@@ -40335,14 +40231,36 @@ mod tests {
 #[cfg(test)]
 mod pinned_source_proof_tests {
     use super::*;
+    use factory_native::planning::license_decision::{SourceEvidenceProof, VerifiedSourceEvidence};
 
     fn proof() -> PinnedSourceEvidence {
         serde_json::from_str(PINNED_SOURCE_EVIDENCE_JSON).expect("pinned proof")
     }
 
+    fn dto(value: &PinnedSourceEvidence) -> SourceEvidenceProof {
+        SourceEvidenceProof {
+            source_store_path: value.source_store_path.clone(),
+            source_drv_path: value.source_drv_path.clone(),
+            flat_sha256: value.flat_sha256.clone(),
+            nar_sri: value.nar_sri.clone(),
+            nar_size: value.nar_size,
+            signature: value.signature.clone(),
+            output_drv_path: value.output_drv_path.clone(),
+            output_store_path: value.output_store_path.clone(),
+            output_drv_input_drvs: value.output_drv_input_drvs.clone(),
+            nar_nix32: Some(value.nar_nix32.clone()),
+            fingerprint: Some(value.fingerprint.clone()),
+            ca: Some(value.ca.clone()),
+        }
+    }
+
+    fn verify(value: &PinnedSourceEvidence) -> bool {
+        VerifiedSourceEvidence::verify(&dto(value)).is_ok()
+    }
+
     #[test]
     fn exact_pinned_source_proof_is_accepted() {
-        assert!(verify_pinned_source_proof(&proof()).is_ok());
+        assert!(verify(&proof()));
         assert!(pinned_source_evidence().is_ok());
     }
 
@@ -40350,36 +40268,36 @@ mod pinned_source_proof_tests {
     fn fingerprint_without_the_hash_type_is_rejected() {
         let mut value = proof();
         value.fingerprint = value.fingerprint.replace(";sha256:", ";");
-        assert!(verify_pinned_source_proof(&value).is_err());
+        assert!(!verify(&value));
     }
 
     #[test]
     fn tampered_source_path_or_size_is_rejected() {
         let mut value = proof();
         value.source_store_path.push('x');
-        assert!(verify_pinned_source_proof(&value).is_err());
+        assert!(!verify(&value));
         let mut value = proof();
         value.nar_size += 1;
-        assert!(verify_pinned_source_proof(&value).is_err());
+        assert!(!verify(&value));
     }
 
     #[test]
     fn signature_from_another_path_or_key_is_rejected() {
         let mut value = proof();
         value.signature = "cache.nixos.org-1:W4VnH28q6+fK/k9ITu/zNJwqbXjFfO3qkAr1KbJWAz4eCMsji3j0uimkom3QngDtahbtaH7+tpjA5sxMeyaYAA==".into();
-        assert!(verify_pinned_source_proof(&value).is_err());
+        assert!(!verify(&value));
         let mut value = proof();
         value.signature = value.signature.replace("cache.nixos.org-1:", "other:");
-        assert!(verify_pinned_source_proof(&value).is_err());
+        assert!(!verify(&value));
     }
 
     #[test]
     fn tampered_flat_or_ca_is_rejected() {
         let mut value = proof();
         value.flat_sha256 = "0".repeat(64);
-        assert!(verify_pinned_source_proof(&value).is_err());
+        assert!(!verify(&value));
         let mut value = proof();
         value.ca = "fixed:sha256:0000000000000000000000000000000000000000000000000000".into();
-        assert!(verify_pinned_source_proof(&value).is_err());
+        assert!(!verify(&value));
     }
 }
