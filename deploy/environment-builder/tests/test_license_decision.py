@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
+
 from environment_builder import cli, license_decision, license_policy
 
 
@@ -195,7 +198,7 @@ class LicenseDecisionTests(unittest.TestCase):
         self.assertNotIn("signatureValid", proof)
         self.assertNotIn("sourceInOutputInputDrvs", proof)
 
-    def test_license_gate_failure_manifest_is_bounded_exact_evidence(self) -> None:
+    def test_license_gate_failure_writes_only_a_realisation_pointer(self) -> None:
         manifest = [
             {
                 "path": "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1",
@@ -204,16 +207,23 @@ class LicenseDecisionTests(unittest.TestCase):
                 "references": [],
             }
         ]
-        payload = cli._failure_identity_facts_manifest(manifest, manifest[0]["path"])
-        self.assertEqual(payload["observedRoot"], manifest[0]["path"])
-        self.assertEqual(payload["factCount"], 1)
-        self.assertFalse(payload["truncated"])
-        self.assertEqual(payload["facts"][0]["outputs"], [manifest[0]["path"]])
+        plan = {"planSha256": "a" * 64}
+        spec = {"specSha256": "b" * 64}
+        with tempfile.TemporaryDirectory() as directory:
+            cli._write_realisation(
+                Path(directory), plan, spec, manifest[0]["path"], manifest
+            )
+            payload = json.loads(
+                (Path(directory) / "realisation.json").read_text(encoding="utf-8")
+            )
+        self.assertEqual(payload["status"], "REALISED")
+        self.assertEqual(payload["planSha256"], "a" * 64)
+        self.assertEqual(payload["specSha256"], "b" * 64)
+        self.assertEqual(payload["storePath"], manifest[0]["path"])
+        self.assertNotIn("facts", payload)
         self.assertEqual(
             payload["closureManifestSha256"],
-            cli.hashlib.sha256(
-                b'[{"storePath":"/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1","deriver":"/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv","narHash":"sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=","outputs":["/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1"]}]'
-            ).hexdigest(),
+            cli.closure_manifest_sha256(manifest),
         )
 
     def test_missing_full_source_proof_is_stale(self) -> None:

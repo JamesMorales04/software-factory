@@ -336,7 +336,7 @@ def build(args: argparse.Namespace) -> int:
                     exclude=exclude_paths,
                 )
             except BuilderError:
-                _write_failure_identity_facts(run_dir, license_manifest, license_root)
+                _write_realisation(run_dir, plan, spec, license_root, license_manifest)
                 raise
             output_sha = environment_digest(
                 spec["specSha256"], spec["platform"], root, manifest, frozen_sbom_sha256
@@ -1134,50 +1134,28 @@ def _closure_license_inventory_entry(entry: Any, index: int) -> dict[str, Any]:
     }
 
 
-IDENTITY_FACTS_MANIFEST_FILE = "identity-facts-manifest.json"
+REALISATION_FILE = "realisation.json"
 
 
-def _failure_identity_facts_manifest(
-    manifest: list[dict[str, Any]], observed_root: str
-) -> dict[str, Any]:
-    """Bounded exact closure facts for a refused licence gate.
-
-    This is evidence only: it never grants a licence, freezes a spec or creates
-    a successful build receipt. The broker reads it before cleanup and Core
-    signs/consumes it as a spec-cache observation for the current plan/spec.
-    """
-    facts: list[dict[str, Any]] = []
-    for entry in manifest:
-        path = str(entry.get("path", ""))
-        if not path.startswith("/nix/store/"):
-            continue
-        facts.append(
-            {
-                "storePath": path,
-                "deriver": entry.get("deriver") or None,
-                "narHash": str(entry.get("narHash", "")),
-                "outputs": [path],
-            }
-        )
-    canonical = json.dumps(facts, separators=(",", ":"), ensure_ascii=False)
-    return {
-        "observedRoot": observed_root,
-        "facts": facts,
-        "factCount": len(facts),
-        "closureManifestSha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
-        "truncated": False,
-    }
-
-
-def _write_failure_identity_facts(
-    run_dir: Path, manifest: list[dict[str, Any]], observed_root: str
+def _write_realisation(
+    run_dir: Path,
+    plan: dict[str, Any],
+    spec: dict[str, Any] | None,
+    observed_root: str,
+    manifest: list[dict[str, Any]],
 ) -> None:
-    payload = _failure_identity_facts_manifest(manifest, observed_root)
-    if not payload["facts"] or observed_root not in {
-        fact["storePath"] for fact in payload["facts"]
-    }:
-        return
-    write_json(run_dir / IDENTITY_FACTS_MANIFEST_FILE, payload)
+    """Bounded non-authority pointer: the broker re-observes and signs facts."""
+    write_json(
+        run_dir / REALISATION_FILE,
+        {
+            "schemaVersion": 1,
+            "planSha256": str(plan.get("planSha256", "")),
+            "specSha256": str((spec or {}).get("specSha256", "")),
+            "storePath": observed_root,
+            "closureManifestSha256": closure_manifest_sha256(manifest),
+            "status": "REALISED",
+        },
+    )
 
 
 def _validate_closure_licenses_reporting_all(
@@ -1826,8 +1804,8 @@ def resolve(args: argparse.Namespace) -> int:
                     exclude={closure_root},
                 )
             except BuilderError:
-                _write_failure_identity_facts(
-                    run_dir, closure_manifest_value, closure_root
+                _write_realisation(
+                    run_dir, plan, None, closure_root, closure_manifest_value
                 )
                 raise
         disk_budget.check()

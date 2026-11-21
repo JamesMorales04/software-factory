@@ -13086,52 +13086,6 @@ async fn observe_environment_identity_facts(
         .await
 }
 
-/// Sign and verify the bounded closure manifest a builder wrote before
-/// cleaning up a refused licence-gate build. This is a spec-cache observation:
-/// it proves what the refused build observed, never an accepted build receipt.
-fn sign_failure_identity_facts(
-    challenge: &factory_native::planning::identity_facts::IdentityFactsChallenge,
-    evidence: &serde_json::Value,
-    bearer: &[u8],
-) -> Result<
-    factory_native::planning::identity_facts::BoundIdentityFacts,
-    factory_native::planning::environment::EnvironmentError,
-> {
-    use factory_native::planning::identity_facts::{
-        BoundIdentityFacts, IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION,
-        IdentityFactsEnvelope, IdentityFactsManifest, IdentityFactsReceipt, sign, verify,
-    };
-    let manifest: IdentityFactsManifest = serde_json::from_value(evidence.clone()).map_err(|error| {
-        factory_native::planning::environment::EnvironmentError::new(
-            factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentIdentityFactsRefused,
-            format!("the builder failure identity manifest is malformed: {error}"),
-        )
-    })?;
-    let envelope = IdentityFactsEnvelope {
-        schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
-        context: IDENTITY_FACTS_CONTEXT.into(),
-        challenge: challenge.clone(),
-        manifest,
-    };
-    let signature = sign(&envelope, bearer).map_err(|error| {
-        factory_native::planning::environment::EnvironmentError::new(
-            factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentIdentityFactsRefused,
-            format!("the builder failure identity manifest could not be signed: {error}"),
-        )
-    })?;
-    let receipt = IdentityFactsReceipt {
-        envelope,
-        signature,
-    };
-    let verified = verify(&receipt, bearer, challenge).map_err(|error| {
-        factory_native::planning::environment::EnvironmentError::new(
-            factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentIdentityFactsRefused,
-            format!("the builder failure identity receipt was refused: {error}"),
-        )
-    })?;
-    Ok(BoundIdentityFacts::spec_cache_observation(verified))
-}
-
 async fn consume_environment_identity_facts(
     app: &App,
     challenge: &factory_native::planning::identity_facts::IdentityFactsChallenge,
@@ -13218,45 +13172,25 @@ async fn build_environment_before_freeze(
             })
         }
         Err(error) => {
-            let Some(evidence) = error
-                .failure_evidence
-                .as_ref()
-                .filter(|value| !value.is_null())
-            else {
-                return Err((
-                    StatusCode::CONFLICT,
-                    Json(json!({
-                        "error": error.message,
-                        "code": error.code_str(),
-                    })),
-                )
-                    .into_response());
-            };
-            let bearer = match factory_native::secrets::required("FACTORY_RUNTIME_BROKER_TOKEN") {
-                Ok(bearer) => bearer,
-                Err(_) => {
-                    return Err((
-                        StatusCode::CONFLICT,
-                        Json(json!({
-                            "error": "the broker bearer is not available to sign the builder failure identity facts",
-                            "code": "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT",
-                        })),
-                    )
-                        .into_response());
-                }
-            };
-            sign_failure_identity_facts(&challenge, evidence, bearer.as_bytes()).map_err(
-                |error| {
+            // A refused build is not authority. Ask the broker's normal
+            // identity operation to re-observe the realised store with its own
+            // fixed Nix queries and sign the receipt; Core only verifies and
+            // consumes it. Never sign a builder-written manifest.
+            let identity = observe_environment_identity_facts(app, &challenge, plan, spec)
+                .await
+                .map_err(|identity_error| {
                     (
                         StatusCode::CONFLICT,
                         Json(json!({
-                            "error": error.message,
+                            "error": format!("{}; identity evidence: {}", error.message, identity_error.message),
                             "code": error.code_str(),
                         })),
                     )
                         .into_response()
-                },
-            )?
+                })?;
+            factory_native::planning::identity_facts::BoundIdentityFacts::spec_cache_observation(
+                identity,
+            )
         }
     };
     consume_environment_identity_facts(app, &challenge, &bound)
@@ -40513,67 +40447,5 @@ mod pinned_source_proof_tests {
         let mut value = proof();
         value.ca = "fixed:sha256:0000000000000000000000000000000000000000000000000000".into();
         assert!(!verify(&value));
-    }
-}
-
-#[cfg(test)]
-mod failure_identity_facts_tests {
-    use super::*;
-    use factory_native::planning::identity_facts::{
-        IdentityFactsChallenge, IdentityFactsMode, IdentityFactsRootBinding, IdentityFactsStage,
-        OperationRoot,
-    };
-
-    fn challenge() -> IdentityFactsChallenge {
-        IdentityFactsChallenge {
-            operation_id: "environment-identity:test".into(),
-            runtime_id: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                .into(),
-            nonce: "identity-facts:test".into(),
-            pin: "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d".into(),
-            plan_sha256: "a".repeat(64),
-            spec_sha256: "b".repeat(64),
-            mode: IdentityFactsMode::Enumerate,
-            root: OperationRoot::Operation,
-            questions: Vec::new(),
-            stage: IdentityFactsStage::Spec,
-            resolution_key: String::new(),
-        }
-    }
-
-    fn manifest() -> serde_json::Value {
-        serde_json::json!({
-            "observedRoot": "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1",
-            "facts": [{
-                "storePath": "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1",
-                "deriver": "/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv",
-                "narHash": "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=",
-                "outputs": ["/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1"],
-            }],
-            "factCount": 1,
-            "truncated": false,
-            "closureManifestSha256": "2e9fe1dfd48e1ca88751c251af062d9c3c8c9f2e586cb2a6d687db7efb88ac69",
-        })
-    }
-
-    #[test]
-    fn builder_failure_manifest_is_signed_and_bound_as_spec_cache() {
-        let bound = sign_failure_identity_facts(&challenge(), &manifest(), b"test-bearer")
-            .expect("signed failure evidence");
-        assert_eq!(
-            bound.binding(),
-            IdentityFactsRootBinding::SpecCacheObservation
-        );
-        assert_eq!(bound.receipt().envelope.manifest.fact_count, 1);
-    }
-
-    #[test]
-    fn tampered_failure_manifest_is_refused() {
-        let mut value = manifest();
-        value["closureManifestSha256"] = serde_json::json!("0".repeat(64));
-        assert!(sign_failure_identity_facts(&challenge(), &value, b"test-bearer").is_err());
-        let mut value = manifest();
-        value["facts"][0]["narHash"] = serde_json::json!("not-a-hash");
-        assert!(sign_failure_identity_facts(&challenge(), &value, b"test-bearer").is_err());
     }
 }
