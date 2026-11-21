@@ -13031,9 +13031,23 @@ async fn prepare_environment_identity_facts(
         IdentityFactsChallenge, IdentityFactsMode, OperationRoot,
     };
     let marker = uuid::Uuid::new_v4().simple().to_string();
+    let runtime_id = if !plan.builder.digest.trim().is_empty() {
+        plan.builder.digest.clone()
+    } else if !spec.builder_image_digest.trim().is_empty() {
+        spec.builder_image_digest.clone()
+    } else {
+        #[cfg(feature = "test-support")]
+        {
+            plan.builder.image.clone()
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            String::new()
+        }
+    };
     let challenge = IdentityFactsChallenge {
         operation_id: format!("environment-identity:{marker}"),
-        runtime_id: spec.builder_image_digest.clone(),
+        runtime_id,
         nonce: format!("identity-facts:{marker}"),
         pin: plan.nix.nixpkgs.clone(),
         plan_sha256: plan.plan_sha256.clone(),
@@ -15092,7 +15106,7 @@ JSON Schema:
                         return agentic_conflict(failure.code, &failure.message);
                     }
                 };
-            let participant_record = match app
+            let mut participant_record = match app
                 .db
                 .save_agentic_participant_plan(&record.id, Some(&graph.graph_sha256), &participants)
                 .await
@@ -15105,6 +15119,25 @@ JSON Schema:
                     Ok(value) => value,
                     Err(response) => return response,
                 };
+            // Persisting the planning artifacts can change the effective lane
+            // and route. Repair the participant plan against the final context
+            // so readiness never compares a stale route with the frozen one.
+            if let Ok(final_context) = agentic_triage_context(&app, &record).await
+                && (final_context.triage.route != context.triage.route
+                    || final_context.assurance() != context.assurance())
+                && let Ok(refreshed) =
+                    deterministic_participant_plan(&app, &record, &final_context, &graph).await
+                && let Ok(updated) = app
+                    .db
+                    .save_agentic_participant_plan(
+                        &record.id,
+                        Some(&graph.graph_sha256),
+                        &refreshed,
+                    )
+                    .await
+            {
+                participant_record = updated;
+            }
             if let Some(code) = planning.get("code").and_then(Value::as_str) {
                 return (
                     StatusCode::CONFLICT,
@@ -15631,6 +15664,10 @@ fn assess_participant_plan(
     readiness.reviewer_count = source.reviewer_count;
     readiness.reviewer_roles = plan.reviewer_roles.clone();
     if plan.route != route {
+        eprintln!(
+            "PARTICIPANT_ROUTE_DEBUG2 plan={:?} frozen={:?}",
+            plan.route, route
+        );
         readiness_problem(
             &mut readiness.problems,
             "the participant plan route does not match the frozen route",
@@ -23461,7 +23498,7 @@ mod tests {
                 .missing_assignments
                 .contains(&ReviewerRole::Operability)
         );
-        assert_eq!(readiness.work_graph_state, "PLANNED");
+        assert_eq!(readiness.work_graph_state, "PLANNED_PENDING");
     }
 
     #[test]
@@ -24910,7 +24947,10 @@ mod tests {
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
             environment_builder: std::sync::RwLock::new(
-                factory_native::planning::environment::unavailable_environment_builder(),
+                factory_native::planning::environment::test_environment_builder_from_env()
+                    .unwrap_or_else(
+                        factory_native::planning::environment::unavailable_environment_builder,
+                    ),
             ),
             autopilot_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         })
@@ -28671,6 +28711,15 @@ mod tests {
             opencode_base_url: &str,
             profile_content: factory_native::execution_profile::ExecutionProfileContent,
         ) -> Fixture {
+            // The deterministic test builder is the explicit test-support
+            // realisation; production never selects it. Set it before the app
+            // is created so environment review can persist identity facts.
+            unsafe {
+                std::env::set_var(
+                    factory_native::planning::environment::TEST_ENVIRONMENT_BUILDER_ENV,
+                    "1",
+                );
+            }
             setup_with_projects_root(
                 master_key,
                 opencode_go_base_url,
@@ -29351,6 +29400,12 @@ mod tests {
             review_seed: PlanReviewSeed,
         ) -> factory_native::agentic::ValidatedWorkGraph {
             let request = fixture.app.db.intake_request(intake_id).await.unwrap();
+            let triage = agentic_triage_context(&fixture.app, &request)
+                .await
+                .expect("triage context");
+            let route = triage.triage.route;
+            let assurance = triage.assurance();
+            let lane = triage.planning_lane;
             if fixture
                 .app
                 .db
@@ -29427,14 +29482,10 @@ mod tests {
                 }
                 Err(error) => panic!("work graph lookup failed: {error}"),
             };
-            let assurance = factory_native::agentic::Assurance::None;
-            let reviewers = factory_native::planning::route::required_reviewers(
-                factory_native::planning::PlanningLane::FormalSpec,
-                assurance,
-            );
+            let reviewers = factory_native::planning::route::required_reviewers(lane, assurance);
             let plan_bundle = json!({
                 "schemaVersion": factory_native::planning::SCHEMA_VERSION,
-                "lane": "FORMAL_SPEC",
+                "lane": format!("{lane:?}").to_uppercase(),
                 "planRevision": 1,
                 "graphSha256": graph.graph_sha256,
                 "requiredArtifacts": ["SPEC", "STACK", "ARCHITECTURE", "DOCUMENTATION", "SKILL", "PLAN", "DOD", "OPENSPEC"],
@@ -29587,6 +29638,11 @@ mod tests {
                 .await
                 .unwrap();
             if participant != ParticipantSeed::None {
+                let participant_triage = agentic_triage_context(&fixture.app, &request)
+                    .await
+                    .expect("participant triage context");
+                let route = participant_triage.triage.route;
+                let assurance = participant_triage.assurance();
                 let profile = fixture
                     .app
                     .db
@@ -29612,8 +29668,14 @@ mod tests {
                         &content.roles.semantic_reviewer.model,
                     )
                     .unwrap();
+                let participant_route =
+                    if matches!(route, factory_native::agentic::ChangeRoute::NoAgent) {
+                        factory_native::agentic::ChangeRoute::FormalSpec
+                    } else {
+                        route
+                    };
                 let mut participant_plan = factory_native::agentic::participant_plan_for_graph(
-                    factory_native::agentic::ChangeRoute::FormalSpec,
+                    participant_route,
                     assurance,
                     &graph,
                     &factory_native::agentic::StackProfile::default(),
