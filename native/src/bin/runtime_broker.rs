@@ -6196,12 +6196,10 @@ async fn run_environment_container(
 
 fn failure_from_builder_output(bytes: &[u8]) -> Option<(String, String)> {
     let text = String::from_utf8_lossy(bytes);
-    let candidates = [
-        text.as_ref(),
-        text.split_once("Bad Request: ")
-            .map(|(_, rest)| rest)
-            .unwrap_or(text.as_ref()),
-    ];
+    let mut candidates = vec![text.as_ref()];
+    if let Some(index) = text.find('{') {
+        candidates.push(&text[index..]);
+    }
     for candidate in candidates {
         let Ok(value) = serde_json::from_str::<Value>(candidate.trim()) else {
             continue;
