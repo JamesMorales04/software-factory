@@ -767,6 +767,9 @@ pub enum LicenseDecisionRefusal {
     AssetCanonicalMismatch,
     AssetCanonicalHashMissing,
     LicenseTextDigest,
+    FileEvidenceMismatch(&'static str),
+    PackageRightsMismatch(String),
+    DocumentationGrantMismatch(String),
     MissingLicensingFact,
     BranchNotInExpression,
     ObligationsMismatch,
@@ -824,6 +827,18 @@ impl std::fmt::Display for LicenseDecisionRefusal {
             Self::LicenseTextDigest => {
                 formatter.write_str("the software licence text digest is not a trusted text")
             }
+            Self::FileEvidenceMismatch(field) => write!(
+                formatter,
+                "the file evidence {field} is not the exact authenticated asset value"
+            ),
+            Self::PackageRightsMismatch(atom) => write!(
+                formatter,
+                "packageRights.atoms.{atom}.licensingFact is missing or not exact"
+            ),
+            Self::DocumentationGrantMismatch(path) => write!(
+                formatter,
+                "documentation.{path}.outputGrant/licenseText is not exact"
+            ),
             Self::MissingLicensingFact => {
                 formatter.write_str("no licensing fact establishes the selected expression")
             }
@@ -1372,11 +1387,18 @@ fn family_is_copyleft(family: &str) -> bool {
 /// A licence text belongs to the reviewed expression when it is the exact
 /// identifier, the same family with an explicit `-only`/`-or-later` suffix, or
 /// the selected `WITH` base atom. It never lets an unrelated text stand in.
-fn text_license_matches(text_license: &str, expression: &str) -> bool {
-    text_license == expression
-        || text_license == expression.replace("-or-later", "-only")
-        || text_license == base_atom(expression)
-        || text_license == base_atom(expression).replace("-or-later", "-only")
+/// Typed relation between an asset-owned text licence and a package/document
+/// right. A text never grants a right: the exact licensing fact or output-file
+/// grant must already exist. Only the known `X-only` base text may accompany
+/// an exact `X-or-later` grant; there is no generic only/or-later rewrite.
+fn file_text_supports(asset_license: &str, right: &str, exact_grant: bool) -> bool {
+    if asset_license == right {
+        return true;
+    }
+    if exact_grant && let Some(base) = right.strip_suffix("-or-later") {
+        return asset_license == format!("{base}-only");
+    }
+    false
 }
 
 /// Bool-free reconciliation of a generic prior DENY.
@@ -2067,39 +2089,51 @@ fn verify_against_source_asset(
         if !seen_texts.insert(text.sha256.as_str()) {
             return Err(LicenseDecisionRefusal::LicenseTextDigest);
         }
-        let Some((license, sha)) = text_by_path.get(text.path.as_str()) else {
-            return Err(LicenseDecisionRefusal::LicenseTextDigest);
+        let Some((_asset_license, sha)) = text_by_path.get(text.path.as_str()) else {
+            return Err(LicenseDecisionRefusal::FileEvidenceMismatch("softwareTexts.path"));
         };
-        if *license != text.license || *sha != text.sha256 {
-            return Err(LicenseDecisionRefusal::LicenseTextDigest);
+        // The selected path and digest are the Lead's semantic choice. The
+        // text's own licence label is shared-asset data, never a model claim;
+        // a model label that differs from the asset is diagnostic only.
+        if *sha != text.sha256 {
+            return Err(LicenseDecisionRefusal::FileEvidenceMismatch("softwareTexts.sha256"));
         }
     }
+    let mut package_rights = Vec::new();
     for atom in &selected_atoms {
+        let grant = license_entries.iter().find(|entry| {
+            exact(entry, "role") == Some("licensing")
+                && exact(entry, "license") == Some(atom.as_str())
+                && exact(entry, "path").is_some()
+                && exact(entry, "sha256").is_some()
+        });
+        let Some(grant) = grant else {
+            return Err(LicenseDecisionRefusal::PackageRightsMismatch(atom.clone()));
+        };
+        package_rights.push(serde_json::json!({
+            "atom": atom,
+            "license": exact(grant, "license"),
+            "path": exact(grant, "path"),
+            "sha256": exact(grant, "sha256"),
+            "source": identity.get("source"),
+        }));
         let covered = review.software_texts.iter().any(|text| {
-            text_license_matches(&text.license, atom)
-                && text_by_path
-                    .get(text.path.as_str())
-                    .is_some_and(|(_, sha)| *sha == text.sha256)
+            text_by_path
+                .get(text.path.as_str())
+                .is_some_and(|(asset_license, sha)| {
+                    *sha == text.sha256 && file_text_supports(asset_license, atom, true)
+                })
         }) || (selected_atoms.len() == 1
             && review.software_texts.is_empty()
             && text_by_license.iter().any(|(license, digests)| {
-                text_license_matches(license, atom)
+                file_text_supports(license, atom, true)
                     && digests.contains(review.software_text_sha256.as_str())
             }));
         if !covered {
-            return Err(LicenseDecisionRefusal::LicenseTextDigest);
+            return Err(LicenseDecisionRefusal::FileEvidenceMismatch("softwareTexts.licenseText"));
         }
     }
     let trusted_text = true;
-    for atom in &selected_atoms {
-        let licensing_fact = license_entries.iter().any(|entry| {
-            exact(entry, "role") == Some("licensing")
-                && exact(entry, "license") == Some(atom.as_str())
-        });
-        if !licensing_fact {
-            return Err(LicenseDecisionRefusal::MissingLicensingFact);
-        }
-    }
 
     let commercial_ok = review.commercial_use
         && !review.payment_required
@@ -2183,13 +2217,28 @@ fn verify_against_source_asset(
         if !family_permits_commercial_no_fee(&entry.family) {
             return Err(LicenseDecisionRefusal::DocumentationDenied);
         }
+        let output_grant = output_files
+            .as_array()
+            .and_then(|entries| {
+                entries.iter().find(|entry| {
+                    exact(entry, "purpose") == Some("documentation")
+                        && exact(entry, "path") == Some(document.path.as_str())
+                        && exact(entry, "sha256") == Some(document.output_sha256.as_str())
+                        && exact(entry, "license") == Some(document.license.as_str())
+                })
+            })
+            .ok_or_else(|| LicenseDecisionRefusal::DocumentationGrantMismatch(document.path.clone()))?;
+        let _ = output_grant;
         let trusted = evidence_by_path
             .get(document.license_text_path.as_str())
             .is_some_and(|(license, digest)| {
-                *license == document.license && *digest == document.license_text_sha256
+                file_text_supports(license, &document.license, true)
+                    && *digest == document.license_text_sha256
             });
         if !trusted {
-            return Err(LicenseDecisionRefusal::DocumentationTextMissing);
+            return Err(LicenseDecisionRefusal::FileEvidenceMismatch(
+                "documentation.licenseTextPath",
+            ));
         }
         let verdict = match evaluate(
             &document.license,
@@ -2220,6 +2269,35 @@ fn verify_against_source_asset(
     }
     let documentation_obligations = documentation_obligation_set.into_iter().collect::<Vec<_>>();
     documentation.sort_by(|left, right| left.path.cmp(&right.path));
+    let file_evidence = review
+        .software_texts
+        .iter()
+        .map(|text| {
+            serde_json::json!({
+                "path": text.path,
+                "sha256": text.sha256,
+                "assetLicense": text_by_path.get(text.path.as_str()).map(|(license, _)| *license),
+                "role": "license-text",
+            })
+        })
+        .collect::<Vec<_>>();
+    let documentation_grants = review
+        .documentation
+        .iter()
+        .map(|document| {
+            serde_json::json!({
+                "path": document.path,
+                "license": document.license,
+                "outputSha256": document.output_sha256,
+                "licenseTextPath": document.license_text_path,
+                "licenseTextSha256": document.license_text_sha256,
+                "textAssetLicense": evidence_by_path
+                    .get(document.license_text_path.as_str())
+                    .map(|(license, _)| *license),
+                "grantSource": "OUTPUT_FILE_ASSET",
+            })
+        })
+        .collect::<Vec<_>>();
 
     // HYBRID decision: the Lead asserts the commercial/no-mandatory-fee reading
     // of the exact authenticated licence text, while Core deterministically
@@ -2264,8 +2342,15 @@ fn verify_against_source_asset(
         "sourceEvidence": source.to_json(),
         "sourceEvidenceSha256": source_evidence_digest,
         "obligationsSource": "CORE_CATALOGUE",
+        "fileLabelSource": "ASSET",
+        "modelTextLicenseIgnored": true,
+        "packageRightsSource": "LICENSING_FACT",
+        "documentationGrantSource": "OUTPUT_FILE_ASSET",
+        "packageRights": package_rights,
+        "fileEvidence": file_evidence,
+        "documentationGrants": documentation_grants,
         "modelObligationsIgnored": true,
-        "contractRevision": "license-review-v2-core-obligations",
+        "contractRevision": "license-review-v3-file-package-rights",
         "softwareTexts": review.software_texts,
         "stage": context.binding.stage_json(),
         "candidate": context.binding.candidate(),
@@ -2303,8 +2388,15 @@ fn verify_against_source_asset(
         "sourceEvidence": source.to_json(),
         "sourceEvidenceSha256": source_evidence_digest,
         "obligationsSource": "CORE_CATALOGUE",
+        "fileLabelSource": "ASSET",
+        "modelTextLicenseIgnored": true,
+        "packageRightsSource": "LICENSING_FACT",
+        "documentationGrantSource": "OUTPUT_FILE_ASSET",
+        "packageRights": package_rights.clone(),
+        "fileEvidence": file_evidence.clone(),
+        "documentationGrants": documentation_grants.clone(),
         "modelObligationsIgnored": true,
-        "contractRevision": "license-review-v2-core-obligations",
+        "contractRevision": "license-review-v3-file-package-rights",
         "catalogSha256": context.binding.catalog_sha256(),
         "profileSha256": context.binding.profile_sha256(),
         "policySha256": context.binding.policy_sha256(),
