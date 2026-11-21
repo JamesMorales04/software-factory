@@ -7,9 +7,11 @@ recorded below. This ADR and its data are a candidate for Reviewer70 review
 before any build or runtime activation; they do not create a new reserved-matter
 authority outside that delegation.
 
-**Supersedes:** none. **Amends:** the exact-source-identity rules in ADR-0029
-and the environment licence inventory rules without changing the Quality Gate,
-trust boundaries or delivery authority.
+**Supersedes:** none.
+
+**Amends:** the exact-source-identity rules in ADR-0029 and the environment
+licence inventory rules without changing the Quality Gate, trust boundaries or
+delivery authority.
 
 ## Context
 

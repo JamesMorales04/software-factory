@@ -483,6 +483,7 @@ Decision: `proposed`
 - CAP-064 — Bounded repair orchestration (proposed, in_progress)
 - CAP-065 — Owner charter and delegated autonomy (proposed, in_progress)
 - CAP-066 — Agent fleet observability and cost (proposed, not_implemented)
+- CAP-068 — Exact licence, identity and evidence decisions (proposed, in_progress)
 
 ### Deliverables
 

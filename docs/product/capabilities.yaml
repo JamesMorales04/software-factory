@@ -326,6 +326,7 @@ milestones:
   - CAP-064
   - CAP-065
   - CAP-066
+  - CAP-068
   exclusions:
   - a second orchestrator outside Core
   - model-granted authority or model-selected tools
@@ -2996,7 +2997,7 @@ capabilities:
   - Two-operation concurrency and per-operation worktree isolation still need a real browser acceptance run.
   blockers:
   - Worktree isolation evidence and the two-operation real acceptance remain pending.
-  - P1a makes the Lead a coordinator for decomposition: a change Lead proposal may carry an empty `workUnits` array and the Director/Office surfaces the typed `WORK_GRAPH_NOT_PLANNED` state until Core validates a Planner WorkGraph. The Lead still authors `environmentProposal`/stack, so Lead coordination remains INCOMPLETE until P1b moves that decision to the existing ArchitecturePlan/StackDecision and environment compiler.
+  - "P1a makes the Lead a coordinator for decomposition: a change Lead proposal may carry an empty `workUnits` array and the Director/Office surfaces the typed `WORK_GRAPH_NOT_PLANNED` state until Core validates a Planner WorkGraph. The Lead still authors `environmentProposal`/stack, so Lead coordination remains INCOMPLETE until P1b moves that decision to the existing ArchitecturePlan/StackDecision and environment compiler."
 
 - id: CAP-060
   name: Planner and Spec Manager
@@ -3357,3 +3358,53 @@ capabilities:
   - The panel does not offer an automatic revert or a branch-protection bypass.
   blockers:
   - A running Core with an authorized GitHub connection is required for real browser acceptance.
+
+- id: CAP-068
+  name: Exact licence, identity and evidence decisions
+  category: Governance
+  purpose: Record one exact Owner delegation and exact Lead licence/identity/evidence decisions in Office with audit, revocation and no name/version approval
+  product_objective: Governed delivery
+  decision_status: proposed
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-026
+  target_milestone: F1-S10
+  refs:
+    adr: []
+    contract:
+    - docs/implementation/license-decision-interface.md
+    - docs/implementation/license-decision-stage-binding.md
+    - docs/implementation/license-source-proof.md
+    source:
+    - office/src/views/LicenseDecisions.tsx
+    - native/src/bin/core.rs
+    - native/src/planning/license_decision.rs
+    - deploy/environment-builder/environment_builder/license_decision.py
+    test:
+    - office/src/views/LicenseDecisions.test.tsx
+    - deploy/environment-builder/tests/test_license_decision.py
+  acceptance:
+    deterministic: Office reads Core delegations and decisions, creates one exact delegation, approves/revokes it with a reason and revokes a decision; every allow shows the exact identity, branch, obligations, use context and stage; NEEDS_EVIDENCE, DENY, REVOKED and error/retry states are explicit; no name, version, family or static-asset approval exists.
+    real: A browser journey at desktop, tablet and 320 px in EN and ES creates and approves the delegated Owner decision, records an exact ed/GFDL decision, shows STALE/denied/unknown/revoked states and revokes with audit.
+  evidence:
+    deterministic:
+    - docs/evidence/license-decision-deterministic-2026-11-20.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - The retained plan carries an older catalogue hash and is STALE; a new plan revision and a new Lead environment review are required before an exact decision can be accepted.
+  - The separate source proof is exact cache/store evidence, not a fabricated manifest fact.
+  - Real Compose/browser acceptance and the real exact decision remain NOT_TESTED.
+  blockers:
+  - Final backend G2-G5 review and integration are pending.
+  - A new plan revision with the current catalogue/profile is required.
