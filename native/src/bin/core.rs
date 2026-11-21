@@ -15664,10 +15664,6 @@ fn assess_participant_plan(
     readiness.reviewer_count = source.reviewer_count;
     readiness.reviewer_roles = plan.reviewer_roles.clone();
     if plan.route != route {
-        eprintln!(
-            "PARTICIPANT_ROUTE_DEBUG2 plan={:?} frozen={:?}",
-            plan.route, route
-        );
         readiness_problem(
             &mut readiness.problems,
             "the participant plan route does not match the frozen route",
@@ -18896,6 +18892,43 @@ async fn revoke_license_delegation(
     }
 }
 
+fn source_evidence_matches_exact_asset(
+    proof: &factory_native::planning::license_decision::SourceEvidenceProof,
+) -> bool {
+    let Ok(asset) = serde_json::from_str::<serde_json::Value>(
+        factory_native::planning::license_decision::VERSIONED_SOURCE_EVIDENCE_JSON,
+    ) else {
+        return false;
+    };
+    let Some(identity) = asset
+        .get("identities")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|identities| identities.first())
+    else {
+        return false;
+    };
+    identity
+        .get("source")
+        .and_then(|source| source.get("storePath"))
+        .and_then(serde_json::Value::as_str)
+        == Some(proof.source_store_path.as_str())
+        && identity
+            .get("source")
+            .and_then(|source| source.get("drvPath"))
+            .and_then(serde_json::Value::as_str)
+            == Some(proof.source_drv_path.as_str())
+        && identity
+            .get("output")
+            .and_then(|output| output.get("storePath"))
+            .and_then(serde_json::Value::as_str)
+            == Some(proof.output_store_path.as_str())
+        && identity
+            .get("output")
+            .and_then(|output| output.get("drvPath"))
+            .and_then(serde_json::Value::as_str)
+            == Some(proof.output_drv_path.as_str())
+}
+
 /// Pinned exact recovery record for the bootstrap ed source.
 ///
 /// The source fixed-output path is not part of the realised environment
@@ -18919,6 +18952,7 @@ struct PinnedSourceEvidence {
     output_store_path: String,
     source_drv_aterm: String,
     output_drv_aterm: String,
+    output_drv_input_drvs: Vec<String>,
     source_in_output_input_drvs: bool,
     signature_valid: bool,
 }
@@ -18972,6 +19006,14 @@ fn verify_pinned_source_proof(proof: &PinnedSourceEvidence) -> Result<(), String
 
     if !proof.signature_valid || !proof.source_in_output_input_drvs {
         return Err("the pinned source evidence was not verified".into());
+    }
+    if proof.output_drv_input_drvs.is_empty()
+        || !proof
+            .output_drv_input_drvs
+            .iter()
+            .any(|drv| drv == &proof.source_drv_path)
+    {
+        return Err("the pinned source derivation input membership is not exact".into());
     }
     if !proof.source_store_path.starts_with("/nix/store/")
         || !proof.source_drv_path.starts_with("/nix/store/")
@@ -19387,6 +19429,78 @@ async fn request_license_evidence_review(
         Ok(false) => {}
         Err(error) => return api_error(error),
     }
+    if matches!(
+        lead.state,
+        factory_native::lead::LeadRequestState::Blocked
+            | factory_native::lead::LeadRequestState::Failed
+    ) {
+        return api_error(Error::IntakeConflict {
+            code: "LICENSE_LEAD_TERMINAL",
+            message: "the Lead request is blocked or failed".into(),
+        });
+    }
+    if let Some(response) = withdrawn_conflict(&app, &lead.id).await {
+        return response;
+    }
+    let plan = match app.db.latest_environment_plan(&id).await {
+        Ok(plan) => plan,
+        Err(Error::NotFound) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_PLAN_REQUIRED",
+                message: "a real EnvironmentPlan is required for the exact stage binding".into(),
+            });
+        }
+        Err(error) => return api_error(error),
+    };
+    let spec = app.db.environment_spec_for_request(&id).await.ok();
+    let evidence_bundle = InventoryEvidenceBundle::from_plan(&plan.plan);
+    let source_evidence = match pinned_source_evidence() {
+        Ok(proof) => proof,
+        Err(error) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_SOURCE_EVIDENCE_INVALID",
+                message: error,
+            });
+        }
+    };
+    if !source_evidence_matches_exact_asset(&source_evidence) {
+        return api_error(Error::IntakeConflict {
+            code: "LICENSE_SOURCE_EVIDENCE_INVALID",
+            message: "the source proof does not match the exact reviewed identity".into(),
+        });
+    }
+    let delegation_evidence = &delegation.evidence;
+    let delegation_domain = delegation_evidence
+        .get("domain")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let delegation_pin = delegation_evidence
+        .get("pin")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let delegation_use_context = delegation_evidence
+        .get("useContext")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let delegation_criterion = delegation_evidence
+        .get("economicCriterion")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let delegation_revision = delegation_evidence
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if delegation_domain != "licenses-identity-evidence"
+        || delegation_pin != plan.plan.nix.nixpkgs
+        || delegation_use_context.trim().is_empty()
+        || delegation_criterion != "no-mandatory-fee-commercial-use"
+        || delegation_revision == 0
+    {
+        return api_error(Error::IntakeConflict {
+            code: "LICENSE_DELEGATION_REQUIRED",
+            message: "the Owner delegation evidence does not match the exact plan, use context and commercial criterion".into(),
+        });
+    }
     if let Ok(existing) = app.db.lead_license_evidence_reservation(&lead.id).await {
         let review: LicenseDecisionReview = match serde_json::from_str(existing.response_text()) {
             Ok(review) => review,
@@ -19406,18 +19520,6 @@ async fn request_license_evidence_review(
         }))
         .into_response();
     }
-    let plan = match app.db.latest_environment_plan(&id).await {
-        Ok(plan) => plan,
-        Err(Error::NotFound) => {
-            return api_error(Error::IntakeConflict {
-                code: "LICENSE_PLAN_REQUIRED",
-                message: "a real EnvironmentPlan is required for the exact stage binding".into(),
-            });
-        }
-        Err(error) => return api_error(error),
-    };
-    let spec = app.db.environment_spec_for_request(&id).await.ok();
-    let evidence_bundle = InventoryEvidenceBundle::from_plan(&plan.plan);
     let stored_receipt = match app
         .db
         .latest_identity_facts_receipt(&plan.plan_sha256)
@@ -19490,15 +19592,24 @@ async fn request_license_evidence_review(
             message: error.to_string(),
         });
     }
-    let source_evidence = match pinned_source_evidence() {
-        Ok(proof) => proof,
-        Err(error) => {
-            return api_error(Error::IntakeConflict {
-                code: "LICENSE_SOURCE_EVIDENCE_INVALID",
-                message: error,
-            });
-        }
-    };
+    let receipt_fact = identity_facts
+        .receipt()
+        .envelope
+        .manifest
+        .facts
+        .iter()
+        .find(|fact| fact.store_path == source_evidence.output_store_path);
+    if receipt_fact.is_none()
+        || receipt_fact.and_then(|fact| fact.deriver.as_deref())
+            != Some(source_evidence.output_drv_path.as_str())
+    {
+        return api_error(Error::IntakeConflict {
+            code: "LICENSE_IDENTITY_FACTS_INVALID",
+            message: "the signed receipt does not contain the exact source-proof output fact"
+                .into(),
+        });
+    }
+
     let profile = match app
         .db
         .execution_profile_revision(&intake.profile_id, &intake.profile_revision_id)
@@ -29144,13 +29255,19 @@ mod tests {
                 .await
                 .unwrap();
             fixture_plan(&fixture, &record.id, "FIXTURE").await;
+            let plan = fixture
+                .app
+                .db
+                .latest_environment_plan(&record.id)
+                .await
+                .unwrap();
             let options = vec![
                 "APPROVE_DELEGATION".to_string(),
                 "DENY_DELEGATION".to_string(),
             ];
             let evidence = serde_json::json!({
                 "domain": "licenses-identity-evidence",
-                "pin": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+                "pin": plan.plan.nix.nixpkgs,
                 "useContext": "commercial-development",
                 "economicCriterion": "no-mandatory-fee-commercial-use",
                 "revision": 1,
@@ -29235,13 +29352,20 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            fixture_plan(&fixture, &record.id, "FIXTURE").await;
+            let plan = fixture
+                .app
+                .db
+                .latest_environment_plan(&record.id)
+                .await
+                .unwrap();
             let options = vec![
                 "APPROVE_DELEGATION".to_string(),
                 "DENY_DELEGATION".to_string(),
             ];
             let evidence = serde_json::json!({
                 "domain": "licenses-identity-evidence",
-                "pin": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+                "pin": plan.plan.nix.nixpkgs,
                 "useContext": "commercial-development",
                 "economicCriterion": "no-mandatory-fee-commercial-use",
                 "revision": 1,
@@ -29343,11 +29467,12 @@ mod tests {
                     ))
                     .unwrap();
                 let response = fixture.router.clone().oneshot(request).await.unwrap();
-                assert_eq!(response.status(), StatusCode::OK);
+                let status = response.status();
                 let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
                     .await
                     .unwrap();
                 let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(status, StatusCode::OK, "{body}");
                 assert_eq!(
                     body.get("reservationId")
                         .and_then(serde_json::Value::as_str),
