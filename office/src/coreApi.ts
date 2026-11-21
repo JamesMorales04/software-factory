@@ -4765,6 +4765,55 @@ export const coreApi = {
       `/agentic/decisions/${encodeURIComponent(id)}/resolve`,
       { method: "POST", body: JSON.stringify({ option, rationale }) },
     ),
+  getLicenseEvidenceReview: (requestId: string) =>
+    request<{
+      available: boolean;
+      reservationId?: string;
+      requestSha256?: string;
+      review?: {
+        decision: string;
+        pin: string;
+        name: string;
+        version: string;
+        licenseExpression: string;
+        selectedBranch: string;
+        useContext: string;
+        paymentRequired: boolean;
+      };
+    }>(
+      `/agentic/requests/${encodeURIComponent(requestId)}/license-evidence-review`,
+    ),
+  requestLicenseEvidenceReview: (
+    requestId: string,
+    input: { delegation_id: string; idempotency_key: string },
+  ) =>
+    request<{
+      reservationId: string;
+      provider: string;
+      model: string;
+      requestSha256: string;
+      review: {
+        decision: string;
+        pin: string;
+        name: string;
+        version: string;
+        licenseExpression: string;
+        selectedBranch: string;
+        useContext: string;
+        paymentRequired: boolean;
+      };
+    }>(
+      `/agentic/requests/${encodeURIComponent(requestId)}/license-evidence-review`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  recordLicenseDecision: (
+    requestId: string,
+    input: { delegation_id: string; idempotency_key: string },
+  ) =>
+    request<LicenseDecisionRecord>(
+      `/agentic/requests/${encodeURIComponent(requestId)}/license-decision`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
   listLicenseDecisions: (projectId: string) =>
     request<{ decisions: LicenseDecisionRecord[] }>(
       `/agentic/license-decisions?project_id=${encodeURIComponent(projectId)}`,

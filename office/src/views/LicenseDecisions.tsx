@@ -13,6 +13,7 @@ import {
   type AgenticOwnerDecision,
   CoreApiError,
   coreApi,
+  type IntakeRequestSummary,
   type LicenseDecisionRecord,
   type Project,
 } from "../coreApi";
@@ -59,6 +60,18 @@ export function LicenseDecisions() {
   const [projectId, setProjectId] = useState("");
   const [delegations, setDelegations] = useState<AgenticOwnerDecision[]>([]);
   const [decisions, setDecisions] = useState<LicenseDecisionRecord[]>([]);
+  const [requests, setRequests] = useState<IntakeRequestSummary[]>([]);
+  const [requestId, setRequestId] = useState("");
+  const [review, setReview] = useState<{
+    reservationId: string;
+    decision: string;
+    name: string;
+    version: string;
+    licenseExpression: string;
+    selectedBranch: string;
+    paymentRequired: boolean;
+  } | null>(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -78,10 +91,12 @@ export function LicenseDecisions() {
       const selected = projectId || projectResult[0]?.id || "";
       if (!projectId && selected) setProjectId(selected);
       if (selected) {
-        const [ownerDecisions, licenseDecisions] = await Promise.all([
-          coreApi.listAgenticDecisions(selected),
-          coreApi.listLicenseDecisions(selected),
-        ]);
+        const [ownerDecisions, licenseDecisions, requestList] =
+          await Promise.all([
+            coreApi.listAgenticDecisions(selected),
+            coreApi.listLicenseDecisions(selected),
+            coreApi.listIntakeRequests({ projectId: selected, limit: 20 }),
+          ]);
         setDelegations(
           ownerDecisions.decisions.filter(
             (decision) =>
@@ -89,9 +104,13 @@ export function LicenseDecisions() {
           ),
         );
         setDecisions(licenseDecisions.decisions);
+        setRequests(requestList);
+        if (!requestId) setRequestId(requestList[0]?.id ?? "");
       } else {
         setDelegations([]);
         setDecisions([]);
+        setRequests([]);
+        setRequestId("");
       }
       setError(null);
     } catch (cause) {
@@ -104,6 +123,40 @@ export function LicenseDecisions() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!requestId) {
+      setReview(null);
+      return;
+    }
+    coreApi
+      .getLicenseEvidenceReview(requestId)
+      .then((status) => {
+        if (cancelled) return;
+        setReview(
+          status.available &&
+            status.reservationId &&
+            status.review
+            ? {
+                reservationId: status.reservationId,
+                decision: status.review.decision,
+                name: status.review.name,
+                version: status.review.version,
+                licenseExpression: status.review.licenseExpression,
+                selectedBranch: status.review.selectedBranch,
+                paymentRequired: status.review.paymentRequired,
+              }
+            : null,
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setReview(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [requestId]);
 
   async function createDelegation() {
     if (!projectId || pin.trim().length === 0 || useContext.trim().length === 0) {
@@ -184,6 +237,56 @@ export function LicenseDecisions() {
       setError(errorText(cause, t("licenses.error")));
     } finally {
       setBusy(null);
+    }
+  }
+
+  const approvedDelegation = delegations.find(
+    (delegation) =>
+      delegation.status === "APPROVED" &&
+      delegation.selectedOption === "APPROVE_DELEGATION",
+  );
+
+  async function runReview() {
+    if (!requestId || !approvedDelegation) return;
+    setReviewBusy(true);
+    setNotice(null);
+    try {
+      const result = await coreApi.requestLicenseEvidenceReview(requestId, {
+        delegation_id: approvedDelegation.id,
+        idempotency_key: `license-review:${requestId}:${approvedDelegation.id}`,
+      });
+      setReview({
+        reservationId: result.reservationId,
+        decision: result.review.decision,
+        name: result.review.name,
+        version: result.review.version,
+        licenseExpression: result.review.licenseExpression,
+        selectedBranch: result.review.selectedBranch,
+        paymentRequired: result.review.paymentRequired,
+      });
+      setNotice(t("licenses.review.available"));
+    } catch (cause) {
+      setError(errorText(cause, t("licenses.review.error")));
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
+  async function recordDecision() {
+    if (!requestId || !approvedDelegation || !review) return;
+    setReviewBusy(true);
+    setNotice(null);
+    try {
+      await coreApi.recordLicenseDecision(requestId, {
+        delegation_id: approvedDelegation.id,
+        idempotency_key: `license-decision:${review.reservationId}`,
+      });
+      setNotice(t("licenses.review.recorded"));
+      await load();
+    } catch (cause) {
+      setError(errorText(cause, t("licenses.review.error")));
+    } finally {
+      setReviewBusy(false);
     }
   }
 
@@ -314,6 +417,63 @@ export function LicenseDecisions() {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+      </Panel>
+      <Panel>
+        <h2 className="ui-section-title">{t("licenses.review.title")}</h2>
+        {requests.length === 0 ? (
+          <EmptyState
+            title={t("licenses.review.emptyTitle")}
+            description={t("licenses.review.emptyDescription")}
+          />
+        ) : (
+          <div className="stack-xs">
+            <Select
+              label={t("licenses.review.request")}
+              value={requestId}
+              onChange={(event) => setRequestId(event.target.value)}
+            >
+              {requests.map((request) => (
+                <option key={request.id} value={request.id}>
+                  {request.objective} · {request.state}
+                </option>
+              ))}
+            </Select>
+            {approvedDelegation ? null : (
+              <p className="muted">{t("licenses.review.delegationRequired")}</p>
+            )}
+            {review ? (
+              <div className="stack-xs">
+                <p>
+                  <Badge tone={decisionTone(review.decision)}>
+                    {review.decision}
+                  </Badge>{" "}
+                  {review.name} {review.version} ·{" "}
+                  <span className="mono">{review.licenseExpression}</span> ·{" "}
+                  {review.selectedBranch}
+                  {review.paymentRequired
+                    ? ` · ${t("licenses.review.paid")}`
+                    : ""}
+                </p>
+                <Button
+                  onClick={() => void recordDecision()}
+                  disabled={reviewBusy || !approvedDelegation}
+                >
+                  {t("licenses.review.record")}
+                </Button>
+              </div>
+            ) : (
+              <Button
+                onClick={() => void runReview()}
+                disabled={reviewBusy || !approvedDelegation}
+              >
+                {t("licenses.review.run")}
+              </Button>
+            )}
+            {approvedDelegation ? null : (
+              <p className="muted">{t("licenses.review.required")}</p>
+            )}
           </div>
         )}
       </Panel>

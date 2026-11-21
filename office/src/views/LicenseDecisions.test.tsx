@@ -8,6 +8,10 @@ const mocks = vi.hoisted(() => ({
   listProjects: vi.fn(),
   listAgenticDecisions: vi.fn(),
   listLicenseDecisions: vi.fn(),
+  listIntakeRequests: vi.fn(),
+  getLicenseEvidenceReview: vi.fn(),
+  requestLicenseEvidenceReview: vi.fn(),
+  recordLicenseDecision: vi.fn(),
   createAgenticOwnerDecision: vi.fn(),
   resolveAgenticOwnerDecision: vi.fn(),
   revokeLicenseDecision: vi.fn(),
@@ -47,7 +51,34 @@ beforeEach(() => {
   ]);
   mocks.listAgenticDecisions.mockResolvedValue({ decisions: [] });
   mocks.listLicenseDecisions.mockResolvedValue({ decisions: [] });
+  mocks.listIntakeRequests.mockResolvedValue([
+    {
+      id: "request-1",
+      objective: "Build the exact ed environment",
+      state: "PLANNING",
+      projectId: "project-1",
+    },
+  ]);
+  mocks.getLicenseEvidenceReview.mockResolvedValue({ available: false });
 });
+
+async function withApprovedDelegation() {
+  mocks.listAgenticDecisions.mockResolvedValue({
+    decisions: [
+      {
+        id: "delegation-1",
+        matter: "LICENSE_IDENTITY_EVIDENCE_DELEGATION",
+        status: "APPROVED",
+        selectedOption: "APPROVE_DELEGATION",
+        evidence: {
+          pin: "github:NixOS/nixpkgs/ac62194c",
+          useContext: "commercial-development",
+        },
+        deadline: "2026-12-01T00:00:00Z",
+      },
+    ],
+  });
+}
 
 describe("LicenseDecisions", () => {
   it("renders the exact delegation and decision empty states", async () => {
@@ -181,6 +212,69 @@ describe("LicenseDecisions", () => {
     renderView();
     expect(await screen.findByText("NEEDS_EVIDENCE")).toBeTruthy();
     expect(screen.getByText("DENY")).toBeTruthy();
+  });
+
+  it("runs the Lead licence review for the selected request", async () => {
+    await withApprovedDelegation();
+    mocks.requestLicenseEvidenceReview.mockResolvedValue({
+      reservationId: "reservation-1",
+      provider: "opencode-go",
+      model: "deepseek",
+      requestSha256: "a".repeat(64),
+      review: {
+        decision: "ACCEPT",
+        pin: "github:NixOS/nixpkgs/ac62194c",
+        name: "ed",
+        version: "1.21.1",
+        licenseExpression: "GPL-2.0-or-later",
+        selectedBranch: "GPL-2.0-or-later",
+        useContext: "commercial-development",
+        paymentRequired: false,
+      },
+    });
+    renderView();
+    await screen.findByText("Exact licence evidence review");
+    await userEvent.click(
+      screen.getByText("Run Lead licence review (model call)"),
+    );
+    await waitFor(() =>
+      expect(mocks.requestLicenseEvidenceReview).toHaveBeenCalledWith(
+        "request-1",
+        {
+          delegation_id: "delegation-1",
+          idempotency_key: "license-review:request-1:delegation-1",
+        },
+      ),
+    );
+  });
+
+  it("records an available exact decision with the reservation key", async () => {
+    await withApprovedDelegation();
+    mocks.getLicenseEvidenceReview.mockResolvedValue({
+      available: true,
+      reservationId: "reservation-1",
+      requestSha256: "a".repeat(64),
+      review: {
+        decision: "ACCEPT",
+        pin: "github:NixOS/nixpkgs/ac62194c",
+        name: "ed",
+        version: "1.21.1",
+        licenseExpression: "GPL-2.0-or-later",
+        selectedBranch: "GPL-2.0-or-later",
+        useContext: "commercial-development",
+        paymentRequired: false,
+      },
+    });
+    mocks.recordLicenseDecision.mockResolvedValue({});
+    renderView();
+    await screen.findByText("Record exact decision");
+    await userEvent.click(screen.getByText("Record exact decision"));
+    await waitFor(() =>
+      expect(mocks.recordLicenseDecision).toHaveBeenCalledWith("request-1", {
+        delegation_id: "delegation-1",
+        idempotency_key: "license-decision:reservation-1",
+      }),
+    );
   });
 
   it("shows a Core error with retry when the project load fails", async () => {
