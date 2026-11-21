@@ -17,7 +17,7 @@ proof. Candidate proof from the recovered cache/source evidence:
 - narNix32 `1hbr1vva53ma8gbx529ybgx73k00c0zan9siiigahjamf460yjvl`
 - narSize `70136`
 - signature `cache.nixos.org-1:xYwC8Vo2buDIPQNzCyHhC8Kz7Y6riU596Zp3tnRTIicdLtih5xQzAPlip25FtXIsShiTfkl4eABEg4TX0c+ZDA==`
-- fingerprint `1;/nix/store/wa88…tar.lz;1hbr…;70136;`
+- fingerprint `1;/nix/store/wa88…tar.lz;sha256:1hbr…;70136;`
 - ca `fixed:sha256:0jrwn9bq921xv4kv78w4lzjssrg8af8734raj2f53c025ccwgl6n`
 - outputDrvPath `frkd…`, outputStorePath `36qz…`
 - sourceInOutputInputDrvs true; signatureValid true

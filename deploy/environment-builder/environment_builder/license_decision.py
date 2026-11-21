@@ -150,7 +150,7 @@ def _exact_source_proof(identity: dict[str, Any], evidence: dict[str, Any]) -> d
         "narNix32": nar_nix32,
         "narSize": source["narSize"],
         "signature": source["signature"],
-        "fingerprint": f"1;{source['storePath']};{nar_nix32};{source['narSize']};",
+        "fingerprint": f"1;{source['storePath']};sha256:{nar_nix32};{source['narSize']};",
         "ca": ca,
         "outputDrvPath": output["drvPath"],
         "outputStorePath": output["storePath"],
