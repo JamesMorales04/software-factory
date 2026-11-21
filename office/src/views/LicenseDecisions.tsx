@@ -370,7 +370,7 @@ export function LicenseDecisions() {
                           : decision.decision}
                       </Badge>
                       {decision.status === "REVOKED" && decision.revocationReason ? (
-                        <div className="muted small">
+                        <div className="muted">
                           {decision.revocationReason}
                         </div>
                       ) : null}
