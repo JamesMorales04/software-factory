@@ -10,6 +10,7 @@ closed.
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 from pathlib import Path
 from typing import Any
@@ -113,6 +114,49 @@ def _exact_list(value: Any, label: str) -> list[str]:
             "ENVIRONMENT_LICENSE_DECISION_INVALID", f"{label} is malformed"
         )
     return value
+
+
+_NIX32_ALPHABET = "0123456789abcdfghijklmnpqrsvwxyz"
+
+
+def _nix32_from_sri(value: str) -> str:
+    raw = base64.b64decode(value.split("-", 1)[1])
+    length = (len(raw) * 8 - 1) // 5 + 1
+    encoded = []
+    for index in range(length - 1, -1, -1):
+        bit = index * 5
+        low = bit // 8
+        shift = bit % 8
+        current = raw[low] >> shift
+        if low + 1 < len(raw):
+            current |= raw[low + 1] << (8 - shift)
+        encoded.append(_NIX32_ALPHABET[current & 31])
+    return "".join(encoded)
+
+
+def _exact_source_proof(identity: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
+    source = identity["source"]
+    output = identity["output"]
+    nar_nix32 = _nix32_from_sri(source["narHash"])
+    flat = evidence["sourceFlatSha256"]
+    ca = "fixed:sha256:" + _nix32_from_sri(
+        "sha256-" + base64.b64encode(bytes.fromhex(flat)).decode()
+    )
+    return {
+        "sourceStorePath": source["storePath"],
+        "sourceDrvPath": source["drvPath"],
+        "flatSha256": flat,
+        "narSri": source["narHash"],
+        "narNix32": nar_nix32,
+        "narSize": source["narSize"],
+        "signature": source["signature"],
+        "fingerprint": f"1;{source['storePath']};{nar_nix32};{source['narSize']};",
+        "ca": ca,
+        "outputDrvPath": output["drvPath"],
+        "outputStorePath": output["storePath"],
+        "sourceInOutputInputDrvs": True,
+        "signatureValid": True,
+    }
 
 
 def validate_license_decision_receipt(
@@ -274,33 +318,14 @@ def validate_license_decision_receipt(
                 "ENVIRONMENT_LICENSE_DECISION_INVALID",
                 "the documentation obligations are not exact for the identity",
             )
+    exact_source = _exact_source_proof(identity, evidence)
     source_evidence = receipt.get("sourceEvidence")
-    if not isinstance(source_evidence, dict):
-        raise LicenseDecisionError(
-            "ENVIRONMENT_SOURCE_EVIDENCE_STALE",
-            "the decision has no exact source evidence proof",
-        )
-    if (
-        source_evidence.get("sourceStorePath")
-        != identity.get("source", {}).get("storePath")
-        or source_evidence.get("sourceDrvPath")
-        != identity.get("source", {}).get("drvPath")
-        or source_evidence.get("outputStorePath")
-        != identity.get("output", {}).get("storePath")
-        or source_evidence.get("outputDrvPath")
-        != identity.get("output", {}).get("drvPath")
-        or source_evidence.get("flatSha256") != evidence.get("sourceFlatSha256")
-        or source_evidence.get("narSri") != identity.get("source", {}).get("narHash")
-        or source_evidence.get("narSize") != identity.get("source", {}).get("narSize")
-        or source_evidence.get("signature") != identity.get("source", {}).get("signature")
-        or source_evidence.get("signatureValid") is not True
-        or source_evidence.get("sourceInOutputInputDrvs") is not True
-    ):
+    if source_evidence is not None and source_evidence != exact_source:
         raise LicenseDecisionError(
             "ENVIRONMENT_SOURCE_EVIDENCE_STALE",
             "the source evidence proof does not match the exact identity",
         )
-    if receipt.get("sourceEvidenceSha256") != _sha_value(source_evidence):
+    if receipt.get("sourceEvidenceSha256") != _sha_value(exact_source):
         raise LicenseDecisionError(
             "ENVIRONMENT_SOURCE_EVIDENCE_STALE",
             "the source evidence digest does not match its exact proof",

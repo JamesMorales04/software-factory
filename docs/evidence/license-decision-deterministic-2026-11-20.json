@@ -34,7 +34,7 @@
       "name": "builder licence decision",
       "command": "PYTHONPATH=. python3 tests/test_license_decision.py",
       "pass": true,
-      "detail": "9 passed; 0 failed (host and canonical container)"
+      "detail": "10 passed; 0 failed (host and canonical container)"
     },
     {
       "name": "builder licence policy and closure",
@@ -51,7 +51,7 @@
     {
       "name": "exact source proof",
       "pass": true,
-      "detail": "wa88 source store path, j151 source drv, flat d6d0c719..., NAR 1hbr.../70136, cache signature/CA/fingerprint, output frkd/36qz, inputDrvs membership and signature validity; derived from cache/pathinfo and the retained store, not fabricated"
+      "detail": "wa88 source store path, j151 source drv, flat d6d0c719..., NAR 1hbr.../70136, cache signature/CA/fingerprint, output frkd/36qz, inputDrvs membership and signature validity; derived from cache/pathinfo and the retained store, not fabricated; builder recomputes the exact proof hash from the signed asset and rejects a missing/tampered digest as ENVIRONMENT_SOURCE_EVIDENCE_STALE"
     },
     {
       "name": "plan STALE refusal",

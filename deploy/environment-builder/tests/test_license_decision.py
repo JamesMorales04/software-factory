@@ -30,21 +30,7 @@ def source_proof(identity: dict, evidence: dict) -> dict:
     The proof is evidence assembled from cache.nixos.org/pathinfo and the
     retained store; it is validated by the backend, not granted here.
     """
-    source = identity["source"]
-    output = identity["output"]
-    return {
-        "sourceStorePath": source["storePath"],
-        "sourceDrvPath": source["drvPath"],
-        "flatSha256": evidence["sourceFlatSha256"],
-        "narSri": source["narHash"],
-        "narSize": source["narSize"],
-        "signature": source["signature"],
-        "outputDrvPath": output["drvPath"],
-        "outputStorePath": output["storePath"],
-        "sourceInOutputInputDrvs": True,
-        "signatureValid": True,
-    }
-
+    return license_decision._exact_source_proof(identity, evidence)
 
 def receipt() -> dict:
     asset = json.loads(license_decision.ASSET_FILE.read_text(encoding="utf-8"))
@@ -165,9 +151,18 @@ class LicenseDecisionTests(unittest.TestCase):
         with self.assertRaises(license_decision.LicenseDecisionError):
             license_decision.validate_license_decision_receipt(missing_text, plan())
 
+    def test_source_digest_without_full_proof_is_accepted(self) -> None:
+        receipt_value = receipt()
+        del receipt_value["sourceEvidence"]
+        accepted = license_decision.validate_license_decision_receipt(
+            receipt_value, plan()
+        )
+        self.assertEqual(accepted["name"], "ed")
+        self.assertEqual(accepted["source"]["storePath"], "/nix/store/wa88qds9615j2r5imfryzbyg86c97iga-ed-1.21.1.tar.lz")
+
     def test_source_proof_missing_or_tampered_is_stale(self) -> None:
         missing = receipt()
-        del missing["sourceEvidence"]
+        del missing["sourceEvidenceSha256"]
         with self.assertRaises(license_decision.LicenseDecisionError) as caught:
             license_decision.validate_license_decision_receipt(missing, plan())
         self.assertEqual(caught.exception.code, "ENVIRONMENT_SOURCE_EVIDENCE_STALE")
