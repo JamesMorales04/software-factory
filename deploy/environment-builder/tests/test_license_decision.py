@@ -213,6 +213,9 @@ class LicenseDecisionTests(unittest.TestCase):
             cli._write_realisation(
                 Path(directory), plan, spec, manifest[0]["path"], manifest
             )
+            self.assertFalse(
+                (Path(directory) / "identity-facts-manifest.json").exists()
+            )
             payload = json.loads(
                 (Path(directory) / "realisation.json").read_text(encoding="utf-8")
             )

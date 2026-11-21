@@ -23,28 +23,27 @@ not run (`LICENSE_IDENTITY_FACTS_REQUIRED`).
 ## Repair principle
 
 A refused licence gate is **evidence**, not a grant and not a successful build
-receipt. The builder writes a bounded, exact manifest before cleanup:
+receipt. The builder writes only a bounded non-authority
+`realisation.json` pointer before cleanup:
 
 ```json
 {
-  "observedRoot": "/nix/store/…",
-  "facts": [{
-    "storePath": "/nix/store/…",
-    "deriver": "/nix/store/….drv",
-    "narHash": "sha256-…",
-    "outputs": ["/nix/store/…"]
-  }],
-  "factCount": 1,
+  "schemaVersion": 1,
+  "planSha256": "…",
+  "specSha256": "…",
+  "storePath": "/nix/store/…",
   "closureManifestSha256": "…",
-  "truncated": false
+  "status": "REALISED"
 }
 ```
 
-The runtime broker returns the manifest in the authenticated failure body. Core
-issues the exact identity challenge before dispatch, signs and verifies the
-manifest with the broker bearer, and consumes it as a `SpecCacheObservation`
-before returning the blocker. The plan remains blocked; no `BuildReceipt`, spec
-or licence ACCEPT is fabricated.
+Core issues the exact identity challenge before dispatch. The runtime broker
+reads the pointer, validates it against the exact plan/spec, re-runs its fixed
+`nix path-info`/`nix derivation show` queries over the persistent store, builds
+the manifest itself and signs the envelope. Core only verifies and consumes the
+broker receipt. A builder-authored fact manifest is never signed or trusted.
+The plan remains blocked; no `BuildReceipt`, spec or licence ACCEPT is
+fabricated.
 
 ## Resolve-stage extension
 

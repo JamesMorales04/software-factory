@@ -13129,8 +13129,9 @@ async fn build_environment_before_freeze(
     }
     // The build may refuse at the licence gate. Issue the exact challenge
     // before dispatch: a successful build observes it from its own store; a
-    // refused build returns a bounded closure manifest written before cleanup,
-    // which Core signs and binds as a spec-cache observation.
+    // refused build leaves only a bounded realisation pointer. Core asks the
+    // broker's normal identity operation to re-observe the store with its fixed
+    // Nix queries and sign the receipt; Core verifies and consumes it.
     let challenge = issue_environment_identity_facts_challenge(app, plan, spec)
         .await
         .map_err(|error| {

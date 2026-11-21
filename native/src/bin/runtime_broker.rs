@@ -10676,3 +10676,199 @@ exit 1
         assert!(workspaces.len() >= 2, "{log}");
     }
 }
+
+#[cfg(test)]
+mod secure_identity_negative_tests {
+    use super::*;
+    use factory_native::planning::identity_facts::{
+        IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION, IdentityFact,
+        IdentityFactsChallenge, IdentityFactsEnvelope, IdentityFactsManifest, IdentityFactsMode,
+        IdentityFactsReceipt, IdentityFactsStage, OperationRoot, RealisationObservation,
+        closure_manifest_sha256, sign, verify,
+    };
+
+    fn challenge() -> IdentityFactsChallenge {
+        IdentityFactsChallenge {
+            operation_id: "environment-identity:test".into(),
+            runtime_id: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .into(),
+            nonce: "identity-facts:test".into(),
+            pin: "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d".into(),
+            plan_sha256: "a".repeat(64),
+            spec_sha256: "b".repeat(64),
+            mode: IdentityFactsMode::Enumerate,
+            root: OperationRoot::Operation,
+            questions: Vec::new(),
+            stage: IdentityFactsStage::Spec,
+            resolution_key: String::new(),
+        }
+    }
+
+    fn observation(store_path: &str) -> RealisationObservation {
+        RealisationObservation {
+            schema_version: 1,
+            plan_sha256: "a".repeat(64),
+            spec_sha256: "b".repeat(64),
+            store_path: store_path.into(),
+            closure_manifest_sha256: "c".repeat(64),
+            status: "REALISED".into(),
+        }
+    }
+
+    #[test]
+    fn forged_realisation_roots_or_bindings_are_refused() {
+        assert!(
+            observation("/tmp/not-a-store")
+                .validate_for(&"a".repeat(64), Some(&"b".repeat(64)))
+                .is_err()
+        );
+        assert!(
+            observation("/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1")
+                .validate_for(&"0".repeat(64), Some(&"b".repeat(64)))
+                .is_err()
+        );
+        assert!(
+            observation("/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1")
+                .validate_for(&"a".repeat(64), Some(&"0".repeat(64)))
+                .is_err()
+        );
+        assert!(
+            observation("/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1")
+                .validate_for(&"a".repeat(64), Some(&"b".repeat(64)))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_tampered_broker_receipt_is_refused() {
+        let fact = IdentityFact {
+            store_path: "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1".into(),
+            deriver: Some("/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv".into()),
+            nar_hash: "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=".into(),
+            outputs: vec!["/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1".into()],
+        };
+        let manifest = IdentityFactsManifest {
+            observed_root: fact.store_path.clone(),
+            facts: vec![fact],
+            fact_count: 1,
+            closure_manifest_sha256: closure_manifest_sha256(&[IdentityFact {
+                store_path: "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1".into(),
+                deriver: Some("/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv".into()),
+                nar_hash: "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=".into(),
+                outputs: vec!["/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1".into()],
+            }]),
+            truncated: false,
+        };
+        let envelope = IdentityFactsEnvelope {
+            schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
+            context: IDENTITY_FACTS_CONTEXT.into(),
+            challenge: challenge(),
+            manifest,
+        };
+        let signature = sign(&envelope, b"test-bearer").expect("sign");
+        let mut tampered = IdentityFactsReceipt {
+            envelope: envelope.clone(),
+            signature,
+        };
+        tampered.signature = "0".repeat(64);
+        assert!(verify(&tampered, b"test-bearer", &challenge()).is_err());
+        let valid = IdentityFactsReceipt {
+            envelope: envelope.clone(),
+            signature: sign(&envelope, b"test-bearer").unwrap(),
+        };
+        assert!(verify(&valid, b"test-bearer", &challenge()).is_ok());
+    }
+    #[tokio::test]
+    async fn failure_body_has_no_builder_manifest_channel() {
+        let response = EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_LICENSE_UNKNOWN",
+            "the exact licence blocker",
+        )
+        .response();
+        let body = axum::body::to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("ENVIRONMENT_LICENSE_UNKNOWN"));
+        assert!(!body.contains("identityFactsManifest"));
+        assert!(!body.contains("sourceInOutputInputDrvs"));
+        assert!(!body.contains("signatureValid"));
+    }
+
+    struct FixedQueryRunner {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+        root: String,
+        drv: String,
+    }
+
+    impl factory_native::runtime_broker::IdentityFactsCommandRunner for FixedQueryRunner {
+        fn run_identity_command<'a>(
+            &'a self,
+            args: Vec<String>,
+            _operation: &'a str,
+            _limit: usize,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+        {
+            self.calls.lock().unwrap().push(args.clone());
+            let root = self.root.clone();
+            let drv = self.drv.clone();
+            Box::pin(async move {
+                let command = args.join(" ");
+                if command.contains("path-info") {
+                    Ok(serde_json::to_vec(&serde_json::json!({
+                        root.clone(): {
+                            "narHash": "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=",
+                            "narSize": 1,
+                            "deriver": drv,
+                            "references": [],
+                        }
+                    }))
+                    .unwrap())
+                } else if command.contains("derivation show") {
+                    Ok(serde_json::to_vec(&serde_json::json!({
+                        drv.clone(): {"outputs": {"out": {"path": root}}}
+                    }))
+                    .unwrap())
+                } else {
+                    Err("unexpected fixed query".into())
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn broker_fixed_queries_are_the_only_manifest_producer() {
+        let root = "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1".to_string();
+        let drv = "/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv".to_string();
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let runner = FixedQueryRunner {
+            calls: calls.clone(),
+            root: root.clone(),
+            drv: drv.clone(),
+        };
+        let manifest = factory_native::runtime_broker::observe_identity_facts_with_root(
+            &runner,
+            "image",
+            "cache",
+            "store",
+            &challenge(),
+            &root,
+        )
+        .await
+        .expect("fixed query manifest");
+        assert_eq!(manifest.observed_root, root);
+        assert_eq!(manifest.facts.len(), 1);
+        assert_eq!(manifest.facts[0].deriver.as_deref(), Some(drv.as_str()));
+        let recorded = calls.lock().unwrap().clone();
+        assert!(
+            recorded
+                .iter()
+                .any(|args| args.join(" ").contains("path-info") && args.contains(&root))
+        );
+        assert!(
+            recorded
+                .iter()
+                .any(|args| args.join(" ").contains("derivation show"))
+        );
+    }
+}
