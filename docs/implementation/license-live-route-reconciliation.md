@@ -44,6 +44,7 @@ not the generated-environment Resolve command.
 The missing generated-environment Resolve `realisation.json` / plan-keyed
 persistent cache / RESOLUTION challenge path is **not** on the retained ed
 route. It remains an open product gap for generated environments. The retained
-ed pre-spec path can be assessed with the narrow build-phase manifest/broker/
-Core-signing repair, subject to Reviewer70's GO. This document does not claim
+ed pre-spec path can be assessed with the narrow build-phase realisation
+pointer → broker fixed-query re-observation/sign → Core verify-only repair,
+subject to Reviewer70's GO. This document does not claim
 E2E or close the Resolve gap.

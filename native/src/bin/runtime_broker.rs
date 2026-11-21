@@ -4970,34 +4970,16 @@ async fn execute_identity_facts_operation(
                     64 * 1024,
                 )
                 .await?;
-                let observation: factory_native::planning::identity_facts::RealisationObservation =
-                    serde_json::from_slice(&bytes).map_err(|_| {
-                        EnvironmentBrokerFailure::new(
-                            "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT",
-                            "the builder realisation pointer is malformed",
-                        )
-                    })?;
-                observation
-                    .validate_for(&challenge.plan_sha256, Some(&spec.spec_sha256))
-                    .map_err(|error| {
-                        EnvironmentBrokerFailure::new(
-                            "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT",
-                            error.to_string(),
-                        )
-                    })?;
                 let runner = AppIdentityFactsRunner(&app);
-                factory_native::runtime_broker::observe_identity_facts_with_root(
+                reobserve_from_realisation_pointer(
                     &runner,
                     &validated.image_id,
                     &resources.cache_volume,
-                    ENVIRONMENT_NIX_STORE_VOLUME,
                     challenge,
-                    &observation.store_path,
+                    &spec.spec_sha256,
+                    &bytes,
                 )
-                .await
-                .map_err(|message| {
-                    EnvironmentBrokerFailure::new("ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT", message)
-                })?
+                .await?
             }
             Err(failure) => return Err(failure),
         };
@@ -5061,6 +5043,40 @@ impl factory_native::runtime_broker::IdentityFactsCommandRunner for AppIdentityF
     {
         Box::pin(async move { self.0.run_bounded(args, operation, limit).await })
     }
+}
+
+async fn reobserve_from_realisation_pointer(
+    runner: &dyn factory_native::runtime_broker::IdentityFactsCommandRunner,
+    image_id: &str,
+    cache_volume: &str,
+    challenge: &IdentityFactsChallenge,
+    spec_sha256: &str,
+    bytes: &[u8],
+) -> Result<IdentityFactsManifest, EnvironmentBrokerFailure> {
+    let observation: factory_native::planning::identity_facts::RealisationObservation =
+        serde_json::from_slice(bytes).map_err(|_| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT",
+                "the builder realisation pointer is malformed",
+            )
+        })?;
+    observation
+        .validate_for(&challenge.plan_sha256, Some(spec_sha256))
+        .map_err(|error| {
+            EnvironmentBrokerFailure::new("ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT", error.to_string())
+        })?;
+    factory_native::runtime_broker::observe_identity_facts_with_root(
+        runner,
+        image_id,
+        cache_volume,
+        ENVIRONMENT_NIX_STORE_VOLUME,
+        challenge,
+        &observation.store_path,
+    )
+    .await
+    .map_err(|message| {
+        EnvironmentBrokerFailure::new("ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT", message)
+    })
 }
 
 async fn observe_identity_facts(
@@ -10833,6 +10849,68 @@ mod secure_identity_negative_tests {
                     Err("unexpected fixed query".into())
                 }
             })
+        }
+    }
+
+    #[tokio::test]
+    async fn realisation_pointer_fallback_reobserves_or_fails_closed() {
+        let root = "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1".to_string();
+        let drv = "/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv".to_string();
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let runner = FixedQueryRunner {
+            calls: calls.clone(),
+            root: root.clone(),
+            drv: drv.clone(),
+        };
+        let valid = serde_json::to_vec(&observation(&root)).unwrap();
+        let manifest = reobserve_from_realisation_pointer(
+            &runner,
+            "image",
+            "cache",
+            &challenge(),
+            &"b".repeat(64),
+            &valid,
+        )
+        .await
+        .expect("valid pointer re-observed");
+        assert_eq!(manifest.observed_root, root);
+        assert_eq!(calls.lock().unwrap().len(), 2);
+
+        for bytes in [
+            b"".to_vec(),
+            b"{".to_vec(),
+            serde_json::to_vec(&observation("/tmp/not-a-store")).unwrap(),
+            serde_json::to_vec(&{
+                let mut value = observation(&root);
+                value.plan_sha256 = "0".repeat(64);
+                value
+            })
+            .unwrap(),
+            serde_json::to_vec(&{
+                let mut value = observation(&root);
+                value.spec_sha256 = "0".repeat(64);
+                value
+            })
+            .unwrap(),
+        ] {
+            let before = calls.lock().unwrap().len();
+            assert!(
+                reobserve_from_realisation_pointer(
+                    &runner,
+                    "image",
+                    "cache",
+                    &challenge(),
+                    &"b".repeat(64),
+                    &bytes,
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(
+                calls.lock().unwrap().len(),
+                before,
+                "no fixed query on a refused pointer"
+            );
         }
     }
 
