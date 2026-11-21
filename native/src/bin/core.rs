@@ -13052,7 +13052,7 @@ async fn issue_environment_identity_facts_challenge(
         mode: IdentityFactsMode::Enumerate,
         root: OperationRoot::Operation,
         questions: Vec::new(),
-        stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+        stage: factory_native::planning::identity_facts::IdentityFactsStage::Spec,
         resolution_key: String::new(),
     };
     app.db

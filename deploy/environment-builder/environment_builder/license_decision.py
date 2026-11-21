@@ -154,8 +154,6 @@ def _exact_source_proof(identity: dict[str, Any], evidence: dict[str, Any]) -> d
         "ca": ca,
         "outputDrvPath": output["drvPath"],
         "outputStorePath": output["storePath"],
-        "sourceInOutputInputDrvs": True,
-        "signatureValid": True,
     }
 
 

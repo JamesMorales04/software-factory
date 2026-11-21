@@ -151,6 +151,30 @@ class LicenseDecisionTests(unittest.TestCase):
         with self.assertRaises(license_decision.LicenseDecisionError):
             license_decision.validate_license_decision_receipt(missing_text, plan())
 
+    def test_shared_source_proof_vector_is_the_single_canonical_representation(self) -> None:
+        vector = json.loads(
+            (
+                license_decision.ASSET_FILE.parent
+                / "source_evidence_proof_vector.json"
+            ).read_text(encoding="utf-8")
+        )
+        asset = json.loads(license_decision.ASSET_FILE.read_text(encoding="utf-8"))
+        selector = vector["identity"]
+        identity = next(
+            entry
+            for entry in asset["identities"]
+            if entry["pin"] == selector["pin"]
+            and entry["name"] == selector["name"]
+            and entry["version"] == selector["version"]
+        )
+        proof = license_decision._exact_source_proof(identity, asset["evidence"])
+        self.assertEqual(proof, vector["sourceProof"])
+        self.assertEqual(
+            license_decision._sha_value(proof), vector["canonicalSha256"]
+        )
+        self.assertNotIn("signatureValid", proof)
+        self.assertNotIn("sourceInOutputInputDrvs", proof)
+
     def test_license_gate_failure_manifest_is_bounded_exact_evidence(self) -> None:
         manifest = [
             {
