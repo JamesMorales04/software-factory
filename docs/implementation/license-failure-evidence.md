@@ -60,6 +60,9 @@ static asset grant and no old-plan/old-receipt reuse.
 
 ## Current state
 
-The live stack remains on the verified `05e71714` images; the plan revision,
-review and three settled calls are preserved. No a53f image is built and no
-further model call is made until the corrected backend and a fresh build GO.
+The secure candidate is `6eac6b23`. The live history is four settled calls,
+the old receipt `475c1f95…` only, plan rev4 `1cb9ab2c…` and review
+`a512a857…`; no unsafe builder-manifest receipt was persisted. The stack is
+rebuilt only from the secure candidate; plan rev5 must be recompiled against
+the new builder digest before any new environment review. No model call is made
+until a fresh GO for rev5.
