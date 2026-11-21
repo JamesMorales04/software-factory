@@ -1,4 +1,5 @@
 use super::*;
+use crate::planning::environment::{EnvironmentPlan, EnvironmentSpec};
 use crate::planning::identity_facts::{
     IdentityFact, IdentityFactsChallenge, IdentityFactsEnvelope, IdentityFactsManifest,
     IdentityFactsMode, IdentityFactsReceipt, IdentityFactsRootBinding, OperationRoot,
@@ -20,6 +21,30 @@ const SOURCE_DRV: &str = "/nix/store/j151nb5vh176kdrrh1rkilxkdkmvm47w-ed-1.21.1.
 const SOURCE_PATH: &str = "/nix/store/wa88qds9615j2r5imfryzbyg86c97iga-ed-1.21.1.tar.lz";
 const SOURCE_HASH: &str = "sha256-1tDHGSsCsFGckCqTcZBT6GWt5aeEo7Mn2T2IhFeyPEs=";
 const SOURCE_NAR: &str = "sha256-dEsPDHFVSahejFEnqz5gAMxx+ls+idLXQ6qOovYOecE=";
+const SOURCE_FLAT: &str = "d6d0c7192b02b0519c902a93719053e865ade5a784a3b327d93d888457b23c4b";
+const SOURCE_NAR_NIX32: &str = "1hbr1vva53ma8gbx529ybgx73k00c0zan9siiigahjamf460yjvl";
+const SOURCE_SIZE: u64 = 70136;
+const SOURCE_SIGNATURE: &str = "cache.nixos.org-1:xYwC8Vo2buDIPQNzCyHhC8Kz7Y6riU596Zp3tnRTIicdLtih5xQzAPlip25FtXIsShiTfkl4eABEg4TX0c+ZDA==";
+const SOURCE_CA: &str = "fixed:sha256:0jrwn9bq921xv4kv78w4lzjssrg8af8734raj2f53c025ccwgl6n";
+const PLAN_ROOT: &str = "/nix/store/cccccccccccccccccccccccccccccccc-plan-root";
+
+fn source_evidence() -> SourceEvidenceProof {
+    SourceEvidenceProof {
+        source_store_path: SOURCE_PATH.into(),
+        source_drv_path: SOURCE_DRV.into(),
+        flat_sha256: SOURCE_FLAT.into(),
+        nar_sri: SOURCE_NAR.into(),
+        nar_nix32: SOURCE_NAR_NIX32.into(),
+        nar_size: SOURCE_SIZE,
+        signature: SOURCE_SIGNATURE.into(),
+        fingerprint: format!("1;{SOURCE_PATH};sha256:{SOURCE_NAR_NIX32};{SOURCE_SIZE};"),
+        ca: SOURCE_CA.into(),
+        output_drv_path: OUTPUT_DRV.into(),
+        output_store_path: OUTPUT_PATH.into(),
+        source_in_output_input_drvs: true,
+        signature_valid: true,
+    }
+}
 const REQUEST_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const PROJECT_CONFIG: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const RESPONSE: &str = r#"{"decision":"ACCEPT"}"#;
@@ -109,6 +134,7 @@ fn review() -> LicenseDecisionReview {
         source_output_hash: SOURCE_HASH.into(),
         license_expression: "GPL-2.0-or-later".into(),
         // COPYING: the GPL-2.0 licence text observed by the builder.
+        software_texts: vec![],
         software_text_sha256: "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6"
             .into(),
         selected_branch: "GPL-2.0-or-later".into(),
@@ -211,6 +237,9 @@ struct Fixture {
     binding: PolicyBinding,
     reservation: crate::db::LicenseEvidenceReservation,
     delegation: crate::db::AgenticOwnerDecisionRecord,
+    source: SourceEvidenceProof,
+    observed_root: &'static str,
+    root_binding: crate::planning::identity_facts::IdentityFactsRootBinding,
 }
 
 impl Fixture {
@@ -222,6 +251,10 @@ impl Fixture {
             binding,
             reservation: reservation(),
             delegation: delegation(),
+            source: source_evidence(),
+            observed_root: OUTPUT_PATH,
+            root_binding:
+                crate::planning::identity_facts::IdentityFactsRootBinding::SpecCacheObservation,
         }
     }
 
@@ -237,6 +270,9 @@ impl Fixture {
             delegation: &self.delegation,
             delegation_revoked: false,
             identity_facts: &self.facts,
+            identity_facts_root_binding: self.root_binding,
+            observed_root: self.observed_root,
+            source_evidence: &self.source,
             binding: &self.binding,
         }
     }
@@ -474,6 +510,20 @@ fn an_and_expression_keeps_every_conjunct_and_rejects_a_single_atom() {
             "role": "licensing",
             "license": "GPL-2.0-or-later",
             "sha256": "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58"
+        },
+        {
+            "path": "MIT",
+            "purpose": "license-text",
+            "role": "license-text",
+            "license": "MIT",
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        {
+            "path": "MIT.header",
+            "purpose": "header",
+            "role": "licensing",
+            "license": "MIT",
+            "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
         }
     ]);
     identity["licenseEvidence"] = license_evidence.clone();
@@ -493,6 +543,18 @@ fn an_and_expression_keeps_every_conjunct_and_rejects_a_single_atom() {
     and_review.license_expression = "GPL-2.0-or-later AND MIT".into();
     and_review.selected_branch = "GPL-2.0-or-later AND MIT".into();
     and_review.software_obligations = vec!["notice".into(), "source".into()];
+    and_review.software_texts = vec![
+        SoftwareTextEvidence {
+            path: "COPYING".into(),
+            license: "GPL-2.0-only".into(),
+            sha256: "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6".into(),
+        },
+        SoftwareTextEvidence {
+            path: "MIT".into(),
+            license: "MIT".into(),
+            sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+        },
+    ];
     and_review.documentation.clear();
     and_review.documentation_obligations.clear();
     let context = fixture.context();
@@ -509,11 +571,61 @@ fn an_and_expression_keeps_every_conjunct_and_rejects_a_single_atom() {
         Err(LicenseDecisionRefusal::BranchNotInExpression)
     );
 
-    let mut missing_gpl_obligations = and_review;
+    let mut missing_mit_text = and_review.clone();
+    missing_mit_text
+        .software_texts
+        .retain(|text| text.path == "COPYING");
+    assert_eq!(
+        verify_against_source_asset(&missing_mit_text, &context, &asset),
+        Err(LicenseDecisionRefusal::LicenseTextDigest)
+    );
+
+    let mut missing_gpl_obligations = and_review.clone();
     missing_gpl_obligations.software_obligations = vec!["notice".into()];
     assert_eq!(
         verify_against_source_asset(&missing_gpl_obligations, &context, &asset),
         Err(LicenseDecisionRefusal::ObligationsMismatch)
+    );
+
+    let mut missing_mit_licensing = asset.clone();
+    missing_mit_licensing["identities"]
+        .as_array_mut()
+        .expect("identities")
+        .last_mut()
+        .expect("synthetic identity")["licenseEvidence"] = serde_json::json!([
+        {
+            "path": "COPYING",
+            "purpose": "license-text",
+            "role": "license-text",
+            "license": "GPL-2.0-only",
+            "sha256": "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6"
+        },
+        {
+            "path": "ed.h",
+            "purpose": "header",
+            "role": "licensing",
+            "license": "GPL-2.0-or-later",
+            "sha256": "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58"
+        },
+        {
+            "path": "MIT",
+            "purpose": "license-text",
+            "role": "license-text",
+            "license": "MIT",
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+    ]);
+    let missing_licensing_evidence = missing_mit_licensing["identities"]
+        .as_array()
+        .expect("identities")
+        .last()
+        .expect("identity")["licenseEvidence"]
+        .clone();
+    missing_mit_licensing["evidence"]["licenseEvidenceCanonicalSha256"] =
+        serde_json::json!(canonical_json_sha256(&missing_licensing_evidence));
+    assert_eq!(
+        verify_against_source_asset(&and_review, &context, &missing_mit_licensing),
+        Err(LicenseDecisionRefusal::MissingLicensingFact)
     );
 }
 
@@ -541,6 +653,9 @@ fn the_binding_is_a_tagged_real_stage_and_config_hashes_cannot_stand_in() {
         delegation: &fixture.delegation,
         delegation_revoked: false,
         identity_facts: &fixture.facts,
+        identity_facts_root_binding: fixture.root_binding,
+        observed_root: fixture.observed_root,
+        source_evidence: &fixture.source,
         binding: &forged,
     };
     assert_eq!(
@@ -565,7 +680,7 @@ fn the_binding_is_a_tagged_real_stage_and_config_hashes_cannot_stand_in() {
     };
     assert_eq!(
         verify_license_evidence_review(&review(), &context),
-        Err(LicenseDecisionRefusal::PolicyBindingForged)
+        Err(LicenseDecisionRefusal::CandidateUnverified)
     );
 
     // Renaming the stage to a runtime spec with a foreign plan is refused.
@@ -590,6 +705,10 @@ fn the_binding_is_a_tagged_real_stage_and_config_hashes_cannot_stand_in() {
         delegation: &fixture.delegation,
         delegation_revoked: false,
         identity_facts: &fixture.facts,
+        identity_facts_root_binding:
+            crate::planning::identity_facts::IdentityFactsRootBinding::BuildReceipt,
+        observed_root: fixture.observed_root,
+        source_evidence: &fixture.source,
         binding: &binding,
     };
     assert_eq!(
@@ -639,70 +758,48 @@ fn text_digests_request_response_and_receipt_are_tamper_evident() {
         Err(LicenseDecisionRefusal::ReceiptMismatch)
     );
 
-    let source_missing = verified_output_only();
-    let mut missing_source = Fixture::new();
-    missing_source.facts = source_missing;
-    missing_source.binding = binding(&missing_source.facts);
+    let mut bad_source = Fixture::new();
+    bad_source.source.signature_valid = false;
     assert_eq!(
-        missing_source.verified_with(&review()),
-        Err(LicenseDecisionRefusal::ReceiptMismatch)
+        bad_source.verified_with(&review()),
+        Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
+    );
+    let mut bad_flat = Fixture::new();
+    bad_flat.source.flat_sha256 = "f".repeat(64);
+    assert_eq!(
+        bad_flat.verified_with(&review()),
+        Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
+    );
+    let mut no_output_binding = Fixture::new();
+    no_output_binding.source.source_in_output_input_drvs = false;
+    assert_eq!(
+        no_output_binding.verified_with(&review()),
+        Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
     );
 
-    let plan_root = verified_with_root("/nix/store/cccccccccccccccccccccccccccccccc-plan-root");
+    let plan_root = verified_with_root(PLAN_ROOT);
     let mut wide = Fixture::new();
     wide.facts = plan_root;
     wide.binding = binding(&wide.facts);
+    wide.observed_root = PLAN_ROOT;
     assert!(
         wide.verified_with(&review()).is_ok(),
         "a plan-wide receipt with a legitimate plan observed root must pass exact membership"
     );
-}
 
-fn output_only_facts() -> Vec<IdentityFact> {
-    vec![IdentityFact {
-        store_path: OUTPUT_PATH.into(),
-        deriver: Some(OUTPUT_DRV.into()),
-        nar_hash: OUTPUT_NAR.into(),
-        outputs: vec![OUTPUT_PATH.into()],
-    }]
-}
-
-fn verified_output_only() -> VerifiedIdentityFacts {
-    let challenge = IdentityFactsChallenge {
-        operation_id: "operation-1".into(),
-        runtime_id: "runtime-1".into(),
-        nonce: "identity-facts:test".into(),
-        pin: PIN.into(),
-        plan_sha256: PLAN.into(),
-        spec_sha256: OBSERVED_SPEC.into(),
-        mode: IdentityFactsMode::Questions,
-        root: OperationRoot::Operation,
-        questions: vec![crate::planning::identity_facts::IdentityQuestion {
-            store_path: OUTPUT_PATH.into(),
-            deriver: Some(OUTPUT_DRV.into()),
-            nar_hash: OUTPUT_NAR.into(),
-            outputs: vec![OUTPUT_PATH.into()],
-        }],
-    };
-    let facts = output_only_facts();
-    let envelope = IdentityFactsEnvelope {
-        schema_version: 1,
-        context: IDENTITY_FACTS_CONTEXT.into(),
-        challenge: challenge.clone(),
-        manifest: IdentityFactsManifest {
-            observed_root: OUTPUT_PATH.into(),
-            fact_count: facts.len(),
-            closure_manifest_sha256: closure_manifest_sha256(&facts),
-            facts,
-            truncated: false,
-        },
-    };
-    let signature = sign(&envelope, BEARER).expect("the fixture receipt signs");
-    let receipt = IdentityFactsReceipt {
-        envelope,
-        signature,
-    };
-    verify(&receipt, BEARER, &challenge).expect("the fixture receipt verifies")
+    let mut wrong_root_binding = Fixture::new();
+    wrong_root_binding.root_binding =
+        crate::planning::identity_facts::IdentityFactsRootBinding::BuildReceipt;
+    assert_eq!(
+        wrong_root_binding.verified_with(&review()),
+        Err(LicenseDecisionRefusal::RootBindingMismatch)
+    );
+    let mut foreign_root = Fixture::new();
+    foreign_root.observed_root = PLAN_ROOT;
+    assert_eq!(
+        foreign_root.verified_with(&review()),
+        Err(LicenseDecisionRefusal::RootBindingMismatch)
+    );
 }
 
 fn verified_with_root(root: &str) -> VerifiedIdentityFacts {
@@ -764,6 +861,9 @@ fn actor_delegation_project_and_terminal_states_fail_closed() {
         delegation: &revoked.delegation,
         delegation_revoked: true,
         identity_facts: &revoked.facts,
+        identity_facts_root_binding: revoked.root_binding,
+        observed_root: revoked.observed_root,
+        source_evidence: &revoked.source,
         binding: &revoked.binding,
     };
     assert!(verify_license_evidence_review(&review(), &context).is_err());
@@ -779,6 +879,9 @@ fn actor_delegation_project_and_terminal_states_fail_closed() {
         delegation: &fixture.delegation,
         delegation_revoked: false,
         identity_facts: &fixture.facts,
+        identity_facts_root_binding: fixture.root_binding,
+        observed_root: fixture.observed_root,
+        source_evidence: &fixture.source,
         binding: &fixture.binding,
     };
     assert_eq!(
@@ -882,5 +985,277 @@ fn a_stored_receipt_is_reverified_with_the_broker_bearer() {
     assert_eq!(
         verify_stored_identity_facts(&tampered, BEARER).unwrap_err(),
         LicenseDecisionRefusal::ReceiptMismatch
+    );
+}
+
+fn stored_plan(plan: &EnvironmentPlan) -> StoredEnvironmentPlan {
+    StoredEnvironmentPlan {
+        row_id: "plan-row".into(),
+        revision: plan.revision,
+        status: "CORE_VALIDATED".into(),
+        plan_sha256: plan.plan_sha256.clone(),
+        content_json: serde_json::to_string(plan).expect("plan serializes"),
+        created_at: "2026-11-20T19:24:23Z".into(),
+        updated_at: "2026-11-20T19:24:23Z".into(),
+        plan: plan.clone(),
+    }
+}
+
+fn challenge_for(plan_sha: &str, spec_sha: &str, nar_hash: &str) -> IdentityFactsChallenge {
+    IdentityFactsChallenge {
+        operation_id: "operation-1".into(),
+        runtime_id: "runtime-1".into(),
+        nonce: "identity-facts:test".into(),
+        pin: PIN.into(),
+        plan_sha256: plan_sha.into(),
+        spec_sha256: spec_sha.into(),
+        mode: IdentityFactsMode::Questions,
+        root: OperationRoot::Operation,
+        questions: vec![
+            crate::planning::identity_facts::IdentityQuestion {
+                store_path: OUTPUT_PATH.into(),
+                deriver: Some(OUTPUT_DRV.into()),
+                nar_hash: nar_hash.into(),
+                outputs: vec![OUTPUT_PATH.into()],
+            },
+            crate::planning::identity_facts::IdentityQuestion {
+                store_path: SOURCE_PATH.into(),
+                deriver: Some(SOURCE_DRV.into()),
+                nar_hash: SOURCE_NAR.into(),
+                outputs: vec![SOURCE_PATH.into()],
+            },
+        ],
+    }
+}
+
+fn verified_for(
+    plan_sha: &str,
+    spec_sha: &str,
+    nar_hash: &str,
+    observed_root: &str,
+) -> VerifiedIdentityFacts {
+    let challenge = challenge_for(plan_sha, spec_sha, nar_hash);
+    let facts = facts(nar_hash);
+    let envelope = IdentityFactsEnvelope {
+        schema_version: 1,
+        context: IDENTITY_FACTS_CONTEXT.into(),
+        challenge: challenge.clone(),
+        manifest: IdentityFactsManifest {
+            observed_root: observed_root.into(),
+            fact_count: facts.len(),
+            closure_manifest_sha256: closure_manifest_sha256(&facts),
+            facts,
+            truncated: false,
+        },
+    };
+    let signature = sign(&envelope, BEARER).expect("the fixture receipt signs");
+    let receipt = IdentityFactsReceipt {
+        envelope,
+        signature,
+    };
+    verify(&receipt, BEARER, &challenge).expect("the fixture receipt verifies")
+}
+
+#[test]
+fn real_plan_and_frozen_spec_build_the_typed_binding() {
+    let retained: EnvironmentPlan =
+        serde_json::from_str(include_str!("fixtures/retained-plan.json")).expect("real plan");
+    let retained_evidence = InventoryEvidenceBundle::from_plan(&retained);
+    let retained_facts = verified_for(
+        &retained.plan_sha256,
+        OBSERVED_SPEC,
+        OUTPUT_NAR,
+        OUTPUT_PATH,
+    );
+    let retained_binding = PolicyBinding::from_plan_inventory_evidence(
+        default_catalog_sha256(),
+        default_profile_sha256(),
+        default_binding_sha256(),
+        &stored_plan(&retained),
+        &retained_evidence,
+        CandidateBinding::base(retained.base_commit.clone()).expect("base"),
+        &retained_facts,
+    );
+    // The retained plan was compiled under an older catalogue: it is STALE under
+    // the current policy and must not be silently accepted.
+    assert_eq!(
+        retained_binding,
+        Err(LicenseDecisionRefusal::PolicyMismatch)
+    );
+
+    let mut plan = retained;
+    plan.license_inventory.catalog_sha256 = default_catalog_sha256().into();
+    plan.license_inventory.profile_sha256 = default_profile_sha256().into();
+    plan.license_inventory.inventory_sha256 = plan.license_inventory.compute_sha256(&plan.plan_id);
+    plan.license_inventory_sha256 = plan.license_inventory.inventory_sha256.clone();
+    plan.plan_sha256 = plan.compute_sha256();
+    let evidence = InventoryEvidenceBundle::from_plan(&plan);
+    let facts = verified_for(&plan.plan_sha256, OBSERVED_SPEC, OUTPUT_NAR, OUTPUT_PATH);
+    let binding = PolicyBinding::from_plan_inventory_evidence(
+        default_catalog_sha256(),
+        default_profile_sha256(),
+        default_binding_sha256(),
+        &stored_plan(&plan),
+        &evidence,
+        CandidateBinding::base(plan.base_commit.clone()).expect("base"),
+        &facts,
+    )
+    .expect("current real plan binds");
+    assert_eq!(binding.stage().plan_sha256(), plan.plan_sha256);
+    assert_eq!(
+        binding.stage().inventory_sha256(),
+        plan.license_inventory_sha256
+    );
+    assert_eq!(
+        binding.identity_facts_receipt_digest(),
+        identity_facts_receipt_digest(&facts)
+    );
+
+    let wrong_evidence = InventoryEvidenceBundle { entries: vec![] };
+    assert_eq!(
+        PolicyBinding::from_plan_inventory_evidence(
+            default_catalog_sha256(),
+            default_profile_sha256(),
+            default_binding_sha256(),
+            &stored_plan(&plan),
+            &wrong_evidence,
+            CandidateBinding::base(plan.base_commit.clone()).expect("base"),
+            &facts,
+        ),
+        Err(LicenseDecisionRefusal::EvidenceBundleMismatch)
+    );
+    assert_eq!(
+        PolicyBinding::from_plan_inventory_evidence(
+            default_catalog_sha256(),
+            default_profile_sha256(),
+            default_binding_sha256(),
+            &stored_plan(&plan),
+            &evidence,
+            CandidateBinding::base("a".repeat(40)).expect("base"),
+            &facts,
+        ),
+        Err(LicenseDecisionRefusal::PolicyBindingIncomplete)
+    );
+
+    let spec_sha256 = "d".repeat(64);
+    let spec = EnvironmentSpec {
+        schema_version: 1,
+        spec_id: "spec-1".into(),
+        spec_sha256: spec_sha256.clone(),
+        project_id: plan.project_id.clone(),
+        request_id: plan.request_id.clone(),
+        action_id: plan.action_id.clone(),
+        campaign_id: None,
+        base_commit: plan.base_commit.clone(),
+        plan_id: plan.plan_id.clone(),
+        plan_sha256: plan.plan_sha256.clone(),
+        conventions_sha256: plan.conventions_sha256.clone(),
+        review_id: "review-1".into(),
+        platform: "x86_64-linux".into(),
+        nix_version: "2.24.0".into(),
+        devenv_version: "1.0.0".into(),
+        flake_lock_sha256: String::new(),
+        devenv_lock_sha256: String::new(),
+        license_inventory_sha256: plan.license_inventory_sha256.clone(),
+        sbom_sha256: plan.license_inventory.sbom_sha256.clone(),
+        builder_image: plan.builder.image.clone(),
+        builder_image_digest: plan.builder.digest.clone(),
+        resource_policy: plan.resources.clone(),
+        network_policy: plan.network.clone(),
+        status: crate::planning::environment::EnvironmentSpecStatus::Frozen,
+        frozen_at: "2026-11-20T20:00:00Z".into(),
+    };
+    let stored_spec = StoredEnvironmentSpec {
+        row_id: "spec-row".into(),
+        spec_sha256: spec.spec_sha256.clone(),
+        content_json: serde_json::to_string(&spec).expect("spec serializes"),
+        frozen_at: spec.frozen_at.clone(),
+        created_at: "2026-11-20T20:00:00Z".into(),
+        spec,
+    };
+    let spec_facts = verified_for(&plan.plan_sha256, &spec_sha256, OUTPUT_NAR, OUTPUT_PATH);
+    let spec_binding = PolicyBinding::from_spec_inventory_evidence(
+        default_catalog_sha256(),
+        default_profile_sha256(),
+        default_binding_sha256(),
+        &stored_plan(&plan),
+        &stored_spec,
+        &evidence,
+        CandidateBinding::base(plan.base_commit.clone()).expect("base"),
+        &spec_facts,
+    )
+    .expect("frozen spec binds");
+    assert_eq!(
+        spec_binding.stage().spec_sha256(),
+        Some(spec_sha256.as_str())
+    );
+}
+
+#[test]
+fn an_old_documentation_row_without_output_association_is_not_defaulted() {
+    let old = serde_json::json!([{
+        "path": "share/doc/old",
+        "license": "MIT",
+        "licenseTextSha256": "a".repeat(64),
+        "obligations": ["notice"],
+        "verdict": "ALLOWED"
+    }]);
+    assert!(
+        serde_json::from_value::<Vec<super::DocumentationDecision>>(old).is_err(),
+        "missing outputSha256/licenseTextPath must be read as incomplete, never defaulted to an authorising empty value"
+    );
+}
+
+fn verified_output_only() -> VerifiedIdentityFacts {
+    let challenge = IdentityFactsChallenge {
+        operation_id: "operation-1".into(),
+        runtime_id: "runtime-1".into(),
+        nonce: "identity-facts:test".into(),
+        pin: PIN.into(),
+        plan_sha256: PLAN.into(),
+        spec_sha256: OBSERVED_SPEC.into(),
+        mode: IdentityFactsMode::Questions,
+        root: OperationRoot::Operation,
+        questions: vec![crate::planning::identity_facts::IdentityQuestion {
+            store_path: OUTPUT_PATH.into(),
+            deriver: Some(OUTPUT_DRV.into()),
+            nar_hash: OUTPUT_NAR.into(),
+            outputs: vec![OUTPUT_PATH.into()],
+        }],
+    };
+    let facts = vec![IdentityFact {
+        store_path: OUTPUT_PATH.into(),
+        deriver: Some(OUTPUT_DRV.into()),
+        nar_hash: OUTPUT_NAR.into(),
+        outputs: vec![OUTPUT_PATH.into()],
+    }];
+    let envelope = IdentityFactsEnvelope {
+        schema_version: 1,
+        context: IDENTITY_FACTS_CONTEXT.into(),
+        challenge: challenge.clone(),
+        manifest: IdentityFactsManifest {
+            observed_root: OUTPUT_PATH.into(),
+            fact_count: facts.len(),
+            closure_manifest_sha256: closure_manifest_sha256(&facts),
+            facts,
+            truncated: false,
+        },
+    };
+    let signature = sign(&envelope, BEARER).expect("the fixture receipt signs");
+    let receipt = IdentityFactsReceipt {
+        envelope,
+        signature,
+    };
+    verify(&receipt, BEARER, &challenge).expect("the fixture receipt verifies")
+}
+
+#[test]
+fn a_plan_wide_receipt_without_a_source_fact_uses_the_separate_source_proof() {
+    let mut fixture = Fixture::new();
+    fixture.facts = verified_output_only();
+    fixture.binding = binding(&fixture.facts);
+    assert!(
+        fixture.verified_with(&review()).is_ok(),
+        "the source is proven by the separate fixed-output proof, not by inventing a manifest fact"
     );
 }

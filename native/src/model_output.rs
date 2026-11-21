@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::lead::{AssessmentInput, Intent, LeadAssessment, bound_suggested_next_action};
 use crate::planning::environment::EnvironmentLeadReviewModel;
+use crate::planning::license_decision::LicenseDecisionReview;
 use crate::planning::stack::StackSelectionModel;
 use crate::semantic_review::{SemanticReview, SemanticReviewError, SemanticReviewInput};
 
@@ -64,6 +65,70 @@ pub fn decode_environment_lead_review(
         .validate(&value)
         .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
     serde_json::from_value(value).map_err(ModelOutputError::Json)
+}
+
+pub fn license_evidence_review_schema() -> Value {
+    serde_json::to_value(schema_for!(LicenseDecisionReview))
+        .expect("generated licence evidence review schema is serializable")
+}
+
+pub fn license_evidence_review_schema_sha256() -> String {
+    let bytes = serde_json::to_vec(&license_evidence_review_schema())
+        .expect("generated licence evidence review schema is serializable");
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+pub fn decode_license_evidence_review(
+    raw: &[u8],
+) -> Result<LicenseDecisionReview, ModelOutputError> {
+    let value: Value = serde_json::from_slice(raw)?;
+    let schema = license_evidence_review_schema();
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    validator
+        .validate(&value)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    let review: LicenseDecisionReview =
+        serde_json::from_value(value).map_err(ModelOutputError::Json)?;
+    if !matches!(
+        review.decision.as_str(),
+        "ACCEPT" | "NEEDS_EVIDENCE" | "DENY"
+    ) || review.pin.trim().is_empty()
+        || review.name.trim().is_empty()
+        || review.version.trim().is_empty()
+        || review.output_drv_path.trim().is_empty()
+        || review.output_store_path.trim().is_empty()
+        || review.output_nar_hash.trim().is_empty()
+        || review.source_drv_path.trim().is_empty()
+        || review.source_store_path.trim().is_empty()
+        || review.source_output_hash.trim().is_empty()
+        || review.license_expression.trim().is_empty()
+        || review.selected_branch.trim().is_empty()
+        || review.use_context.trim().is_empty()
+        || !review.request_sha256.is_empty()
+        || !review.response_sha256.is_empty()
+    {
+        return Err(ModelOutputError::Domain(
+            "licence evidence review has invalid or Core-owned fields".into(),
+        ));
+    }
+    let mut docs = std::collections::BTreeSet::new();
+    for document in &review.documentation {
+        if document.path.trim().is_empty()
+            || document.license.trim().is_empty()
+            || document.output_sha256.trim().is_empty()
+            || document.license_text_path.trim().is_empty()
+            || !docs.insert((document.path.as_str(), document.license.as_str()))
+        {
+            return Err(ModelOutputError::Domain(
+                "licence evidence documentation is incomplete or duplicated".into(),
+            ));
+        }
+    }
+    Ok(review)
 }
 
 pub fn agentic_triage_schema() -> Value {
@@ -781,5 +846,69 @@ mod tests {
         let mut wrong: serde_json::Value = serde_json::from_slice(raw).unwrap();
         wrong["candidateCommitSha"] = serde_json::json!("0".repeat(40));
         assert!(decode_semantic_review(&serde_json::to_vec(&wrong).unwrap(), &input).is_err());
+    }
+}
+
+#[cfg(test)]
+mod license_evidence_review_schema_tests {
+    use super::*;
+
+    fn valid_review() -> Value {
+        serde_json::json!({
+            "decision": "ACCEPT",
+            "pin": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+            "name": "ed",
+            "version": "1.21.1",
+            "outputDrvPath": "/nix/store/frk.drv",
+            "outputStorePath": "/nix/store/out",
+            "outputNarHash": "sha256-humg",
+            "sourceDrvPath": "/nix/store/src.drv",
+            "sourceStorePath": "/nix/store/src",
+            "sourceOutputHash": "sha256-flat",
+            "licenseExpression": "GPL-2.0-or-later",
+            "softwareTextSha256": "a".repeat(64),
+            "softwareTexts": [],
+            "selectedBranch": "GPL-2.0-or-later",
+            "documentation": [{
+                "path": "share/doc",
+                "license": "GFDL-1.3-or-later",
+                "outputSha256": "b".repeat(64),
+                "licenseTextPath": "doc/fdl.texi",
+                "licenseTextSha256": "c".repeat(64),
+                "obligations": ["notice", "source"]
+            }],
+            "useContext": "commercial-development",
+            "commercialUse": true,
+            "paymentRequired": false,
+            "obligationsReviewed": true,
+            "softwareObligations": ["notice", "source"],
+            "documentationObligations": ["notice", "source"]
+        })
+    }
+
+    #[test]
+    fn licence_review_schema_is_closed_and_core_fields_are_not_model_owned() {
+        validate_provider_schema(&license_evidence_review_schema()).unwrap();
+        let raw = serde_json::to_vec(&valid_review()).unwrap();
+        let review = decode_license_evidence_review(&raw).unwrap();
+        assert_eq!(review.decision, "ACCEPT");
+        assert_eq!(review.documentation.len(), 1);
+
+        let mut missing = valid_review();
+        missing["documentation"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("outputSha256");
+        assert!(decode_license_evidence_review(&serde_json::to_vec(&missing).unwrap()).is_err());
+
+        let mut unknown = valid_review();
+        unknown["authorized"] = serde_json::json!(true);
+        assert!(decode_license_evidence_review(&serde_json::to_vec(&unknown).unwrap()).is_err());
+
+        let mut core_filled = valid_review();
+        core_filled["requestSha256"] = serde_json::json!("a".repeat(64));
+        assert!(
+            decode_license_evidence_review(&serde_json::to_vec(&core_filled).unwrap()).is_err()
+        );
     }
 }

@@ -5,7 +5,7 @@ use crate::planning::identity_facts::{
 };
 use crate::planning::license_decision::{
     CandidateBinding, LicenseDecisionContext, LicenseDecisionReview, PolicyBinding,
-    identity_facts_receipt_digest, verify_license_evidence_review,
+    SourceEvidenceProof, identity_facts_receipt_digest, verify_license_evidence_review,
 };
 
 const BEARER: &[u8] = b"scoped-environment-bearer-0123456789abcdef";
@@ -25,12 +25,36 @@ const SOURCE_NAR: &str = "sha256-dEsPDHFVSahejFEnqz5gAMxx+ls+idLXQ6qOovYOecE=";
 const REQUEST_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const RESPONSE: &str = r#"{"decision":"ACCEPT"}"#;
 const PROJECT_CONFIG: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const SOURCE_FLAT: &str = "d6d0c7192b02b0519c902a93719053e865ade5a784a3b327d93d888457b23c4b";
+const SOURCE_NAR_NIX32: &str = "1hbr1vva53ma8gbx529ybgx73k00c0zan9siiigahjamf460yjvl";
+const SOURCE_SIZE: u64 = 70136;
+const SOURCE_SIGNATURE: &str = "cache.nixos.org-1:xYwC8Vo2buDIPQNzCyHhC8Kz7Y6riU596Zp3tnRTIicdLtih5xQzAPlip25FtXIsShiTfkl4eABEg4TX0c+ZDA==";
+const SOURCE_CA: &str = "fixed:sha256:0jrwn9bq921xv4kv78w4lzjssrg8af8734raj2f53c025ccwgl6n";
+
+fn source_evidence() -> SourceEvidenceProof {
+    SourceEvidenceProof {
+        source_store_path: SOURCE_PATH.into(),
+        source_drv_path: SOURCE_DRV.into(),
+        flat_sha256: SOURCE_FLAT.into(),
+        nar_sri: SOURCE_NAR.into(),
+        nar_nix32: SOURCE_NAR_NIX32.into(),
+        nar_size: SOURCE_SIZE,
+        signature: SOURCE_SIGNATURE.into(),
+        fingerprint: format!("1;{SOURCE_PATH};sha256:{SOURCE_NAR_NIX32};{SOURCE_SIZE};"),
+        ca: SOURCE_CA.into(),
+        output_drv_path: OUTPUT_DRV.into(),
+        output_store_path: OUTPUT_PATH.into(),
+        source_in_output_input_drvs: true,
+        signature_valid: true,
+    }
+}
 
 struct Fixture {
     path: std::path::PathBuf,
     db: Database,
     decision: VerifiedLicenseDecision,
     owner_id: String,
+    source: SourceEvidenceProof,
 }
 
 fn receipt() -> IdentityFactsReceipt {
@@ -104,6 +128,7 @@ fn review() -> LicenseDecisionReview {
         source_store_path: SOURCE_PATH.into(),
         source_output_hash: SOURCE_HASH.into(),
         license_expression: "GPL-2.0-or-later".into(),
+        software_texts: vec![],
         software_text_sha256: "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6"
             .into(),
         selected_branch: "GPL-2.0-or-later".into(),
@@ -264,6 +289,7 @@ async fn fixture() -> Fixture {
         .await
         .unwrap();
     let delegation = db.agentic_owner_decision(&owner.id).await.unwrap();
+    let source = source_evidence();
     let context = LicenseDecisionContext {
         project_id: "project-1",
         lead_request_id: "lead-1",
@@ -275,6 +301,10 @@ async fn fixture() -> Fixture {
         delegation: &delegation,
         delegation_revoked: false,
         identity_facts: &facts,
+        identity_facts_root_binding:
+            crate::planning::identity_facts::IdentityFactsRootBinding::SpecCacheObservation,
+        observed_root: OUTPUT_PATH,
+        source_evidence: &source,
         binding: &binding,
     };
     let decision = verify_license_evidence_review(&review(), &context).unwrap();
@@ -283,6 +313,7 @@ async fn fixture() -> Fixture {
         db,
         decision,
         owner_id: owner.id,
+        source,
     }
 }
 
@@ -339,6 +370,7 @@ async fn a_verified_decision_is_durable_idempotent_and_revocable() {
             CandidateBinding::base(BASE).unwrap(),
             &identity_facts_receipt_digest(&facts),
         );
+        let source = source_evidence();
         let context = LicenseDecisionContext {
             project_id: "project-1",
             lead_request_id: "lead-1",
@@ -350,6 +382,10 @@ async fn a_verified_decision_is_durable_idempotent_and_revocable() {
             delegation: &delegation,
             delegation_revoked: false,
             identity_facts: &facts,
+            identity_facts_root_binding:
+                crate::planning::identity_facts::IdentityFactsRootBinding::SpecCacheObservation,
+            observed_root: OUTPUT_PATH,
+            source_evidence: &source,
             binding: &binding,
         };
         verify_license_evidence_review(&changed_review, &context).unwrap()
@@ -577,4 +613,19 @@ async fn revocation_audit_rows_are_appended_once_and_never_removed() {
     );
     db.close().await;
     let _ = std::fs::remove_file(&fixture.path);
+}
+
+#[test]
+fn applied_0084_migration_is_byte_identical_to_the_checkpoint() {
+    use crate::planning::lead_classification::sha256_hex;
+    assert_eq!(
+        sha256_hex(include_bytes!(
+            "../../../../migrations/0084_license_decisions.sql"
+        )),
+        "a91e19a36a6e951109c62a9b4073818d308346af5328c323cce1b10a122827e2"
+    );
+    assert!(
+        include_str!("../../../../migrations/0087_license_decision_constraints.sql")
+            .contains("license_decisions_grant_identity_idx")
+    );
 }

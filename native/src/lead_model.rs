@@ -5,6 +5,10 @@
 //! evidence references, WorkGraph, scope, route and budget before persistence.
 //! Model output never grants authority.
 
+use crate::planning::license_decision::{
+    InventoryEvidenceBundle, LicenseDecisionReview, SourceEvidenceProof,
+    VERSIONED_SOURCE_EVIDENCE_JSON, identity_facts_receipt_digest,
+};
 use crate::{
     db::{ActionSpec, Database, ModelCallRole},
     lead::{
@@ -322,6 +326,167 @@ pub async fn review_environment(
     review
         .validate_for(request.plan, request.now)
         .map_err(|error| LeadError::Assessment(error.message))?;
+    Ok((review, result))
+}
+
+pub struct LicenseEvidenceReviewRequest<'a> {
+    pub request_id: &'a str,
+    pub objective_id: &'a str,
+    pub project: &'a crate::lead::ProjectConfig,
+    pub plan: &'a crate::db::StoredEnvironmentPlan,
+    pub spec: Option<&'a crate::db::StoredEnvironmentSpec>,
+    pub inventory: &'a InventoryEvidenceBundle,
+    pub source: &'a SourceEvidenceProof,
+    pub identity_facts: &'a crate::planning::identity_facts::VerifiedIdentityFacts,
+    pub delegation: &'a crate::db::AgenticOwnerDecisionRecord,
+    pub grant: &'a crate::lead::StandingDelegationV2,
+    pub now: chrono::DateTime<chrono::Utc>,
+}
+
+fn license_evidence_review_prompt(
+    request: &LicenseEvidenceReviewRequest<'_>,
+    schema: &str,
+) -> Result<String, LeadError> {
+    let plan_json = serde_json::to_string(request.plan).map_err(|error| {
+        LeadError::Assessment(format!("cannot encode environment plan: {error}"))
+    })?;
+    let inventory = serde_json::to_value(request.inventory).map_err(|error| {
+        LeadError::Assessment(format!("cannot encode inventory evidence: {error}"))
+    })?;
+    let evidence: serde_json::Value = serde_json::from_str(VERSIONED_SOURCE_EVIDENCE_JSON)
+        .map_err(|error| {
+            LeadError::Assessment(format!("cannot decode source evidence: {error}"))
+        })?;
+    let context = serde_json::json!({
+        "requestId": request.request_id,
+        "objectiveId": request.objective_id,
+        "projectId": request.project.project_id,
+        "principalId": request.grant.principal_id,
+        "planSha256": request.plan.plan_sha256,
+        "planRevision": request.plan.revision,
+        "planStatus": request.plan.status,
+        "specSha256": request.spec.map(|spec| spec.spec_sha256.clone()),
+        "inventoryEvidence": inventory,
+        "evidenceBundleSha256": crate::planning::license_decision::canonical_json_sha256(
+            &serde_json::json!({"entries": request.inventory.entries})
+        ),
+        "sourceEvidence": request.source.to_json(),
+        "sourceEvidenceSha256": request.source.canonical_sha256(),
+        "identityFactsReceiptDigest": identity_facts_receipt_digest(request.identity_facts),
+        "identityFactsManifestObservedRoot": request.identity_facts.receipt().envelope.manifest.observed_root,
+        "licenseEvidenceAsset": evidence,
+        "delegation": {
+            "id": request.delegation.id,
+            "matter": request.delegation.matter,
+            "status": request.delegation.status,
+            "selectedOption": request.delegation.selected_option,
+            "evidence": request.delegation.evidence,
+            "deadline": request.delegation.deadline,
+        },
+        "policy": {
+            "catalogSha256": crate::planning::license_policy::default_catalog_sha256(),
+            "profileSha256": crate::planning::license_policy::default_profile_sha256(),
+            "bindingSha256": crate::planning::license_policy::default_binding_sha256(),
+        },
+    });
+    let context = serde_json::to_string_pretty(&context)
+        .map_err(|error| LeadError::Assessment(format!("cannot encode review context: {error}")))?;
+    Ok(format!(
+        "You are the bounded Intelligent Lead reviewing the exact licence identity evidence for one environment stage. Return ONLY one JSON object that validates against the JSON Schema below; no prose, markdown, comments or unknown fields. You have no authority: Core verifies every field, the exact output/source facts, the signed source proof, the plan/inventory stage, the Owner delegation, the Lead actor and the current catalogue/profile/policy. Do not invent an identity, licence, text, digest, source path, obligation, delegation field or plan/spec hash. ACCEPT only when the reviewed expression is the exact identity licensing fact, the selected branch is a complete AST selection (AND keeps all conjuncts, OR chooses one alternative, WITH keeps base plus exception), every selected atom has an exact licence text and licensing fact, documentation has exact outputSha256 and licenseTextPath/licence/text digest, obligations are exact for software and documentation, and the commercial/no-mandatory-fee reading is supported by the authenticated text. GFDL/classified-UNKNOWN documentation needs the active delegation and must be recorded, never ignored. A prior copyleft DENY may be reconciled only by exact trusted text, exact obligations and the commercial/no-fee predicate; source-available/BUSL, NC and paid licences stay denied. Do not emit requestSha256 or responseSha256: Core fills them. Echo the exact pin/name/version/output/source fields from the context. Use softwareTexts with one exact {{path,license,sha256}} per selected atom; for a single atom softwareTextSha256 may carry the legacy digest. Documentation entries require outputSha256, licenseTextPath, licenseTextSha256 and exact obligations. The Lead is the semantic reader of the authenticated text; Core applies the deterministic limits. If evidence is incomplete, return NEEDS_EVIDENCE; if policy requires denial, return DENY.
+
+Review context:
+{}
+
+EnvironmentPlan (exact):
+{}
+
+JSON Schema:
+{}",
+        context,
+        plan_json.chars().take(300_000).collect::<String>(),
+        schema
+    ))
+}
+
+/// Execute the authorized bounded Lead `license_evidence_review` call. The
+/// returned review is schema/domain checked but remains advisory until Core
+/// verifies it and persists a decision. A failed/unknown model call returns no
+/// review and therefore grants nothing.
+pub async fn review_license_evidence(
+    gateway: &ModelGateway,
+    database: &Database,
+    request: LicenseEvidenceReviewRequest<'_>,
+) -> Result<(LicenseDecisionReview, crate::db::ModelCallResult), LeadError> {
+    if request.grant.revoked_at.is_some() || request.grant.expires_at <= request.now {
+        return Err(LeadError::Assessment(
+            "the Lead grant is expired or revoked".into(),
+        ));
+    }
+    if request.delegation.project_id != request.project.project_id
+        || request.delegation.matter != "LICENSE_IDENTITY_EVIDENCE_DELEGATION"
+        || request.delegation.status != "APPROVED"
+        || request.delegation.selected_option.as_deref() != Some("APPROVE_DELEGATION")
+        || chrono::DateTime::parse_from_rfc3339(&request.delegation.deadline)
+            .map(|deadline| deadline <= request.now)
+            .unwrap_or(true)
+    {
+        return Err(LeadError::Assessment(
+            "the Owner licence delegation is not active for this call".into(),
+        ));
+    }
+    if request.inventory.entries != request.plan.plan.license_inventory.entries {
+        return Err(LeadError::Assessment(
+            "the inventory evidence is not the exact plan inventory".into(),
+        ));
+    }
+    let challenge = &request.identity_facts.receipt().envelope.challenge;
+    if challenge.plan_sha256 != request.plan.plan_sha256 {
+        return Err(LeadError::Assessment(
+            "the identity-facts receipt does not bind the exact plan".into(),
+        ));
+    }
+    if let Some(spec) = request.spec
+        && challenge.spec_sha256 != spec.spec_sha256
+    {
+        return Err(LeadError::Assessment(
+            "the identity-facts receipt does not bind the exact spec".into(),
+        ));
+    }
+    let schema = serde_json::to_string(&crate::model_output::license_evidence_review_schema())
+        .map_err(|error| {
+            LeadError::Assessment(format!("cannot encode licence review schema: {error}"))
+        })?;
+    let prompt = license_evidence_review_prompt(&request, &schema)?;
+    let result = gateway
+        .call(
+            database,
+            ModelCallRequest {
+                role: ModelCallRole::Lead,
+                principal_id: &request.grant.principal_id,
+                project_id: &request.project.project_id,
+                objective_id: request.objective_id,
+                scope_id: &request.grant.id,
+                purpose: "license_evidence_review",
+                system_prompt:
+                    "Return strict JSON only. The licence review is evidence, never authority; Core verifies and persists.",
+                user_prompt: &prompt,
+                max_output_tokens: 0,
+            },
+        )
+        .await
+        .map_err(|error| match error {
+            ModelGatewayError::Ambiguous(_)
+            | ModelGatewayError::Upstream(_)
+            | ModelGatewayError::Usage(_) => {
+                LeadError::TransientAssessment(error.to_string())
+            }
+            ModelGatewayError::Database(
+                crate::db::Error::Forbidden(_) | crate::db::Error::Conflict(_),
+            ) => LeadError::TransientAssessment(error.to_string()),
+            other => LeadError::Assessment(other.to_string()),
+        })?;
+    let review = crate::model_output::decode_license_evidence_review(result.content.as_bytes())
+        .map_err(|error| LeadError::Assessment(error.to_string()))?;
     Ok((review, result))
 }
 

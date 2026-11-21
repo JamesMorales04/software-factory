@@ -98,6 +98,54 @@ impl CandidateBinding {
     }
 }
 
+/// Exact plan licence-inventory evidence bundle.
+///
+/// The builder and Core both canonicalise exactly `{ "entries": entries }`;
+/// entries are the plan's real `licenseInventory.entries`, never a free JSON
+/// object. The stage stores the canonical hash but not the entries themselves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct InventoryEvidenceBundle {
+    pub entries: Vec<crate::planning::environment::LicenseEntry>,
+}
+
+impl InventoryEvidenceBundle {
+    pub fn from_plan(plan: &crate::planning::environment::EnvironmentPlan) -> Self {
+        Self {
+            entries: plan.license_inventory.entries.clone(),
+        }
+    }
+
+    fn validate(&self) -> Result<(), LicenseDecisionRefusal> {
+        if self.entries.is_empty() {
+            return Err(LicenseDecisionRefusal::EvidenceBundleMismatch);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in &self.entries {
+            if entry.name.trim().is_empty()
+                || entry.version.trim().is_empty()
+                || entry.license.trim().is_empty()
+                || entry.source.trim().is_empty()
+                || !seen.insert((
+                    entry.name.as_str(),
+                    entry.version.as_str(),
+                    entry.source.as_str(),
+                ))
+            {
+                return Err(LicenseDecisionRefusal::EvidenceBundleMismatch);
+            }
+        }
+        Ok(())
+    }
+
+    fn canonical_sha256(&self) -> Result<String, LicenseDecisionRefusal> {
+        self.validate()?;
+        let value = serde_json::to_value(self)
+            .map_err(|_| LicenseDecisionRefusal::EvidenceBundleMismatch)?;
+        Ok(canonical_json_sha256(&value))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StageKind {
@@ -161,7 +209,7 @@ impl StageBinding {
 
     fn from_plan(
         plan: &StoredEnvironmentPlan,
-        evidence_bundle: &serde_json::Value,
+        evidence_bundle: &InventoryEvidenceBundle,
         candidate: CandidateBinding,
         identity_facts: &VerifiedIdentityFacts,
     ) -> Result<Self, LicenseDecisionRefusal> {
@@ -188,13 +236,11 @@ impl StageBinding {
         {
             return Err(LicenseDecisionRefusal::PolicyMismatch);
         }
-        let evidence_bundle_sha256 = canonical_json_sha256(evidence_bundle);
-        if evidence_bundle
-            .as_object()
-            .is_none_or(|object| object.is_empty())
-            || evidence_bundle_sha256 == plan_sha256
-            || evidence_bundle_sha256 == inventory_sha256
-        {
+        if evidence_bundle.entries != plan.plan.license_inventory.entries {
+            return Err(LicenseDecisionRefusal::EvidenceBundleMismatch);
+        }
+        let evidence_bundle_sha256 = evidence_bundle.canonical_sha256()?;
+        if evidence_bundle_sha256 == plan_sha256 || evidence_bundle_sha256 == inventory_sha256 {
             return Err(LicenseDecisionRefusal::PolicyBindingIncomplete);
         }
         validate_candidate(&candidate, &plan.plan.base_commit)?;
@@ -217,7 +263,7 @@ impl StageBinding {
     fn from_spec(
         plan: &StoredEnvironmentPlan,
         spec: &StoredEnvironmentSpec,
-        evidence_bundle: &serde_json::Value,
+        evidence_bundle: &InventoryEvidenceBundle,
         candidate: CandidateBinding,
         identity_facts: &VerifiedIdentityFacts,
     ) -> Result<Self, LicenseDecisionRefusal> {
@@ -244,11 +290,11 @@ impl StageBinding {
         {
             return Err(LicenseDecisionRefusal::PolicyMismatch);
         }
-        let evidence_bundle_sha256 = canonical_json_sha256(evidence_bundle);
-        if evidence_bundle
-            .as_object()
-            .is_none_or(|object| object.is_empty())
-            || evidence_bundle_sha256 == plan_sha256
+        if evidence_bundle.entries != plan.plan.license_inventory.entries {
+            return Err(LicenseDecisionRefusal::EvidenceBundleMismatch);
+        }
+        let evidence_bundle_sha256 = evidence_bundle.canonical_sha256()?;
+        if evidence_bundle_sha256 == plan_sha256
             || evidence_bundle_sha256 == inventory_sha256
             || evidence_bundle_sha256 == spec_sha256
         {
@@ -282,12 +328,11 @@ fn validate_candidate(
     match candidate {
         CandidateBinding::Base { base_commit } if base_commit == plan_base_commit => Ok(()),
         CandidateBinding::Base { .. } => Err(LicenseDecisionRefusal::PolicyBindingIncomplete),
-        CandidateBinding::Candidate { candidate_sha256 } => {
-            if candidate_sha256 == &sha256_hex(plan_base_commit.as_bytes()) {
-                Err(LicenseDecisionRefusal::PolicyBindingForged)
-            } else {
-                Ok(())
-            }
+        CandidateBinding::Candidate { .. } => {
+            // A free 64-hex string is not a candidate. The verified candidate
+            // loader is not part of the current pre-candidate stage; fail closed
+            // until a real candidate record can be bound and revalidated.
+            Err(LicenseDecisionRefusal::CandidateUnverified)
         }
     }
 }
@@ -310,7 +355,7 @@ impl PolicyBinding {
         profile_sha256: impl Into<String>,
         policy_sha256: impl Into<String>,
         plan: &StoredEnvironmentPlan,
-        evidence_bundle: &serde_json::Value,
+        evidence_bundle: &InventoryEvidenceBundle,
         candidate: CandidateBinding,
         identity_facts: &VerifiedIdentityFacts,
     ) -> Result<Self, LicenseDecisionRefusal> {
@@ -327,7 +372,7 @@ impl PolicyBinding {
         policy_sha256: impl Into<String>,
         plan: &StoredEnvironmentPlan,
         spec: &StoredEnvironmentSpec,
-        evidence_bundle: &serde_json::Value,
+        evidence_bundle: &InventoryEvidenceBundle,
         candidate: CandidateBinding,
         identity_facts: &VerifiedIdentityFacts,
     ) -> Result<Self, LicenseDecisionRefusal> {
@@ -420,8 +465,16 @@ impl PolicyBinding {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SoftwareTextEvidence {
+    pub path: String,
+    pub license: String,
+    pub sha256: String,
+}
+
 /// One documentation output and its exact licence decision.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DocumentationReview {
     pub path: String,
@@ -434,7 +487,7 @@ pub struct DocumentationReview {
     pub obligations: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct LicenseDecisionReview {
     pub decision: String,
@@ -449,6 +502,8 @@ pub struct LicenseDecisionReview {
     pub source_output_hash: String,
     pub license_expression: String,
     pub software_text_sha256: String,
+    #[serde(default)]
+    pub software_texts: Vec<SoftwareTextEvidence>,
     pub selected_branch: String,
     pub documentation: Vec<DocumentationReview>,
     pub use_context: String,
@@ -689,6 +744,10 @@ pub enum LicenseDecisionRefusal {
     PolicyMismatch,
     PlanBindingMismatch,
     SpecBindingMismatch,
+    EvidenceBundleMismatch,
+    CandidateUnverified,
+    SourceEvidenceMismatch,
+    RootBindingMismatch,
     ReceiptMismatch,
     ReceiptDigestMismatch,
     Actor(String),
@@ -775,6 +834,17 @@ impl std::fmt::Display for LicenseDecisionRefusal {
             Self::SpecBindingMismatch => {
                 formatter.write_str("the identity-facts receipt does not bind the runtime spec")
             }
+            Self::EvidenceBundleMismatch => formatter
+                .write_str("the evidence bundle is not the exact plan licence inventory entries"),
+            Self::CandidateUnverified => formatter.write_str(
+                "a free candidate hash is not a verified candidate; only the plan base is accepted",
+            ),
+            Self::SourceEvidenceMismatch => formatter.write_str(
+                "the fixed-output source proof does not match the exact source/output evidence",
+            ),
+            Self::RootBindingMismatch => formatter.write_str(
+                "the identity-facts observed root does not match the required stage root binding",
+            ),
             Self::ReceiptMismatch => formatter
                 .write_str("the identity-facts receipt does not bind the exact reviewed identity"),
             Self::ReceiptDigestMismatch => {
@@ -1279,6 +1349,59 @@ pub(crate) fn reconcile_prior_deny(
     Ok(())
 }
 
+/// Separate exact fixed-output source proof.
+///
+/// The retained identity-facts receipt covers the realised output closure, not
+/// necessarily the fetched source path. This proof is constructed by Core from
+/// the independently verified source recovery (cache NAR/signature/fingerprint
+/// plus the FOD → output recipe binding); it is never model output and never a
+/// broker fact invented for the source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceEvidenceProof {
+    pub source_store_path: String,
+    pub source_drv_path: String,
+    pub flat_sha256: String,
+    pub nar_sri: String,
+    pub nar_nix32: String,
+    pub nar_size: u64,
+    pub signature: String,
+    pub fingerprint: String,
+    pub ca: String,
+    pub output_drv_path: String,
+    pub output_store_path: String,
+    pub source_in_output_input_drvs: bool,
+    pub signature_valid: bool,
+}
+
+impl SourceEvidenceProof {
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "sourceStorePath": self.source_store_path,
+            "sourceDrvPath": self.source_drv_path,
+            "flatSha256": self.flat_sha256,
+            "narSri": self.nar_sri,
+            "narNix32": self.nar_nix32,
+            "narSize": self.nar_size,
+            "signature": self.signature,
+            "fingerprint": self.fingerprint,
+            "ca": self.ca,
+            "outputDrvPath": self.output_drv_path,
+            "outputStorePath": self.output_store_path,
+            "sourceInOutputInputDrvs": self.source_in_output_input_drvs,
+            "signatureValid": self.signature_valid,
+        })
+    }
+
+    pub fn canonical_sha256(&self) -> String {
+        canonical_json_sha256(&self.to_json())
+    }
+}
+
+fn source_evidence_sha256(proof: &SourceEvidenceProof) -> String {
+    proof.canonical_sha256()
+}
+
+/// Inputs Core
 /// Inputs Core must provide from its own state. Every field is a database or
 /// Core-owned value, never a caller payload attribute.
 pub struct LicenseDecisionContext<'a> {
@@ -1292,6 +1415,9 @@ pub struct LicenseDecisionContext<'a> {
     pub delegation: &'a crate::db::AgenticOwnerDecisionRecord,
     pub delegation_revoked: bool,
     pub identity_facts: &'a VerifiedIdentityFacts,
+    pub identity_facts_root_binding: super::identity_facts::IdentityFactsRootBinding,
+    pub observed_root: &'a str,
+    pub source_evidence: &'a SourceEvidenceProof,
     pub binding: &'a PolicyBinding,
 }
 
@@ -1419,13 +1545,23 @@ fn verify_against_source_asset(
             return Err(LicenseDecisionRefusal::PolicyBindingForged);
         }
     }
+    if context.observed_root != receipt.envelope.manifest.observed_root {
+        return Err(LicenseDecisionRefusal::RootBindingMismatch);
+    }
+    match (
+        context.binding.stage().spec_sha256(),
+        context.identity_facts_root_binding,
+    ) {
+        (None, super::identity_facts::IdentityFactsRootBinding::SpecCacheObservation) => {}
+        (Some(_), super::identity_facts::IdentityFactsRootBinding::BuildReceipt) => {}
+        _ => return Err(LicenseDecisionRefusal::RootBindingMismatch),
+    }
     match context.binding.candidate() {
-        CandidateBinding::Candidate { candidate_sha256 } => {
-            if candidate_sha256 == context.project_config_hash
-                || candidate_sha256 == &sha256_hex(context.base_commit.as_bytes())
-            {
-                return Err(LicenseDecisionRefusal::PolicyBindingForged);
-            }
+        CandidateBinding::Candidate { .. } => {
+            // A free 64-hex string is not a candidate. The verified candidate
+            // loader is not part of the current pre-candidate stage; fail closed
+            // until a real candidate record can be bound and revalidated.
+            return Err(LicenseDecisionRefusal::CandidateUnverified);
         }
         CandidateBinding::Base { base_commit } => {
             if base_commit != context.base_commit {
@@ -1501,25 +1637,52 @@ fn verify_against_source_asset(
             return Err(LicenseDecisionRefusal::IdentityMismatch);
         }
     }
-    // The HMAC receipt must contain the exact reviewed output and source
-    // facts. A plan-wide receipt may contain many facts and its observed root
-    // may be the plan root; only exact membership is required here.
-    let source_nar_hash = identity
-        .get("source")
-        .and_then(|source| exact(source, "narHash"))
-        .ok_or(LicenseDecisionRefusal::IdentityMismatch)?;
+    // The HMAC receipt must contain the exact reviewed output fact. A
+    // plan-wide receipt may contain many facts and its observed root may be the
+    // plan root; only exact membership is required here. The source is a
+    // separate fixed-output proof, because the fetched source is not guaranteed
+    // to be one of the realised environment manifest facts.
     receipt_fact(
         &receipt.envelope.manifest.facts,
         &review.output_store_path,
         &review.output_drv_path,
         &review.output_nar_hash,
     )?;
-    receipt_fact(
-        &receipt.envelope.manifest.facts,
-        &review.source_store_path,
-        &review.source_drv_path,
-        source_nar_hash,
-    )?;
+    let source = context.source_evidence;
+    let source_doc = identity
+        .get("source")
+        .ok_or(LicenseDecisionRefusal::IdentityMismatch)?;
+    let source_nar =
+        exact(source_doc, "narHash").ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
+    let source_flat = asset
+        .get("evidence")
+        .and_then(|evidence| exact(evidence, "sourceFlatSha256"))
+        .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
+    let source_size = source_doc
+        .get("narSize")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
+    let source_signature =
+        exact(source_doc, "signature").ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
+    let expected_fingerprint = format!(
+        "1;{};sha256:{};{};",
+        review.source_store_path, source.nar_nix32, source.nar_size
+    );
+    if !source.signature_valid
+        || !source.source_in_output_input_drvs
+        || source.source_store_path != review.source_store_path
+        || source.source_drv_path != review.source_drv_path
+        || source.output_drv_path != review.output_drv_path
+        || source.output_store_path != review.output_store_path
+        || source.flat_sha256 != source_flat
+        || source.nar_sri != source_nar
+        || source.nar_size != source_size
+        || source.signature != source_signature
+        || source.fingerprint != expected_fingerprint
+        || !source.ca.starts_with("fixed:sha256:")
+    {
+        return Err(LicenseDecisionRefusal::SourceEvidenceMismatch);
+    }
 
     let evidence = asset
         .get("evidence")
@@ -1563,40 +1726,60 @@ fn verify_against_source_asset(
         .as_array()
         .ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
     let selected_atoms = branch_atoms(&review.selected_branch).unwrap_or_default();
+    if selected_atoms.is_empty() {
+        return Err(LicenseDecisionRefusal::BranchNotInExpression);
+    }
+    let mut text_by_path: BTreeMap<&str, (&str, &str)> = BTreeMap::new();
     let mut text_by_license: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    let mut trusted_text = false;
     for entry in license_entries {
         let sha = exact(entry, "sha256").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
         if !is_sha256(sha) {
             return Err(LicenseDecisionRefusal::AssetCanonicalMismatch);
         }
-        if let Some(license) = exact(entry, "license") {
+        if let (Some(path), Some(license)) = (exact(entry, "path"), exact(entry, "license"))
+            && exact(entry, "purpose") == Some("license-text")
+        {
+            text_by_path.insert(path, (license, sha));
             text_by_license.entry(license).or_default().insert(sha);
         }
-        if exact(entry, "purpose") == Some("license-text")
-            && sha == review.software_text_sha256
-            && exact(entry, "license").is_some_and(|license| {
-                text_license_matches(license, &review.license_expression)
-                    || selected_atoms
-                        .iter()
-                        .any(|atom| text_license_matches(license, atom))
-            })
-        {
-            trusted_text = true;
+    }
+    let mut seen_texts = BTreeSet::new();
+    for text in &review.software_texts {
+        if !seen_texts.insert(text.sha256.as_str()) {
+            return Err(LicenseDecisionRefusal::LicenseTextDigest);
+        }
+        let Some((license, sha)) = text_by_path.get(text.path.as_str()) else {
+            return Err(LicenseDecisionRefusal::LicenseTextDigest);
+        };
+        if *license != text.license || *sha != text.sha256 {
+            return Err(LicenseDecisionRefusal::LicenseTextDigest);
         }
     }
-    if !trusted_text {
-        return Err(LicenseDecisionRefusal::LicenseTextDigest);
+    for atom in &selected_atoms {
+        let covered = review.software_texts.iter().any(|text| {
+            text_license_matches(&text.license, atom)
+                && text_by_path
+                    .get(text.path.as_str())
+                    .is_some_and(|(_, sha)| *sha == text.sha256)
+        }) || (selected_atoms.len() == 1
+            && review.software_texts.is_empty()
+            && text_by_license.iter().any(|(license, digests)| {
+                text_license_matches(license, atom)
+                    && digests.contains(review.software_text_sha256.as_str())
+            }));
+        if !covered {
+            return Err(LicenseDecisionRefusal::LicenseTextDigest);
+        }
     }
-    let licensing_fact = license_entries.iter().any(|entry| {
-        exact(entry, "role") == Some("licensing")
-            && exact(entry, "license").is_some_and(|license| {
-                license == review.license_expression
-                    || selected_atoms.iter().any(|atom| atom == license)
-            })
-    });
-    if !licensing_fact {
-        return Err(LicenseDecisionRefusal::MissingLicensingFact);
+    let trusted_text = true;
+    for atom in &selected_atoms {
+        let licensing_fact = license_entries.iter().any(|entry| {
+            exact(entry, "role") == Some("licensing")
+                && exact(entry, "license") == Some(atom.as_str())
+        });
+        if !licensing_fact {
+            return Err(LicenseDecisionRefusal::MissingLicensingFact);
+        }
     }
 
     let commercial_ok = review.commercial_use
@@ -1753,6 +1936,7 @@ fn verify_against_source_asset(
     }
 
     let receipt_digest = identity_facts_receipt_digest(context.identity_facts);
+    let source_evidence_digest = source_evidence_sha256(source);
     let provenance = serde_json::json!({
         "pin": review.pin,
         "identitySha256": identity_sha256,
@@ -1764,6 +1948,8 @@ fn verify_against_source_asset(
         "sourceOutputHash": review.source_output_hash,
         "licenseEvidenceSha256": evidence_sha256,
         "identityFactsReceiptDigest": receipt_digest,
+        "sourceEvidenceSha256": source_evidence_digest,
+        "softwareTexts": review.software_texts,
         "stage": context.binding.stage_json(),
         "candidate": context.binding.candidate(),
     });
@@ -1791,11 +1977,13 @@ fn verify_against_source_asset(
         "licenseExpression": review.license_expression,
         "selectedBranch": review.selected_branch,
         "softwareObligations": software_obligations,
+        "softwareTexts": review.software_texts,
         "documentation": documentation,
         "documentationObligations": documentation_obligations,
         "softwareVerdict": software_verdict,
         "evidenceSha256": evidence_sha256,
         "identityFactsReceiptDigest": receipt_digest,
+        "sourceEvidenceSha256": source_evidence_digest,
         "catalogSha256": context.binding.catalog_sha256(),
         "profileSha256": context.binding.profile_sha256(),
         "policySha256": context.binding.policy_sha256(),
