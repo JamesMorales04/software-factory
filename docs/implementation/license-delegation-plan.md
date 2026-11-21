@@ -112,18 +112,27 @@ place.
   assert the 0/1 call boundary with a fake dispatcher.
 - The source proof has one canonical representation shared with the builder:
   `deploy/environment-builder/environment_builder/source_evidence_proof_vector.json`.
-  Core and the builder hash the same sorted compact JSON plus LF to the same
-  digest; there is no `signatureValid` or caller membership boolean, and a Rust
-  test plus a builder test consume the same vector. A drift in either
-  representation fails both suites.
+  It carries the real output-drv `inputDrvs`, the output/source ATerm digests
+  bound to the shared identity evidence, and the derived SRI/Nix-base32/
+  fingerprint/CA values. Core and the builder hash the same sorted compact JSON
+  plus LF to the same digest; there is no `signatureValid`, caller membership
+  boolean or synthetic `[sourceDrv]` list. The decision provenance stores this
+  exact verified proof and the overlay re-verifies it; a missing input, tampered
+  ATerm digest or missing proof is refused. Rust and builder tests consume the
+  same vector, so a drift fails both suites.
+- A failed-realisation `resolutionKey` uses the same canonical JSON plus LF. Its
+  shared vector is
+  `deploy/environment-builder/environment_builder/resolution_observation_vector.json`.
 - Execution receives the existing builder `licenseDecisions` overlay, never a
   second approval path. Core re-verifies the persisted decision with
   `verify_license_decision_overlay` against the exact current project, plan,
   spec, inventory, evidence bundle, candidate base, catalogue/profile/policy,
-  delegation deadline and revocation, identity and pinned source proof before
-  emitting the overlay. The same verified overlay is delivered to the resolve
-  and build operations; a stale, revoked or expired decision refuses and the
-  environment stays `FAILED`. A failed realisation is observed as a
+  delegation deadline and revocation, the actual `BoundIdentityFacts` receipt
+  digest and observed identity fact, the stage and resolution key, identity and
+  pinned source proof before emitting the overlay. The overlay carries its own
+  canonical `contentSha256`. The same verified overlay is delivered to the
+  resolve and build operations; a stale, revoked or expired decision refuses and
+  the environment stays `FAILED`. A failed realisation is observed as a
   `RESOLUTION`-stage identity receipt and never as an accepted build.
 - The call reuses the frozen Lead route and the request-scoped subscription
   admission already active for `fc7e7311`; no new provider configuration,

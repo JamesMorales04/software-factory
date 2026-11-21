@@ -48,9 +48,12 @@ manifest; a reordered `QUESTIONS` answer is refused.
   normal build/check observation.
 - `RESOLUTION` binds a failed realisation before any frozen spec exists:
   `specSha256` is empty and `resolutionKey` is the canonical digest of the
-  exact `RealisationObservation`. It can only be persisted with
+  exact `RealisationObservation` (sorted compact JSON plus LF, shared vector
+  `resolution_observation_vector.json`). It can only be persisted with
   `SPEC_CACHE_OBSERVATION`, never with `BUILD_RECEIPT`. No plan hash is ever
-  written into `specSha256` and no spec is fabricated.
+  written into `specSha256` and no spec is fabricated. The durable consumer and
+  `verify_stored_identity_facts` compare the stored stage/key with the signed
+  challenge and envelope.
 
 `root` is `OPERATION` in this cut. The producer refuses `PLAN` or `RUNTIME`
 instead of silently treating them as the operation root.
@@ -167,7 +170,9 @@ transitive licence). In that case:
   run against the exact plan/context receipt it previously could not obtain.
 
 The `RESOLUTION` stage and migration `0088` are implemented in this repository;
-the remaining broker/Core wiring is: a persistent plan-keyed cache
+`0088` upgrades a real `0084`–`0087` database without rewriting old rows (they
+default to `SPEC` with an empty key) and a test proves the upgrade is
+idempotent. The remaining broker/Core wiring is: a persistent plan-keyed cache
 (`EnvironmentRunResources::for_plan`), the broker fallback that reads
 `realisation.json` when the live profile marker is gone, and Core issuing and
 consuming the resolution challenge before returning the licence blocker.

@@ -5665,3 +5665,141 @@ async fn resolving_a_warning_reevaluates_the_gate_idempotently() {
     );
     fixture.db.close().await;
 }
+
+#[test]
+fn frozen_license_migration_checksums_are_exact() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../migrations");
+    for (name, expected) in [
+        (
+            "0084_license_decisions.sql",
+            "a91e19a36a6e951109c62a9b4073818d308346af5328c323cce1b10a122827e2",
+        ),
+        (
+            "0088_identity_facts_stages.sql",
+            "dc9bb34086bcf300181271c939f0304e9b7dd1937a01c0c9ef0d7b30b1af4534",
+        ),
+    ] {
+        let bytes = std::fs::read(directory.join(name)).unwrap();
+        assert_eq!(
+            crate::planning::lead_classification::sha256_hex(&bytes),
+            expected,
+            "{name} changed; a frozen migration must stay byte-identical"
+        );
+    }
+}
+
+#[tokio::test]
+async fn identity_facts_stage_upgrade_preserves_old_spec_rows_and_is_idempotent() {
+    let repo_migrations = Path::new(env!("CARGO_MANIFEST_DIR")).join("../migrations");
+    let subset = std::env::temp_dir().join(format!("factory-migrations-0087-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&subset).unwrap();
+    let mut applied = 0u32;
+    for entry in std::fs::read_dir(&repo_migrations).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(version) = name
+            .split_once('_')
+            .and_then(|(prefix, _)| prefix.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if version <= 87 && name.ends_with(".sql") {
+            std::fs::copy(entry.path(), subset.join(name.as_ref())).unwrap();
+            applied += 1;
+        }
+    }
+    assert!(applied > 0);
+    let path = temp_path("factory-identity-stage-upgrade");
+    let options = SqliteConnectOptions::new()
+        .filename(&path)
+        .create_if_missing(true)
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::migrate::Migrator::new(subset.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    let now = Utc::now().to_rfc3339();
+    let hash = "a".repeat(64);
+    sqlx::query::query(
+        "INSERT INTO identity_facts_challenges
+         (nonce,operation_id,runtime_id,plan_sha256,spec_sha256,pin,mode,root,
+          questions_json,challenge_json,request_id,plan_id,state,created_at,
+          expires_at,consumed_at)
+         VALUES ('old-nonce','old-operation','runtime',?1,?1,'pin','ENUMERATE','OPERATION',
+                 '[]','{}',NULL,'plan','CONSUMED',?2,?2,?2)",
+    )
+    .bind(&hash)
+    .bind(&now)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO environment_identity_facts_receipts
+         (nonce,operation_id,runtime_id,plan_sha256,spec_sha256,pin,observed_root,
+          root_binding,fact_count,closure_manifest_sha256,manifest_json,
+          envelope_json,signature,created_at)
+         VALUES ('old-nonce','old-operation','runtime',?1,?1,'pin','/nix/store/x',
+                 'SPEC_CACHE_OBSERVATION',1,?1,'{}','{}',?1,?2)",
+    )
+    .bind(&hash)
+    .bind(&now)
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    let db = Database::open(&path).await.unwrap();
+    let versions: Vec<(i64,)> =
+        sqlx::query_as::query_as("SELECT version FROM _sqlx_migrations WHERE version = 88")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(versions.len(), 1);
+    let (stage, key): (String, String) = sqlx::query_as::query_as(
+        "SELECT stage,resolution_key FROM identity_facts_challenges WHERE nonce='old-nonce'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!((stage.as_str(), key.as_str()), ("SPEC", ""));
+    let (stage, key): (String, String) = sqlx::query_as::query_as(
+        "SELECT stage,resolution_key FROM environment_identity_facts_receipts WHERE nonce='old-nonce'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!((stage.as_str(), key.as_str()), ("SPEC", ""));
+    let migrations = count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await;
+    db.close().await;
+
+    // Reopening does not re-apply 0088 and keeps the preserved rows.
+    let reopened = Database::open(&path).await.unwrap();
+    assert_eq!(
+        count(&reopened, "SELECT COUNT(*) FROM _sqlx_migrations").await,
+        migrations
+    );
+    assert_eq!(
+        count(
+            &reopened,
+            "SELECT COUNT(*) FROM environment_identity_facts_receipts WHERE nonce='old-nonce'"
+        )
+        .await,
+        1
+    );
+    reopened.close().await;
+    let _ = std::fs::remove_dir_all(subset);
+    let _ = std::fs::remove_file(path);
+}

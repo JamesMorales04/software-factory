@@ -174,6 +174,10 @@ pub struct StageBinding {
     inventory_sha256: String,
     evidence_bundle_sha256: String,
     identity_facts_receipt_digest: String,
+    /// Present only when the decision was made from a `RESOLUTION`-stage
+    /// observation of an exact failed realisation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolution_key: Option<String>,
     candidate: CandidateBinding,
 }
 
@@ -208,6 +212,10 @@ impl StageBinding {
 
     pub fn candidate(&self) -> &CandidateBinding {
         &self.candidate
+    }
+
+    pub fn resolution_key(&self) -> Option<&str> {
+        self.resolution_key.as_deref()
     }
 
     fn from_plan(
@@ -262,6 +270,17 @@ impl StageBinding {
         {
             return Err(LicenseDecisionRefusal::PlanBindingMismatch);
         }
+        let challenge = &identity_facts.verified().receipt().envelope.challenge;
+        let resolution_key = match challenge.stage {
+            super::identity_facts::IdentityFactsStage::Resolution => {
+                if challenge.spec_sha256.is_empty() {
+                    Some(challenge.resolution_key.clone())
+                } else {
+                    return Err(LicenseDecisionRefusal::RootBindingMismatch);
+                }
+            }
+            super::identity_facts::IdentityFactsStage::Spec => None,
+        };
         let receipt_digest = identity_facts_receipt_digest(identity_facts.verified());
         Ok(Self {
             stage: StageKind::PlanInventoryEvidence,
@@ -271,6 +290,7 @@ impl StageBinding {
             inventory_sha256,
             evidence_bundle_sha256,
             identity_facts_receipt_digest: receipt_digest,
+            resolution_key,
             candidate,
         })
     }
@@ -334,6 +354,7 @@ impl StageBinding {
             inventory_sha256,
             evidence_bundle_sha256,
             identity_facts_receipt_digest: identity_facts_receipt_digest(identity_facts.verified()),
+            resolution_key: None,
             candidate,
         })
     }
@@ -450,6 +471,7 @@ impl PolicyBinding {
                 inventory_sha256: inventory_sha256.to_owned(),
                 evidence_bundle_sha256: evidence_bundle_sha256.to_owned(),
                 identity_facts_receipt_digest: identity_facts_receipt_digest.to_owned(),
+                resolution_key: None,
                 candidate,
             },
         }
@@ -963,6 +985,8 @@ pub(crate) fn source_matches_asset_identity(
             == Some(source.nar_size())
         && exact(source_doc, "signature") == Some(source.signature())
         && exact(asset_evidence, "sourceFlatSha256") == Some(source.flat_sha256())
+        && exact(asset_evidence, "outputDrvAtermSha256") == Some(source.output_drv_aterm_sha256())
+        && exact(asset_evidence, "sourceDrvAtermSha256") == Some(source.source_drv_aterm_sha256())
 }
 
 /// True when the verified source proof belongs to at least one shared asset
@@ -1051,6 +1075,8 @@ pub fn verify_stored_identity_facts(
     if receipt.envelope.context != IDENTITY_FACTS_CONTEXT
         || receipt.envelope.challenge.plan_sha256 != stored.plan_sha256
         || receipt.envelope.challenge.spec_sha256 != stored.spec_sha256
+        || receipt.envelope.challenge.stage != stored.stage
+        || receipt.envelope.challenge.resolution_key != stored.resolution_key
         || receipt.envelope.challenge.pin != stored.pin
         || receipt.envelope.manifest.observed_root != stored.observed_root
         || receipt.envelope.manifest.fact_count != stored.fact_count as usize
@@ -1426,6 +1452,10 @@ pub struct SourceEvidenceProof {
     pub output_store_path: String,
     /// Exact `inputDrvs` entries of the output derivation, from the real drv.
     pub output_drv_input_drvs: Vec<String>,
+    /// SHA-256 of the exact output derivation ATerm bytes.
+    pub output_drv_aterm_sha256: String,
+    /// SHA-256 of the exact fixed-output source derivation ATerm bytes.
+    pub source_drv_aterm_sha256: String,
     /// Optional asserted derived values; if present they must match the
     /// internally derived values.
     pub nar_nix32: Option<String>,
@@ -1452,6 +1482,9 @@ pub struct VerifiedSourceEvidence {
     ca: String,
     output_drv_path: String,
     output_store_path: String,
+    output_drv_input_drvs: Vec<String>,
+    output_drv_aterm_sha256: String,
+    source_drv_aterm_sha256: String,
 }
 
 impl VerifiedSourceEvidence {
@@ -1466,6 +1499,8 @@ impl VerifiedSourceEvidence {
             || !proof.output_drv_path.ends_with(".drv")
             || !is_store_path(&proof.output_store_path)
             || !is_sha256(&proof.flat_sha256)
+            || !is_sha256(&proof.output_drv_aterm_sha256)
+            || !is_sha256(&proof.source_drv_aterm_sha256)
             || proof.nar_size == 0
             || proof.output_drv_input_drvs.is_empty()
         {
@@ -1537,7 +1572,60 @@ impl VerifiedSourceEvidence {
             ca,
             output_drv_path: proof.output_drv_path.clone(),
             output_store_path: proof.output_store_path.clone(),
+            output_drv_input_drvs: proof.output_drv_input_drvs.clone(),
+            output_drv_aterm_sha256: proof.output_drv_aterm_sha256.clone(),
+            source_drv_aterm_sha256: proof.source_drv_aterm_sha256.clone(),
         })
+    }
+
+    /// Reconstruct a proof from its canonical **verified** representation. The
+    /// signature, derived values and exact inputDrvs membership are re-verified
+    /// and the representation must round-trip byte-for-byte, so a persisted
+    /// proof cannot drop or add a fact.
+    pub fn from_verified_json(value: &serde_json::Value) -> Result<Self, LicenseDecisionRefusal> {
+        let text = |key: &str| {
+            value
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)
+        };
+        let drvs = value
+            .get("outputDrvInputDrvs")
+            .and_then(serde_json::Value::as_array)
+            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
+            .iter()
+            .map(|entry| {
+                entry
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let proof = SourceEvidenceProof {
+            source_store_path: text("sourceStorePath")?,
+            source_drv_path: text("sourceDrvPath")?,
+            flat_sha256: text("flatSha256")?,
+            nar_sri: text("narSri")?,
+            nar_size: value
+                .get("narSize")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?,
+            signature: text("signature")?,
+            output_drv_path: text("outputDrvPath")?,
+            output_store_path: text("outputStorePath")?,
+            output_drv_input_drvs: drvs,
+            output_drv_aterm_sha256: text("outputDrvAtermSha256")?,
+            source_drv_aterm_sha256: text("sourceDrvAtermSha256")?,
+            nar_nix32: Some(text("narNix32")?),
+            fingerprint: Some(text("fingerprint")?),
+            ca: Some(text("ca")?),
+        };
+        let verified = Self::verify(&proof)?;
+        if verified.to_json() != *value {
+            return Err(LicenseDecisionRefusal::SourceEvidenceMismatch);
+        }
+        Ok(verified)
     }
 
     pub fn source_store_path(&self) -> &str {
@@ -1584,6 +1672,18 @@ impl VerifiedSourceEvidence {
         &self.output_store_path
     }
 
+    pub fn output_drv_input_drvs(&self) -> &[String] {
+        &self.output_drv_input_drvs
+    }
+
+    pub fn output_drv_aterm_sha256(&self) -> &str {
+        &self.output_drv_aterm_sha256
+    }
+
+    pub fn source_drv_aterm_sha256(&self) -> &str {
+        &self.source_drv_aterm_sha256
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "sourceStorePath": self.source_store_path,
@@ -1597,6 +1697,9 @@ impl VerifiedSourceEvidence {
             "ca": self.ca,
             "outputDrvPath": self.output_drv_path,
             "outputStorePath": self.output_store_path,
+            "outputDrvInputDrvs": self.output_drv_input_drvs,
+            "outputDrvAtermSha256": self.output_drv_aterm_sha256,
+            "sourceDrvAtermSha256": self.source_drv_aterm_sha256,
         })
     }
 
@@ -2164,6 +2267,7 @@ fn verify_against_source_asset(
         "sourceOutputHash": review.source_output_hash,
         "licenseEvidenceSha256": evidence_sha256,
         "identityFactsReceiptDigest": receipt_digest,
+        "sourceEvidence": source.to_json(),
         "sourceEvidenceSha256": source_evidence_digest,
         "softwareTexts": review.software_texts,
         "stage": context.binding.stage_json(),
@@ -2199,6 +2303,7 @@ fn verify_against_source_asset(
         "softwareVerdict": software_verdict,
         "evidenceSha256": evidence_sha256,
         "identityFactsReceiptDigest": receipt_digest,
+        "sourceEvidence": source.to_json(),
         "sourceEvidenceSha256": source_evidence_digest,
         "catalogSha256": context.binding.catalog_sha256(),
         "profileSha256": context.binding.profile_sha256(),
@@ -2263,6 +2368,9 @@ pub struct LicenseDecisionOverlayContext<'a> {
     pub evidence_bundle_sha256: &'a str,
     pub base_commit: &'a str,
     pub delegation_revoked: bool,
+    /// The current verified identity-facts receipt. The decision must be the
+    /// exact decision made from this receipt, not merely the same plan.
+    pub identity_facts: &'a BoundIdentityFacts,
     pub now: chrono::DateTime<chrono::Utc>,
 }
 
@@ -2279,52 +2387,6 @@ impl VerifiedLicenseDecisionOverlay {
     pub fn to_json(&self) -> &serde_json::Value {
         &self.receipt
     }
-}
-
-fn source_proof_from_identity(
-    identity: &serde_json::Value,
-) -> Result<SourceEvidenceProof, LicenseDecisionRefusal> {
-    let source = identity
-        .get("source")
-        .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
-    let output = identity
-        .get("output")
-        .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
-    let evidence = source_asset()
-        .get("evidence")
-        .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
-    let source_drv_path = exact(source, "drvPath")
-        .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
-        .to_owned();
-    Ok(SourceEvidenceProof {
-        source_store_path: exact(source, "storePath")
-            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
-            .to_owned(),
-        source_drv_path: source_drv_path.clone(),
-        flat_sha256: exact(evidence, "sourceFlatSha256")
-            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
-            .to_owned(),
-        nar_sri: exact(source, "narHash")
-            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
-            .to_owned(),
-        nar_size: source
-            .get("narSize")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?,
-        signature: exact(source, "signature")
-            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
-            .to_owned(),
-        output_drv_path: exact(output, "drvPath")
-            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
-            .to_owned(),
-        output_store_path: exact(output, "storePath")
-            .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?
-            .to_owned(),
-        output_drv_input_drvs: vec![source_drv_path],
-        nar_nix32: None,
-        fingerprint: None,
-        ca: None,
-    })
 }
 
 /// Re-verify one persisted decision for the exact plan/spec and emit the
@@ -2416,6 +2478,43 @@ pub fn verify_license_decision_overlay(
         return Err(LicenseDecisionRefusal::PlanBindingMismatch);
     }
 
+    let receipt = context.identity_facts.receipt();
+    let digest = identity_facts_receipt_digest(context.identity_facts.verified());
+    if record.identity_facts_receipt_digest != digest
+        || record
+            .stage
+            .get("identityFactsReceiptDigest")
+            .and_then(serde_json::Value::as_str)
+            != Some(digest.as_str())
+        || receipt.envelope.challenge.plan_sha256 != context.plan_sha256
+        || receipt.envelope.challenge.pin != record.delegation_pin
+    {
+        return Err(LicenseDecisionRefusal::ReceiptDigestMismatch);
+    }
+    match receipt.envelope.challenge.stage {
+        super::identity_facts::IdentityFactsStage::Spec => {
+            if record.stage.get("resolutionKey").is_some() {
+                return Err(LicenseDecisionRefusal::RootBindingMismatch);
+            }
+            if let Some(spec_sha256) = context.spec_sha256
+                && receipt.envelope.challenge.spec_sha256 != spec_sha256
+            {
+                return Err(LicenseDecisionRefusal::ReceiptMismatch);
+            }
+        }
+        super::identity_facts::IdentityFactsStage::Resolution => {
+            if record
+                .stage
+                .get("resolutionKey")
+                .and_then(serde_json::Value::as_str)
+                != Some(receipt.envelope.challenge.resolution_key.as_str())
+                || !receipt.envelope.challenge.spec_sha256.is_empty()
+            {
+                return Err(LicenseDecisionRefusal::RootBindingMismatch);
+            }
+        }
+    }
+
     // The stored identity must still be the exact shared asset identity.
     let identity = &record.identity;
     let identities = source_asset()
@@ -2447,6 +2546,15 @@ pub fn verify_license_decision_overlay(
     if canonical_json_sha256(expected) != canonical_json_sha256(identity) {
         return Err(LicenseDecisionRefusal::IdentityMismatch);
     }
+    let output = identity
+        .get("output")
+        .ok_or(LicenseDecisionRefusal::IdentityMismatch)?;
+    receipt_fact(
+        &receipt.envelope.manifest.facts,
+        exact(output, "storePath").ok_or(LicenseDecisionRefusal::IdentityMismatch)?,
+        exact(output, "drvPath").ok_or(LicenseDecisionRefusal::IdentityMismatch)?,
+        exact(output, "narHash").ok_or(LicenseDecisionRefusal::IdentityMismatch)?,
+    )?;
     let asset_evidence = source_asset()
         .get("evidence")
         .ok_or(LicenseDecisionRefusal::AssetCanonicalHashMissing)?;
@@ -2460,10 +2568,16 @@ pub fn verify_license_decision_overlay(
         return Err(LicenseDecisionRefusal::EvidenceBundleMismatch);
     }
 
-    // The decision carries a source proof, but only the pinned cryptographic
-    // verification can produce the value delivered to the builder.
-    let proof = source_proof_from_identity(identity)?;
-    let source = VerifiedSourceEvidence::verify(&proof)?;
+    // The decision carries the exact verified proof with the real output-drv
+    // inputDrvs and ATerm digests. Re-verify it; never synthesise an input.
+    let stored_proof = record
+        .provenance
+        .get("sourceEvidence")
+        .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
+    let source = VerifiedSourceEvidence::from_verified_json(stored_proof)?;
+    if !source_matches_asset_identity(&source, expected) {
+        return Err(LicenseDecisionRefusal::SourceEvidenceMismatch);
+    }
     let source_digest = source.canonical_sha256();
     if record
         .provenance
@@ -2474,7 +2588,7 @@ pub fn verify_license_decision_overlay(
         return Err(LicenseDecisionRefusal::SourceEvidenceMismatch);
     }
 
-    let receipt = serde_json::json!({
+    let mut receipt = serde_json::json!({
         "id": record.id,
         "projectId": record.project_id,
         "planSha256": record.plan_sha256,
@@ -2507,6 +2621,10 @@ pub fn verify_license_decision_overlay(
         "sourceEvidence": source.to_json(),
         "sourceEvidenceSha256": source_digest,
     });
+    // Recompute one canonical digest over the emitted overlay (without the
+    // digest itself) so the builder verifies the exact delivered bytes.
+    let content_sha256 = canonical_json_sha256(&receipt);
+    receipt["contentSha256"] = serde_json::Value::String(content_sha256);
     Ok(VerifiedLicenseDecisionOverlay { receipt })
 }
 

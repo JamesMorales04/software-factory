@@ -162,15 +162,25 @@ impl RealisationObservation {
     pub const SCHEMA_VERSION: u32 = 1;
     pub const STATUS: &'static str = "REALISED";
 
+    /// Exact canonical representation: sorted, compact JSON with a trailing
+    /// LF. Shared with the builder vector so Core and Python compute the same
+    /// bytes.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "schemaVersion": self.schema_version,
+            "planSha256": self.plan_sha256,
+            "specSha256": self.spec_sha256,
+            "storePath": self.store_path,
+            "closureManifestSha256": self.closure_manifest_sha256,
+            "status": self.status,
+        })
+    }
+
     /// Canonical digest of this exact observation. Core binds it into a
     /// `RESOLUTION` challenge so a receipt cannot be replayed for another
     /// realisation of the same plan.
     pub fn resolution_key(&self) -> String {
-        let bytes = serde_json::to_vec(self).expect("a realisation observation serialises");
-        Sha256::digest(bytes)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
+        crate::planning::license_decision::canonical_json_sha256(&self.to_json())
     }
 
     /// Validate the observation against the exact plan and, when supplied, the
@@ -1271,5 +1281,30 @@ mod tests {
         let mut other = observation.clone();
         other.store_path = "/nix/store/ffffffffffffffffffffffffffffffff-ed-1.21.1".into();
         assert_ne!(other.resolution_key(), observation.resolution_key());
+    }
+
+    #[test]
+    fn the_shared_realisation_vector_binds_the_same_resolution_key_bytes() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../deploy/environment-builder/environment_builder/resolution_observation_vector.json"
+        ))
+        .expect("the shared realisation vector is valid JSON");
+        let observation: RealisationObservation =
+            serde_json::from_value(vector["observation"].clone())
+                .expect("the vector observation is typed");
+        assert_eq!(observation.to_json(), vector["observation"]);
+        let key = vector["resolutionKey"]
+            .as_str()
+            .expect("the vector carries its key");
+        assert_eq!(observation.resolution_key(), key);
+        assert_eq!(
+            crate::planning::lead_classification::sha256_hex(
+                vector["canonicalJson"]
+                    .as_str()
+                    .expect("the vector carries canonical bytes")
+                    .as_bytes()
+            ),
+            key
+        );
     }
 }

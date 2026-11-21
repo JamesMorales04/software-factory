@@ -41,7 +41,17 @@ fn source_proof() -> SourceEvidenceProof {
         signature: SOURCE_SIGNATURE.into(),
         output_drv_path: OUTPUT_DRV.into(),
         output_store_path: OUTPUT_PATH.into(),
-        output_drv_input_drvs: vec![SOURCE_DRV.into()],
+        output_drv_input_drvs: vec![
+            "/nix/store/05q48dcd4lgk4vh7wyk330gr2fr082i2-bootstrap-tools.drv".into(),
+            "/nix/store/37wqz292qyx3z03p4s50lrs32vcgq9f4-bash-5.2p37.drv".into(),
+            SOURCE_DRV.into(),
+            "/nix/store/vxv9n01jpwvh83byh2q72mcf4vqlm3j5-lzip-1.25.drv".into(),
+            "/nix/store/zd1gad3l5xmc1i9hivj0l468srnsmvb2-bootstrap-stage4-stdenv-linux.drv".into(),
+        ],
+        output_drv_aterm_sha256: "294060511213ba226bb3687e28ad65650d8058e4b60fab50157ba19d2ad46d8c"
+            .into(),
+        source_drv_aterm_sha256: "5c1177a7e9a55b0e5fc1860375b211e13560ae88776e3796fee8ec105d9cf52e"
+            .into(),
         nar_nix32: Some(SOURCE_NAR_NIX32.into()),
         fingerprint: None,
         ca: Some(SOURCE_CA.into()),
@@ -767,6 +777,13 @@ fn text_digests_request_response_and_receipt_are_tamper_evident() {
     let mut missing_input = source_proof();
     missing_input.output_drv_input_drvs.clear();
     assert!(VerifiedSourceEvidence::verify(&missing_input).is_err());
+    let mut unrelated_input = source_proof();
+    unrelated_input.output_drv_input_drvs =
+        vec!["/nix/store/05q48dcd4lgk4vh7wyk330gr2fr082i2-bootstrap-tools.drv".into()];
+    assert!(
+        VerifiedSourceEvidence::verify(&unrelated_input).is_err(),
+        "the real output drv input list must contain the exact source drv"
+    );
 
     // A flat hash is not covered by the cache fingerprint signature; it must
     // still match the shared asset before it can be used. An asserted CA that
@@ -957,6 +974,18 @@ fn a_stored_receipt_is_reverified_with_the_broker_bearer() {
     assert_eq!(parsed.envelope.challenge.spec_sha256, stored.spec_sha256);
     assert_eq!(parsed.envelope.challenge.pin, stored.pin);
     assert_eq!(parsed.envelope.manifest.observed_root, stored.observed_root);
+    let mut stale_stage = stored.clone();
+    stale_stage.stage = crate::planning::identity_facts::IdentityFactsStage::Resolution;
+    assert_eq!(
+        verify_stored_identity_facts(&stale_stage, BEARER),
+        Err(LicenseDecisionRefusal::ReceiptMismatch)
+    );
+    let mut stale_key = stored.clone();
+    stale_key.resolution_key = "f".repeat(64);
+    assert_eq!(
+        verify_stored_identity_facts(&stale_key, BEARER),
+        Err(LicenseDecisionRefusal::ReceiptMismatch)
+    );
     assert_eq!(
         parsed.envelope.manifest.fact_count,
         stored.fact_count as usize
@@ -1019,6 +1048,32 @@ fn challenge_for(plan_sha: &str, spec_sha: &str, nar_hash: &str) -> IdentityFact
         stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
         resolution_key: String::new(),
     }
+}
+
+fn verified_resolution(plan_sha: &str, resolution_key: &str) -> VerifiedIdentityFacts {
+    let mut challenge = challenge_for(plan_sha, "", OUTPUT_NAR);
+    challenge.stage = crate::planning::identity_facts::IdentityFactsStage::Resolution;
+    challenge.spec_sha256 = String::new();
+    challenge.resolution_key = resolution_key.into();
+    let facts = facts(OUTPUT_NAR);
+    let envelope = IdentityFactsEnvelope {
+        schema_version: 1,
+        context: IDENTITY_FACTS_CONTEXT.into(),
+        challenge,
+        manifest: IdentityFactsManifest {
+            observed_root: OUTPUT_PATH.into(),
+            fact_count: facts.len(),
+            closure_manifest_sha256: closure_manifest_sha256(&facts),
+            facts,
+            truncated: false,
+        },
+    };
+    let envelope_signature = sign(&envelope, BEARER).expect("the fixture receipt signs");
+    let receipt = IdentityFactsReceipt {
+        envelope,
+        signature: envelope_signature,
+    };
+    verify(&receipt, BEARER, &receipt.envelope.challenge).expect("the resolution receipt verifies")
 }
 
 fn verified_for(
@@ -1107,6 +1162,30 @@ fn real_plan_and_frozen_spec_build_the_typed_binding() {
     assert_eq!(
         binding.identity_facts_receipt_digest(),
         identity_facts_receipt_digest(facts.verified())
+    );
+    let resolution_key = "d".repeat(64);
+    let resolution_facts = BoundIdentityFacts::spec_cache_observation(verified_resolution(
+        &plan.plan_sha256,
+        &resolution_key,
+    ));
+    let resolution_binding = PolicyBinding::from_plan_inventory_evidence(
+        default_catalog_sha256(),
+        default_profile_sha256(),
+        default_binding_sha256(),
+        &stored_plan(&plan),
+        &evidence,
+        CandidateBinding::base(plan.base_commit.clone()).expect("base"),
+        &resolution_facts,
+    )
+    .expect("a failed-realisation observation binds the plan stage");
+    assert_eq!(
+        resolution_binding.stage().resolution_key(),
+        Some(resolution_key.as_str())
+    );
+    assert!(
+        resolution_binding
+            .stage_json()
+            .contains("\"resolutionKey\"")
     );
 
     let wrong_evidence = InventoryEvidenceBundle { entries: vec![] };
@@ -1297,23 +1376,12 @@ fn the_shared_source_proof_vector_is_the_single_canonical_representation() {
     ))
     .expect("the shared source-proof vector is valid JSON");
     assert_eq!(vector["schemaVersion"], 1);
-    let selector = &vector["identity"];
-    let identity = source_asset()
-        .get("identities")
-        .and_then(serde_json::Value::as_array)
-        .expect("the shared asset has identities")
-        .iter()
-        .find(|entry| {
-            exact(entry, "pin") == selector["pin"].as_str()
-                && exact(entry, "name") == selector["name"].as_str()
-                && exact(entry, "version") == selector["version"].as_str()
-        })
-        .expect("the vector names one shared identity");
-    let proof = source_proof_from_identity(identity).expect("the exact proof derives");
-    let verified = VerifiedSourceEvidence::verify(&proof).expect("the pinned signature verifies");
+    let proof = vector["sourceProof"].clone();
+    let verified = VerifiedSourceEvidence::from_verified_json(&proof)
+        .expect("the shared proof verifies and round-trips exactly");
 
     // One canonical representation, byte-identical to the builder's vector.
-    assert_eq!(verified.to_json(), vector["sourceProof"]);
+    assert_eq!(verified.to_json(), proof);
     let digest = vector["canonicalSha256"]
         .as_str()
         .expect("the vector carries its digest");
@@ -1327,6 +1395,16 @@ fn the_shared_source_proof_vector_is_the_single_canonical_representation() {
                 .as_bytes()
         ),
         digest
+    );
+    assert_eq!(
+        verified.output_drv_input_drvs().len(),
+        5,
+        "the real output drv inputs are retained, not synthesised"
+    );
+    assert!(
+        verified
+            .output_drv_input_drvs()
+            .contains(&verified.source_drv_path().to_owned())
     );
     assert!(
         !verified.to_json().to_string().contains("signatureValid"),

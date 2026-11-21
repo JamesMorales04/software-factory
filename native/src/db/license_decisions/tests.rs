@@ -43,7 +43,17 @@ fn source_proof() -> SourceEvidenceProof {
         signature: SOURCE_SIGNATURE.into(),
         output_drv_path: OUTPUT_DRV.into(),
         output_store_path: OUTPUT_PATH.into(),
-        output_drv_input_drvs: vec![SOURCE_DRV.into()],
+        output_drv_input_drvs: vec![
+            "/nix/store/05q48dcd4lgk4vh7wyk330gr2fr082i2-bootstrap-tools.drv".into(),
+            "/nix/store/37wqz292qyx3z03p4s50lrs32vcgq9f4-bash-5.2p37.drv".into(),
+            SOURCE_DRV.into(),
+            "/nix/store/vxv9n01jpwvh83byh2q72mcf4vqlm3j5-lzip-1.25.drv".into(),
+            "/nix/store/zd1gad3l5xmc1i9hivj0l468srnsmvb2-bootstrap-stage4-stdenv-linux.drv".into(),
+        ],
+        output_drv_aterm_sha256: "294060511213ba226bb3687e28ad65650d8058e4b60fab50157ba19d2ad46d8c"
+            .into(),
+        source_drv_aterm_sha256: "5c1177a7e9a55b0e5fc1860375b211e13560ae88776e3796fee8ec105d9cf52e"
+            .into(),
         nar_nix32: Some(SOURCE_NAR_NIX32.into()),
         fingerprint: None,
         ca: Some(SOURCE_CA.into()),
@@ -60,6 +70,7 @@ struct Fixture {
     db: Database,
     decision: VerifiedLicenseDecision,
     owner_id: String,
+    facts: BoundIdentityFacts,
 }
 
 fn receipt() -> IdentityFactsReceipt {
@@ -319,6 +330,7 @@ async fn fixture() -> Fixture {
         db,
         decision,
         owner_id: owner.id,
+        facts,
     }
 }
 
@@ -652,6 +664,7 @@ async fn the_builder_overlay_is_reverified_and_carries_the_exact_source_proof() 
         evidence_bundle_sha256: EVIDENCE_BUNDLE,
         base_commit: BASE,
         delegation_revoked: false,
+        identity_facts: &fixture.facts,
         now,
     };
     let overlay = verify_license_decision_overlay(&record, &context(now))
@@ -661,6 +674,15 @@ async fn the_builder_overlay_is_reverified_and_carries_the_exact_source_proof() 
     assert_eq!(json["status"], "ACTIVE");
     assert_eq!(json["planSha256"], PLAN);
     assert_eq!(json["identity"]["pin"], PIN);
+    let mut without_digest = json.clone();
+    without_digest
+        .as_object_mut()
+        .expect("the overlay is an object")
+        .remove("contentSha256");
+    assert_eq!(
+        json["contentSha256"],
+        crate::planning::license_decision::canonical_json_sha256(&without_digest)
+    );
     let expected_source = source_evidence();
     assert_eq!(json["sourceEvidence"], expected_source.to_json());
     assert_eq!(
@@ -725,6 +747,44 @@ async fn the_builder_overlay_is_reverified_and_carries_the_exact_source_proof() 
     assert!(matches!(
         verify_license_decision_overlay(&candidate, &context(now)),
         Err(LicenseDecisionRefusal::CandidateUnverified)
+    ));
+    // The persisted proof is consumed exactly: no synthetic input, no
+    // tampered ATerm digest, no missing proof.
+    let mut no_source = record.clone();
+    no_source
+        .provenance
+        .as_object_mut()
+        .expect("the provenance is an object")
+        .remove("sourceEvidence");
+    assert!(matches!(
+        verify_license_decision_overlay(&no_source, &context(now)),
+        Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
+    ));
+    let mut no_input = record.clone();
+    no_input.provenance["sourceEvidence"]["outputDrvInputDrvs"] =
+        serde_json::json!(["/nix/store/05q48dcd4lgk4vh7wyk330gr2fr082i2-bootstrap-tools.drv"]);
+    assert!(matches!(
+        verify_license_decision_overlay(&no_input, &context(now)),
+        Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
+    ));
+    let mut bad_aterm = record.clone();
+    bad_aterm.provenance["sourceEvidence"]["outputDrvAtermSha256"] =
+        serde_json::json!("f".repeat(64));
+    assert!(matches!(
+        verify_license_decision_overlay(&bad_aterm, &context(now)),
+        Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
+    ));
+    let mut stale_receipt = record.clone();
+    stale_receipt.identity_facts_receipt_digest = "f".repeat(64);
+    assert!(matches!(
+        verify_license_decision_overlay(&stale_receipt, &context(now)),
+        Err(LicenseDecisionRefusal::ReceiptDigestMismatch)
+    ));
+    let mut stale_stage = record.clone();
+    stale_stage.stage["identityFactsReceiptDigest"] = serde_json::json!("f".repeat(64));
+    assert!(matches!(
+        verify_license_decision_overlay(&stale_stage, &context(now)),
+        Err(LicenseDecisionRefusal::ReceiptDigestMismatch)
     ));
     let revoked = db
         .revoke_license_decision(
