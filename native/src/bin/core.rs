@@ -38219,6 +38219,73 @@ mod tests {
         }
 
         #[cfg(feature = "test-support")]
+        struct ForgedPointerEnvironmentBuilder;
+
+        #[cfg(feature = "test-support")]
+        impl factory_native::planning::environment::EnvironmentBuilder for ForgedPointerEnvironmentBuilder {
+            fn descriptor(
+                &self,
+            ) -> factory_native::planning::environment::EnvironmentBuilderDescriptor {
+                use factory_native::planning::environment::{
+                    ENVIRONMENT_POLICY_REVISION, EnvironmentBuilderDescriptor,
+                    EnvironmentBuilderStatus,
+                };
+                EnvironmentBuilderDescriptor {
+                    image: "factory/environment-builder".into(),
+                    digest: format!("sha256:{}", "a".repeat(64)),
+                    platform: "x86_64-linux".into(),
+                    policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                    default_nixpkgs:
+                        "github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into(),
+                    status: EnvironmentBuilderStatus::Ready,
+                }
+            }
+
+            fn resolve<'a>(
+                &'a self,
+                _plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _workspace: Option<&'a std::path::Path>,
+            ) -> factory_native::planning::environment::EnvironmentResolutionFuture<'a>
+            {
+                Box::pin(async {
+                    Err(factory_native::planning::environment::EnvironmentError::new(
+                        factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentPinMissing,
+                        "the forged-pointer fixture does not resolve",
+                    ))
+                })
+            }
+
+            fn build<'a>(
+                &'a self,
+                _spec: &'a factory_native::planning::environment::EnvironmentSpec,
+                _plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _workspace: Option<&'a std::path::Path>,
+            ) -> factory_native::planning::environment::EnvironmentBuilderFuture<'a> {
+                Box::pin(async {
+                    Err(factory_native::planning::environment::EnvironmentError::new(
+                        factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                        "the exact ed licence gate refused the realised environment",
+                    ))
+                })
+            }
+
+            fn identity_facts<'a>(
+                &'a self,
+                _challenge: &'a factory_native::planning::identity_facts::IdentityFactsChallenge,
+                _plan: &'a factory_native::planning::environment::EnvironmentPlan,
+                _spec: &'a factory_native::planning::environment::EnvironmentSpec,
+            ) -> factory_native::planning::environment::EnvironmentIdentityFactsFuture<'a>
+            {
+                Box::pin(async {
+                    Err(factory_native::planning::environment::EnvironmentError::new(
+                        factory_native::planning::environment::EnvironmentBlockerCode::EnvironmentIdentityEvidenceAbsent,
+                        "the broker refused the forged realisation pointer",
+                    ))
+                })
+            }
+        }
+
+        #[cfg(feature = "test-support")]
         #[derive(Clone, Copy, Debug)]
         enum ReceiptDefect {
             EmptyRoot,
@@ -39627,6 +39694,47 @@ mod tests {
                 latest.root_binding,
                 factory_native::planning::identity_facts::IdentityFactsRootBinding::SpecCacheObservation,
                 "a refused build keeps an operation-scoped receipt, never an accepted build binding"
+            );
+
+            // A forged/refused realisation pointer must not create a receipt, a
+            // model reservation or a Lead call. The broker refuses the pointer;
+            // Core has no signing path and only consumes a broker receipt.
+            fixture
+                .app
+                .set_environment_builder(std::sync::Arc::new(ForgedPointerEnvironmentBuilder));
+            let before_nonce = fixture
+                .app
+                .db
+                .latest_identity_facts_receipt(&plan_sha256)
+                .await
+                .unwrap()
+                .nonce;
+            let before_calls = fixture.app.db.model_calls(100).await.unwrap().len();
+            let refused = build_environment_before_freeze(&fixture.app, &plan, &spec, None, &[])
+                .await
+                .err()
+                .expect("a forged pointer must not yield identity evidence");
+            let body = axum::body::to_bytes(refused.into_body(), 16 * 1024)
+                .await
+                .unwrap();
+            let text = String::from_utf8_lossy(&body);
+            assert!(text.contains("ENVIRONMENT_LICENSE_UNKNOWN"), "{text}");
+            assert!(text.contains("identity evidence"), "{text}");
+            let after_nonce = fixture
+                .app
+                .db
+                .latest_identity_facts_receipt(&plan_sha256)
+                .await
+                .unwrap()
+                .nonce;
+            assert_eq!(
+                after_nonce, before_nonce,
+                "a forged pointer must not persist a receipt"
+            );
+            assert_eq!(
+                fixture.app.db.model_calls(100).await.unwrap().len(),
+                before_calls,
+                "a forged pointer must not reserve a model call"
             );
 
             fixture.app.db.close().await;
