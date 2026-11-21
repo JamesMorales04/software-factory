@@ -6195,14 +6195,33 @@ async fn run_environment_container(
 }
 
 fn failure_from_builder_output(bytes: &[u8]) -> Option<(String, String)> {
-    let value: Value = serde_json::from_slice(bytes).ok()?;
-    let blocker = value.get("blocker")?;
-    let code = blocker.get("code").and_then(Value::as_str)?;
-    let message = blocker
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or("the environment builder failed");
-    Some((code.to_owned(), message.to_owned()))
+    let text = String::from_utf8_lossy(bytes);
+    let candidates = [
+        text.as_ref(),
+        text.split_once("Bad Request: ")
+            .map(|(_, rest)| rest)
+            .unwrap_or(text.as_ref()),
+    ];
+    for candidate in candidates {
+        let Ok(value) = serde_json::from_str::<Value>(candidate.trim()) else {
+            continue;
+        };
+        if let Some(blocker) = value.get("blocker") {
+            let code = blocker.get("code").and_then(Value::as_str)?;
+            let message = blocker
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("the environment builder failed");
+            return Some((code.to_owned(), message.to_owned()));
+        }
+        if let (Some(code), Some(message)) = (
+            value.get("code").and_then(Value::as_str),
+            value.get("error").and_then(Value::as_str),
+        ) {
+            return Some((code.to_owned(), message.to_owned()));
+        }
+    }
+    None
 }
 
 async fn run_environment_cat(
