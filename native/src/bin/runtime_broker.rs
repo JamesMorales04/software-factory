@@ -8533,6 +8533,7 @@ exit 1
             )
             .then_some(spec),
             workspace_files: Vec::new(),
+            license_decisions: Vec::new(),
             identity_facts: None,
         }
     }
@@ -9473,7 +9474,7 @@ exit 0
             mode: IdentityFactsMode::Enumerate,
             root: OperationRoot::Operation,
             questions: Vec::new(),
-            stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+            stage: factory_native::planning::identity_facts::IdentityFactsStage::Spec,
             resolution_key: String::new(),
         };
         request.identity_facts = Some(challenge.clone());
