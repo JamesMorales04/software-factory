@@ -1,7 +1,8 @@
 use super::*;
 use crate::planning::identity_facts::{
-    IdentityFact, IdentityFactsChallenge, IdentityFactsEnvelope, IdentityFactsManifest,
-    IdentityFactsMode, IdentityFactsReceipt, OperationRoot, closure_manifest_sha256, sign, verify,
+    BoundIdentityFacts, IdentityFact, IdentityFactsChallenge, IdentityFactsEnvelope,
+    IdentityFactsManifest, IdentityFactsMode, IdentityFactsReceipt, OperationRoot,
+    closure_manifest_sha256, sign, verify,
 };
 use crate::planning::license_decision::{
     CandidateBinding, LicenseDecisionContext, LicenseDecisionReview, PolicyBinding,
@@ -31,22 +32,26 @@ const SOURCE_SIZE: u64 = 70136;
 const SOURCE_SIGNATURE: &str = "cache.nixos.org-1:xYwC8Vo2buDIPQNzCyHhC8Kz7Y6riU596Zp3tnRTIicdLtih5xQzAPlip25FtXIsShiTfkl4eABEg4TX0c+ZDA==";
 const SOURCE_CA: &str = "fixed:sha256:0jrwn9bq921xv4kv78w4lzjssrg8af8734raj2f53c025ccwgl6n";
 
-fn source_evidence() -> SourceEvidenceProof {
+fn source_proof() -> SourceEvidenceProof {
     SourceEvidenceProof {
         source_store_path: SOURCE_PATH.into(),
         source_drv_path: SOURCE_DRV.into(),
         flat_sha256: SOURCE_FLAT.into(),
         nar_sri: SOURCE_NAR.into(),
-        nar_nix32: SOURCE_NAR_NIX32.into(),
         nar_size: SOURCE_SIZE,
         signature: SOURCE_SIGNATURE.into(),
-        fingerprint: format!("1;{SOURCE_PATH};sha256:{SOURCE_NAR_NIX32};{SOURCE_SIZE};"),
-        ca: SOURCE_CA.into(),
         output_drv_path: OUTPUT_DRV.into(),
         output_store_path: OUTPUT_PATH.into(),
-        source_in_output_input_drvs: true,
-        signature_valid: true,
+        output_drv_input_drvs: vec![SOURCE_DRV.into()],
+        nar_nix32: Some(SOURCE_NAR_NIX32.into()),
+        fingerprint: None,
+        ca: Some(SOURCE_CA.into()),
     }
+}
+
+fn source_evidence() -> crate::planning::license_decision::VerifiedSourceEvidence {
+    crate::planning::license_decision::VerifiedSourceEvidence::verify(&source_proof())
+        .expect("the pinned cache signature verifies")
 }
 
 struct Fixture {
@@ -54,7 +59,6 @@ struct Fixture {
     db: Database,
     decision: VerifiedLicenseDecision,
     owner_id: String,
-    source: SourceEvidenceProof,
 }
 
 fn receipt() -> IdentityFactsReceipt {
@@ -274,7 +278,9 @@ async fn fixture() -> Fixture {
     .unwrap();
 
     let receipt = receipt();
-    let facts = verify(&receipt, BEARER, &receipt.envelope.challenge.clone()).unwrap();
+    let facts = BoundIdentityFacts::spec_cache_observation(
+        verify(&receipt, BEARER, &receipt.envelope.challenge.clone()).unwrap(),
+    );
     let binding = PolicyBinding::test_binding(
         PLAN,
         1,
@@ -282,7 +288,7 @@ async fn fixture() -> Fixture {
         INVENTORY,
         EVIDENCE_BUNDLE,
         CandidateBinding::base(BASE).unwrap(),
-        &identity_facts_receipt_digest(&facts),
+        &identity_facts_receipt_digest(facts.verified()),
     );
     let reservation = db
         .lead_license_evidence_reservation("lead-1")
@@ -301,9 +307,6 @@ async fn fixture() -> Fixture {
         delegation: &delegation,
         delegation_revoked: false,
         identity_facts: &facts,
-        identity_facts_root_binding:
-            crate::planning::identity_facts::IdentityFactsRootBinding::SpecCacheObservation,
-        observed_root: OUTPUT_PATH,
         source_evidence: &source,
         binding: &binding,
     };
@@ -313,7 +316,6 @@ async fn fixture() -> Fixture {
         db,
         decision,
         owner_id: owner.id,
-        source,
     }
 }
 
@@ -360,7 +362,9 @@ async fn a_verified_decision_is_durable_idempotent_and_revocable() {
             .await
             .unwrap();
         let delegation = db.agentic_owner_decision(&fixture.owner_id).await.unwrap();
-        let facts = verify(&receipt(), BEARER, &receipt().envelope.challenge.clone()).unwrap();
+        let facts = BoundIdentityFacts::spec_cache_observation(
+            verify(&receipt(), BEARER, &receipt().envelope.challenge.clone()).unwrap(),
+        );
         let binding = PolicyBinding::test_binding(
             PLAN,
             1,
@@ -368,7 +372,7 @@ async fn a_verified_decision_is_durable_idempotent_and_revocable() {
             INVENTORY,
             EVIDENCE_BUNDLE,
             CandidateBinding::base(BASE).unwrap(),
-            &identity_facts_receipt_digest(&facts),
+            &identity_facts_receipt_digest(facts.verified()),
         );
         let source = source_evidence();
         let context = LicenseDecisionContext {
@@ -382,9 +386,6 @@ async fn a_verified_decision_is_durable_idempotent_and_revocable() {
             delegation: &delegation,
             delegation_revoked: false,
             identity_facts: &facts,
-            identity_facts_root_binding:
-                crate::planning::identity_facts::IdentityFactsRootBinding::SpecCacheObservation,
-            observed_root: OUTPUT_PATH,
             source_evidence: &source,
             binding: &binding,
         };

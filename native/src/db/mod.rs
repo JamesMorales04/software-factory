@@ -1155,7 +1155,9 @@ pub use github::{
 mod inference_ledger;
 mod lead;
 mod license_decisions;
-pub use license_decisions::LicenseDecisionRecord;
+pub use license_decisions::{
+    LICENSE_DELEGATION_MATTER, LICENSE_DELEGATION_OPTION, LicenseDecisionRecord,
+};
 mod model_calls;
 pub use crate::inference_ledger::{
     CampaignEnvelopeBindingInput, CampaignInferenceRequirement, InferenceEnvelopeRecord,

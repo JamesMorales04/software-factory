@@ -6,8 +6,8 @@
 //! Model output never grants authority.
 
 use crate::planning::license_decision::{
-    InventoryEvidenceBundle, LicenseDecisionReview, SourceEvidenceProof,
-    VERSIONED_SOURCE_EVIDENCE_JSON, identity_facts_receipt_digest,
+    InventoryEvidenceBundle, LicenseDecisionReview, VERSIONED_SOURCE_EVIDENCE_JSON,
+    identity_facts_receipt_digest,
 };
 use crate::{
     db::{ActionSpec, Database, ModelCallRole},
@@ -336,8 +336,8 @@ pub struct LicenseEvidenceReviewRequest<'a> {
     pub plan: &'a crate::db::StoredEnvironmentPlan,
     pub spec: Option<&'a crate::db::StoredEnvironmentSpec>,
     pub inventory: &'a InventoryEvidenceBundle,
-    pub source: &'a SourceEvidenceProof,
-    pub identity_facts: &'a crate::planning::identity_facts::VerifiedIdentityFacts,
+    pub source: &'a crate::planning::license_decision::VerifiedSourceEvidence,
+    pub identity_facts: &'a crate::planning::identity_facts::BoundIdentityFacts,
     pub delegation: &'a crate::db::AgenticOwnerDecisionRecord,
     pub grant: &'a crate::lead::StandingDelegationV2,
     pub now: chrono::DateTime<chrono::Utc>,
@@ -372,7 +372,7 @@ fn license_evidence_review_prompt(
         ),
         "sourceEvidence": request.source.to_json(),
         "sourceEvidenceSha256": request.source.canonical_sha256(),
-        "identityFactsReceiptDigest": identity_facts_receipt_digest(request.identity_facts),
+        "identityFactsReceiptDigest": identity_facts_receipt_digest(request.identity_facts.verified()),
         "identityFactsManifestObservedRoot": request.identity_facts.receipt().envelope.manifest.observed_root,
         "licenseEvidenceAsset": evidence,
         "delegation": {
@@ -408,6 +408,27 @@ JSON Schema:
     ))
 }
 
+/// Narrow dispatch seam for the licence review producer. Production always
+/// dispatches through the role-scoped `ModelGateway`; tests use it to prove
+/// that every refusal happens before any dispatch and without a reservation.
+trait LicenseReviewDispatch {
+    async fn dispatch(
+        &self,
+        database: &Database,
+        request: ModelCallRequest<'_>,
+    ) -> Result<crate::db::ModelCallResult, ModelGatewayError>;
+}
+
+impl LicenseReviewDispatch for ModelGateway {
+    async fn dispatch(
+        &self,
+        database: &Database,
+        request: ModelCallRequest<'_>,
+    ) -> Result<crate::db::ModelCallResult, ModelGatewayError> {
+        self.call(database, request).await
+    }
+}
+
 /// Execute the authorized bounded Lead `license_evidence_review` call. The
 /// returned review is schema/domain checked but remains advisory until Core
 /// verifies it and persists a decision. A failed/unknown model call returns no
@@ -417,15 +438,24 @@ pub async fn review_license_evidence(
     database: &Database,
     request: LicenseEvidenceReviewRequest<'_>,
 ) -> Result<(LicenseDecisionReview, crate::db::ModelCallResult), LeadError> {
+    review_license_evidence_with(gateway, database, request).await
+}
+
+async fn review_license_evidence_with<G: LicenseReviewDispatch>(
+    gateway: &G,
+    database: &Database,
+    request: LicenseEvidenceReviewRequest<'_>,
+) -> Result<(LicenseDecisionReview, crate::db::ModelCallResult), LeadError> {
     if request.grant.revoked_at.is_some() || request.grant.expires_at <= request.now {
         return Err(LeadError::Assessment(
             "the Lead grant is expired or revoked".into(),
         ));
     }
     if request.delegation.project_id != request.project.project_id
-        || request.delegation.matter != "LICENSE_IDENTITY_EVIDENCE_DELEGATION"
+        || request.delegation.matter != crate::db::LICENSE_DELEGATION_MATTER
         || request.delegation.status != "APPROVED"
-        || request.delegation.selected_option.as_deref() != Some("APPROVE_DELEGATION")
+        || request.delegation.selected_option.as_deref()
+            != Some(crate::db::LICENSE_DELEGATION_OPTION)
         || chrono::DateTime::parse_from_rfc3339(&request.delegation.deadline)
             .map(|deadline| deadline <= request.now)
             .unwrap_or(true)
@@ -439,10 +469,82 @@ pub async fn review_license_evidence(
             "the inventory evidence is not the exact plan inventory".into(),
         ));
     }
+    if request.plan.plan_sha256 != request.plan.plan.plan_sha256
+        || request.plan.revision != request.plan.plan.revision
+    {
+        return Err(LeadError::Assessment(
+            "the stored plan row is not its exact plan content".into(),
+        ));
+    }
+    if !matches!(
+        request.plan.plan.status,
+        crate::planning::environment::EnvironmentPlanStatus::CoreValidated
+            | crate::planning::environment::EnvironmentPlanStatus::LeadApproved
+            | crate::planning::environment::EnvironmentPlanStatus::Frozen
+    ) || request.plan.plan.license_inventory.catalog_sha256
+        != crate::planning::license_policy::default_catalog_sha256()
+        || request.plan.plan.license_inventory.profile_sha256
+            != crate::planning::license_policy::default_profile_sha256()
+    {
+        return Err(LeadError::Assessment(
+            "the plan is stale or outside the current licence policy".into(),
+        ));
+    }
+    if let Some(spec) = request.spec
+        && (spec.spec.status != crate::planning::environment::EnvironmentSpecStatus::Frozen
+            || spec.spec_sha256 != spec.spec.spec_sha256
+            || spec.spec.plan_sha256 != request.plan.plan_sha256
+            || spec.spec.license_inventory_sha256 != request.plan.plan.license_inventory_sha256
+            || spec.spec.base_commit != request.plan.plan.base_commit)
+    {
+        return Err(LeadError::Assessment(
+            "the spec is not the exact frozen stage for this plan".into(),
+        ));
+    }
+    let expected_binding = if request.spec.is_some() {
+        crate::planning::identity_facts::IdentityFactsRootBinding::BuildReceipt
+    } else {
+        crate::planning::identity_facts::IdentityFactsRootBinding::SpecCacheObservation
+    };
+    if request.identity_facts.binding() != expected_binding {
+        return Err(LeadError::Assessment(
+            "the identity-facts root binding does not match the stage".into(),
+        ));
+    }
+    let evidence = &request.delegation.evidence;
+    if evidence.get("domain").and_then(serde_json::Value::as_str)
+        != Some("licenses-identity-evidence")
+        || evidence
+            .get("pin")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+        || evidence
+            .get("useContext")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+        || evidence
+            .get("economicCriterion")
+            .and_then(serde_json::Value::as_str)
+            != Some("no-mandatory-fee-commercial-use")
+        || evidence
+            .get("revision")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            == 0
+    {
+        return Err(LeadError::Assessment(
+            "the Owner delegation evidence is incomplete".into(),
+        ));
+    }
     let challenge = &request.identity_facts.receipt().envelope.challenge;
     if challenge.plan_sha256 != request.plan.plan_sha256 {
         return Err(LeadError::Assessment(
             "the identity-facts receipt does not bind the exact plan".into(),
+        ));
+    }
+    if challenge.pin != request.plan.plan.nix.nixpkgs {
+        return Err(LeadError::Assessment(
+            "the identity-facts receipt does not bind the exact plan pin".into(),
         ));
     }
     if let Some(spec) = request.spec
@@ -452,13 +554,21 @@ pub async fn review_license_evidence(
             "the identity-facts receipt does not bind the exact spec".into(),
         ));
     }
+    if !crate::planning::license_decision::source_evidence_belongs_to_pin(
+        request.source,
+        &challenge.pin,
+    ) {
+        return Err(LeadError::Assessment(
+            "the source proof is not a shared-asset identity under the plan pin".into(),
+        ));
+    }
     let schema = serde_json::to_string(&crate::model_output::license_evidence_review_schema())
         .map_err(|error| {
             LeadError::Assessment(format!("cannot encode licence review schema: {error}"))
         })?;
     let prompt = license_evidence_review_prompt(&request, &schema)?;
     let result = gateway
-        .call(
+        .dispatch(
             database,
             ModelCallRequest {
                 role: ModelCallRole::Lead,
@@ -712,5 +822,730 @@ mod tests {
         }
         assert!(prompt.contains("EnvironmentPlan:\n"));
         assert!(prompt.contains("\n\nJSON Schema:\n"));
+    }
+
+    mod license_review {
+        use super::*;
+        use crate::db::{AgenticOwnerDecisionRecord, StoredEnvironmentPlan, StoredEnvironmentSpec};
+        use crate::lead::RiskClass;
+        use crate::planning::environment::{
+            EnvironmentBuildReceipt, EnvironmentBuilderStatus, EnvironmentPlan,
+            EnvironmentPlanStatus, EnvironmentSpec, EnvironmentSpecStatus, SandboxAttestation,
+        };
+        use crate::planning::identity_facts::{
+            BoundIdentityFacts, IdentityFact, IdentityFactsChallenge, IdentityFactsEnvelope,
+            IdentityFactsManifest, IdentityFactsMode, IdentityFactsReceipt, OperationRoot,
+            VerifiedIdentityFacts, closure_manifest_sha256, sign, verify,
+        };
+        use crate::planning::license_decision::{
+            InventoryEvidenceBundle, SourceEvidenceProof, VerifiedSourceEvidence,
+        };
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        const BEARER: &[u8] = b"scoped-environment-bearer-0123456789abcdef";
+        const PIN: &str = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d";
+        const OBSERVED_SPEC: &str =
+            "067f8c8948e570e3ac2c8b8c8a9c47a0120759916b19e3c420308ff509d1b901";
+        const OUTPUT_PATH: &str = "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1";
+        const OUTPUT_DRV: &str = "/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv";
+        const OUTPUT_NAR: &str = "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=";
+        const SOURCE_DRV: &str = "/nix/store/j151nb5vh176kdrrh1rkilxkdkmvm47w-ed-1.21.1.tar.lz.drv";
+        const SOURCE_PATH: &str = "/nix/store/wa88qds9615j2r5imfryzbyg86c97iga-ed-1.21.1.tar.lz";
+        const SOURCE_NAR: &str = "sha256-dEsPDHFVSahejFEnqz5gAMxx+ls+idLXQ6qOovYOecE=";
+        const SOURCE_FLAT: &str =
+            "d6d0c7192b02b0519c902a93719053e865ade5a784a3b327d93d888457b23c4b";
+        const SOURCE_SIZE: u64 = 70136;
+        const SOURCE_SIGNATURE: &str = "cache.nixos.org-1:xYwC8Vo2buDIPQNzCyHhC8Kz7Y6riU596Zp3tnRTIicdLtih5xQzAPlip25FtXIsShiTfkl4eABEg4TX0c+ZDA==";
+
+        fn current_plan() -> EnvironmentPlan {
+            let mut plan: EnvironmentPlan = serde_json::from_str(include_str!(
+                "planning/license_decision/fixtures/retained-plan.json"
+            ))
+            .expect("the retained plan fixture is valid");
+            plan.license_inventory.catalog_sha256 =
+                crate::planning::license_policy::default_catalog_sha256().into();
+            plan.license_inventory.profile_sha256 =
+                crate::planning::license_policy::default_profile_sha256().into();
+            plan.license_inventory.inventory_sha256 =
+                plan.license_inventory.compute_sha256(&plan.plan_id);
+            plan.license_inventory_sha256 = plan.license_inventory.inventory_sha256.clone();
+            plan.plan_sha256 = plan.compute_sha256();
+            plan.status = EnvironmentPlanStatus::CoreValidated;
+            plan
+        }
+
+        fn stored_plan(plan: &EnvironmentPlan) -> StoredEnvironmentPlan {
+            StoredEnvironmentPlan {
+                row_id: "plan-row".into(),
+                revision: plan.revision,
+                status: "CORE_VALIDATED".into(),
+                plan_sha256: plan.plan_sha256.clone(),
+                content_json: serde_json::to_string(plan).expect("plan serializes"),
+                created_at: "2026-11-20T19:24:23Z".into(),
+                updated_at: "2026-11-20T19:24:23Z".into(),
+                plan: plan.clone(),
+            }
+        }
+
+        fn environment_spec(plan: &EnvironmentPlan, spec_sha256: &str) -> EnvironmentSpec {
+            EnvironmentSpec {
+                schema_version: 1,
+                spec_id: "spec-1".into(),
+                spec_sha256: spec_sha256.into(),
+                project_id: plan.project_id.clone(),
+                request_id: plan.request_id.clone(),
+                action_id: plan.action_id.clone(),
+                campaign_id: None,
+                base_commit: plan.base_commit.clone(),
+                plan_id: plan.plan_id.clone(),
+                plan_sha256: plan.plan_sha256.clone(),
+                conventions_sha256: plan.conventions_sha256.clone(),
+                review_id: "review-1".into(),
+                platform: "x86_64-linux".into(),
+                nix_version: "2.24.0".into(),
+                devenv_version: "1.0.0".into(),
+                flake_lock_sha256: String::new(),
+                devenv_lock_sha256: String::new(),
+                license_inventory_sha256: plan.license_inventory_sha256.clone(),
+                sbom_sha256: plan.license_inventory.sbom_sha256.clone(),
+                builder_image: plan.builder.image.clone(),
+                builder_image_digest: plan.builder.digest.clone(),
+                resource_policy: plan.resources.clone(),
+                network_policy: plan.network.clone(),
+                status: EnvironmentSpecStatus::Frozen,
+                frozen_at: "2026-11-20T20:00:00Z".into(),
+            }
+        }
+
+        fn stored_spec(spec: EnvironmentSpec) -> StoredEnvironmentSpec {
+            StoredEnvironmentSpec {
+                row_id: "spec-row".into(),
+                spec_sha256: spec.spec_sha256.clone(),
+                content_json: serde_json::to_string(&spec).expect("spec serializes"),
+                frozen_at: spec.frozen_at.clone(),
+                created_at: "2026-11-20T20:00:00Z".into(),
+                spec,
+            }
+        }
+
+        fn receipt_for(plan_sha256: &str, spec_sha256: &str, pin: &str) -> IdentityFactsReceipt {
+            let challenge = IdentityFactsChallenge {
+                operation_id: "operation-1".into(),
+                runtime_id: "runtime-1".into(),
+                nonce: format!(
+                    "identity-facts:{}",
+                    plan_sha256.get(..8).unwrap_or_default()
+                ),
+                pin: pin.into(),
+                plan_sha256: plan_sha256.into(),
+                spec_sha256: spec_sha256.into(),
+                mode: IdentityFactsMode::Questions,
+                root: OperationRoot::Operation,
+                questions: vec![
+                    crate::planning::identity_facts::IdentityQuestion {
+                        store_path: OUTPUT_PATH.into(),
+                        deriver: Some(OUTPUT_DRV.into()),
+                        nar_hash: OUTPUT_NAR.into(),
+                        outputs: vec![OUTPUT_PATH.into()],
+                    },
+                    crate::planning::identity_facts::IdentityQuestion {
+                        store_path: SOURCE_PATH.into(),
+                        deriver: Some(SOURCE_DRV.into()),
+                        nar_hash: SOURCE_NAR.into(),
+                        outputs: vec![SOURCE_PATH.into()],
+                    },
+                ],
+            };
+            let facts = vec![
+                IdentityFact {
+                    store_path: OUTPUT_PATH.into(),
+                    deriver: Some(OUTPUT_DRV.into()),
+                    nar_hash: OUTPUT_NAR.into(),
+                    outputs: vec![OUTPUT_PATH.into()],
+                },
+                IdentityFact {
+                    store_path: SOURCE_PATH.into(),
+                    deriver: Some(SOURCE_DRV.into()),
+                    nar_hash: SOURCE_NAR.into(),
+                    outputs: vec![SOURCE_PATH.into()],
+                },
+            ];
+            let envelope = IdentityFactsEnvelope {
+                schema_version: 1,
+                context: crate::planning::identity_facts::IDENTITY_FACTS_CONTEXT.into(),
+                challenge,
+                manifest: IdentityFactsManifest {
+                    observed_root: OUTPUT_PATH.into(),
+                    fact_count: facts.len(),
+                    closure_manifest_sha256: closure_manifest_sha256(&facts),
+                    facts,
+                    truncated: false,
+                },
+            };
+            let signature = sign(&envelope, BEARER).expect("the fixture receipt signs");
+            IdentityFactsReceipt {
+                envelope,
+                signature,
+            }
+        }
+
+        fn verified_facts(
+            plan_sha256: &str,
+            spec_sha256: &str,
+            pin: &str,
+        ) -> VerifiedIdentityFacts {
+            let receipt = receipt_for(plan_sha256, spec_sha256, pin);
+            verify(&receipt, BEARER, &receipt.envelope.challenge)
+                .expect("the fixture receipt verifies")
+        }
+
+        fn source_proof() -> SourceEvidenceProof {
+            SourceEvidenceProof {
+                source_store_path: SOURCE_PATH.into(),
+                source_drv_path: SOURCE_DRV.into(),
+                flat_sha256: SOURCE_FLAT.into(),
+                nar_sri: SOURCE_NAR.into(),
+                nar_size: SOURCE_SIZE,
+                signature: SOURCE_SIGNATURE.into(),
+                output_drv_path: OUTPUT_DRV.into(),
+                output_store_path: OUTPUT_PATH.into(),
+                output_drv_input_drvs: vec![SOURCE_DRV.into()],
+                nar_nix32: None,
+                fingerprint: None,
+                ca: None,
+            }
+        }
+
+        fn delegation(project_id: &str) -> AgenticOwnerDecisionRecord {
+            let now = chrono::Utc::now();
+            AgenticOwnerDecisionRecord {
+                id: "delegation-1".into(),
+                project_id: project_id.into(),
+                request_id: None,
+                campaign_id: None,
+                matter: crate::db::LICENSE_DELEGATION_MATTER.into(),
+                risk: RiskClass::R0,
+                status: "APPROVED".into(),
+                options: vec![
+                    crate::db::LICENSE_DELEGATION_OPTION.into(),
+                    "DENY_DELEGATION".into(),
+                ],
+                evidence: serde_json::json!({
+                    "domain": "licenses-identity-evidence",
+                    "pin": PIN,
+                    "useContext": "commercial-development",
+                    "economicCriterion": "no-mandatory-fee-commercial-use",
+                    "revision": 7,
+                }),
+                recommendation: "Delegate the exact licence decision.".into(),
+                deadline: (now + chrono::Duration::hours(1)).to_rfc3339(),
+                selected_option: Some(crate::db::LICENSE_DELEGATION_OPTION.into()),
+                rationale: Some("Owner delegated the exact decision.".into()),
+                resolved_by: Some("operator".into()),
+                created_at: now.to_rfc3339(),
+                updated_at: now.to_rfc3339(),
+                resolved_at: Some(now.to_rfc3339()),
+            }
+        }
+
+        struct Fixture {
+            plan: EnvironmentPlan,
+            stored: StoredEnvironmentPlan,
+            inventory: InventoryEvidenceBundle,
+            facts: BoundIdentityFacts,
+            source: VerifiedSourceEvidence,
+            project: ProjectConfig,
+            delegation: AgenticOwnerDecisionRecord,
+            grant: StandingDelegationV2,
+            now: chrono::DateTime<chrono::Utc>,
+        }
+
+        impl Fixture {
+            fn new() -> Self {
+                let plan = current_plan();
+                let inventory = InventoryEvidenceBundle::from_plan(&plan);
+                let facts = BoundIdentityFacts::spec_cache_observation(verified_facts(
+                    &plan.plan_sha256,
+                    OBSERVED_SPEC,
+                    PIN,
+                ));
+                let (project, _, _, grant) = request_stub();
+                Self {
+                    stored: stored_plan(&plan),
+                    plan,
+                    inventory,
+                    facts,
+                    source: VerifiedSourceEvidence::verify(&source_proof())
+                        .expect("the pinned cache signature verifies"),
+                    project,
+                    delegation: delegation("project-1"),
+                    grant,
+                    now: chrono::Utc::now(),
+                }
+            }
+
+            fn request<'a>(
+                &'a self,
+                spec: Option<&'a StoredEnvironmentSpec>,
+            ) -> LicenseEvidenceReviewRequest<'a> {
+                LicenseEvidenceReviewRequest {
+                    request_id: "lead-1",
+                    objective_id: "objective-1",
+                    project: &self.project,
+                    plan: &self.stored,
+                    spec,
+                    inventory: &self.inventory,
+                    source: &self.source,
+                    identity_facts: &self.facts,
+                    delegation: &self.delegation,
+                    grant: &self.grant,
+                    now: self.now,
+                }
+            }
+        }
+
+        #[derive(Default)]
+        struct Captured {
+            purpose: String,
+            scope_id: String,
+            prompt: String,
+        }
+
+        #[derive(Default)]
+        struct FakeGateway {
+            calls: AtomicUsize,
+            captured: Mutex<Vec<Captured>>,
+            content: Mutex<Option<String>>,
+        }
+
+        impl FakeGateway {
+            fn with_review() -> Self {
+                Self {
+                    content: Mutex::new(Some(valid_review().to_string())),
+                    ..Self::default()
+                }
+            }
+
+            fn calls(&self) -> usize {
+                self.calls.load(Ordering::SeqCst)
+            }
+
+            fn captured(&self) -> std::sync::MutexGuard<'_, Vec<Captured>> {
+                self.captured.lock().expect("fake gateway capture lock")
+            }
+        }
+
+        impl LicenseReviewDispatch for FakeGateway {
+            async fn dispatch(
+                &self,
+                _database: &Database,
+                request: ModelCallRequest<'_>,
+            ) -> Result<crate::db::ModelCallResult, ModelGatewayError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(request.role, ModelCallRole::Lead);
+                assert_eq!(request.purpose, "license_evidence_review");
+                self.captured
+                    .lock()
+                    .expect("fake gateway capture lock")
+                    .push(Captured {
+                        purpose: request.purpose.into(),
+                        scope_id: request.scope_id.into(),
+                        prompt: request.user_prompt.into(),
+                    });
+                let content = self
+                    .content
+                    .lock()
+                    .expect("fake gateway content lock")
+                    .clone()
+                    .unwrap_or_else(|| "{}".into());
+                Ok(crate::db::ModelCallResult {
+                    reservation_id: "reservation-test".into(),
+                    role: ModelCallRole::Lead,
+                    provider: "opencode-go".into(),
+                    model: "deepseek-v4.1-flash".into(),
+                    request_sha256: "a".repeat(64),
+                    content,
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    total_tokens: 2,
+                    cost_micros: 0,
+                    usage_known: true,
+                })
+            }
+        }
+
+        fn valid_review() -> serde_json::Value {
+            serde_json::json!({
+                "decision": "ACCEPT",
+                "pin": PIN,
+                "name": "ed",
+                "version": "1.21.1",
+                "outputDrvPath": OUTPUT_DRV,
+                "outputStorePath": OUTPUT_PATH,
+                "outputNarHash": OUTPUT_NAR,
+                "sourceDrvPath": SOURCE_DRV,
+                "sourceStorePath": SOURCE_PATH,
+                "sourceOutputHash": "sha256-1tDHGSsCsFGckCqTcZBT6GWt5aeEo7Mn2T2IhFeyPEs=",
+                "licenseExpression": "GPL-2.0-or-later",
+                "softwareTextSha256": "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6",
+                "softwareTexts": [],
+                "selectedBranch": "GPL-2.0-or-later",
+                "documentation": [{
+                    "path": "share/doc",
+                    "license": "GFDL-1.3-or-later",
+                    "outputSha256": "b".repeat(64),
+                    "licenseTextPath": "doc/fdl.texi",
+                    "licenseTextSha256": "c".repeat(64),
+                    "obligations": ["notice", "source"]
+                }],
+                "useContext": "commercial-development",
+                "commercialUse": true,
+                "paymentRequired": false,
+                "obligationsReviewed": true,
+                "softwareObligations": ["notice", "source"],
+                "documentationObligations": ["notice", "source"]
+            })
+        }
+
+        async fn database() -> Database {
+            let path = std::env::temp_dir().join(format!(
+                "factory-lead-license-review-{}-{}.sqlite",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ));
+            Database::open(&path).await.expect("fixture database")
+        }
+
+        async fn assert_refused(
+            fixture: &Fixture,
+            database: &Database,
+            gateway: &FakeGateway,
+            spec: Option<&StoredEnvironmentSpec>,
+            needle: &str,
+        ) {
+            let before = gateway.calls();
+            let error = review_license_evidence_with(gateway, database, fixture.request(spec))
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("the request must be refused: {needle}"));
+            assert!(
+                error.to_string().contains(needle),
+                "unexpected refusal `{error}`; expected `{needle}`"
+            );
+            assert_eq!(
+                gateway.calls(),
+                before,
+                "a refused review must not dispatch a model call"
+            );
+            assert!(
+                database
+                    .model_calls_for_scope(&fixture.grant.id)
+                    .await
+                    .expect("scope read")
+                    .is_empty(),
+                "a refused review must not create a reservation"
+            );
+        }
+
+        #[tokio::test]
+        async fn every_pre_dispatch_guard_refuses_without_a_call_or_reservation() {
+            let database = database().await;
+            let gateway = FakeGateway::with_review();
+
+            let mut revoked = Fixture::new();
+            revoked.grant.revoked_at = Some(chrono::Utc::now());
+            assert_refused(&revoked, &database, &gateway, None, "expired or revoked").await;
+
+            let mut expired = Fixture::new();
+            expired.grant.expires_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+            assert_refused(&expired, &database, &gateway, None, "expired or revoked").await;
+
+            let mut unapproved = Fixture::new();
+            unapproved.delegation.status = "PENDING".into();
+            unapproved.delegation.selected_option = None;
+            assert_refused(&unapproved, &database, &gateway, None, "not active").await;
+
+            let mut denied = Fixture::new();
+            denied.delegation.selected_option = Some("DENY_DELEGATION".into());
+            assert_refused(&denied, &database, &gateway, None, "not active").await;
+
+            let mut foreign_project = Fixture::new();
+            foreign_project.delegation.project_id = "project-2".into();
+            assert_refused(&foreign_project, &database, &gateway, None, "not active").await;
+
+            let mut lapsed = Fixture::new();
+            lapsed.delegation.deadline =
+                (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+            assert_refused(&lapsed, &database, &gateway, None, "not active").await;
+
+            let mut widened_inventory = Fixture::new();
+            widened_inventory.inventory = InventoryEvidenceBundle { entries: vec![] };
+            assert_refused(
+                &widened_inventory,
+                &database,
+                &gateway,
+                None,
+                "not the exact plan inventory",
+            )
+            .await;
+
+            let mut stale_plan = Fixture::new();
+            stale_plan.stored.plan.license_inventory.catalog_sha256 = "f".repeat(64);
+            assert_refused(
+                &stale_plan,
+                &database,
+                &gateway,
+                None,
+                "stale or outside the current licence policy",
+            )
+            .await;
+
+            let mut unvalidated = Fixture::new();
+            unvalidated.stored.plan.status = EnvironmentPlanStatus::Draft;
+            assert_refused(
+                &unvalidated,
+                &database,
+                &gateway,
+                None,
+                "stale or outside the current licence policy",
+            )
+            .await;
+
+            let mut incomplete_evidence = Fixture::new();
+            incomplete_evidence.delegation.evidence["economicCriterion"] =
+                serde_json::json!("mandatory-fee");
+            assert_refused(
+                &incomplete_evidence,
+                &database,
+                &gateway,
+                None,
+                "Owner delegation evidence is incomplete",
+            )
+            .await;
+
+            let mut foreign_receipt = Fixture::new();
+            foreign_receipt.facts = BoundIdentityFacts::spec_cache_observation(verified_facts(
+                &"e".repeat(64),
+                OBSERVED_SPEC,
+                PIN,
+            ));
+            assert_refused(
+                &foreign_receipt,
+                &database,
+                &gateway,
+                None,
+                "does not bind the exact plan",
+            )
+            .await;
+
+            let mut forged_row = Fixture::new();
+            forged_row.stored.plan_sha256 = "f".repeat(64);
+            assert_refused(
+                &forged_row,
+                &database,
+                &gateway,
+                None,
+                "not its exact plan content",
+            )
+            .await;
+
+            let mut foreign_pin = Fixture::new();
+            foreign_pin.facts = BoundIdentityFacts::spec_cache_observation(verified_facts(
+                &foreign_pin.plan.plan_sha256,
+                OBSERVED_SPEC,
+                &format!("github:NixOS/nixpkgs/{}", "1".repeat(40)),
+            ));
+            assert_refused(
+                &foreign_pin,
+                &database,
+                &gateway,
+                None,
+                "does not bind the exact plan pin",
+            )
+            .await;
+
+            let mut foreign_source = Fixture::new();
+            let mut proof = source_proof();
+            proof.output_store_path = format!("/nix/store/{}-other", "b".repeat(32));
+            foreign_source.source =
+                VerifiedSourceEvidence::verify(&proof).expect("the signature covers the source");
+            assert_refused(
+                &foreign_source,
+                &database,
+                &gateway,
+                None,
+                "not a shared-asset identity under the plan pin",
+            )
+            .await;
+        }
+
+        fn build_receipt(spec: &EnvironmentSpec) -> EnvironmentBuildReceipt {
+            EnvironmentBuildReceipt {
+                schema_version: 1,
+                receipt_id: "receipt-1".into(),
+                spec_sha256: spec.spec_sha256.clone(),
+                platform: spec.platform.clone(),
+                builder_image: spec.builder_image.clone(),
+                builder_image_digest: spec.builder_image_digest.clone(),
+                builder_policy_revision: "nix-devenv-environment-v1".into(),
+                status: EnvironmentBuilderStatus::Succeeded,
+                store_path: OUTPUT_PATH.into(),
+                output_sha256: "e".repeat(64),
+                sbom_sha256: spec.sbom_sha256.clone(),
+                log_ref: "log".into(),
+                sandbox_attestation: SandboxAttestation {
+                    non_root: true,
+                    no_secrets: true,
+                    no_host_network: true,
+                    no_host_socket: true,
+                    no_host_mount: true,
+                    sandbox: true,
+                    impure: false,
+                    bounded_resources: true,
+                },
+                blockers: vec![],
+                duration_ms: 1,
+                created_at: "2026-11-20T20:00:01Z".into(),
+            }
+        }
+
+        fn with_build_receipt(fixture: &mut Fixture, spec: &StoredEnvironmentSpec) {
+            fixture.facts = BoundIdentityFacts::bind_build_receipt(
+                verified_facts(&fixture.plan.plan_sha256, &spec.spec.spec_sha256, PIN),
+                &build_receipt(&spec.spec),
+                &spec.spec,
+            )
+            .expect("the build receipt binds the exact frozen spec");
+        }
+
+        #[tokio::test]
+        async fn a_spec_stage_review_requires_the_build_receipt_root_and_the_exact_spec() {
+            let database = database().await;
+            let gateway = FakeGateway::with_review();
+            let fixture = Fixture::new();
+            let spec = stored_spec(environment_spec(&fixture.plan, &"d".repeat(64)));
+
+            // A spec stage with a spec-cache root is refused before dispatch.
+            assert_refused(
+                &fixture,
+                &database,
+                &gateway,
+                Some(&spec),
+                "root binding does not match the stage",
+            )
+            .await;
+
+            // A build receipt bound to another spec cannot authorise this spec.
+            let mut foreign = Fixture::new();
+            let foreign_spec = stored_spec(environment_spec(&foreign.plan, &"e".repeat(64)));
+            with_build_receipt(&mut foreign, &foreign_spec);
+            assert_refused(
+                &foreign,
+                &database,
+                &gateway,
+                Some(&spec),
+                "does not bind the exact spec",
+            )
+            .await;
+
+            // A stored row that is not its content cannot stand in for it.
+            let mut forged_row = Fixture::new();
+            let mut forged_spec = stored_spec(environment_spec(&forged_row.plan, &"d".repeat(64)));
+            forged_spec.spec_sha256 = "f".repeat(64);
+            with_build_receipt(&mut forged_row, &forged_spec);
+            assert_refused(
+                &forged_row,
+                &database,
+                &gateway,
+                Some(&forged_spec),
+                "not the exact frozen stage for this plan",
+            )
+            .await;
+
+            let mut unfrozen = Fixture::new();
+            let mut unfrozen_spec = stored_spec(environment_spec(&unfrozen.plan, &"d".repeat(64)));
+            unfrozen_spec.spec.status = EnvironmentSpecStatus::Superseded;
+            with_build_receipt(&mut unfrozen, &unfrozen_spec);
+            assert_refused(
+                &unfrozen,
+                &database,
+                &gateway,
+                Some(&unfrozen_spec),
+                "not the exact frozen stage for this plan",
+            )
+            .await;
+        }
+
+        #[tokio::test]
+        async fn a_valid_plan_review_dispatches_exactly_once_with_a_stable_exact_request() {
+            let database = database().await;
+            let gateway = FakeGateway::with_review();
+            let fixture = Fixture::new();
+
+            let (review, result) =
+                review_license_evidence_with(&gateway, &database, fixture.request(None))
+                    .await
+                    .expect("the valid plan review dispatches");
+            assert_eq!(review.decision, "ACCEPT");
+            assert_eq!(result.role, ModelCallRole::Lead);
+            assert_eq!(gateway.calls(), 1);
+
+            // The same evidence produces the same exact request, which is what
+            // the gateway's request digest dedupes on replay.
+            let (_, _) = review_license_evidence_with(&gateway, &database, fixture.request(None))
+                .await
+                .expect("the replay dispatches the identical request");
+            assert_eq!(gateway.calls(), 2);
+            let captured = gateway.captured();
+            assert_eq!(captured[0].purpose, "license_evidence_review");
+            assert_eq!(captured[0].scope_id, "grant-1");
+            assert_eq!(
+                captured[0].prompt, captured[1].prompt,
+                "the producer must build one deterministic request from one evidence set"
+            );
+            assert!(captured[0].prompt.contains(&fixture.plan.plan_sha256));
+            assert!(captured[0].prompt.contains(&fixture.stored.plan_sha256));
+            assert!(
+                captured[0]
+                    .prompt
+                    .contains(&fixture.source.canonical_sha256())
+            );
+        }
+
+        #[tokio::test]
+        async fn a_valid_frozen_spec_review_dispatches_exactly_once() {
+            let database = database().await;
+            let gateway = FakeGateway::with_review();
+            let mut fixture = Fixture::new();
+            let spec = stored_spec(environment_spec(&fixture.plan, &"d".repeat(64)));
+            with_build_receipt(&mut fixture, &spec);
+
+            review_license_evidence_with(&gateway, &database, fixture.request(Some(&spec)))
+                .await
+                .expect("the valid spec review dispatches");
+            assert_eq!(gateway.calls(), 1);
+            assert!(
+                gateway.captured()[0]
+                    .prompt
+                    .contains(&spec.spec.spec_sha256)
+            );
+        }
+
+        #[tokio::test]
+        async fn an_invalid_model_payload_is_refused_after_exactly_one_dispatch() {
+            let database = database().await;
+            let gateway = FakeGateway::default();
+            *gateway.content.lock().expect("content lock") = Some("{}".into());
+            let fixture = Fixture::new();
+            let error = review_license_evidence_with(&gateway, &database, fixture.request(None))
+                .await
+                .err()
+                .expect("an untyped payload is not a review");
+            assert!(error.to_string().contains("invalid assessment"));
+            assert_eq!(gateway.calls(), 1);
+        }
     }
 }

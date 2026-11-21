@@ -1,5 +1,8 @@
 use super::*;
-use crate::planning::environment::{EnvironmentPlan, EnvironmentSpec};
+use crate::planning::environment::{
+    EnvironmentBuildReceipt, EnvironmentBuilderStatus, EnvironmentPlan, EnvironmentSpec,
+    SandboxAttestation,
+};
 use crate::planning::identity_facts::{
     IdentityFact, IdentityFactsChallenge, IdentityFactsEnvelope, IdentityFactsManifest,
     IdentityFactsMode, IdentityFactsReceipt, IdentityFactsRootBinding, OperationRoot,
@@ -28,23 +31,27 @@ const SOURCE_SIGNATURE: &str = "cache.nixos.org-1:xYwC8Vo2buDIPQNzCyHhC8Kz7Y6riU
 const SOURCE_CA: &str = "fixed:sha256:0jrwn9bq921xv4kv78w4lzjssrg8af8734raj2f53c025ccwgl6n";
 const PLAN_ROOT: &str = "/nix/store/cccccccccccccccccccccccccccccccc-plan-root";
 
-fn source_evidence() -> SourceEvidenceProof {
+fn source_proof() -> SourceEvidenceProof {
     SourceEvidenceProof {
         source_store_path: SOURCE_PATH.into(),
         source_drv_path: SOURCE_DRV.into(),
         flat_sha256: SOURCE_FLAT.into(),
         nar_sri: SOURCE_NAR.into(),
-        nar_nix32: SOURCE_NAR_NIX32.into(),
         nar_size: SOURCE_SIZE,
         signature: SOURCE_SIGNATURE.into(),
-        fingerprint: format!("1;{SOURCE_PATH};sha256:{SOURCE_NAR_NIX32};{SOURCE_SIZE};"),
-        ca: SOURCE_CA.into(),
         output_drv_path: OUTPUT_DRV.into(),
         output_store_path: OUTPUT_PATH.into(),
-        source_in_output_input_drvs: true,
-        signature_valid: true,
+        output_drv_input_drvs: vec![SOURCE_DRV.into()],
+        nar_nix32: Some(SOURCE_NAR_NIX32.into()),
+        fingerprint: None,
+        ca: Some(SOURCE_CA.into()),
     }
 }
+
+fn source_evidence() -> VerifiedSourceEvidence {
+    VerifiedSourceEvidence::verify(&source_proof()).expect("the pinned cache signature verifies")
+}
+
 const REQUEST_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const PROJECT_CONFIG: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const RESPONSE: &str = r#"{"decision":"ACCEPT"}"#;
@@ -220,7 +227,7 @@ fn delegation() -> crate::db::AgenticOwnerDecisionRecord {
     }
 }
 
-fn binding(facts: &VerifiedIdentityFacts) -> PolicyBinding {
+fn binding(facts: &BoundIdentityFacts) -> PolicyBinding {
     PolicyBinding::test_binding(
         PLAN,
         1,
@@ -228,23 +235,21 @@ fn binding(facts: &VerifiedIdentityFacts) -> PolicyBinding {
         INVENTORY,
         EVIDENCE_BUNDLE,
         CandidateBinding::base(BASE).expect("base candidate"),
-        &identity_facts_receipt_digest(facts),
+        &identity_facts_receipt_digest(facts.verified()),
     )
 }
 
 struct Fixture {
-    facts: VerifiedIdentityFacts,
+    facts: BoundIdentityFacts,
     binding: PolicyBinding,
     reservation: crate::db::LicenseEvidenceReservation,
     delegation: crate::db::AgenticOwnerDecisionRecord,
-    source: SourceEvidenceProof,
-    observed_root: &'static str,
-    root_binding: crate::planning::identity_facts::IdentityFactsRootBinding,
+    source: VerifiedSourceEvidence,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let facts = verified(OUTPUT_NAR);
+        let facts = BoundIdentityFacts::spec_cache_observation(verified(OUTPUT_NAR));
         let binding = binding(&facts);
         Self {
             facts,
@@ -252,9 +257,6 @@ impl Fixture {
             reservation: reservation(),
             delegation: delegation(),
             source: source_evidence(),
-            observed_root: OUTPUT_PATH,
-            root_binding:
-                crate::planning::identity_facts::IdentityFactsRootBinding::SpecCacheObservation,
         }
     }
 
@@ -270,8 +272,6 @@ impl Fixture {
             delegation: &self.delegation,
             delegation_revoked: false,
             identity_facts: &self.facts,
-            identity_facts_root_binding: self.root_binding,
-            observed_root: self.observed_root,
             source_evidence: &self.source,
             binding: &self.binding,
         }
@@ -640,7 +640,7 @@ fn the_binding_is_a_tagged_real_stage_and_config_hashes_cannot_stand_in() {
         INVENTORY,
         EVIDENCE_BUNDLE,
         CandidateBinding::base(BASE).unwrap(),
-        &identity_facts_receipt_digest(&fixture.facts),
+        &identity_facts_receipt_digest(fixture.facts.verified()),
     );
     let context = LicenseDecisionContext {
         project_id: "project-1",
@@ -653,8 +653,6 @@ fn the_binding_is_a_tagged_real_stage_and_config_hashes_cannot_stand_in() {
         delegation: &fixture.delegation,
         delegation_revoked: false,
         identity_facts: &fixture.facts,
-        identity_facts_root_binding: fixture.root_binding,
-        observed_root: fixture.observed_root,
         source_evidence: &fixture.source,
         binding: &forged,
     };
@@ -672,7 +670,7 @@ fn the_binding_is_a_tagged_real_stage_and_config_hashes_cannot_stand_in() {
         INVENTORY,
         EVIDENCE_BUNDLE,
         CandidateBinding::candidate(hashed_base).unwrap(),
-        &identity_facts_receipt_digest(&fixture.facts),
+        &identity_facts_receipt_digest(fixture.facts.verified()),
     );
     let context = LicenseDecisionContext {
         binding: &binding,
@@ -692,7 +690,7 @@ fn the_binding_is_a_tagged_real_stage_and_config_hashes_cannot_stand_in() {
         INVENTORY,
         EVIDENCE_BUNDLE,
         CandidateBinding::base(BASE).unwrap(),
-        &identity_facts_receipt_digest(&fixture.facts),
+        &identity_facts_receipt_digest(fixture.facts.verified()),
     );
     let context = LicenseDecisionContext {
         project_id: "project-1",
@@ -705,15 +703,12 @@ fn the_binding_is_a_tagged_real_stage_and_config_hashes_cannot_stand_in() {
         delegation: &fixture.delegation,
         delegation_revoked: false,
         identity_facts: &fixture.facts,
-        identity_facts_root_binding:
-            crate::planning::identity_facts::IdentityFactsRootBinding::BuildReceipt,
-        observed_root: fixture.observed_root,
         source_evidence: &fixture.source,
         binding: &binding,
     };
     assert_eq!(
         verify_license_evidence_review(&review(), &context),
-        Err(LicenseDecisionRefusal::SpecBindingMismatch)
+        Err(LicenseDecisionRefusal::RootBindingMismatch)
     );
 }
 
@@ -749,7 +744,7 @@ fn text_digests_request_response_and_receipt_are_tamper_evident() {
     );
     let foreign = verified("sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
     let mut tampered = Fixture::new();
-    tampered.facts = foreign;
+    tampered.facts = BoundIdentityFacts::spec_cache_observation(foreign);
     // Rebuild the binding for the foreign receipt: the digest now matches, so
     // the refusal must come from exact output/source fact membership.
     tampered.binding = binding(&tampered.facts);
@@ -758,47 +753,43 @@ fn text_digests_request_response_and_receipt_are_tamper_evident() {
         Err(LicenseDecisionRefusal::ReceiptMismatch)
     );
 
-    let mut bad_source = Fixture::new();
-    bad_source.source.signature_valid = false;
+    let mut bad_signature = source_proof();
+    bad_signature.signature = "cache.nixos.org-1:AAAA".into();
+    assert!(VerifiedSourceEvidence::verify(&bad_signature).is_err());
+    let mut bad_size = source_proof();
+    bad_size.nar_size += 1;
+    assert!(VerifiedSourceEvidence::verify(&bad_size).is_err());
+    let mut bad_nix32 = source_proof();
+    bad_nix32.nar_nix32 = Some("f".repeat(52));
+    assert!(VerifiedSourceEvidence::verify(&bad_nix32).is_err());
+    let mut missing_input = source_proof();
+    missing_input.output_drv_input_drvs.clear();
+    assert!(VerifiedSourceEvidence::verify(&missing_input).is_err());
+
+    // A flat hash is not covered by the cache fingerprint signature; it must
+    // still match the shared asset before it can be used. An asserted CA that
+    // disagrees with the flat hash is refused outright.
+    let mut bad_ca = source_proof();
+    bad_ca.ca = Some("fixed:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into());
+    assert!(VerifiedSourceEvidence::verify(&bad_ca).is_err());
+    let mut bad_flat_proof = source_proof();
+    bad_flat_proof.ca = None;
+    bad_flat_proof.flat_sha256 = "f".repeat(64);
+    let bad_flat = VerifiedSourceEvidence::verify(&bad_flat_proof).expect("signature covers NAR");
+    let mut bad_flat_fixture = Fixture::new();
+    bad_flat_fixture.source = bad_flat;
     assert_eq!(
-        bad_source.verified_with(&review()),
-        Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
-    );
-    let mut bad_flat = Fixture::new();
-    bad_flat.source.flat_sha256 = "f".repeat(64);
-    assert_eq!(
-        bad_flat.verified_with(&review()),
-        Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
-    );
-    let mut no_output_binding = Fixture::new();
-    no_output_binding.source.source_in_output_input_drvs = false;
-    assert_eq!(
-        no_output_binding.verified_with(&review()),
+        bad_flat_fixture.verified_with(&review()),
         Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
     );
 
-    let plan_root = verified_with_root(PLAN_ROOT);
+    let plan_root = BoundIdentityFacts::spec_cache_observation(verified_with_root(PLAN_ROOT));
     let mut wide = Fixture::new();
     wide.facts = plan_root;
     wide.binding = binding(&wide.facts);
-    wide.observed_root = PLAN_ROOT;
     assert!(
         wide.verified_with(&review()).is_ok(),
         "a plan-wide receipt with a legitimate plan observed root must pass exact membership"
-    );
-
-    let mut wrong_root_binding = Fixture::new();
-    wrong_root_binding.root_binding =
-        crate::planning::identity_facts::IdentityFactsRootBinding::BuildReceipt;
-    assert_eq!(
-        wrong_root_binding.verified_with(&review()),
-        Err(LicenseDecisionRefusal::RootBindingMismatch)
-    );
-    let mut foreign_root = Fixture::new();
-    foreign_root.observed_root = PLAN_ROOT;
-    assert_eq!(
-        foreign_root.verified_with(&review()),
-        Err(LicenseDecisionRefusal::RootBindingMismatch)
     );
 }
 
@@ -861,8 +852,6 @@ fn actor_delegation_project_and_terminal_states_fail_closed() {
         delegation: &revoked.delegation,
         delegation_revoked: true,
         identity_facts: &revoked.facts,
-        identity_facts_root_binding: revoked.root_binding,
-        observed_root: revoked.observed_root,
         source_evidence: &revoked.source,
         binding: &revoked.binding,
     };
@@ -879,8 +868,6 @@ fn actor_delegation_project_and_terminal_states_fail_closed() {
         delegation: &fixture.delegation,
         delegation_revoked: false,
         identity_facts: &fixture.facts,
-        identity_facts_root_binding: fixture.root_binding,
-        observed_root: fixture.observed_root,
         source_evidence: &fixture.source,
         binding: &fixture.binding,
     };
@@ -1061,12 +1048,12 @@ fn real_plan_and_frozen_spec_build_the_typed_binding() {
     let retained: EnvironmentPlan =
         serde_json::from_str(include_str!("fixtures/retained-plan.json")).expect("real plan");
     let retained_evidence = InventoryEvidenceBundle::from_plan(&retained);
-    let retained_facts = verified_for(
+    let retained_facts = BoundIdentityFacts::spec_cache_observation(verified_for(
         &retained.plan_sha256,
         OBSERVED_SPEC,
         OUTPUT_NAR,
         OUTPUT_PATH,
-    );
+    ));
     let retained_binding = PolicyBinding::from_plan_inventory_evidence(
         default_catalog_sha256(),
         default_profile_sha256(),
@@ -1090,7 +1077,12 @@ fn real_plan_and_frozen_spec_build_the_typed_binding() {
     plan.license_inventory_sha256 = plan.license_inventory.inventory_sha256.clone();
     plan.plan_sha256 = plan.compute_sha256();
     let evidence = InventoryEvidenceBundle::from_plan(&plan);
-    let facts = verified_for(&plan.plan_sha256, OBSERVED_SPEC, OUTPUT_NAR, OUTPUT_PATH);
+    let facts = BoundIdentityFacts::spec_cache_observation(verified_for(
+        &plan.plan_sha256,
+        OBSERVED_SPEC,
+        OUTPUT_NAR,
+        OUTPUT_PATH,
+    ));
     let binding = PolicyBinding::from_plan_inventory_evidence(
         default_catalog_sha256(),
         default_profile_sha256(),
@@ -1108,7 +1100,7 @@ fn real_plan_and_frozen_spec_build_the_typed_binding() {
     );
     assert_eq!(
         binding.identity_facts_receipt_digest(),
-        identity_facts_receipt_digest(&facts)
+        identity_facts_receipt_digest(facts.verified())
     );
 
     let wrong_evidence = InventoryEvidenceBundle { entries: vec![] };
@@ -1173,7 +1165,37 @@ fn real_plan_and_frozen_spec_build_the_typed_binding() {
         created_at: "2026-11-20T20:00:00Z".into(),
         spec,
     };
-    let spec_facts = verified_for(&plan.plan_sha256, &spec_sha256, OUTPUT_NAR, OUTPUT_PATH);
+    let spec_verified = verified_for(&plan.plan_sha256, &spec_sha256, OUTPUT_NAR, OUTPUT_PATH);
+    let build_receipt = EnvironmentBuildReceipt {
+        schema_version: 1,
+        receipt_id: "receipt-1".into(),
+        spec_sha256: spec_sha256.clone(),
+        platform: stored_spec.spec.platform.clone(),
+        builder_image: stored_spec.spec.builder_image.clone(),
+        builder_image_digest: stored_spec.spec.builder_image_digest.clone(),
+        builder_policy_revision: "nix-devenv-environment-v1".into(),
+        status: EnvironmentBuilderStatus::Succeeded,
+        store_path: OUTPUT_PATH.into(),
+        output_sha256: "e".repeat(64),
+        sbom_sha256: stored_spec.spec.sbom_sha256.clone(),
+        log_ref: "log".into(),
+        sandbox_attestation: SandboxAttestation {
+            non_root: true,
+            no_secrets: true,
+            no_host_network: true,
+            no_host_socket: true,
+            no_host_mount: true,
+            sandbox: true,
+            impure: false,
+            bounded_resources: true,
+        },
+        blockers: vec![],
+        duration_ms: 1,
+        created_at: "2026-11-20T20:00:01Z".into(),
+    };
+    let spec_facts =
+        BoundIdentityFacts::bind_build_receipt(spec_verified, &build_receipt, &stored_spec.spec)
+            .expect("complete build receipt binds");
     let spec_binding = PolicyBinding::from_spec_inventory_evidence(
         default_catalog_sha256(),
         default_profile_sha256(),
@@ -1252,7 +1274,7 @@ fn verified_output_only() -> VerifiedIdentityFacts {
 #[test]
 fn a_plan_wide_receipt_without_a_source_fact_uses_the_separate_source_proof() {
     let mut fixture = Fixture::new();
-    fixture.facts = verified_output_only();
+    fixture.facts = BoundIdentityFacts::spec_cache_observation(verified_output_only());
     fixture.binding = binding(&fixture.facts);
     assert!(
         fixture.verified_with(&review()).is_ok(),

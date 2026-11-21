@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use super::identity_facts::{
-    self, IDENTITY_FACTS_CONTEXT, IdentityFactsReceipt, VerifiedIdentityFacts,
+    self, BoundIdentityFacts, IDENTITY_FACTS_CONTEXT, IdentityFactsReceipt, VerifiedIdentityFacts,
 };
 use crate::db::{StoredEnvironmentPlan, StoredEnvironmentSpec};
 use crate::planning::environment::{EnvironmentPlanStatus, EnvironmentSpecStatus};
@@ -211,7 +211,7 @@ impl StageBinding {
         plan: &StoredEnvironmentPlan,
         evidence_bundle: &InventoryEvidenceBundle,
         candidate: CandidateBinding,
-        identity_facts: &VerifiedIdentityFacts,
+        identity_facts: &BoundIdentityFacts,
     ) -> Result<Self, LicenseDecisionRefusal> {
         let plan_sha256 = plan.plan_sha256.clone();
         let plan_revision = plan.revision;
@@ -236,6 +236,11 @@ impl StageBinding {
         {
             return Err(LicenseDecisionRefusal::PolicyMismatch);
         }
+        if identity_facts.binding()
+            != super::identity_facts::IdentityFactsRootBinding::SpecCacheObservation
+        {
+            return Err(LicenseDecisionRefusal::RootBindingMismatch);
+        }
         if evidence_bundle.entries != plan.plan.license_inventory.entries {
             return Err(LicenseDecisionRefusal::EvidenceBundleMismatch);
         }
@@ -244,10 +249,17 @@ impl StageBinding {
             return Err(LicenseDecisionRefusal::PolicyBindingIncomplete);
         }
         validate_candidate(&candidate, &plan.plan.base_commit)?;
-        if identity_facts.receipt().envelope.challenge.plan_sha256 != plan_sha256 {
+        if identity_facts
+            .verified()
+            .receipt()
+            .envelope
+            .challenge
+            .plan_sha256
+            != plan_sha256
+        {
             return Err(LicenseDecisionRefusal::PlanBindingMismatch);
         }
-        let receipt_digest = identity_facts_receipt_digest(identity_facts);
+        let receipt_digest = identity_facts_receipt_digest(identity_facts.verified());
         Ok(Self {
             stage: StageKind::PlanInventoryEvidence,
             plan_sha256,
@@ -265,7 +277,7 @@ impl StageBinding {
         spec: &StoredEnvironmentSpec,
         evidence_bundle: &InventoryEvidenceBundle,
         candidate: CandidateBinding,
-        identity_facts: &VerifiedIdentityFacts,
+        identity_facts: &BoundIdentityFacts,
     ) -> Result<Self, LicenseDecisionRefusal> {
         let plan_sha256 = plan.plan_sha256.clone();
         let plan_revision = plan.revision;
@@ -290,6 +302,10 @@ impl StageBinding {
         {
             return Err(LicenseDecisionRefusal::PolicyMismatch);
         }
+        if identity_facts.binding() != super::identity_facts::IdentityFactsRootBinding::BuildReceipt
+        {
+            return Err(LicenseDecisionRefusal::RootBindingMismatch);
+        }
         if evidence_bundle.entries != plan.plan.license_inventory.entries {
             return Err(LicenseDecisionRefusal::EvidenceBundleMismatch);
         }
@@ -301,7 +317,7 @@ impl StageBinding {
             return Err(LicenseDecisionRefusal::PolicyBindingIncomplete);
         }
         validate_candidate(&candidate, &plan.plan.base_commit)?;
-        let receipt = identity_facts.receipt();
+        let receipt = identity_facts.verified().receipt();
         if receipt.envelope.challenge.plan_sha256 != plan_sha256
             || receipt.envelope.challenge.spec_sha256 != spec_sha256
         {
@@ -314,7 +330,7 @@ impl StageBinding {
             spec_sha256: Some(spec_sha256),
             inventory_sha256,
             evidence_bundle_sha256,
-            identity_facts_receipt_digest: identity_facts_receipt_digest(identity_facts),
+            identity_facts_receipt_digest: identity_facts_receipt_digest(identity_facts.verified()),
             candidate,
         })
     }
@@ -357,7 +373,7 @@ impl PolicyBinding {
         plan: &StoredEnvironmentPlan,
         evidence_bundle: &InventoryEvidenceBundle,
         candidate: CandidateBinding,
-        identity_facts: &VerifiedIdentityFacts,
+        identity_facts: &BoundIdentityFacts,
     ) -> Result<Self, LicenseDecisionRefusal> {
         let stage = StageBinding::from_plan(plan, evidence_bundle, candidate, identity_facts)?;
         Self::from_stage(catalog_sha256, profile_sha256, policy_sha256, stage)
@@ -374,7 +390,7 @@ impl PolicyBinding {
         spec: &StoredEnvironmentSpec,
         evidence_bundle: &InventoryEvidenceBundle,
         candidate: CandidateBinding,
-        identity_facts: &VerifiedIdentityFacts,
+        identity_facts: &BoundIdentityFacts,
     ) -> Result<Self, LicenseDecisionRefusal> {
         let stage =
             StageBinding::from_spec(plan, spec, evidence_bundle, candidate, identity_facts)?;
@@ -920,6 +936,46 @@ fn source_asset() -> &'static serde_json::Value {
     })
 }
 
+/// True when the verified fixed-output proof is exactly the source/output pair
+/// recorded for one shared licence asset identity. Core applies this both
+/// before dispatch (so an impossible proof never spends a model call) and
+/// after the review, so the two checks cannot drift.
+pub(crate) fn source_matches_asset_identity(
+    source: &VerifiedSourceEvidence,
+    identity: &serde_json::Value,
+) -> bool {
+    let source_doc = identity.get("source").unwrap_or(&serde_json::Value::Null);
+    let output_doc = identity.get("output").unwrap_or(&serde_json::Value::Null);
+    let asset_evidence = source_asset()
+        .get("evidence")
+        .unwrap_or(&serde_json::Value::Null);
+    exact(output_doc, "drvPath") == Some(source.output_drv_path())
+        && exact(output_doc, "storePath") == Some(source.output_store_path())
+        && exact(source_doc, "drvPath") == Some(source.source_drv_path())
+        && exact(source_doc, "storePath") == Some(source.source_store_path())
+        && exact(source_doc, "narHash") == Some(source.nar_sri())
+        && source_doc
+            .get("narSize")
+            .and_then(serde_json::Value::as_u64)
+            == Some(source.nar_size())
+        && exact(source_doc, "signature") == Some(source.signature())
+        && exact(asset_evidence, "sourceFlatSha256") == Some(source.flat_sha256())
+}
+
+/// True when the verified source proof belongs to at least one shared asset
+/// identity under the plan pin. The producer refuses a call otherwise.
+pub(crate) fn source_evidence_belongs_to_pin(source: &VerifiedSourceEvidence, pin: &str) -> bool {
+    source_asset()
+        .get("identities")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|identities| {
+            identities.iter().any(|identity| {
+                exact(identity, "pin") == Some(pin)
+                    && source_matches_asset_identity(source, identity)
+            })
+        })
+}
+
 fn write_canonical(value: &serde_json::Value, output: &mut String) {
     match value {
         serde_json::Value::Null => output.push_str("null"),
@@ -1349,31 +1405,182 @@ pub(crate) fn reconcile_prior_deny(
     Ok(())
 }
 
-/// Separate exact fixed-output source proof.
+/// Separate exact fixed-output source proof input.
 ///
-/// The retained identity-facts receipt covers the realised output closure, not
-/// necessarily the fetched source path. This proof is constructed by Core from
-/// the independently verified source recovery (cache NAR/signature/fingerprint
-/// plus the FOD → output recipe binding); it is never model output and never a
-/// broker fact invented for the source.
+/// This is the untrusted DTO Core/Builders construct from the persisted source
+/// recovery. Only [`VerifiedSourceEvidence`] can be used by the decision
+/// verifier; the constructor derives Nix base32/fingerprint/CA from the bytes
+/// and verifies the pinned Ed25519 cache signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceEvidenceProof {
     pub source_store_path: String,
     pub source_drv_path: String,
     pub flat_sha256: String,
     pub nar_sri: String,
-    pub nar_nix32: String,
     pub nar_size: u64,
     pub signature: String,
-    pub fingerprint: String,
-    pub ca: String,
     pub output_drv_path: String,
     pub output_store_path: String,
-    pub source_in_output_input_drvs: bool,
-    pub signature_valid: bool,
+    /// Exact `inputDrvs` entries of the output derivation, from the real drv.
+    pub output_drv_input_drvs: Vec<String>,
+    /// Optional asserted derived values; if present they must match the
+    /// internally derived values.
+    pub nar_nix32: Option<String>,
+    pub fingerprint: Option<String>,
+    pub ca: Option<String>,
 }
 
-impl SourceEvidenceProof {
+const NIX_CACHE_KEY_NAME: &str = "cache.nixos.org-1";
+const NIX_CACHE_PUBLIC_KEY: &str = "6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=";
+
+/// Source proof that passed pinned Ed25519 verification and derived all Nix
+/// base32/fingerprint/CA values. Fields are private; only [`Self::verify`] can
+/// create it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedSourceEvidence {
+    source_store_path: String,
+    source_drv_path: String,
+    flat_sha256: String,
+    nar_sri: String,
+    nar_nix32: String,
+    nar_size: u64,
+    signature: String,
+    fingerprint: String,
+    ca: String,
+    output_drv_path: String,
+    output_store_path: String,
+}
+
+impl VerifiedSourceEvidence {
+    pub fn verify(proof: &SourceEvidenceProof) -> Result<Self, LicenseDecisionRefusal> {
+        use base64::Engine as _;
+        use ring::signature::{ED25519, UnparsedPublicKey};
+        let invalid = || LicenseDecisionRefusal::SourceEvidenceMismatch;
+        if !is_store_path(&proof.source_store_path)
+            || !proof.source_drv_path.starts_with("/nix/store/")
+            || !proof.source_drv_path.ends_with(".drv")
+            || !proof.output_drv_path.starts_with("/nix/store/")
+            || !proof.output_drv_path.ends_with(".drv")
+            || !is_store_path(&proof.output_store_path)
+            || !is_sha256(&proof.flat_sha256)
+            || proof.nar_size == 0
+            || proof.output_drv_input_drvs.is_empty()
+        {
+            return Err(invalid());
+        }
+        let mut seen = BTreeSet::new();
+        if proof.output_drv_input_drvs.iter().any(|drv| {
+            !drv.starts_with("/nix/store/") || !drv.ends_with(".drv") || !seen.insert(drv)
+        }) || !seen.contains(&proof.source_drv_path)
+        {
+            return Err(invalid());
+        }
+        let nar_bytes = proof
+            .nar_sri
+            .strip_prefix("sha256-")
+            .and_then(|encoded| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .ok()
+            })
+            .filter(|bytes| bytes.len() == 32)
+            .ok_or_else(invalid)?;
+        let flat_bytes = hex_decode(&proof.flat_sha256).ok_or_else(invalid)?;
+        let nar_nix32 = nix_base32(&nar_bytes);
+        let flat_nix32 = nix_base32(&flat_bytes);
+        let fingerprint = format!(
+            "1;{};sha256:{};{};",
+            proof.source_store_path, nar_nix32, proof.nar_size
+        );
+        let ca = format!("fixed:sha256:{flat_nix32}");
+        if proof
+            .nar_nix32
+            .as_deref()
+            .is_some_and(|value| value != nar_nix32)
+            || proof
+                .fingerprint
+                .as_deref()
+                .is_some_and(|value| value != fingerprint)
+            || proof.ca.as_deref().is_some_and(|value| value != ca)
+        {
+            return Err(invalid());
+        }
+        let (signature_name, signature_b64) =
+            proof.signature.split_once(':').ok_or_else(invalid)?;
+        if signature_name != NIX_CACHE_KEY_NAME {
+            return Err(invalid());
+        }
+        let signature = base64::engine::general_purpose::STANDARD
+            .decode(signature_b64)
+            .map_err(|_| invalid())?;
+        let public_key = base64::engine::general_purpose::STANDARD
+            .decode(NIX_CACHE_PUBLIC_KEY)
+            .map_err(|_| invalid())?;
+        if signature.len() != 64 || public_key.len() != 32 {
+            return Err(invalid());
+        }
+        UnparsedPublicKey::new(&ED25519, public_key)
+            .verify(fingerprint.as_bytes(), &signature)
+            .map_err(|_| invalid())?;
+        Ok(Self {
+            source_store_path: proof.source_store_path.clone(),
+            source_drv_path: proof.source_drv_path.clone(),
+            flat_sha256: proof.flat_sha256.clone(),
+            nar_sri: proof.nar_sri.clone(),
+            nar_nix32,
+            nar_size: proof.nar_size,
+            signature: proof.signature.clone(),
+            fingerprint,
+            ca,
+            output_drv_path: proof.output_drv_path.clone(),
+            output_store_path: proof.output_store_path.clone(),
+        })
+    }
+
+    pub fn source_store_path(&self) -> &str {
+        &self.source_store_path
+    }
+
+    pub fn source_drv_path(&self) -> &str {
+        &self.source_drv_path
+    }
+
+    pub fn flat_sha256(&self) -> &str {
+        &self.flat_sha256
+    }
+
+    pub fn nar_sri(&self) -> &str {
+        &self.nar_sri
+    }
+
+    pub fn nar_nix32(&self) -> &str {
+        &self.nar_nix32
+    }
+
+    pub fn nar_size(&self) -> u64 {
+        self.nar_size
+    }
+
+    pub fn signature(&self) -> &str {
+        &self.signature
+    }
+
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+
+    pub fn ca(&self) -> &str {
+        &self.ca
+    }
+
+    pub fn output_drv_path(&self) -> &str {
+        &self.output_drv_path
+    }
+
+    pub fn output_store_path(&self) -> &str {
+        &self.output_store_path
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "sourceStorePath": self.source_store_path,
@@ -1387,8 +1594,7 @@ impl SourceEvidenceProof {
             "ca": self.ca,
             "outputDrvPath": self.output_drv_path,
             "outputStorePath": self.output_store_path,
-            "sourceInOutputInputDrvs": self.source_in_output_input_drvs,
-            "signatureValid": self.signature_valid,
+            "sourceInOutputInputDrvs": true,
         })
     }
 
@@ -1397,11 +1603,50 @@ impl SourceEvidenceProof {
     }
 }
 
-fn source_evidence_sha256(proof: &SourceEvidenceProof) -> String {
-    proof.canonical_sha256()
+fn is_store_path(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("/nix/store/") else {
+        return false;
+    };
+    let Some((hash, name)) = rest.split_once('-') else {
+        return false;
+    };
+    hash.len() == 32
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && !name.is_empty()
+        && !name.contains('/')
 }
 
-/// Inputs Core
+fn hex_decode(value: &str) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for chunk in value.as_bytes().chunks(2) {
+        let text = std::str::from_utf8(chunk).ok()?;
+        bytes.push(u8::from_str_radix(text, 16).ok()?);
+    }
+    Some(bytes)
+}
+
+fn nix_base32(bytes: &[u8]) -> String {
+    const CHARS: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
+    let length = bytes.len().saturating_mul(8).div_ceil(5);
+    let mut output = String::with_capacity(length);
+    for index in (0..length).rev() {
+        let bit = index * 5;
+        let byte = bit / 8;
+        let shift = bit % 8;
+        let mut value = u16::from(bytes[byte]) >> shift;
+        if byte + 1 < bytes.len() {
+            value |= u16::from(bytes[byte + 1]) << (8 - shift);
+        }
+        output.push(CHARS[(value & 0x1f) as usize] as char);
+    }
+    output
+}
+
 /// Inputs Core must provide from its own state. Every field is a database or
 /// Core-owned value, never a caller payload attribute.
 pub struct LicenseDecisionContext<'a> {
@@ -1414,10 +1659,8 @@ pub struct LicenseDecisionContext<'a> {
     pub reservation: &'a crate::db::LicenseEvidenceReservation,
     pub delegation: &'a crate::db::AgenticOwnerDecisionRecord,
     pub delegation_revoked: bool,
-    pub identity_facts: &'a VerifiedIdentityFacts,
-    pub identity_facts_root_binding: super::identity_facts::IdentityFactsRootBinding,
-    pub observed_root: &'a str,
-    pub source_evidence: &'a SourceEvidenceProof,
+    pub identity_facts: &'a BoundIdentityFacts,
+    pub source_evidence: &'a VerifiedSourceEvidence,
     pub binding: &'a PolicyBinding,
 }
 
@@ -1518,15 +1761,23 @@ fn verify_against_source_asset(
         return Err(LicenseDecisionRefusal::PolicyMismatch);
     }
     if context.binding.identity_facts_receipt_digest()
-        != identity_facts_receipt_digest(context.identity_facts)
+        != identity_facts_receipt_digest(context.identity_facts.verified())
     {
         return Err(LicenseDecisionRefusal::ReceiptDigestMismatch);
     }
-    let receipt = context.identity_facts.receipt();
+    let receipt = context.identity_facts.verified().receipt();
     if receipt.envelope.context != IDENTITY_FACTS_CONTEXT
         || receipt.envelope.challenge.pin != review.pin
     {
         return Err(LicenseDecisionRefusal::ReceiptMismatch);
+    }
+    match (
+        context.binding.stage().spec_sha256(),
+        context.identity_facts.binding(),
+    ) {
+        (None, super::identity_facts::IdentityFactsRootBinding::SpecCacheObservation) => {}
+        (Some(_), super::identity_facts::IdentityFactsRootBinding::BuildReceipt) => {}
+        _ => return Err(LicenseDecisionRefusal::RootBindingMismatch),
     }
     if context.binding.stage().plan_sha256() == context.project_config_hash
         || context.binding.stage().inventory_sha256() == context.project_config_hash
@@ -1544,17 +1795,6 @@ fn verify_against_source_asset(
         if spec_sha256 == context.project_config_hash {
             return Err(LicenseDecisionRefusal::PolicyBindingForged);
         }
-    }
-    if context.observed_root != receipt.envelope.manifest.observed_root {
-        return Err(LicenseDecisionRefusal::RootBindingMismatch);
-    }
-    match (
-        context.binding.stage().spec_sha256(),
-        context.identity_facts_root_binding,
-    ) {
-        (None, super::identity_facts::IdentityFactsRootBinding::SpecCacheObservation) => {}
-        (Some(_), super::identity_facts::IdentityFactsRootBinding::BuildReceipt) => {}
-        _ => return Err(LicenseDecisionRefusal::RootBindingMismatch),
     }
     match context.binding.candidate() {
         CandidateBinding::Candidate { .. } => {
@@ -1649,37 +1889,11 @@ fn verify_against_source_asset(
         &review.output_nar_hash,
     )?;
     let source = context.source_evidence;
-    let source_doc = identity
-        .get("source")
-        .ok_or(LicenseDecisionRefusal::IdentityMismatch)?;
-    let source_nar =
-        exact(source_doc, "narHash").ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
-    let source_flat = asset
-        .get("evidence")
-        .and_then(|evidence| exact(evidence, "sourceFlatSha256"))
-        .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
-    let source_size = source_doc
-        .get("narSize")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
-    let source_signature =
-        exact(source_doc, "signature").ok_or(LicenseDecisionRefusal::SourceEvidenceMismatch)?;
-    let expected_fingerprint = format!(
-        "1;{};sha256:{};{};",
-        review.source_store_path, source.nar_nix32, source.nar_size
-    );
-    if !source.signature_valid
-        || !source.source_in_output_input_drvs
-        || source.source_store_path != review.source_store_path
-        || source.source_drv_path != review.source_drv_path
-        || source.output_drv_path != review.output_drv_path
-        || source.output_store_path != review.output_store_path
-        || source.flat_sha256 != source_flat
-        || source.nar_sri != source_nar
-        || source.nar_size != source_size
-        || source.signature != source_signature
-        || source.fingerprint != expected_fingerprint
-        || !source.ca.starts_with("fixed:sha256:")
+    if !source_matches_asset_identity(source, identity)
+        || source.source_store_path() != review.source_store_path
+        || source.source_drv_path() != review.source_drv_path
+        || source.output_drv_path() != review.output_drv_path
+        || source.output_store_path() != review.output_store_path
     {
         return Err(LicenseDecisionRefusal::SourceEvidenceMismatch);
     }
@@ -1935,8 +2149,8 @@ fn verify_against_source_asset(
         // an explicit, evidence-bound denial rather than an accidental one.
     }
 
-    let receipt_digest = identity_facts_receipt_digest(context.identity_facts);
-    let source_evidence_digest = source_evidence_sha256(source);
+    let receipt_digest = identity_facts_receipt_digest(context.identity_facts.verified());
+    let source_evidence_digest = source.canonical_sha256();
     let provenance = serde_json::json!({
         "pin": review.pin,
         "identitySha256": identity_sha256,

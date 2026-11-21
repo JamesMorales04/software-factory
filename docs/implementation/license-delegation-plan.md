@@ -100,6 +100,16 @@ place.
 - One bounded Lead-route structured call, purpose `license_evidence_review`, with
   the exact `VersionedSourceEvidence` and licence-text digests; no tools, no
   egress, no free-form authority.
+- The fetched source is a separate fixed-output proof, not an invented identity
+  fact. `VerifiedSourceEvidence` is a private Core type produced only by
+  verifying the pinned `cache.nixos.org-1` Ed25519 signature, the exact
+  SRI/Nix-base32/fingerprint/CA/size derivation and the source→output
+  `inputDrvs` membership; no caller boolean or deserialised struct can stand in
+  for it.
+- Every evidence, source, plan/spec, policy, inventory, delegation, grant,
+  receipt and root-binding guard runs before `gateway.call`. A refusal therefore
+  spends zero model calls and creates zero reservations; the producer's tests
+  assert the 0/1 call boundary with a fake dispatcher.
 - The call reuses the frozen Lead route and the request-scoped subscription
   admission already active for `fc7e7311`; no new provider configuration,
   credential or monetary envelope. Token/cost telemetry is recorded, not used
