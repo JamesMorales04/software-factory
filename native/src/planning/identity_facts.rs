@@ -96,6 +96,55 @@ pub struct IdentityFactsChallenge {
     pub questions: Vec<IdentityQuestion>,
 }
 
+/// Exact builder evidence for one realisation that refused at the licence
+/// gate. It names only the realised root and the builder's own closure digest;
+/// the broker re-observes every fact from its persistent store, so this value
+/// can never supply or authorise an identity fact. It exists so a refused
+/// realisation can still be observed for the exact plan (and frozen spec, when
+/// one exists) without inventing a successful build receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RealisationObservation {
+    pub schema_version: u32,
+    pub plan_sha256: String,
+    /// Empty for a resolve-phase refusal that precedes the frozen spec.
+    #[serde(default)]
+    pub spec_sha256: String,
+    pub store_path: String,
+    /// The builder's own closure digest. Diagnostic only: the broker hashes
+    /// the facts it re-observes, never this value.
+    pub closure_manifest_sha256: String,
+    pub status: String,
+}
+
+impl RealisationObservation {
+    pub const SCHEMA_VERSION: u32 = 1;
+    pub const STATUS: &'static str = "REALISED";
+
+    /// Validate the observation against the exact plan and, when supplied, the
+    /// exact frozen spec. A resolve-phase observation must not claim a spec and
+    /// a spec-phase observation must match it exactly.
+    pub fn validate_for(
+        &self,
+        plan_sha256: &str,
+        spec_sha256: Option<&str>,
+    ) -> Result<(), IdentityFactsError> {
+        if self.schema_version != Self::SCHEMA_VERSION
+            || self.status != Self::STATUS
+            || self.plan_sha256 != plan_sha256
+            || !is_sha256(&self.closure_manifest_sha256)
+            || !is_output_store_path(&self.store_path)
+        {
+            return Err(IdentityFactsError::RealisationEvidenceInvalid);
+        }
+        match (spec_sha256, self.spec_sha256.is_empty()) {
+            (Some(expected), false) if self.spec_sha256 == expected => Ok(()),
+            (None, true) => Ok(()),
+            _ => Err(IdentityFactsError::RealisationEvidenceInvalid),
+        }
+    }
+}
+
 impl IdentityFactsChallenge {
     /// Validate the Core-issued challenge before it is dispatched. Bounds are
     /// applied to every field so a broker never runs a fixed query on an
@@ -320,6 +369,7 @@ pub enum IdentityFactsError {
     SignatureMismatch,
     RootBindingMismatch,
     BuildReceiptInvalid(String),
+    RealisationEvidenceInvalid,
     EvidenceAbsent,
     Refused(IdentityFactsRefusal),
 }
@@ -345,6 +395,9 @@ impl std::fmt::Display for IdentityFactsError {
             Self::BuildReceiptInvalid(message) => {
                 write!(formatter, "the build receipt is invalid: {message}")
             }
+            Self::RealisationEvidenceInvalid => formatter.write_str(
+                "the realised-environment evidence is not the exact plan/spec observation",
+            ),
             Self::EvidenceAbsent => {
                 formatter.write_str("the broker returned no identity-facts evidence")
             }
@@ -1021,6 +1074,78 @@ mod tests {
                 &manifest
             ),
             Err(IdentityFactsRefusal::QuestionMismatch)
+        );
+    }
+
+    fn realisation_observation() -> RealisationObservation {
+        RealisationObservation {
+            schema_version: RealisationObservation::SCHEMA_VERSION,
+            plan_sha256: "a".repeat(64),
+            spec_sha256: String::new(),
+            store_path: "/nix/store/0123456789abcdef0123456789abcdef-ed-1.21.1".into(),
+            closure_manifest_sha256: "b".repeat(64),
+            status: RealisationObservation::STATUS.into(),
+        }
+    }
+
+    #[test]
+    fn a_refused_realisation_is_evidence_only_for_its_exact_plan_and_stage() {
+        let plan = "a".repeat(64);
+        let spec = "c".repeat(64);
+        let observation = realisation_observation();
+        observation
+            .validate_for(&plan, None)
+            .expect("a resolve-phase observation binds the plan only");
+
+        let mut spec_stage = realisation_observation();
+        spec_stage.spec_sha256 = spec.clone();
+        spec_stage
+            .validate_for(&plan, Some(&spec))
+            .expect("a build-phase observation binds plan and spec");
+        assert_eq!(
+            spec_stage.validate_for(&plan, None),
+            Err(IdentityFactsError::RealisationEvidenceInvalid),
+            "a spec observation cannot stand in for a resolve-phase observation"
+        );
+        assert_eq!(
+            observation.validate_for(&plan, Some(&spec)),
+            Err(IdentityFactsError::RealisationEvidenceInvalid),
+            "a resolve observation cannot stand in for a frozen spec"
+        );
+
+        for mutate in [
+            |value: &mut RealisationObservation| value.schema_version = 2,
+            |value: &mut RealisationObservation| value.status = "SUCCEEDED".into(),
+            |value: &mut RealisationObservation| value.plan_sha256 = "d".repeat(64),
+            |value: &mut RealisationObservation| value.spec_sha256 = "d".repeat(64),
+            |value: &mut RealisationObservation| {
+                value.closure_manifest_sha256 = "not-a-hash".into()
+            },
+            |value: &mut RealisationObservation| {
+                value.store_path = "/nix/store/0123456789abcdef0123456789abcdef-ed.drv".into()
+            },
+            |value: &mut RealisationObservation| value.store_path = "/tmp/ed".into(),
+        ] {
+            let mut invalid = realisation_observation();
+            mutate(&mut invalid);
+            assert_eq!(
+                invalid.validate_for(&plan, None),
+                Err(IdentityFactsError::RealisationEvidenceInvalid)
+            );
+        }
+
+        let unknown = serde_json::json!({
+            "schemaVersion": 1,
+            "planSha256": plan,
+            "specSha256": "",
+            "storePath": "/nix/store/0123456789abcdef0123456789abcdef-ed-1.21.1",
+            "closureManifestSha256": "b".repeat(64),
+            "status": "REALISED",
+            "authorised": true
+        });
+        assert!(
+            serde_json::from_value::<RealisationObservation>(unknown).is_err(),
+            "builder evidence is closed and cannot carry authority"
         );
     }
 }

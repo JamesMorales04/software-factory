@@ -130,6 +130,45 @@ READY/SUCCEEDED build semantics and unique key are different:
 `identity_facts_challenges` and `environment_identity_facts_receipts`
 (migration `0081`).
 
+## Failed realisation at the licence gate
+
+A licence refusal is not a reason to lose the realisation. The builder may
+refuse **after** Nix realised the environment (for example an unknown
+transitive licence). In that case:
+
+- The builder writes one bounded `realisation.json` before it exits, shaped as
+  `RealisationObservation { schemaVersion, planSha256, specSha256, storePath,
+  closureManifestSha256, status: "REALISED" }`. `specSha256` is empty for a
+  resolve-phase refusal that precedes the frozen spec. The typed blocker is
+  unchanged and the build result stays `FAILED`; no successful
+  `EnvironmentBuildReceipt` exists.
+- The observation is a **pointer, not evidence**. The broker validates it
+  against the exact plan and, when present, the exact frozen spec
+  (`RealisationObservation::validate_for`), then re-runs the fixed
+  `nix path-info`/`nix derivation show` queries for that root against its
+  persistent store. The builder's `closureManifestSha256` is diagnostic only;
+  it is never trusted, copied or signed.
+- The broker signs the normal `IdentityFactsEnvelope` for the Core challenge
+  and the durable consumer persists it with `SPEC_CACHE_OBSERVATION`. A failed
+  build is therefore never presented as an accepted build, and no build receipt
+  is fabricated.
+- Core persists the receipt before applying the licence outcome. The
+  environment stays blocked, and the delegated `license_evidence_review` can
+  run against the exact plan/context receipt it previously could not obtain.
+
+The resolve phase currently uses a disposable cache (`EnvironmentRunResources::new`,
+no frozen spec), so a post-resolve observation needs a persistent plan-keyed
+cache and a plan-stage challenge binding. That producer change is required
+before a resolve-phase licence refusal can yield a receipt; the domain type and
+its validation are implemented here, while the broker/Core wiring is owned by
+the broker/Core implementation.
+
+After an ACCEPT decision, the same realised path still has to pass the
+builder's deterministic closure gate. Accepting the reviewed identity in the
+builder or passing it a bounded decision authorisation is a separate contract;
+the gate must not silently accept an unknown licence merely because a decision
+row exists elsewhere.
+
 ## Placement
 
 - Pure challenge/manifest/envelope rules and the MAC live in
