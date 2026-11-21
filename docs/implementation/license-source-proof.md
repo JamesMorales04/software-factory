@@ -57,10 +57,13 @@ The exact recovery is retained at
 derivation paths, flat SHA-256, NAR SRI/nix32/size, cache signature,
 fingerprint, CA and the source/output derivation ATerms.
 
-The Core loader verifies the Ed25519 `cache.nixos.org-1` signature over the
-exact fingerprint, the flat/NAR/CA/size relationship and the source-drv
-membership in the exact output derivation before constructing a
-`SourceEvidenceProof`. The artifact is exact recovery evidence, not a licence
+The Core loader parses the pinned recovery into the untrusted
+`SourceEvidenceProof` DTO (including the exact output-derivation input drv
+list) and calls `VerifiedSourceEvidence::verify`. That private type verifies the
+Ed25519 `cache.nixos.org-1` signature over the exact fingerprint, derives the
+Nix base32/CA values, checks the flat/NAR/size relationship and requires the
+source drv in the output derivation's exact inputs. No caller boolean or public
+constructor can mint verified source evidence. The artifact is exact recovery evidence, not a licence
 approval; the Lead review and Core decision remain separate. The decision
 persists only `sourceEvidenceSha256`; the builder recomputes the same object
 from the signed identity asset and requires the digest.
