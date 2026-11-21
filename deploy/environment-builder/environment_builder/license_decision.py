@@ -274,6 +274,38 @@ def validate_license_decision_receipt(
                 "ENVIRONMENT_LICENSE_DECISION_INVALID",
                 "the documentation obligations are not exact for the identity",
             )
+    source_evidence = receipt.get("sourceEvidence")
+    if not isinstance(source_evidence, dict):
+        raise LicenseDecisionError(
+            "ENVIRONMENT_SOURCE_EVIDENCE_STALE",
+            "the decision has no exact source evidence proof",
+        )
+    if (
+        source_evidence.get("sourceStorePath")
+        != identity.get("source", {}).get("storePath")
+        or source_evidence.get("sourceDrvPath")
+        != identity.get("source", {}).get("drvPath")
+        or source_evidence.get("outputStorePath")
+        != identity.get("output", {}).get("storePath")
+        or source_evidence.get("outputDrvPath")
+        != identity.get("output", {}).get("drvPath")
+        or source_evidence.get("flatSha256") != evidence.get("sourceFlatSha256")
+        or source_evidence.get("narSri") != identity.get("source", {}).get("narHash")
+        or source_evidence.get("narSize") != identity.get("source", {}).get("narSize")
+        or source_evidence.get("signature") != identity.get("source", {}).get("signature")
+        or source_evidence.get("signatureValid") is not True
+        or source_evidence.get("sourceInOutputInputDrvs") is not True
+    ):
+        raise LicenseDecisionError(
+            "ENVIRONMENT_SOURCE_EVIDENCE_STALE",
+            "the source evidence proof does not match the exact identity",
+        )
+    if receipt.get("sourceEvidenceSha256") != _sha_value(source_evidence):
+        raise LicenseDecisionError(
+            "ENVIRONMENT_SOURCE_EVIDENCE_STALE",
+            "the source evidence digest does not match its exact proof",
+        )
+
     if receipt.get("catalogSha256") != catalog.sha256 or receipt.get(
         "profileSha256"
     ) != profile.sha256:

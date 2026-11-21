@@ -4,15 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from pathlib import Path
-
 from environment_builder import license_decision, license_policy
-
-
-EV = Path(
-    "/home/james/.local/share/software-factory/identity-facts-evidence-20261119/"
-    "uat-ed-source-0fa4990e"
-)
 
 
 ENTRIES = [{"path": "/nix/store/example", "license": "MIT"}]
@@ -29,6 +21,28 @@ def plan() -> dict:
             "entries": ENTRIES,
         },
         "baseCommit": "4fdf1b15f862b2564642443a71ef3e25a2785013",
+    }
+
+
+def source_proof(identity: dict, evidence: dict) -> dict:
+    """Derive the exact source proof from the signed identity asset.
+
+    The proof is evidence assembled from cache.nixos.org/pathinfo and the
+    retained store; it is validated by the backend, not granted here.
+    """
+    source = identity["source"]
+    output = identity["output"]
+    return {
+        "sourceStorePath": source["storePath"],
+        "sourceDrvPath": source["drvPath"],
+        "flatSha256": evidence["sourceFlatSha256"],
+        "narSri": source["narHash"],
+        "narSize": source["narSize"],
+        "signature": source["signature"],
+        "outputDrvPath": output["drvPath"],
+        "outputStorePath": output["storePath"],
+        "sourceInOutputInputDrvs": True,
+        "signatureValid": True,
     }
 
 
@@ -75,6 +89,10 @@ def receipt() -> dict:
         "documentation": documentation,
         "documentationObligations": list(catalog.entries["GFDL-1.3-or-later"].obligations),
         "evidenceSha256": evidence["licenseEvidenceCanonicalSha256"],
+        "sourceEvidence": source_proof(identity, evidence),
+        "sourceEvidenceSha256": license_decision._sha_value(
+            source_proof(identity, evidence)
+        ),
         "identityFactsReceiptDigest": "f" * 64,
         "catalogSha256": catalog.sha256,
         "profileSha256": profile.sha256,
@@ -146,6 +164,17 @@ class LicenseDecisionTests(unittest.TestCase):
         del missing_text["documentation"][0]["licenseTextPath"]
         with self.assertRaises(license_decision.LicenseDecisionError):
             license_decision.validate_license_decision_receipt(missing_text, plan())
+
+    def test_source_proof_missing_or_tampered_is_stale(self) -> None:
+        missing = receipt()
+        del missing["sourceEvidence"]
+        with self.assertRaises(license_decision.LicenseDecisionError) as caught:
+            license_decision.validate_license_decision_receipt(missing, plan())
+        self.assertEqual(caught.exception.code, "ENVIRONMENT_SOURCE_EVIDENCE_STALE")
+        tampered = receipt()
+        tampered["sourceEvidence"]["flatSha256"] = "0" * 64
+        with self.assertRaises(license_decision.LicenseDecisionError):
+            license_decision.validate_license_decision_receipt(tampered, plan())
 
     def test_builder_overlay_is_exact_and_absent_by_default(self) -> None:
         from environment_builder.cli import _with_license_decisions
