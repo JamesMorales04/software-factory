@@ -1341,6 +1341,7 @@
         "POST /agentic/decisions",
         "POST /agentic/decisions/{id}/resolve",
         "GET /agentic/license-decisions?project_id={id}",
+        "GET /agentic/requests/{id}/license-evidence-review",
         "POST /agentic/license-decisions/{id}/revoke",
         "POST /agentic/license-delegations/{id}/revoke"
       ],
@@ -1364,13 +1365,14 @@
         "accept",
         "deny",
         "revoked",
+        "stale",
         "responsive"
       ],
       "acceptance": [
         "office/src/views/LicenseDecisions.test.tsx",
         "deploy/environment-builder/tests/test_license_decision.py"
       ],
-      "notes": "Core owns the delegation, decision, stage, revocation and audit records. Office never creates a decision or approves a name/version/package family; every button calls an authenticated Core operation. The retained plan is STALE against the current catalogue until a new revision and Lead environment review exist. The separate source proof is exact cache/store evidence, not a fabricated manifest fact. Real Compose/browser acceptance remains NOT_TESTED."
+      "notes": "Core owns the delegation, decision, stage, revocation and audit records. Office never creates a decision or approves a name/version/package family; every button calls an authenticated Core operation. The retained plan is STALE against the current catalogue until a new revision and Lead environment review exist. The separate source proof is exact cache/store evidence, not a fabricated manifest fact. GET /agentic/requests/{id}/license-evidence-review is scoped to the exact current plan/spec/identity receipt/delegation context; it returns an explicit stale/empty projection instead of a historical rev5 review. No Office browser acceptance for this projection is claimed; real Compose/browser acceptance remains NOT_TESTED."
     }
   },
   "deferred": [

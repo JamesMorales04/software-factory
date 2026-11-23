@@ -19228,16 +19228,6 @@ async fn record_license_decision(
         Ok(revoked) => revoked,
         Err(error) => return api_error(error),
     };
-    let reservation = match app.db.lead_license_evidence_reservation(&lead.id).await {
-        Ok(reservation) => reservation,
-        Err(Error::NotFound) => {
-            return api_error(Error::IntakeConflict {
-                code: "LICENSE_EVIDENCE_REQUIRED",
-                message: "a SETTLED license_evidence_review reservation is required".into(),
-            });
-        }
-        Err(error) => return api_error(error),
-    };
     let plan = match app.db.latest_environment_plan(&id).await {
         Ok(plan) => plan,
         Err(Error::NotFound) => {
@@ -19321,6 +19311,81 @@ async fn record_license_decision(
             });
         }
     };
+    let spec = app.db.environment_spec_for_request(&id).await.ok();
+    let profile = match app
+        .db
+        .execution_profile_revision(&intake.profile_id, &intake.profile_revision_id)
+        .await
+    {
+        Ok(profile) => profile,
+        Err(error) => return api_error(error),
+    };
+    let gateway = match app.intake_assess_gateway(&profile).await {
+        Ok(gateway) => gateway,
+        Err(error) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_EVIDENCE_MODEL_UNAVAILABLE",
+                message: error.to_string(),
+            });
+        }
+    };
+    let grant = match app.db.standing_delegation_v2(&intake.delegation_id).await {
+        Ok(grant) => grant,
+        Err(error) => return api_error(error),
+    };
+    if grant.revoked_at.is_some() || grant.expires_at <= chrono::Utc::now() {
+        return api_error(Error::IntakeConflict {
+            code: "LICENSE_EVIDENCE_REQUIRED",
+            message: "the exact standing delegation for this licence review is expired or revoked"
+                .into(),
+        });
+    }
+    let review_request = factory_native::lead_model::LicenseEvidenceReviewRequest {
+        request_id: &intake.id,
+        objective_id: &lead.id,
+        project: &config,
+        plan: &plan,
+        spec: spec.as_ref(),
+        inventory: &evidence_bundle,
+        source: &source_evidence,
+        identity_facts: &identity_facts,
+        delegation: &delegation,
+        grant: &grant,
+        now: chrono::Utc::now(),
+    };
+    let expected_request_sha256 =
+        match factory_native::lead_model::license_evidence_review_request_sha256(
+            &gateway,
+            &review_request,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                return api_error(Error::IntakeConflict {
+                    code: "LICENSE_EVIDENCE_INVALID",
+                    message: error.to_string(),
+                });
+            }
+        };
+    let reservation = match app
+        .db
+        .lead_license_evidence_reservation_for_request(&lead.id, &expected_request_sha256)
+        .await
+    {
+        Ok(reservation) => reservation,
+        Err(Error::NotFound) => {
+            return api_error(Error::IntakeConflict {
+                code: "LICENSE_EVIDENCE_REQUIRED",
+                message: "a SETTLED license_evidence_review reservation for the exact current request is required".into(),
+            });
+        }
+        Err(error) => return api_error(error),
+    };
+    if reservation.request_sha256() != expected_request_sha256 {
+        return api_error(Error::IntakeConflict {
+            code: "LICENSE_EVIDENCE_REQUIRED",
+            message: "the settled licence review does not bind the exact current request".into(),
+        });
+    }
     let mut review: LicenseDecisionReview = match serde_json::from_str(reservation.response_text())
     {
         Ok(review) => review,
@@ -19331,14 +19396,14 @@ async fn record_license_decision(
             });
         }
     };
-    review.request_sha256 = reservation.request_sha256().to_owned();
+    review.request_sha256 = expected_request_sha256.clone();
     review.response_sha256 =
         factory_native::device_session::sha256_hex(reservation.response_text());
     let context = LicenseDecisionContext {
         project_id: &intake.project_id,
         lead_request_id: &lead.id,
         principal: reservation.principal_id(),
-        request_sha256: reservation.request_sha256(),
+        request_sha256: &expected_request_sha256,
         project_config_hash: &config.config_hash,
         base_commit: &config.base_commit,
         reservation: &reservation,
@@ -19387,7 +19452,10 @@ async fn get_license_evidence_review(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    use factory_native::planning::license_decision::LicenseDecisionReview;
+    use factory_native::planning::license_decision::{
+        CandidateBinding, InventoryEvidenceBundle, LicenseDecisionReview, PolicyBinding,
+        verify_stored_identity_facts,
+    };
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
@@ -19395,32 +19463,178 @@ async fn get_license_evidence_review(
         Ok(intake) => intake,
         Err(error) => return api_error(error),
     };
+    let stale = |reason: &str, plan_sha: Option<&str>| {
+        Json(json!({
+            "available": false,
+            "stale": true,
+            "reason": reason,
+            "planSha256": plan_sha,
+        }))
+        .into_response()
+    };
+    let plan = match app.db.latest_environment_plan(&id).await {
+        Ok(plan) => plan,
+        Err(Error::NotFound) => return stale("LICENSE_PLAN_REQUIRED", None),
+        Err(error) => return api_error(error),
+    };
+    let spec = app.db.environment_spec_for_request(&id).await.ok();
+    let config = match app.db.project_config(&intake.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let delegations = match app
+        .db
+        .agentic_owner_decisions(Some(&intake.project_id), false)
+        .await
+    {
+        Ok(delegations) => delegations,
+        Err(error) => return api_error(error),
+    };
+    let Some(delegation) = delegations
+        .into_iter()
+        .filter(|delegation| {
+            delegation.matter == "LICENSE_IDENTITY_EVIDENCE_DELEGATION"
+                && delegation.status == "APPROVED"
+                && delegation.selected_option.as_deref() == Some("APPROVE_DELEGATION")
+        })
+        .max_by(|left, right| left.created_at.cmp(&right.created_at))
+    else {
+        return stale("LICENSE_DELEGATION_REQUIRED", Some(&plan.plan_sha256));
+    };
+    let grant = match app.db.standing_delegation_v2(&intake.delegation_id).await {
+        Ok(grant) => grant,
+        Err(error) => return api_error(error),
+    };
+    if grant.revoked_at.is_some() || grant.expires_at <= chrono::Utc::now() {
+        return stale("LICENSE_GRANT_EXPIRED", Some(&plan.plan_sha256));
+    }
+    if chrono::DateTime::parse_from_rfc3339(&delegation.deadline)
+        .map(|deadline| deadline <= chrono::Utc::now())
+        .unwrap_or(true)
+    {
+        return stale("LICENSE_DELEGATION_EXPIRED", Some(&plan.plan_sha256));
+    }
+    match app.db.license_delegation_revoked(&delegation.id).await {
+        Ok(true) => return stale("LICENSE_DELEGATION_REVOKED", Some(&plan.plan_sha256)),
+        Ok(false) => {}
+        Err(error) => return api_error(error),
+    }
+    let profile = match app
+        .db
+        .execution_profile_revision(&intake.profile_id, &intake.profile_revision_id)
+        .await
+    {
+        Ok(profile) => profile,
+        Err(error) => return api_error(error),
+    };
+    let gateway = match app.intake_assess_gateway(&profile).await {
+        Ok(gateway) => gateway,
+        Err(_) => {
+            return stale(
+                "LICENSE_EVIDENCE_MODEL_UNAVAILABLE",
+                Some(&plan.plan_sha256),
+            );
+        }
+    };
+    let stored_receipt = match app
+        .db
+        .latest_identity_facts_receipt(&plan.plan_sha256)
+        .await
+    {
+        Ok(receipt) => receipt,
+        Err(Error::NotFound) => {
+            return stale("LICENSE_IDENTITY_FACTS_REQUIRED", Some(&plan.plan_sha256));
+        }
+        Err(error) => return api_error(error),
+    };
+    let bearer = match factory_native::secrets::required("FACTORY_RUNTIME_BROKER_TOKEN") {
+        Ok(bearer) => bearer,
+        Err(_) => {
+            return stale(
+                "LICENSE_IDENTITY_FACTS_UNAVAILABLE",
+                Some(&plan.plan_sha256),
+            );
+        }
+    };
+    let identity_facts = match verify_stored_identity_facts(&stored_receipt, bearer.as_bytes()) {
+        Ok(facts) => facts,
+        Err(_) => {
+            return stale("LICENSE_IDENTITY_FACTS_INVALID", Some(&plan.plan_sha256));
+        }
+    };
+    let identity_facts =
+        factory_native::planning::identity_facts::BoundIdentityFacts::spec_cache_observation(
+            identity_facts,
+        );
+    let evidence_bundle = InventoryEvidenceBundle::from_plan(&plan.plan);
+    let source_evidence = match pinned_source_evidence() {
+        Ok(source) => source,
+        Err(_) => return stale("LICENSE_SOURCE_EVIDENCE_INVALID", Some(&plan.plan_sha256)),
+    };
+    let candidate = match CandidateBinding::base(&config.base_commit) {
+        Ok(candidate) => candidate,
+        Err(_) => return stale("LICENSE_CANDIDATE_INVALID", Some(&plan.plan_sha256)),
+    };
+    let _binding = match PolicyBinding::from_plan_inventory_evidence(
+        factory_native::planning::license_policy::default_catalog_sha256(),
+        factory_native::planning::license_policy::default_profile_sha256(),
+        factory_native::planning::license_policy::default_binding_sha256(),
+        &plan,
+        &evidence_bundle,
+        candidate,
+        &identity_facts,
+    ) {
+        Ok(binding) => binding,
+        Err(_) => return stale("LICENSE_BINDING_INVALID", Some(&plan.plan_sha256)),
+    };
+    let review_request = factory_native::lead_model::LicenseEvidenceReviewRequest {
+        request_id: &intake.id,
+        objective_id: &intake.lead_request_id,
+        project: &config,
+        plan: &plan,
+        spec: spec.as_ref(),
+        inventory: &evidence_bundle,
+        source: &source_evidence,
+        identity_facts: &identity_facts,
+        delegation: &delegation,
+        grant: &grant,
+        now: chrono::Utc::now(),
+    };
+    let expected_request_sha256 =
+        match factory_native::lead_model::license_evidence_review_request_sha256(
+            &gateway,
+            &review_request,
+        ) {
+            Ok(value) => value,
+            Err(_) => return stale("LICENSE_EVIDENCE_INVALID", Some(&plan.plan_sha256)),
+        };
     match app
         .db
-        .lead_license_evidence_reservation(&intake.lead_request_id)
+        .lead_license_evidence_reservation_for_request(
+            &intake.lead_request_id,
+            &expected_request_sha256,
+        )
         .await
     {
         Ok(reservation) => {
             let review: LicenseDecisionReview =
                 match serde_json::from_str(reservation.response_text()) {
                     Ok(review) => review,
-                    Err(_) => {
-                        return api_error(Error::IntakeConflict {
-                            code: "LICENSE_EVIDENCE_INVALID",
-                            message: "the stored Lead evidence review is not a valid typed output"
-                                .into(),
-                        });
-                    }
+                    Err(_) => return stale("LICENSE_EVIDENCE_INVALID", Some(&plan.plan_sha256)),
                 };
             Json(json!({
                 "available": true,
+                "stale": false,
+                "planSha256": plan.plan_sha256,
+                "planRevision": plan.revision,
+                "specSha256": spec.as_ref().map(|spec| spec.spec_sha256.clone()),
                 "reservationId": reservation.reservation_id(),
                 "requestSha256": reservation.request_sha256(),
                 "review": license_review_projection(&review),
             }))
             .into_response()
         }
-        Err(Error::NotFound) => Json(json!({"available": false})).into_response(),
+        Err(Error::NotFound) => stale("LICENSE_EVIDENCE_REQUIRED", Some(&plan.plan_sha256)),
         Err(error) => api_error(error),
     }
 }
@@ -19439,8 +19653,7 @@ async fn request_license_evidence_review(
     Json(input): Json<LicenseEvidenceReviewHttpRequest>,
 ) -> Response {
     use factory_native::planning::license_decision::{
-        CandidateBinding, InventoryEvidenceBundle, LicenseDecisionReview, PolicyBinding,
-        verify_stored_identity_facts,
+        CandidateBinding, InventoryEvidenceBundle, PolicyBinding, verify_stored_identity_facts,
     };
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -19564,25 +19777,6 @@ async fn request_license_evidence_review(
             code: "LICENSE_DELEGATION_REQUIRED",
             message: "the Owner delegation evidence does not match the exact plan, use context and commercial criterion".into(),
         });
-    }
-    if let Ok(existing) = app.db.lead_license_evidence_reservation(&lead.id).await {
-        let review: LicenseDecisionReview = match serde_json::from_str(existing.response_text()) {
-            Ok(review) => review,
-            Err(_) => {
-                return api_error(Error::IntakeConflict {
-                    code: "LICENSE_EVIDENCE_INVALID",
-                    message: "the stored Lead evidence review is not a valid typed output".into(),
-                });
-            }
-        };
-        return Json(json!({
-            "reservationId": existing.reservation_id(),
-            "provider": "",
-            "model": "",
-            "requestSha256": existing.request_sha256(),
-            "review": license_review_projection(&review),
-        }))
-        .into_response();
     }
     let stored_receipt = match app
         .db
@@ -19723,22 +19917,74 @@ async fn request_license_evidence_review(
         Ok(grant) => grant,
         Err(error) => return api_error(error),
     };
+    if grant.revoked_at.is_some() || grant.expires_at <= chrono::Utc::now() {
+        return api_error(Error::IntakeConflict {
+            code: "LICENSE_EVIDENCE_REQUIRED",
+            message: "the exact standing delegation for this licence review is expired or revoked"
+                .into(),
+        });
+    }
+    let review_request = factory_native::lead_model::LicenseEvidenceReviewRequest {
+        request_id: &intake.id,
+        objective_id: &lead.id,
+        project: &config,
+        plan: &plan,
+        spec: spec.as_ref(),
+        inventory: &evidence_bundle,
+        source: &source_evidence,
+        identity_facts: &identity_facts,
+        delegation: &delegation,
+        grant: &grant,
+        now: chrono::Utc::now(),
+    };
+    // The exact request digest is the replay identity. The gateway's durable
+    // (role, objective, request_sha256) fence performs the SETTLED replay; this
+    // idempotency record only binds the operator key to the same exact context.
+    let expected_request_sha256 =
+        match factory_native::lead_model::license_evidence_review_request_sha256(
+            &gateway,
+            &review_request,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                return api_error(Error::IntakeConflict {
+                    code: "LICENSE_EVIDENCE_INVALID",
+                    message: error.to_string(),
+                });
+            }
+        };
+    let idempotency_payload = json!({
+        "requestSha256": expected_request_sha256,
+        "planSha256": plan.plan_sha256,
+        "planRevision": plan.revision,
+        "specSha256": spec.as_ref().map(|spec| spec.spec_sha256.clone()),
+        "identityFactsReceiptDigest":
+            factory_native::planning::license_decision::identity_facts_receipt_digest(
+                identity_facts.verified(),
+            ),
+        "delegationId": delegation.id,
+        "grantId": grant.id,
+    });
+    let idempotency_key = format!(
+        "license-evidence-review:{}:{}",
+        lead.id,
+        factory_native::device_session::sha256_hex(&input.idempotency_key)
+    );
+    if let Err(error) = app
+        .db
+        .idempotent(
+            &idempotency_key,
+            "license-evidence-review",
+            &idempotency_payload.to_string(),
+        )
+        .await
+    {
+        return api_error(error);
+    }
     let (review, model_result) = match factory_native::lead_model::review_license_evidence(
         &gateway,
         &app.db,
-        factory_native::lead_model::LicenseEvidenceReviewRequest {
-            request_id: &intake.id,
-            objective_id: &lead.id,
-            project: &config,
-            plan: &plan,
-            spec: spec.as_ref(),
-            inventory: &evidence_bundle,
-            source: &source_evidence,
-            identity_facts: &identity_facts,
-            delegation: &delegation,
-            grant: &grant,
-            now: chrono::Utc::now(),
-        },
+        review_request,
     )
     .await
     {
@@ -29449,7 +29695,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn license_evidence_review_replays_a_settled_review_without_a_second_call() {
+        async fn license_evidence_review_does_not_replay_a_lead_only_reservation() {
             use tower::ServiceExt;
             let fixture = setup().await;
             let (status, _) = enable_policy(&fixture).await;
@@ -29588,17 +29834,15 @@ mod tests {
                     .await
                     .unwrap();
                 let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(status, StatusCode::OK, "{body}");
+                assert_eq!(status, StatusCode::CONFLICT, "{body}");
                 assert_eq!(
-                    body.get("reservationId")
-                        .and_then(serde_json::Value::as_str),
-                    Some("reservation-license-replay")
+                    body.get("code").and_then(serde_json::Value::as_str),
+                    Some("LICENSE_IDENTITY_FACTS_REQUIRED"),
+                    "a Lead-only SETTLED row must not bypass the exact request context: {body}"
                 );
-                assert_eq!(
-                    body.get("review")
-                        .and_then(|review| review.get("decision"))
-                        .and_then(serde_json::Value::as_str),
-                    Some("ACCEPT")
+                assert!(
+                    body.get("reservationId").is_none(),
+                    "the historical reservation must not be projected as a replay"
                 );
             }
             pool.close().await;
@@ -29644,7 +29888,7 @@ mod tests {
             let triage = agentic_triage_context(&fixture.app, &request)
                 .await
                 .expect("triage context");
-            let route = triage.triage.route;
+            let _route = triage.triage.route;
             let assurance = triage.assurance();
             let lane = triage.planning_lane;
             if fixture

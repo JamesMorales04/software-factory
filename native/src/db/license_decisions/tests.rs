@@ -647,6 +647,27 @@ fn applied_0084_migration_is_byte_identical_to_the_checkpoint() {
 }
 
 #[tokio::test]
+async fn exact_license_review_reservation_is_request_sha_scoped() {
+    let fixture = fixture().await;
+    let exact = fixture
+        .db
+        .lead_license_evidence_reservation_for_request("lead-1", REQUEST_SHA)
+        .await
+        .expect("the exact settled review is selected");
+    assert_eq!(exact.reservation_id, "reservation-1");
+    assert_eq!(exact.request_sha256, REQUEST_SHA);
+    assert!(matches!(
+        fixture
+            .db
+            .lead_license_evidence_reservation_for_request("lead-1", &"f".repeat(64))
+            .await,
+        Err(Error::NotFound)
+    ));
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.path);
+}
+
+#[tokio::test]
 async fn the_builder_overlay_is_reverified_and_carries_the_exact_source_proof() {
     let fixture = fixture().await;
     let db = &fixture.db;

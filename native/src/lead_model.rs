@@ -408,6 +408,38 @@ JSON Schema:
     ))
 }
 
+fn license_evidence_review_call<'a>(
+    request: &LicenseEvidenceReviewRequest<'a>,
+    user_prompt: &'a str,
+) -> ModelCallRequest<'a> {
+    ModelCallRequest {
+        role: ModelCallRole::Lead,
+        principal_id: &request.grant.principal_id,
+        project_id: &request.project.project_id,
+        objective_id: request.objective_id,
+        scope_id: &request.grant.id,
+        purpose: "license_evidence_review",
+        system_prompt: "Return strict JSON only. The licence review is evidence, never authority; Core verifies and persists.",
+        user_prompt,
+        max_output_tokens: 0,
+    }
+}
+
+/// Canonical identity of the exact licence-review request, without dispatching
+/// a model. The same helper is used by the endpoint, the gateway dispatch and
+/// the decision consumer; callers must never reimplement this digest.
+pub fn license_evidence_review_request_sha256(
+    gateway: &ModelGateway,
+    request: &LicenseEvidenceReviewRequest<'_>,
+) -> Result<String, LeadError> {
+    let schema = serde_json::to_string(&crate::model_output::license_evidence_review_schema())
+        .map_err(|error| {
+            LeadError::Assessment(format!("cannot encode licence review schema: {error}"))
+        })?;
+    let prompt = license_evidence_review_prompt(request, &schema)?;
+    Ok(gateway.request_sha256(&license_evidence_review_call(request, &prompt)))
+}
+
 /// Narrow dispatch seam for the licence review producer. Production always
 /// dispatches through the role-scoped `ModelGateway`; tests use it to prove
 /// that every refusal happens before any dispatch and without a reservation.
@@ -568,28 +600,12 @@ async fn review_license_evidence_with<G: LicenseReviewDispatch>(
         })?;
     let prompt = license_evidence_review_prompt(&request, &schema)?;
     let result = gateway
-        .dispatch(
-            database,
-            ModelCallRequest {
-                role: ModelCallRole::Lead,
-                principal_id: &request.grant.principal_id,
-                project_id: &request.project.project_id,
-                objective_id: request.objective_id,
-                scope_id: &request.grant.id,
-                purpose: "license_evidence_review",
-                system_prompt:
-                    "Return strict JSON only. The licence review is evidence, never authority; Core verifies and persists.",
-                user_prompt: &prompt,
-                max_output_tokens: 0,
-            },
-        )
+        .dispatch(database, license_evidence_review_call(&request, &prompt))
         .await
         .map_err(|error| match error {
             ModelGatewayError::Ambiguous(_)
             | ModelGatewayError::Upstream(_)
-            | ModelGatewayError::Usage(_) => {
-                LeadError::TransientAssessment(error.to_string())
-            }
+            | ModelGatewayError::Usage(_) => LeadError::TransientAssessment(error.to_string()),
             ModelGatewayError::Database(
                 crate::db::Error::Forbidden(_) | crate::db::Error::Conflict(_),
             ) => LeadError::TransientAssessment(error.to_string()),

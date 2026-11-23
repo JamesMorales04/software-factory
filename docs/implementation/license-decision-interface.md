@@ -97,6 +97,20 @@ plan's build/identity step. A decision that does match the current plan but is
 revoked, denied or stale is not treated as absent: it still requires the exact
 identity receipt and fails closed through the full overlay verifier.
 
+The licence-review GET projection is scoped to the same exact current
+plan/spec/identity-receipt/delegation context. If no exact settled review exists,
+it returns `available:false`, `stale:true`, a bounded reason and the current plan
+identity; it never projects the historical rev5 review as current. The POST
+review path has no Lead-only early return: the gateway's exact
+`(role, objective, request_sha256)` identity performs a settled replay, while a
+new context gets a new reservation. The decision consumer recomputes the same
+digest and selects only that exact settled reservation. The operator
+idempotency key is bound through the existing durable idempotency store to the
+exact request/plan/spec/receipt/delegation/grant context, so a reused key with a
+different context is a conflict. This is a read-only projection change; no new
+Office route or decorative action is added. Real browser acceptance of the
+stale/empty projection remains NOT_TESTED.
+
 Office parity impact: **none**. This is an internal Core-to-builder receipt. No
 Office route, control, label, state, projection or user action changes; the
 existing licence-decision audit surface continues to read the Core decision
