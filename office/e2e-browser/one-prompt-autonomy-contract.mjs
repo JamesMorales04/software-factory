@@ -1,0 +1,305 @@
+// Pure contracts for the one-prompt autonomy lane.
+//
+// This module has no Playwright, network, filesystem or Core dependency. The
+// browser lane and its constructive tests import the same helpers so the
+// invariants are not a second, mirroring implementation.
+
+const WORKFLOW_PATHS = [
+  /^\/intake\/requests$/,
+  /^\/intake\/requests\/[^/]+\/(assess|approve|subscription-admission|message|cancel)$/,
+  /^\/agentic\/requests\/[^/]+\/(plan|participants|environment(\/review|\/recompile)?|spec(\/freeze|\/publish|\/refresh)?|plan-review|license-evidence-review|license-decision)$/,
+  /^\/agentic\/requests\/[^/]+\/(findings\/[^/]+\/disposition|knowledge|skills\/[^/]+\/adopt)$/,
+  /^\/campaigns$/,
+  /^\/campaigns\/[^/]+\/(authorize|runs|cancel|repair)$/,
+  /^\/runs\/[^/]+\/attempts$/,
+  /^\/test-support\/subscription-dispatch-admissions$/,
+];
+
+// Setup calls are configuration, not workflow state. They are still recorded
+// and allow-listed explicitly so an accidental workflow POST cannot hide among
+// them.
+const SETUP_MUTATION_ALLOWLIST = [
+  /^\/settings\/providers\/[^/]+$/,
+  /^\/settings\/runtime$/,
+  /^\/execution-profiles$/,
+  /^\/execution-profiles\/[^/]+\/default$/,
+  /^\/projects\/[^/]+\/config$/,
+];
+
+export const REQUIRED_MODEL_PHASES = [
+  "assessment",
+  "planner",
+  "environment",
+  "spec",
+  "license_evidence_review",
+];
+
+export const OPTIONAL_MODEL_PHASES = ["lead_stack_selection", "semantic_review"];
+
+export function normalizeCorePath(value) {
+  if (typeof value !== "string" || value.length === 0) return "";
+  let path = value;
+  try {
+    const url = new URL(value, "http://127.0.0.1");
+    path = url.pathname;
+  } catch {
+    // Already a path.
+  }
+  if (path.startsWith("/core-api")) path = path.slice("/core-api".length);
+  return path.startsWith("/") ? path : `/${path}`;
+}
+
+export function isWorkflowPath(path) {
+  const normalized = normalizeCorePath(path);
+  return WORKFLOW_PATHS.some((pattern) => pattern.test(normalized));
+}
+
+export function isSetupMutation(path) {
+  const normalized = normalizeCorePath(path);
+  return SETUP_MUTATION_ALLOWLIST.some((pattern) => pattern.test(normalized));
+}
+
+export function isReadOnlyMethod(method) {
+  return ["GET", "HEAD", "OPTIONS"].includes(String(method).toUpperCase());
+}
+
+/**
+ * Validate the driver-originated Core calls.
+ *
+ * The driver may read anything for assertions and may perform only the
+ * explicit configuration setup mutations. Any workflow mutation carrying the
+ * driver marker is an API-seeding failure.
+ */
+export function validateDriverCalls(calls) {
+  const failures = [];
+  const setup = [];
+  for (const call of calls) {
+    const method = String(call.method || "").toUpperCase();
+    const path = normalizeCorePath(call.path);
+    if (isReadOnlyMethod(method)) continue;
+    if (isWorkflowPath(path)) {
+      failures.push(`driver workflow mutation ${method} ${path}`);
+      continue;
+    }
+    if (!isSetupMutation(path)) {
+      failures.push(`driver mutation outside setup allowlist ${method} ${path}`);
+      continue;
+    }
+    setup.push(`${method} ${path}`);
+  }
+  if (failures.length > 0) {
+    throw new Error(`one-prompt driver seeded workflow state: ${failures.join("; ")}`);
+  }
+  return { setup_calls: setup };
+}
+
+/**
+ * Validate the page-originated Core mutations.
+ *
+ * The positive lane must create the request and enable the policy exactly once,
+ * from the real page. Project registration is UI setup and is allowed once.
+ * Every other workflow mutation is a failure, including test-support admission
+ * seeding and manual assess/plan/approve/licence/decision/freeze/start.
+ */
+export function validatePageMutations(requests) {
+  const counts = new Map();
+  const failures = [];
+  for (const request of requests) {
+    const method = String(request.method || "").toUpperCase();
+    const path = normalizeCorePath(request.path);
+    if (isReadOnlyMethod(method)) continue;
+    const key = `${method} ${path}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    if (method === "POST" && path === "/projects") continue; // UI project import
+    if (method === "POST" && path === "/intake/requests") continue;
+    if (method === "POST" && /^\/projects\/[^/]+\/execution-policy$/.test(path)) {
+      continue;
+    }
+    if (isWorkflowPath(path)) {
+      failures.push(`page workflow mutation ${key}`);
+      continue;
+    }
+    if (isSetupMutation(path)) {
+      // The dedicated lane performs setup from the driver with the marker.
+      // A page-originated setup mutation is not expected but is not a
+      // workflow-seeding failure; record it for review.
+      continue;
+    }
+    // Non-Core page mutations (for example Vite assets) are ignored by the
+    // caller before this function is reached.
+  }
+  if (failures.length > 0) {
+    throw new Error(`one-prompt lane used manual workflow controls: ${failures.join("; ")}`);
+  }
+  const intake = counts.get("POST /intake/requests") ?? 0;
+  const policy = [...counts.entries()]
+    .filter(([key]) => /^POST \/projects\/[^/]+\/execution-policy$/.test(key))
+    .reduce((total, [, value]) => total + value, 0);
+  if (intake !== 1) {
+    throw new Error(`expected exactly one page POST /intake/requests, observed ${intake}`);
+  }
+  if (policy !== 1) {
+    throw new Error(
+      `expected exactly one page policy confirmation, observed ${policy}`,
+    );
+  }
+  const projectImports = counts.get("POST /projects") ?? 0;
+  if (projectImports > 1) {
+    throw new Error(`expected at most one UI project import, observed ${projectImports}`);
+  }
+  return { intake_posts: intake, policy_posts: policy, project_imports: projectImports };
+}
+
+export function assertNoPreKnownRequestId(env) {
+  const forbidden = Object.keys(env).filter(
+    (key) =>
+      /^FACTORY_.*(REQUEST|INTAKE|CAMPAIGN)_ID$/i.test(key) &&
+      env[key] !== undefined &&
+      String(env[key]).trim() !== "",
+  );
+  if (forbidden.length > 0) {
+    throw new Error(
+      `one-prompt lane must discover the request from the UI, not ${forbidden.join(", ")}`,
+    );
+  }
+}
+
+export function assertCountersBaseline(counters) {
+  if (!counters || typeof counters !== "object") {
+    throw new Error("fixture counters are missing");
+  }
+  for (const [phase, value] of Object.entries(counters)) {
+    if (!Number.isInteger(value) || value < 0) {
+      throw new Error(`fixture counter ${phase} is not a non-negative integer`);
+    }
+    if (value !== 0) {
+      throw new Error(`fixture counter ${phase} is ${value} before the one prompt`);
+    }
+  }
+}
+
+/**
+ * The positive lane may use each required phase exactly once. Stack selection
+ * is conditional on the fixture project. Semantic review may run once per
+ * required reviewer role; the contract only requires at least one. "other" and
+ * any unknown phase must stay zero, and the fixture must report no errors.
+ */
+export function assertCounterDelta(before, after, { semanticReviewMinimum = 1 } = {}) {
+  const phases = new Set([...Object.keys(before), ...Object.keys(after)]);
+  const delta = {};
+  for (const phase of phases) {
+    const start = before[phase] ?? 0;
+    const end = after[phase] ?? 0;
+    delta[phase] = end - start;
+    if (delta[phase] < 0) {
+      throw new Error(`fixture counter ${phase} went backwards`);
+    }
+  }
+  for (const phase of REQUIRED_MODEL_PHASES) {
+    if ((delta[phase] ?? 0) !== 1) {
+      throw new Error(
+        `fixture phase ${phase} must execute exactly once; observed ${delta[phase] ?? 0}`,
+      );
+    }
+  }
+  for (const phase of OPTIONAL_MODEL_PHASES) {
+    if (phase === "semantic_review") continue;
+    if ((delta[phase] ?? 0) > 1) {
+      throw new Error(`fixture phase ${phase} executed more than once`);
+    }
+  }
+  if ((delta.semantic_review ?? 0) < semanticReviewMinimum) {
+    throw new Error(
+      `fixture semantic_review must execute at least ${semanticReviewMinimum} time(s); observed ${delta.semantic_review ?? 0}`,
+    );
+  }
+  if ((delta.other ?? 0) !== 0) {
+    throw new Error(`fixture classified ${delta.other} unexpected prompt(s) as other`);
+  }
+  const known = new Set([...REQUIRED_MODEL_PHASES, ...OPTIONAL_MODEL_PHASES, "other"]);
+  for (const phase of phases) {
+    if (!known.has(phase) && (delta[phase] ?? 0) !== 0) {
+      throw new Error(`fixture executed unknown phase ${phase}`);
+    }
+  }
+  return delta;
+}
+
+export function assertNoFixtureErrors(diagnostics) {
+  const errors = diagnostics?.errors;
+  if (!errors || Object.keys(errors).length === 0) return;
+  throw new Error(`fixture reported model errors: ${JSON.stringify(errors)}`);
+}
+
+function reservationKey(reservation) {
+  return [
+    reservation.reservation_id,
+    reservation.state,
+    reservation.updated_at,
+    reservation.input_tokens,
+    reservation.output_tokens,
+  ].join("|");
+}
+
+export function assertStableSnapshot(before, after) {
+  const problems = [];
+  const compare = (label, left, right) => {
+    if (JSON.stringify(left) !== JSON.stringify(right)) {
+      problems.push(`${label}: ${JSON.stringify(left)} != ${JSON.stringify(right)}`);
+    }
+  };
+  compare("request id", before.ids.request_id, after.ids.request_id);
+  compare("action id", before.ids.action_id, after.ids.action_id);
+  compare("lead id", before.ids.lead_id, after.ids.lead_id);
+  compare("campaign id", before.ids.campaign_id, after.ids.campaign_id);
+  compare("run id", before.ids.run_id, after.ids.run_id);
+  compare("attempt id", before.ids.attempt_id, after.ids.attempt_id);
+  compare("candidate id", before.ids.candidate_id, after.ids.candidate_id);
+  compare("candidate commit", before.ids.candidate_commit, after.ids.candidate_commit);
+  compare("verifier receipt", before.ids.verifier_receipt, after.ids.verifier_receipt);
+  compare("reviewer receipt", before.ids.reviewer_receipt, after.ids.reviewer_receipt);
+  compare("gate", before.ids.gate, after.ids.gate);
+  compare("plan hash", before.plan.plan_hash, after.plan.plan_hash);
+  compare("graph sha256", before.plan.graph_sha256, after.plan.graph_sha256);
+  compare("spec sha256", before.plan.spec_sha256, after.plan.spec_sha256);
+  compare(
+    "environment spec sha256",
+    before.plan.environment_spec_sha256,
+    after.plan.environment_spec_sha256,
+  );
+  compare("request state", before.request_state, after.request_state);
+  compare("campaign status", before.campaign_status, after.campaign_status);
+  compare("attempt count", before.attempt_count, after.attempt_count);
+  compare("fixture counters", before.counters, after.counters);
+  const beforeReservations = (before.reservations ?? []).map(reservationKey).sort();
+  const afterReservations = (after.reservations ?? []).map(reservationKey).sort();
+  compare("model reservations", beforeReservations, afterReservations);
+  if (problems.length > 0) {
+    throw new Error(`restart changed durable identity/state: ${problems.join("; ")}`);
+  }
+  return { stable: true, reservations: afterReservations.length };
+}
+
+export function assertNoManualControls(bodyText, labels) {
+  const observed = labels.filter((label) => String(bodyText).includes(label));
+  if (observed.length > 0) {
+    throw new Error(`manual controls visible in AUTONOMOUS positive lane: ${observed.join(", ")}`);
+  }
+}
+
+export function assertCampaignAuthorization(authorization) {
+  if (!authorization) throw new Error("Campaign authorization is missing");
+  const risk = authorization.riskClass ?? authorization.risk_class;
+  if (risk !== "R0") {
+    throw new Error(`Campaign risk class must be R0, observed ${risk}`);
+  }
+  if (authorization.provider !== "opencode-go") {
+    throw new Error(`Campaign provider must be opencode-go, observed ${authorization.provider}`);
+  }
+  return {
+    risk_class: risk,
+    execution_mode: authorization.executionMode ?? authorization.execution_mode,
+    provider: authorization.provider,
+    model: authorization.model,
+  };
+}
