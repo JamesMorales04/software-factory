@@ -1385,7 +1385,8 @@
       ],
       "acceptance": [
         "office/src/views/LicenseDecisions.test.tsx",
-        "deploy/environment-builder/tests/test_license_decision.py"
+        "deploy/environment-builder/tests/test_license_decision.py",
+        "office/e2e-browser/one-prompt-autonomy.mjs"
       ],
       "notes": "Core owns the delegation, decision, stage, revocation and audit records. Office never creates a decision or approves a name/version/package family; every button calls an authenticated Core operation. The retained plan is STALE against the current catalogue until a new revision and Lead environment review exist. The separate source proof is exact cache/store evidence, not a fabricated manifest fact. GET /agentic/requests/{id}/license-evidence-review is scoped to the exact current plan/spec/identity receipt/delegation context; it returns an explicit stale/empty projection instead of a historical rev5 review. The v4 decision records the Lead-selected role=licensing fact per atom and the unique compatible purpose=license-text asset Core derives (with both hashes and the derivation rule); raw model output is immutable. Office shows the selected fact and derived text separately and does not present a derived text as the model's raw choice. No Office browser acceptance for this projection or the v4 fact/text labels is claimed; real Compose/browser acceptance remains NOT_TESTED."
     }
