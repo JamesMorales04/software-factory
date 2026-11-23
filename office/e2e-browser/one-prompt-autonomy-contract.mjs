@@ -26,6 +26,24 @@ const SETUP_MUTATION_ALLOWLIST = [
   /^\/projects\/[^/]+\/config$/,
 ];
 
+export const HOME_LICENSE_SELECTORS = [
+  "home-policy-license-authority",
+  "home-licence-authority-state",
+  "home-licence-pin",
+  "home-licence-use-context",
+  "home-licence-criterion",
+  "home-licence-deadline",
+  "home-licence-confirm",
+  "home-licence-blocked",
+  "home-licence-resume",
+];
+
+// Initial MISSING/wait-owner does not necessarily show the partial-recovery
+// resume control; record it but do not require it for the first wait state.
+export const REQUIRED_LICENSE_WAIT_SELECTORS = HOME_LICENSE_SELECTORS.filter(
+  (selector) => selector !== "home-licence-resume",
+);
+
 export const REQUIRED_MODEL_PHASES = [
   "assessment",
   "planner",
@@ -384,7 +402,10 @@ export function assertLicenseWaitOwner({
       throw new Error("licence authority projection must be required:true");
     }
     authorityState = String(licenseAuthority.state ?? "UNKNOWN");
-    if (!["MISSING", "REVOKED", "EXPIRED", "MISMATCH"].includes(authorityState)) {
+    if (authorityState === "APPROVED") {
+      throw new Error("licence authority is APPROVED; use the positive lane, not wait-owner");
+    }
+    if (!["MISSING", "REVOKED", "EXPIRED", "MISMATCH", "UNKNOWN"].includes(authorityState)) {
       throw new Error(`licence wait-owner lane must not see authority state ${authorityState}`);
     }
     if (licenseAuthority.source !== "OWNER_DECISION") {

@@ -316,7 +316,18 @@ test("licence wait-owner requires zero licence model/decision/freeze/Campaign", 
           source: "OWNER_DECISION",
         },
       }),
-    /must not see authority state APPROVED/,
+    /APPROVED; use the positive lane/,
+  );
+  assert.equal(
+    assertLicenseWaitOwner({
+      ...base,
+      licenseAuthority: {
+        required: true,
+        state: "UNKNOWN",
+        source: "OWNER_DECISION",
+      },
+    }).license_authority_state,
+    "UNKNOWN",
   );
   assert.throws(
     () =>

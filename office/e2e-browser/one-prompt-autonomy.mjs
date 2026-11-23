@@ -51,6 +51,8 @@ import {
   assertLeaseProjection,
   assertLicenseWaitOwner,
   assertNoFixtureErrors,
+  HOME_LICENSE_SELECTORS,
+  REQUIRED_LICENSE_WAIT_SELECTORS,
   assertNoManualControls,
   assertNoPreKnownRequestId,
   assertStableSnapshot,
@@ -1211,15 +1213,19 @@ async function runLicenseWaitOwner() {
     licenseAuthority,
   });
   const body = await bodyText();
-  const uiSelector = page.locator('[data-testid="home-licence-blocked"]');
-  const uiVisible = await isVisible(uiSelector);
-  const uiAuthorityState = page.locator(
-    '[data-testid="home-licence-authority-state"]',
+  const selectorVisibility = {};
+  for (const selector of HOME_LICENSE_SELECTORS) {
+    selectorVisibility[selector] = await isVisible(
+      page.locator(`[data-testid="${selector}"]`),
+    );
+  }
+  const missingSelectors = REQUIRED_LICENSE_WAIT_SELECTORS.filter(
+    (selector) => !selectorVisibility[selector],
   );
-  const uiStateVisible = await isVisible(uiAuthorityState);
   record.license.ui = {
-    home_licence_blocked: uiVisible,
-    home_licence_authority_state: uiStateVisible,
+    selectors: selectorVisibility,
+    missing: missingSelectors,
+    licenses_page_selectors: "NOT_VISITED",
     body_mentions_owner_delegation: /owner delegation/i.test(body),
   };
   assertNoManualControls(body, MANUAL_CONTROL_LABELS);
@@ -1234,13 +1240,23 @@ async function runLicenseWaitOwner() {
     });
     return;
   }
-  if (!uiVisible || !uiStateVisible) {
+  if (record.license.license_authority_state === "UNKNOWN") {
+    record.assertions.license_authority = "BLOCKED_UNKNOWN";
+    record.result = "BLOCKED";
+    record.findings.push({
+      kind: "license-authority-unknown",
+      detail:
+        "licenseAuthority state is UNKNOWN; fail closed, do not claim a truthful wait-owner state",
+      required_owner: "b786195c-79ee-4af3-bb8a-5f62aa23c05e",
+    });
+    return;
+  }
+  if (missingSelectors.length > 0) {
     record.assertions.license_authority_ui = "BLOCKED_MISSING_SELECTORS";
     record.result = "BLOCKED";
     record.findings.push({
       kind: "license-authority-ui-missing",
-      detail:
-        "UI selectors home-licence-blocked/home-licence-authority-state are not present",
+      detail: `missing Home licence authority selectors: ${missingSelectors.join(", ")}`,
       required_owner: "b786195c-79ee-4af3-bb8a-5f62aa23c05e",
     });
     return;
