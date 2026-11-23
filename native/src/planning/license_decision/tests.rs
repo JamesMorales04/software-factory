@@ -152,9 +152,14 @@ fn review() -> LicenseDecisionReview {
         source_store_path: SOURCE_PATH.into(),
         source_output_hash: SOURCE_HASH.into(),
         license_expression: "GPL-2.0-or-later".into(),
-        // COPYING: the GPL-2.0 licence text observed by the builder.
-        software_texts: vec![],
-        software_text_sha256: "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6"
+        // ed.h: the exact GPL-2.0-or-later licensing fact selected by the Lead.
+        // Core derives the unique compatible COPYING text.
+        software_texts: vec![SoftwareTextEvidence {
+            path: "ed.h".into(),
+            license: "GPL-2.0-or-later".into(),
+            sha256: "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58".into(),
+        }],
+        software_text_sha256: "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58"
             .into(),
         selected_branch: "GPL-2.0-or-later".into(),
         documentation: vec![
@@ -316,6 +321,95 @@ fn exact_ed_evidence_yields_exact_software_and_documentation_decisions() {
 }
 
 #[test]
+fn the_selected_licensing_fact_is_recorded_and_the_unique_text_is_derived() {
+    let fixture = Fixture::new();
+    let decision = fixture
+        .verified_with(&review())
+        .expect("the exact selected header grants the GPL-2.0-or-later atom");
+    assert_eq!(
+        decision.provenance()["licensingFacts"],
+        serde_json::json!([{
+            "atom": "GPL-2.0-or-later",
+            "path": "ed.h",
+            "sha256": "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58",
+            "license": "GPL-2.0-or-later",
+            "purpose": "header",
+            "role": "licensing"
+        }])
+    );
+    assert_eq!(
+        decision.provenance()["licenseTexts"],
+        serde_json::json!([{
+            "atom": "GPL-2.0-or-later",
+            "path": "COPYING",
+            "sha256": "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6",
+            "license": "GPL-2.0-only"
+        }])
+    );
+    assert_eq!(decision.provenance()["fileEvidence"][0]["path"], "COPYING");
+    assert_eq!(
+        decision.provenance()["fileEvidence"][0]["modelPath"],
+        "ed.h"
+    );
+    assert_eq!(decision.provenance()["packageRights"][0]["path"], "ed.h");
+    assert_eq!(decision.documentation()[1].licensing_fact_path, "ed.h");
+    assert_eq!(decision.documentation()[1].license_text_path, "COPYING");
+    assert_eq!(
+        decision.provenance()["derivationRule"],
+        "SELECTED_LICENSING_FACT_TO_UNIQUE_LICENSE_TEXT"
+    );
+}
+
+#[test]
+fn a_text_asset_cannot_replace_the_selected_licensing_fact() {
+    let fixture = Fixture::new();
+    let mut text_only = review();
+    text_only.software_texts = vec![SoftwareTextEvidence {
+        path: "COPYING".into(),
+        license: "GPL-2.0-or-later".into(),
+        sha256: "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6".into(),
+    }];
+    assert_eq!(
+        fixture.verified_with(&text_only),
+        Err(LicenseDecisionRefusal::LicensingFactMismatch(
+            "COPYING".into()
+        ))
+    );
+
+    let mut empty = review();
+    empty.software_texts.clear();
+    assert_eq!(
+        fixture.verified_with(&empty),
+        Err(LicenseDecisionRefusal::FileEvidenceMismatch(
+            "softwareTexts"
+        ))
+    );
+
+    let mut ambiguous_asset = source_asset().clone();
+    let mut entries = ambiguous_asset["identities"][0]["licenseEvidence"]
+        .as_array()
+        .cloned()
+        .expect("license evidence");
+    entries.push(serde_json::json!({
+        "path": "COPYING.or-later",
+        "purpose": "license-text",
+        "role": "license-text",
+        "license": "GPL-2.0-or-later",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }));
+    ambiguous_asset["identities"][0]["licenseEvidence"] = serde_json::json!(entries);
+    ambiguous_asset["evidence"]["licenseEvidenceCanonicalSha256"] = serde_json::json!(
+        canonical_json_sha256(&ambiguous_asset["identities"][0]["licenseEvidence"])
+    );
+    assert_eq!(
+        verify_against_source_asset(&review(), &fixture.context(), &ambiguous_asset),
+        Err(LicenseDecisionRefusal::AmbiguousLicenseText(
+            "GPL-2.0-or-later".into()
+        ))
+    );
+}
+
+#[test]
 fn a_reviewed_expression_that_is_not_the_identity_fact_is_refused() {
     // D2: `ed` is GPL-2.0-or-later, so a model review claiming MIT is refused
     // even when the rest of the evidence is exact.
@@ -408,11 +502,13 @@ fn documentation_is_never_ignored_and_obligations_are_exact() {
     assert_eq!(
         fixture.verified_with(&wrong_text),
         Err(LicenseDecisionRefusal::FileEvidenceMismatch(
-            "documentation.licenseTextPath"
+            "documentation.licenseTextSha256"
         ))
     );
     let mut no_text = review();
-    no_text.documentation[0].license_text_sha256 = "f".repeat(64);
+    no_text.documentation[0].license_text_path = "COPYING".into();
+    no_text.documentation[0].license_text_sha256 =
+        "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6".into();
     assert_eq!(
         fixture.verified_with(&no_text),
         Err(LicenseDecisionRefusal::FileEvidenceMismatch(
@@ -428,7 +524,9 @@ fn documentation_is_never_ignored_and_obligations_are_exact() {
         ))
     );
     let mut wrong_text_path = review();
-    wrong_text_path.documentation[1].license_text_path = "main.c".into();
+    wrong_text_path.documentation[1].license_text_path = "doc/fdl.texi".into();
+    wrong_text_path.documentation[1].license_text_sha256 =
+        "a7e43ea88ee8fc4722d38482fd1a14c12bfbe2f0512d61980c810627b19cdce5".into();
     assert_eq!(
         fixture.verified_with(&wrong_text_path),
         Err(LicenseDecisionRefusal::FileEvidenceMismatch(
@@ -583,14 +681,14 @@ fn an_and_expression_keeps_every_conjunct_and_rejects_a_single_atom() {
     and_review.software_obligations = vec!["notice".into(), "source".into()];
     and_review.software_texts = vec![
         SoftwareTextEvidence {
-            path: "COPYING".into(),
-            license: "GPL-2.0-only".into(),
-            sha256: "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6".into(),
+            path: "ed.h".into(),
+            license: "GPL-2.0-or-later".into(),
+            sha256: "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58".into(),
         },
         SoftwareTextEvidence {
-            path: "MIT".into(),
+            path: "MIT.header".into(),
             license: "MIT".into(),
-            sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into(),
         },
     ];
     and_review.documentation.clear();
@@ -612,11 +710,11 @@ fn an_and_expression_keeps_every_conjunct_and_rejects_a_single_atom() {
     let mut missing_mit_text = and_review.clone();
     missing_mit_text
         .software_texts
-        .retain(|text| text.path == "COPYING");
+        .retain(|text| text.path == "ed.h");
     assert_eq!(
         verify_against_source_asset(&missing_mit_text, &context, &asset),
         Err(LicenseDecisionRefusal::FileEvidenceMismatch(
-            "softwareTexts.licenseText"
+            "softwareTexts.atoms"
         ))
     );
 
@@ -667,7 +765,9 @@ fn an_and_expression_keeps_every_conjunct_and_rejects_a_single_atom() {
         serde_json::json!(canonical_json_sha256(&missing_licensing_evidence));
     assert_eq!(
         verify_against_source_asset(&and_review, &context, &missing_mit_licensing),
-        Err(LicenseDecisionRefusal::PackageRightsMismatch("MIT".into()))
+        Err(LicenseDecisionRefusal::LicensingFactMismatch(
+            "MIT.header".into()
+        ))
     );
 }
 
@@ -762,18 +862,18 @@ fn text_digests_request_response_and_receipt_are_tamper_evident() {
     assert_eq!(
         fixture.verified_with(&text),
         Err(LicenseDecisionRefusal::FileEvidenceMismatch(
-            "softwareTexts.licenseText"
+            "softwareTextSha256"
         ))
     );
     let mut foreign_text = review();
     // The GFDL documentation text is real and trusted, but it is not the
-    // software licence text for GPL-2.0-or-later.
+    // selected software licensing fact for GPL-2.0-or-later.
     foreign_text.software_text_sha256 =
         "a7e43ea88ee8fc4722d38482fd1a14c12bfbe2f0512d61980c810627b19cdce5".into();
     assert_eq!(
         fixture.verified_with(&foreign_text),
         Err(LicenseDecisionRefusal::FileEvidenceMismatch(
-            "softwareTexts.licenseText"
+            "softwareTextSha256"
         ))
     );
     let mut request = review();
@@ -1487,7 +1587,7 @@ fn model_obligation_prose_is_ignored_and_the_raw_review_is_immutable() {
     assert_eq!(decision.provenance()["modelObligationsIgnored"], true);
     assert_eq!(
         decision.provenance()["contractRevision"],
-        "license-review-v3-file-package-rights"
+        "license-review-v4-selected-grant-derived-text"
     );
     assert_eq!(
         live_style, raw,
@@ -1500,13 +1600,15 @@ fn the_live_ed_review_is_a_typed_file_and_package_rights_projection() {
     let fixture = Fixture::new();
     let mut live = review();
     live.software_texts = vec![SoftwareTextEvidence {
-        path: "COPYING".into(),
+        path: "ed.h".into(),
         license: "GPL-2.0-or-later".into(),
-        sha256: "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6".into(),
+        sha256: "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58".into(),
     }];
-    live.documentation[1].license_text_path = "COPYING".into();
+    live.software_text_sha256 =
+        "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58".into();
+    live.documentation[1].license_text_path = "ed.h".into();
     live.documentation[1].license_text_sha256 =
-        "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6".into();
+        "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58".into();
     let raw = live.clone();
     let decision = fixture
         .verified_with(&live)
@@ -1515,7 +1617,7 @@ fn the_live_ed_review_is_a_typed_file_and_package_rights_projection() {
     assert_eq!(decision.documentation_obligations, ["notice", "source"]);
     assert_eq!(
         decision.provenance()["contractRevision"],
-        "license-review-v3-file-package-rights"
+        "license-review-v4-selected-grant-derived-text"
     );
     assert_eq!(decision.provenance()["fileLabelSource"], "ASSET");
     assert_eq!(decision.provenance()["modelTextLicenseIgnored"], true);
@@ -1550,9 +1652,7 @@ fn package_and_document_grants_fail_closed_without_exact_facts() {
         serde_json::json!(canonical_json_sha256(&license_evidence));
     assert_eq!(
         verify_against_source_asset(&review(), &fixture.context(), &no_grants),
-        Err(LicenseDecisionRefusal::PackageRightsMismatch(
-            "GPL-2.0-or-later".into()
-        ))
+        Err(LicenseDecisionRefusal::LicensingFactMismatch("ed.h".into()))
     );
 
     let mut no_doc_grant = source_asset().clone();

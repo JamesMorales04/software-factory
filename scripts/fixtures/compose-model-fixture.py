@@ -36,6 +36,7 @@ PHASES = (
     "planner",
     "environment",
     "spec",
+    "license_evidence_review",
     "semantic_review",
     "other",
 )
@@ -112,6 +113,13 @@ def classify_prompt(system, user=""):
         return "planner"
     if "bounded Software Factory Spec Manager" in system:
         return "spec"
+    if (
+        "bounded Intelligent Lead reviewing the exact licence identity evidence"
+        in system
+        or "bounded Intelligent Lead reviewing the exact licence identity evidence"
+        in user
+    ):
+        return "license_evidence_review"
     if "Review exactly one frozen Candidate EnvironmentPlan" in system:
         return "environment"
     if looks_like_environment_review(user):
@@ -496,6 +504,177 @@ def environment_review(user):
     )
 
 
+def _review_block(user, marker, end_marker):
+    start = user.find(marker)
+    if start < 0:
+        raise ValueError(f"licence review prompt has no {marker.strip()}")
+    start += len(marker)
+    end = user.find(end_marker, start)
+    if end < 0:
+        raise ValueError(f"licence review prompt has no {end_marker.strip()}")
+    return json.loads(user[start:end])
+
+
+def _fixture_text_supports(asset_license, right):
+    if not isinstance(asset_license, str) or not isinstance(right, str):
+        return False
+    if asset_license == right:
+        return True
+    if right.endswith("-or-later"):
+        return asset_license == f"{right[:-len('-or-later')]}-only"
+    return False
+
+
+def license_evidence_review(user):
+    """Exact v4 licence review for the deterministic one-prompt lane.
+
+    The Lead selects the exact role=licensing fact per atom; Core derives the
+    unique purpose/role=license-text asset. The negative header variant returns
+    a text asset where the fact is required so Core fails closed.
+    """
+    context = _review_block(user, "Review context:\n", "\n\nEnvironmentPlan (exact):")
+    plan = _review_block(user, "EnvironmentPlan (exact):\n", "\n\nJSON Schema:")
+    asset = context.get("licenseEvidenceAsset") or {}
+    identities = asset.get("identities") or []
+    if not identities:
+        raise ValueError("licence review context has no identity evidence")
+    packages = plan.get("packages") or []
+    identity = None
+    for package in packages:
+        identity = next(
+            (
+                item
+                for item in identities
+                if item.get("name") == package.get("name")
+                and item.get("version") == package.get("version")
+            ),
+            None,
+        )
+        if identity is not None:
+            break
+    if identity is None:
+        identity = identities[0]
+    entries = identity.get("licenseEvidence") or []
+    license_expression = identity.get("license") or ""
+    atoms = [atom.strip() for atom in license_expression.split(" AND ") if atom.strip()]
+    if not atoms:
+        raise ValueError("licence review identity has no exact atom")
+    software_texts = []
+    for atom in atoms:
+        facts = [
+            entry
+            for entry in entries
+            if entry.get("role") == "licensing"
+            and entry.get("license") == atom
+            and entry.get("purpose") in ("header", "source-version")
+        ]
+        if not facts:
+            raise ValueError(f"licence review identity has no exact fact for {atom}")
+        fact = next(
+            (entry for entry in facts if entry.get("purpose") == "header"),
+            facts[0],
+        )
+        software_texts.append(
+            {
+                "path": fact["path"],
+                "license": atom,
+                "sha256": fact["sha256"],
+            }
+        )
+    runtime_context = context(context.get("requestId", "")) or {}
+    negative = (
+        runtime_context.get("fixtureVariant")
+        or os.environ.get("FACTORY_UAT_NEGATIVE", "")
+    ).strip()
+    if negative == "license-header":
+        text = next(
+            (
+                entry
+                for entry in entries
+                if entry.get("purpose") == "license-text"
+                and entry.get("role") == "license-text"
+            ),
+            None,
+        )
+        if text is None:
+            raise ValueError("negative licence review has no text asset")
+        software_texts = [
+            {
+                "path": text["path"],
+                "license": atoms[0],
+                "sha256": text["sha256"],
+            }
+        ]
+    documentation = []
+    for output in identity.get("outputFiles") or []:
+        if output.get("purpose") != "documentation":
+            continue
+        doc_license = output.get("license")
+        fact = next(
+            (
+                entry
+                for entry in entries
+                if entry.get("role") == "licensing"
+                and entry.get("license") == doc_license
+            ),
+            None,
+        )
+        if fact is not None:
+            text_path = fact["path"]
+            text_sha256 = fact["sha256"]
+        else:
+            text = next(
+                (
+                    entry
+                    for entry in entries
+                    if entry.get("role") == "license-text"
+                    and _fixture_text_supports(entry.get("license"), doc_license)
+                ),
+                None,
+            )
+            if text is None:
+                raise ValueError(f"licence review documentation has no text for {doc_license}")
+            text_path = text["path"]
+            text_sha256 = text["sha256"]
+        documentation.append(
+            {
+                "path": output["path"],
+                "license": doc_license,
+                "outputSha256": output["sha256"],
+                "licenseTextPath": text_path,
+                "licenseTextSha256": text_sha256,
+                "obligations": ["notice", "source"],
+            }
+        )
+    return chat_response(
+        {
+            "decision": "ACCEPT",
+            "pin": identity["pin"],
+            "name": identity["name"],
+            "version": identity["version"],
+            "outputDrvPath": identity["output"]["drvPath"],
+            "outputStorePath": identity["output"]["storePath"],
+            "outputNarHash": identity["output"]["narHash"],
+            "sourceDrvPath": identity["source"]["drvPath"],
+            "sourceStorePath": identity["source"]["storePath"],
+            "sourceOutputHash": identity["source"]["outputHash"],
+            "licenseExpression": license_expression,
+            "softwareTextSha256": software_texts[0]["sha256"],
+            "softwareTexts": software_texts,
+            "selectedBranch": license_expression,
+            "documentation": documentation,
+            "useContext": "commercial-development",
+            "commercialUse": True,
+            "paymentRequired": False,
+            "obligationsReviewed": True,
+            "softwareObligations": ["notice", "source"],
+            "documentationObligations": ["notice", "source"],
+        },
+        1200,
+        500,
+    )
+
+
 def spec_draft(user):
     payload = json.loads(user)
     units = ((payload.get("workGraph") or {}).get("units")) or []
@@ -619,6 +798,8 @@ class Handler(BaseHTTPRequestHandler):
                     response = environment_review(user)
                 elif phase == "spec":
                     response = spec_draft(user)
+                elif phase == "license_evidence_review":
+                    response = license_evidence_review(user)
                 elif phase == "semantic_review":
                     response = semantic_review(user)
                 elif phase == "assessment":

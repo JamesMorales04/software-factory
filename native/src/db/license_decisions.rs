@@ -626,6 +626,68 @@ impl Database {
         rows.iter().map(decision_from_row).collect()
     }
 
+    /// Resolve one already-approved Owner licence delegation for the exact
+    /// request, plan and signed identity-facts receipt. The runner may use it;
+    /// it never creates, renews or widens a delegation.
+    pub async fn current_license_delegation_for_plan(
+        &self,
+        project_id: &str,
+        request_id: &str,
+        plan_sha256: &str,
+        receipt_nonce: &str,
+    ) -> Result<Option<super::AgenticOwnerDecisionRecord>, Error> {
+        let now = Utc::now().to_rfc3339();
+        let decisions = self
+            .agentic_owner_decisions(Some(project_id), false)
+            .await?;
+        for decision in decisions {
+            if decision.request_id.as_deref() != Some(request_id)
+                || decision.matter != LICENSE_DELEGATION_MATTER
+                || decision.status != "APPROVED"
+                || decision.selected_option.as_deref() != Some(LICENSE_DELEGATION_OPTION)
+                || decision.deadline.as_str() <= now.as_str()
+            {
+                continue;
+            }
+            let evidence = &decision.evidence;
+            if evidence.get("domain").and_then(serde_json::Value::as_str)
+                != Some("licenses-identity-evidence")
+                || evidence
+                    .get("planSha256")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(plan_sha256)
+                || evidence
+                    .get("identityFactsReceipt")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(receipt_nonce)
+                || evidence
+                    .get("pin")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none_or(str::is_empty)
+                || evidence
+                    .get("useContext")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none_or(str::is_empty)
+                || evidence
+                    .get("economicCriterion")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("no-mandatory-fee-commercial-use")
+                || evidence
+                    .get("revision")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0)
+                    == 0
+            {
+                continue;
+            }
+            if self.license_delegation_revoked(&decision.id).await? {
+                continue;
+            }
+            return Ok(Some(decision));
+        }
+        Ok(None)
+    }
+
     pub async fn license_delegation_revoked(&self, delegation_id: &str) -> Result<bool, Error> {
         let row = sqlx::query::query(
             "SELECT 1 FROM license_delegation_revocations WHERE delegation_id=?1",

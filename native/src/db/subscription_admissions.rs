@@ -446,6 +446,31 @@ impl Database {
         Ok(row.map(|(id,)| id))
     }
 
+    /// Latest admission for one intake/Lead scope. ACTIVE rows are preferred;
+    /// otherwise the newest row is returned so a truthful projection can show
+    /// ADMISSION_INACTIVE/ADMISSION_EXPIRED. This is a read-only description;
+    /// the dispatch guard still re-evaluates the exact admission.
+    pub async fn subscription_scope_admission_for_request(
+        &self,
+        scope: &str,
+    ) -> Result<Option<ScopeAdmissionRecord>, Error> {
+        let mut connection = self.pool.acquire().await?;
+        let id: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT admission_id FROM subscription_scope_admissions
+             WHERE intake_request_id=?1 OR lead_request_id=?1
+             ORDER BY CASE WHEN state='ACTIVE' THEN 0 ELSE 1 END,
+                      created_at_ms DESC, admission_id DESC
+             LIMIT 1",
+        )
+        .bind(scope)
+        .fetch_optional(&mut *connection)
+        .await?;
+        match id {
+            Some((admission_id,)) => load_scope_admission(&mut connection, &admission_id).await,
+            None => Ok(None),
+        }
+    }
+
     pub async fn subscription_scope_admission(
         &self,
         admission_id: &str,

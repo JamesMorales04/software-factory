@@ -568,10 +568,24 @@ pub struct DocumentationDecision {
     pub path: String,
     pub license: String,
     pub output_sha256: String,
+    /// Exact `purpose=license-text` asset Core used for this output.
     pub license_text_path: String,
     pub license_text_sha256: String,
     pub obligations: Vec<String>,
     pub verdict: String,
+    /// The Lead-selected licensing fact, when the model named a fact rather
+    /// than a text asset. Empty for a direct text selection.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub licensing_fact_path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub licensing_fact_sha256: String,
+    /// The model's original selection before Core derived the exact text.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model_license_text_path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model_license_text_sha256: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub derivation_rule: String,
 }
 
 /// Exact Lead decision payload Core may persist. Fields are crate-visible for
@@ -767,6 +781,8 @@ pub enum LicenseDecisionRefusal {
     AssetCanonicalMismatch,
     AssetCanonicalHashMissing,
     LicenseTextDigest,
+    LicensingFactMismatch(String),
+    AmbiguousLicenseText(String),
     FileEvidenceMismatch(&'static str),
     PackageRightsMismatch(String),
     DocumentationGrantMismatch(String),
@@ -829,6 +845,14 @@ impl std::fmt::Display for LicenseDecisionRefusal {
             Self::LicenseTextDigest => {
                 formatter.write_str("the software licence text digest is not a trusted text")
             }
+            Self::LicensingFactMismatch(path) => write!(
+                formatter,
+                "the selected licensing fact {path} is not an exact role=licensing asset for its atom"
+            ),
+            Self::AmbiguousLicenseText(atom) => write!(
+                formatter,
+                "the selected licensing fact for {atom} has no unique compatible purpose=license-text asset"
+            ),
             Self::FileEvidenceMismatch(field) => write!(
                 formatter,
                 "the file evidence {field} is not the exact authenticated asset value"
@@ -2071,74 +2095,130 @@ fn verify_against_source_asset(
     if selected_atoms.is_empty() {
         return Err(LicenseDecisionRefusal::BranchNotInExpression);
     }
-    let mut text_by_path: BTreeMap<&str, (&str, &str)> = BTreeMap::new();
-    let mut text_by_license: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for entry in license_entries {
-        let sha = exact(entry, "sha256").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
-        if !is_sha256(sha) {
-            return Err(LicenseDecisionRefusal::AssetCanonicalMismatch);
-        }
-        if let (Some(path), Some(license)) = (exact(entry, "path"), exact(entry, "license"))
-            && exact(entry, "purpose") == Some("license-text")
-        {
-            text_by_path.insert(path, (license, sha));
-            text_by_license.entry(license).or_default().insert(sha);
-        }
+    // The model selects the exact licensing fact per selected atom. Core then
+    // derives the unique compatible `purpose/role=license-text` asset. The raw
+    // model output is never rewritten, and no family/suffix shortcut is used.
+    if review.software_texts.is_empty() {
+        return Err(LicenseDecisionRefusal::FileEvidenceMismatch(
+            "softwareTexts",
+        ));
     }
-    let mut seen_texts = BTreeSet::new();
+    let mut selected_facts: BTreeMap<String, &serde_json::Value> = BTreeMap::new();
+    let mut seen_fact_paths = BTreeSet::new();
     for text in &review.software_texts {
-        if !seen_texts.insert(text.sha256.as_str()) {
+        let entry = license_entries
+            .iter()
+            .find(|entry| {
+                exact(entry, "path") == Some(text.path.as_str())
+                    && exact(entry, "sha256") == Some(text.sha256.as_str())
+                    && exact(entry, "role") == Some("licensing")
+                    && exact(entry, "license") == Some(text.license.as_str())
+                    && matches!(exact(entry, "purpose"), Some("header" | "source-version"))
+            })
+            .ok_or_else(|| LicenseDecisionRefusal::LicensingFactMismatch(text.path.clone()))?;
+        if !selected_atoms
+            .iter()
+            .any(|atom| atom == text.license.as_str())
+        {
+            return Err(LicenseDecisionRefusal::LicenseExpressionMismatch);
+        }
+        if !seen_fact_paths.insert(text.path.as_str()) {
             return Err(LicenseDecisionRefusal::LicenseTextDigest);
         }
-        let Some((_asset_license, sha)) = text_by_path.get(text.path.as_str()) else {
-            return Err(LicenseDecisionRefusal::FileEvidenceMismatch(
-                "softwareTexts.path",
-            ));
-        };
-        // The selected path and digest are the Lead's semantic choice. The
-        // text's own licence label is shared-asset data, never a model claim;
-        // a model label that differs from the asset is diagnostic only.
-        if *sha != text.sha256 {
-            return Err(LicenseDecisionRefusal::FileEvidenceMismatch(
-                "softwareTexts.sha256",
+        if selected_facts.insert(text.license.clone(), entry).is_some() {
+            return Err(LicenseDecisionRefusal::AmbiguousLicenseText(
+                text.license.clone(),
             ));
         }
     }
+    if selected_facts.len() != selected_atoms.len()
+        || selected_atoms
+            .iter()
+            .any(|atom| !selected_facts.contains_key(atom))
+    {
+        return Err(LicenseDecisionRefusal::FileEvidenceMismatch(
+            "softwareTexts.atoms",
+        ));
+    }
+    if !review.software_text_sha256.is_empty()
+        && !selected_facts
+            .values()
+            .any(|fact| exact(fact, "sha256") == Some(review.software_text_sha256.as_str()))
+    {
+        return Err(LicenseDecisionRefusal::FileEvidenceMismatch(
+            "softwareTextSha256",
+        ));
+    }
+
+    let mut licensing_facts = Vec::new();
+    let mut license_texts = Vec::new();
+    let mut file_evidence = Vec::new();
+    let mut seen_texts = BTreeSet::new();
     let mut package_rights = Vec::new();
     for atom in &selected_atoms {
-        let grant = license_entries.iter().find(|entry| {
-            exact(entry, "role") == Some("licensing")
-                && exact(entry, "license") == Some(atom.as_str())
-                && exact(entry, "path").is_some()
-                && exact(entry, "sha256").is_some()
-        });
-        let Some(grant) = grant else {
-            return Err(LicenseDecisionRefusal::PackageRightsMismatch(atom.clone()));
-        };
+        let fact = *selected_facts
+            .get(atom)
+            .ok_or_else(|| LicenseDecisionRefusal::PackageRightsMismatch(atom.clone()))?;
+        let fact_path =
+            exact(fact, "path").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+        let fact_sha =
+            exact(fact, "sha256").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+        let fact_license =
+            exact(fact, "license").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+        let fact_purpose =
+            exact(fact, "purpose").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+        let candidates = license_entries
+            .iter()
+            .filter(|entry| {
+                exact(entry, "purpose") == Some("license-text")
+                    && exact(entry, "role") == Some("license-text")
+                    && exact(entry, "license")
+                        .is_some_and(|license| file_text_supports(license, atom, true))
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 {
+            return Err(LicenseDecisionRefusal::AmbiguousLicenseText(atom.clone()));
+        }
+        let text = candidates[0];
+        let text_path =
+            exact(text, "path").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+        let text_sha =
+            exact(text, "sha256").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+        let text_license =
+            exact(text, "license").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+        licensing_facts.push(serde_json::json!({
+            "atom": atom,
+            "path": fact_path,
+            "sha256": fact_sha,
+            "license": fact_license,
+            "purpose": fact_purpose,
+            "role": "licensing",
+        }));
+        license_texts.push(serde_json::json!({
+            "atom": atom,
+            "path": text_path,
+            "sha256": text_sha,
+            "license": text_license,
+        }));
+        if seen_texts.insert((text_path.to_owned(), text_sha.to_owned())) {
+            file_evidence.push(serde_json::json!({
+                "path": text_path,
+                "sha256": text_sha,
+                "assetLicense": text_license,
+                "role": "license-text",
+                "atom": atom,
+                "modelPath": fact_path,
+                "modelSha256": fact_sha,
+                "derivationRule": LICENSE_DERIVATION_RULE,
+            }));
+        }
         package_rights.push(serde_json::json!({
             "atom": atom,
-            "license": exact(grant, "license"),
-            "path": exact(grant, "path"),
-            "sha256": exact(grant, "sha256"),
+            "license": fact_license,
+            "path": fact_path,
+            "sha256": fact_sha,
             "source": identity.get("source"),
         }));
-        let covered = review.software_texts.iter().any(|text| {
-            text_by_path
-                .get(text.path.as_str())
-                .is_some_and(|(asset_license, sha)| {
-                    *sha == text.sha256 && file_text_supports(asset_license, atom, true)
-                })
-        }) || (selected_atoms.len() == 1
-            && review.software_texts.is_empty()
-            && text_by_license.iter().any(|(license, digests)| {
-                file_text_supports(license, atom, true)
-                    && digests.contains(review.software_text_sha256.as_str())
-            }));
-        if !covered {
-            return Err(LicenseDecisionRefusal::FileEvidenceMismatch(
-                "softwareTexts.licenseText",
-            ));
-        }
     }
     let trusted_text = true;
 
@@ -2194,17 +2274,9 @@ fn verify_against_source_asset(
             )
         })
         .collect::<BTreeSet<_>>();
-    let evidence_by_path = license_entries
+    let asset_entry_by_path = license_entries
         .iter()
-        .filter_map(|entry| {
-            Some((
-                exact(entry, "path")?,
-                (
-                    exact(entry, "license").unwrap_or_default(),
-                    exact(entry, "sha256").unwrap_or_default(),
-                ),
-            ))
-        })
+        .filter_map(|entry| Some((exact(entry, "path")?, entry)))
         .collect::<BTreeMap<_, _>>();
     let mut actual_docs = BTreeSet::new();
     let mut documentation = Vec::new();
@@ -2238,17 +2310,79 @@ fn verify_against_source_asset(
                 LicenseDecisionRefusal::DocumentationGrantMismatch(document.path.clone())
             })?;
         let _ = output_grant;
-        let trusted = evidence_by_path
+        let model_text = *asset_entry_by_path
             .get(document.license_text_path.as_str())
-            .is_some_and(|(license, digest)| {
-                file_text_supports(license, &document.license, true)
-                    && *digest == document.license_text_sha256
-            });
-        if !trusted {
+            .ok_or_else(|| {
+                LicenseDecisionRefusal::DocumentationGrantMismatch(document.path.clone())
+            })?;
+        if exact(model_text, "sha256") != Some(document.license_text_sha256.as_str()) {
+            return Err(LicenseDecisionRefusal::FileEvidenceMismatch(
+                "documentation.licenseTextSha256",
+            ));
+        }
+        // The Lead may name the exact licensing fact (man page: ed.h) or a
+        // text asset (ed.info: doc/fdl.texi). Core always records the exact
+        // supporting text and, when present, the exact fact; it never maps a
+        // name or family to a different asset.
+        let (derived_text, licensing_fact_path, licensing_fact_sha256) =
+            if exact(model_text, "role") == Some("license-text") {
+                if !matches!(
+                    exact(model_text, "purpose"),
+                    Some("license-text" | "documentation-license-text")
+                ) {
+                    return Err(LicenseDecisionRefusal::DocumentationGrantMismatch(
+                        document.path.clone(),
+                    ));
+                }
+                (model_text, String::new(), String::new())
+            } else if exact(model_text, "role") == Some("licensing") {
+                if exact(model_text, "license") != Some(document.license.as_str()) {
+                    return Err(LicenseDecisionRefusal::DocumentationGrantMismatch(
+                        document.path.clone(),
+                    ));
+                }
+                let candidates = license_entries
+                    .iter()
+                    .filter(|entry| {
+                        matches!(
+                            exact(entry, "purpose"),
+                            Some("license-text" | "documentation-license-text")
+                        ) && exact(entry, "role") == Some("license-text")
+                            && exact(entry, "license").is_some_and(|license| {
+                                file_text_supports(license, &document.license, true)
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                if candidates.len() != 1 {
+                    return Err(LicenseDecisionRefusal::AmbiguousLicenseText(
+                        document.license.clone(),
+                    ));
+                }
+                (
+                    candidates[0],
+                    document.license_text_path.clone(),
+                    document.license_text_sha256.clone(),
+                )
+            } else {
+                return Err(LicenseDecisionRefusal::DocumentationGrantMismatch(
+                    document.path.clone(),
+                ));
+            };
+        if !file_text_supports(
+            exact(derived_text, "license").unwrap_or_default(),
+            &document.license,
+            true,
+        ) {
             return Err(LicenseDecisionRefusal::FileEvidenceMismatch(
                 "documentation.licenseTextPath",
             ));
         }
+        let derived_text_path = exact(derived_text, "path")
+            .ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?
+            .to_owned();
+        let derived_text_sha256 = exact(derived_text, "sha256")
+            .ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?
+            .to_owned();
         let verdict = match evaluate(
             &document.license,
             LicenseContext::Closure,
@@ -2267,10 +2401,15 @@ fn verify_against_source_asset(
             path: document.path.clone(),
             license: document.license.clone(),
             output_sha256: document.output_sha256.clone(),
-            license_text_path: document.license_text_path.clone(),
-            license_text_sha256: document.license_text_sha256.clone(),
+            license_text_path: derived_text_path,
+            license_text_sha256: derived_text_sha256,
             obligations: obligations.clone(),
             verdict: verdict.to_owned(),
+            licensing_fact_path,
+            licensing_fact_sha256,
+            model_license_text_path: document.license_text_path.clone(),
+            model_license_text_sha256: document.license_text_sha256.clone(),
+            derivation_rule: LICENSE_DERIVATION_RULE.into(),
         });
     }
     if actual_docs != expected_docs {
@@ -2278,20 +2417,7 @@ fn verify_against_source_asset(
     }
     let documentation_obligations = documentation_obligation_set.into_iter().collect::<Vec<_>>();
     documentation.sort_by(|left, right| left.path.cmp(&right.path));
-    let file_evidence = review
-        .software_texts
-        .iter()
-        .map(|text| {
-            serde_json::json!({
-                "path": text.path,
-                "sha256": text.sha256,
-                "assetLicense": text_by_path.get(text.path.as_str()).map(|(license, _)| *license),
-                "role": "license-text",
-            })
-        })
-        .collect::<Vec<_>>();
-    let documentation_grants = review
-        .documentation
+    let documentation_grants = documentation
         .iter()
         .map(|document| {
             serde_json::json!({
@@ -2300,9 +2426,15 @@ fn verify_against_source_asset(
                 "outputSha256": document.output_sha256,
                 "licenseTextPath": document.license_text_path,
                 "licenseTextSha256": document.license_text_sha256,
-                "textAssetLicense": evidence_by_path
-                    .get(document.license_text_path.as_str())
-                    .map(|(license, _)| *license),
+                "licensingFactPath": document.licensing_fact_path,
+                "licensingFactSha256": document.licensing_fact_sha256,
+                "textAssetLicense": exact(
+                    asset_entry_by_path
+                        .get(document.license_text_path.as_str())
+                        .copied()
+                        .unwrap_or(&serde_json::Value::Null),
+                    "license",
+                ),
                 "grantSource": "OUTPUT_FILE_ASSET",
             })
         })
@@ -2359,12 +2491,16 @@ fn verify_against_source_asset(
         "fileEvidence": file_evidence,
         "documentationGrants": documentation_grants,
         "modelObligationsIgnored": true,
-        "contractRevision": "license-review-v3-file-package-rights",
+        "contractRevision": LICENSE_DECISION_CONTRACT_REVISION_V4,
         "softwareTexts": review.software_texts,
+        "licensingFacts": licensing_facts.clone(),
+        "licenseTexts": license_texts.clone(),
+        "derivationRule": LICENSE_DERIVATION_RULE,
+        "modelSoftwareTextSha256": review.software_text_sha256,
         "stage": context.binding.stage_json(),
         "candidate": context.binding.candidate(),
     });
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "projectId": context.project_id,
         "leadRequestId": context.lead_request_id,
         "leadReservationId": actor.reservation_id(),
@@ -2405,7 +2541,7 @@ fn verify_against_source_asset(
         "fileEvidence": file_evidence.clone(),
         "documentationGrants": documentation_grants.clone(),
         "modelObligationsIgnored": true,
-        "contractRevision": "license-review-v3-file-package-rights",
+        "contractRevision": LICENSE_DECISION_CONTRACT_REVISION_V4,
         "catalogSha256": context.binding.catalog_sha256(),
         "profileSha256": context.binding.profile_sha256(),
         "policySha256": context.binding.policy_sha256(),
@@ -2417,6 +2553,11 @@ fn verify_against_source_asset(
         "decision": review.decision,
         "revision": mandate.delegation_revision(),
     });
+    payload["licensingFacts"] = serde_json::Value::Array(licensing_facts);
+    payload["licenseTexts"] = serde_json::Value::Array(license_texts);
+    payload["derivationRule"] = serde_json::Value::String(LICENSE_DERIVATION_RULE.into());
+    payload["modelSoftwareTextSha256"] =
+        serde_json::Value::String(review.software_text_sha256.clone());
     let content_sha256 = canonical_json_sha256(&payload);
 
     Ok(VerifiedLicenseDecision {
@@ -2512,6 +2653,8 @@ impl VerifiedLicenseDecisionOverlay {
 }
 
 const LICENSE_DECISION_CONTRACT_REVISION: &str = "license-review-v3-file-package-rights";
+const LICENSE_DECISION_CONTRACT_REVISION_V4: &str = "license-review-v4-selected-grant-derived-text";
+const LICENSE_DERIVATION_RULE: &str = "SELECTED_LICENSING_FACT_TO_UNIQUE_LICENSE_TEXT";
 
 fn decision_provenance(
     record: &LicenseDecisionRecord,
@@ -2538,9 +2681,12 @@ fn decision_content_payload(
     record: &LicenseDecisionRecord,
 ) -> Result<serde_json::Value, LicenseDecisionRefusal> {
     let provenance = decision_provenance(record)?;
+    let contract_revision = provenance_value(provenance, "contractRevision")?
+        .as_str()
+        .ok_or(LicenseDecisionRefusal::ContractRevisionMismatch)?;
     let documentation = serde_json::to_value(&record.documentation)
         .map_err(|_| LicenseDecisionRefusal::DecisionContentDigestMismatch)?;
-    Ok(serde_json::json!({
+    let mut payload = serde_json::json!({
         "projectId": record.project_id,
         "leadRequestId": record.lead_request_id,
         "leadReservationId": record.lead_reservation_id,
@@ -2592,13 +2738,20 @@ fn decision_content_payload(
         "paymentRequired": record.payment_required,
         "decision": record.decision,
         "revision": record.revision,
-    }))
+    });
+    if contract_revision == LICENSE_DECISION_CONTRACT_REVISION_V4 {
+        payload["licensingFacts"] = provenance_value(provenance, "licensingFacts")?.clone();
+        payload["licenseTexts"] = provenance_value(provenance, "licenseTexts")?.clone();
+        payload["derivationRule"] = provenance_value(provenance, "derivationRule")?.clone();
+        payload["modelSoftwareTextSha256"] =
+            provenance_value(provenance, "modelSoftwareTextSha256")?.clone();
+    }
+    Ok(payload)
 }
 
-/// Validate the file/package/document rights projection against the exact
-/// asset, selected branch and source. The model's text label is diagnostic;
-/// the asset label is the only authority. A GPL-2.0-only text may support an
-/// `or-later` grant only through this exact projection, never a family shortcut.
+/// Validate the v3 file/package/document rights projection against the exact
+/// asset, selected branch and source. Kept for stored historical decisions; new
+/// decisions use the v4 selected-fact/derived-text contract.
 fn verified_v3_rights(
     record: &LicenseDecisionRecord,
     identity: &serde_json::Value,
@@ -2790,6 +2943,311 @@ fn verified_v3_rights(
         expected_rights,
         serde_json::Value::Array(expected_docs),
     ))
+}
+
+/// Validate the v4 selected-fact/derived-text projection. The Lead selected an
+/// exact `role=licensing` fact per atom; Core derived the unique compatible
+/// `purpose/role=license-text` asset. Both are recorded and no raw output or
+/// source proof is rewritten.
+fn verified_v4_rights(
+    record: &LicenseDecisionRecord,
+    identity: &serde_json::Value,
+) -> Result<(serde_json::Value, serde_json::Value, serde_json::Value), LicenseDecisionRefusal> {
+    let provenance = decision_provenance(record)?;
+    let asset_entries = identity
+        .get("licenseEvidence")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+    let mut asset_by_path: BTreeMap<&str, &serde_json::Value> = BTreeMap::new();
+    let mut text_by_path: BTreeMap<&str, &serde_json::Value> = BTreeMap::new();
+    for entry in asset_entries {
+        let path = exact(entry, "path").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+        asset_by_path.insert(path, entry);
+        if exact(entry, "role") == Some("license-text")
+            && matches!(
+                exact(entry, "purpose"),
+                Some("license-text" | "documentation-license-text")
+            )
+        {
+            text_by_path.insert(path, entry);
+        }
+    }
+    let atoms = branch_atoms(&record.selected_branch)?;
+    let licensing_facts = provenance_value(provenance, "licensingFacts")?
+        .as_array()
+        .ok_or(LicenseDecisionRefusal::PackageRightsMismatch(
+            "licensingFacts".into(),
+        ))?;
+    let license_texts = provenance_value(provenance, "licenseTexts")?
+        .as_array()
+        .ok_or(LicenseDecisionRefusal::FileEvidenceMismatch("licenseTexts"))?;
+    if licensing_facts.len() != atoms.len() || license_texts.len() != atoms.len() {
+        return Err(LicenseDecisionRefusal::FileEvidenceMismatch(
+            "licensingFacts/licenseTexts",
+        ));
+    }
+    let mut fact_by_atom: BTreeMap<&str, &serde_json::Value> = BTreeMap::new();
+    for fact in licensing_facts {
+        let atom = exact(fact, "atom").ok_or(LicenseDecisionRefusal::LicenseExpressionMismatch)?;
+        let path = exact(fact, "path").ok_or(LicenseDecisionRefusal::LicensingFactMismatch(
+            atom.to_owned(),
+        ))?;
+        let sha = exact(fact, "sha256").ok_or(LicenseDecisionRefusal::LicensingFactMismatch(
+            atom.to_owned(),
+        ))?;
+        let entry = asset_by_path
+            .get(path)
+            .ok_or_else(|| LicenseDecisionRefusal::LicensingFactMismatch(path.to_owned()))?;
+        if exact(entry, "sha256") != Some(sha)
+            || exact(entry, "role") != Some("licensing")
+            || exact(entry, "license") != Some(atom)
+            || !matches!(exact(entry, "purpose"), Some("header" | "source-version"))
+            || !atoms.iter().any(|value| value == atom)
+        {
+            return Err(LicenseDecisionRefusal::LicensingFactMismatch(
+                path.to_owned(),
+            ));
+        }
+        if fact_by_atom.insert(atom, fact).is_some() {
+            return Err(LicenseDecisionRefusal::AmbiguousLicenseText(
+                atom.to_owned(),
+            ));
+        }
+    }
+    let mut text_by_atom: BTreeMap<&str, &serde_json::Value> = BTreeMap::new();
+    for text in license_texts {
+        let atom = exact(text, "atom").ok_or(LicenseDecisionRefusal::LicenseExpressionMismatch)?;
+        let path = exact(text, "path").ok_or(LicenseDecisionRefusal::FileEvidenceMismatch(
+            "licenseTexts.path",
+        ))?;
+        let sha = exact(text, "sha256").ok_or(LicenseDecisionRefusal::FileEvidenceMismatch(
+            "licenseTexts.sha256",
+        ))?;
+        let entry = text_by_path
+            .get(path)
+            .ok_or(LicenseDecisionRefusal::FileEvidenceMismatch(
+                "licenseTexts.path",
+            ))?;
+        if exact(entry, "sha256") != Some(sha)
+            || !exact(entry, "license")
+                .is_some_and(|license| file_text_supports(license, atom, true))
+            || !atoms.iter().any(|value| value == atom)
+        {
+            return Err(LicenseDecisionRefusal::FileEvidenceMismatch("licenseTexts"));
+        }
+        if text_by_atom.insert(atom, text).is_some() {
+            return Err(LicenseDecisionRefusal::AmbiguousLicenseText(
+                atom.to_owned(),
+            ));
+        }
+    }
+    if fact_by_atom.len() != atoms.len() || text_by_atom.len() != atoms.len() {
+        return Err(LicenseDecisionRefusal::FileEvidenceMismatch(
+            "licensingFacts/licenseTexts",
+        ));
+    }
+
+    // The raw model selection must be the exact fact recorded for its atom.
+    let software_texts = provenance_value(provenance, "softwareTexts")?
+        .as_array()
+        .ok_or(LicenseDecisionRefusal::FileEvidenceMismatch(
+            "softwareTexts",
+        ))?;
+    if software_texts.is_empty() {
+        return Err(LicenseDecisionRefusal::FileEvidenceMismatch(
+            "softwareTexts",
+        ));
+    }
+    for selected in software_texts {
+        let path = exact(selected, "path").ok_or(LicenseDecisionRefusal::FileEvidenceMismatch(
+            "softwareTexts.path",
+        ))?;
+        let sha = exact(selected, "sha256").ok_or(LicenseDecisionRefusal::FileEvidenceMismatch(
+            "softwareTexts.sha256",
+        ))?;
+        let license = exact(selected, "license").ok_or(
+            LicenseDecisionRefusal::FileEvidenceMismatch("softwareTexts.license"),
+        )?;
+        let fact =
+            fact_by_atom
+                .get(license)
+                .ok_or(LicenseDecisionRefusal::LicensingFactMismatch(
+                    path.to_owned(),
+                ))?;
+        if exact(fact, "path") != Some(path) || exact(fact, "sha256") != Some(sha) {
+            return Err(LicenseDecisionRefusal::LicensingFactMismatch(
+                path.to_owned(),
+            ));
+        }
+    }
+
+    let mut expected_file = Vec::new();
+    let mut seen_file = BTreeSet::new();
+    let mut expected_rights = Vec::new();
+    for atom in &atoms {
+        let fact = fact_by_atom[atom.as_str()];
+        let text = text_by_atom[atom.as_str()];
+        let fact_path =
+            exact(fact, "path").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+        let fact_sha =
+            exact(fact, "sha256").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+        let text_path =
+            exact(text, "path").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+        let text_sha =
+            exact(text, "sha256").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+        let text_license =
+            exact(text, "license").ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+        if seen_file.insert((text_path.to_owned(), text_sha.to_owned())) {
+            expected_file.push(serde_json::json!({
+                "path": text_path,
+                "sha256": text_sha,
+                "assetLicense": text_license,
+                "role": "license-text",
+                "atom": atom,
+                "modelPath": fact_path,
+                "modelSha256": fact_sha,
+                "derivationRule": LICENSE_DERIVATION_RULE,
+            }));
+        }
+        expected_rights.push(serde_json::json!({
+            "atom": atom,
+            "license": exact(fact, "license"),
+            "path": fact_path,
+            "sha256": fact_sha,
+            "source": identity.get("source"),
+        }));
+    }
+    if provenance_value(provenance, "fileEvidence")? != &serde_json::Value::Array(expected_file) {
+        return Err(LicenseDecisionRefusal::FileEvidenceMismatch("fileEvidence"));
+    }
+    if provenance_value(provenance, "packageRights")? != &serde_json::Value::Array(expected_rights)
+    {
+        return Err(LicenseDecisionRefusal::PackageRightsMismatch(
+            "packageRights".into(),
+        ));
+    }
+
+    let outputs = identity
+        .get("outputFiles")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(LicenseDecisionRefusal::AssetCanonicalMismatch)?;
+    let output_by_path: BTreeMap<&str, &serde_json::Value> = outputs
+        .iter()
+        .filter_map(|entry| Some((exact(entry, "path")?, entry)))
+        .collect();
+    let mut expected_docs = Vec::new();
+    for document in &record.documentation {
+        let output = output_by_path.get(document.path.as_str()).ok_or_else(|| {
+            LicenseDecisionRefusal::DocumentationGrantMismatch(document.path.clone())
+        })?;
+        if exact(output, "purpose") != Some("documentation")
+            || exact(output, "license") != Some(document.license.as_str())
+            || exact(output, "sha256") != Some(document.output_sha256.as_str())
+        {
+            return Err(LicenseDecisionRefusal::DocumentationGrantMismatch(
+                document.path.clone(),
+            ));
+        }
+        let text = text_by_path
+            .get(document.license_text_path.as_str())
+            .ok_or_else(|| {
+                LicenseDecisionRefusal::DocumentationGrantMismatch(document.path.clone())
+            })?;
+        if exact(text, "sha256") != Some(document.license_text_sha256.as_str())
+            || !exact(text, "license")
+                .is_some_and(|license| file_text_supports(license, &document.license, true))
+        {
+            return Err(LicenseDecisionRefusal::FileEvidenceMismatch(
+                "documentation.licenseTextPath",
+            ));
+        }
+        if !document.licensing_fact_path.is_empty() {
+            let fact = asset_by_path
+                .get(document.licensing_fact_path.as_str())
+                .ok_or_else(|| {
+                    LicenseDecisionRefusal::DocumentationGrantMismatch(document.path.clone())
+                })?;
+            if exact(fact, "sha256") != Some(document.licensing_fact_sha256.as_str())
+                || exact(fact, "role") != Some("licensing")
+                || exact(fact, "license") != Some(document.license.as_str())
+            {
+                return Err(LicenseDecisionRefusal::DocumentationGrantMismatch(
+                    document.path.clone(),
+                ));
+            }
+        }
+        let obligations = catalogue_obligations(&document.license)
+            .ok_or(LicenseDecisionRefusal::DocumentationUnknown)?;
+        if document.obligations != obligations {
+            return Err(LicenseDecisionRefusal::ObligationsMismatch);
+        }
+        expected_docs.push(serde_json::json!({
+            "path": document.path,
+            "license": document.license,
+            "outputSha256": document.output_sha256,
+            "licenseTextPath": document.license_text_path,
+            "licenseTextSha256": document.license_text_sha256,
+            "licensingFactPath": document.licensing_fact_path,
+            "licensingFactSha256": document.licensing_fact_sha256,
+            "textAssetLicense": exact(text, "license"),
+            "grantSource": "OUTPUT_FILE_ASSET",
+        }));
+    }
+    expected_docs.sort_by_key(|entry| {
+        entry
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    });
+    let mut stored_docs = provenance_value(provenance, "documentationGrants")?
+        .as_array()
+        .ok_or(LicenseDecisionRefusal::DocumentationGrantMismatch(
+            "documentationGrants".into(),
+        ))?
+        .clone();
+    stored_docs.sort_by_key(|entry| {
+        entry
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    });
+    if stored_docs != expected_docs {
+        return Err(LicenseDecisionRefusal::DocumentationGrantMismatch(
+            "documentationGrants".into(),
+        ));
+    }
+    Ok((
+        serde_json::Value::Array(
+            provenance_value(provenance, "fileEvidence")?
+                .as_array()
+                .cloned()
+                .unwrap_or_default(),
+        ),
+        serde_json::Value::Array(
+            provenance_value(provenance, "packageRights")?
+                .as_array()
+                .cloned()
+                .unwrap_or_default(),
+        ),
+        serde_json::Value::Array(expected_docs),
+    ))
+}
+
+fn verified_rights(
+    record: &LicenseDecisionRecord,
+    identity: &serde_json::Value,
+) -> Result<(serde_json::Value, serde_json::Value, serde_json::Value), LicenseDecisionRefusal> {
+    let revision = decision_provenance(record)?
+        .get("contractRevision")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(LicenseDecisionRefusal::ContractRevisionMismatch)?;
+    match revision {
+        LICENSE_DECISION_CONTRACT_REVISION => verified_v3_rights(record, identity),
+        LICENSE_DECISION_CONTRACT_REVISION_V4 => verified_v4_rights(record, identity),
+        _ => Err(LicenseDecisionRefusal::ContractRevisionMismatch),
+    }
 }
 
 /// Re-verify one persisted decision for the exact plan/spec and emit the
@@ -2996,8 +3454,11 @@ pub fn verify_license_decision_overlay(
     // first proves the stored decision payload/provenance is canonical, then
     // emits an overlay that binds that decision digest plus the exact v3 rights.
     // The builder verifies the overlay digest and facts; it never reads the DB.
-    let (file_evidence, package_rights, documentation_grants) =
-        verified_v3_rights(record, identity)?;
+    let (file_evidence, package_rights, documentation_grants) = verified_rights(record, identity)?;
+    let contract_revision = decision_provenance(record)?
+        .get("contractRevision")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(LicenseDecisionRefusal::ContractRevisionMismatch)?;
     if !is_sha256(&record.content_sha256) {
         return Err(LicenseDecisionRefusal::DecisionContentDigestMismatch);
     }
@@ -3037,7 +3498,7 @@ pub fn verify_license_decision_overlay(
         "revokedAt": record.revoked_at,
         "delegationDeadline": record.delegation_deadline,
         "decisionContentSha256": record.content_sha256,
-        "contractRevision": LICENSE_DECISION_CONTRACT_REVISION,
+        "contractRevision": contract_revision,
         "fileLabelSource": "ASSET",
         "packageRightsSource": "LICENSING_FACT",
         "documentationGrantSource": "OUTPUT_FILE_ASSET",
@@ -3049,6 +3510,12 @@ pub fn verify_license_decision_overlay(
         "sourceEvidence": source.to_json(),
         "sourceEvidenceSha256": source_digest,
     });
+    if contract_revision == LICENSE_DECISION_CONTRACT_REVISION_V4 {
+        let provenance = decision_provenance(record)?;
+        receipt["licensingFacts"] = provenance_value(provenance, "licensingFacts")?.clone();
+        receipt["licenseTexts"] = provenance_value(provenance, "licenseTexts")?.clone();
+        receipt["derivationRule"] = provenance_value(provenance, "derivationRule")?.clone();
+    }
     // Recompute one canonical digest over the emitted overlay (without the
     // digest itself) so the builder verifies the exact delivered bytes.
     let content_sha256 = canonical_json_sha256(&receipt);

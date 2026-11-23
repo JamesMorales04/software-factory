@@ -1,7 +1,8 @@
 # Licence decision integration interface (Core98 ↔ integrator)
 
-Status: coordination contract for the split backend/integrator work. No runtime
-change. Core98 owns `planning/license_decision.rs`,
+Status: implemented integration contract for the v4 selected-fact/derived-text
+decision and the minimal autonomous licence-gate reuse. Core98 owns
+`planning/license_decision.rs`,
 `planning/lead_classification.rs`, `db/license_decisions.rs`, migration `0084`
 and the model-call changes; the integrator owns the Core bin endpoints,
 builder and Office. Both sides must use the exact names below before replacing
@@ -87,7 +88,44 @@ decision digest without a matching overlay digest is rejected.
 the asset-owned licence facts, selected branch and output grants. The model's
 text label is diagnostic only. A `GPL-2.0-only` text may support the exact
 `GPL-2.0-or-later` grant only through the typed relation; no family, suffix or
-`-only`/`-or-later` shortcut is accepted. The builder marks any mismatch `STALE`
+`-only`/`-or-later` shortcut is accepted.
+
+### v4 selected-fact / derived-text contract
+
+Stored v3 decisions keep their v3 digest and verification. New decisions use
+`contractRevision: license-review-v4-selected-grant-derived-text`:
+
+- The Lead selects one exact `role=licensing` fact per selected atom
+  (`purpose=header` or `source-version`) in `softwareTexts`. It must not put a
+  `COPYING`/`purpose=license-text` asset there.
+- Core derives exactly one compatible
+  `purpose=license-text, role=license-text` asset per atom. Zero or multiple
+  candidates fail closed; there is no family, name or suffix fallback.
+- The decision and overlay record both: `licensingFacts` (selected path/sha/
+  licence/atom), `licenseTexts` (derived path/sha/licence/atom),
+  `derivationRule: SELECTED_LICENSING_FACT_TO_UNIQUE_LICENSE_TEXT`,
+  `fileEvidence` (derived text), `packageRights` (selected fact) and per-document
+  `licensingFactPath/Sha256` plus derived `licenseTextPath/Sha256`.
+- Documentation may select the exact licensing fact for the output grant (the
+  man page selects `ed.h`, GPL-2.0-or-later) or an exact text asset (the info
+  page selects `doc/fdl.texi`, GFDL-1.3-or-later). Core records the derived
+  compatible text (`COPYING`, GPL-2.0-only) and the exact output grant; it never
+  assumes `COPYING` in the raw review.
+- The raw model output, reservation, request digest, source proof, plan,
+  receipt and lease are never mutated or silently rebound. The new decision is
+  a new typed content digest.
+- The builder accepts v3 and v4. v4 requires the selected fact, the unique
+  compatible text, the exact output grant and the exact documentation
+  projection; any mismatch is `ENVIRONMENT_LICENSE_DECISION_INVALID`/`STALE`.
+
+The autonomous runner uses the same transitions. A licence gate is a typed
+recoverable/owner wait (`ENVIRONMENT_LICENSE_UNKNOWN`, `LICENSE_*`), never a
+generic terminal failure. With an existing approved Owner delegation and the
+signed receipt it may reuse the normal Lead review (gateway exact replay, no
+duplicate dispatch) and deterministic decision, then retry the freeze once. A
+successful decision re-enqueues the same autonomous request; `REVIEW_PLAN` never
+auto-starts. The runner never creates or renews a delegation, never widens
+scope and never retries an ambiguous dispatch. The builder marks any mismatch `STALE`
 or `INVALID` (fail closed) and never approves a licence by name, package family
 or a static GFDL profile allow.
 

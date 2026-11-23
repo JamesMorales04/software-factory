@@ -118,6 +118,7 @@ def _exact_list(value: Any, label: str) -> list[str]:
 
 
 _V3_CONTRACT = "license-review-v3-file-package-rights"
+_V4_CONTRACT = "license-review-v4-selected-grant-derived-text"
 
 
 def _is_sha256(value: Any) -> bool:
@@ -152,11 +153,13 @@ def _validate_v3_rights(
     database and does not recompute ``decisionContentSha256``; it binds that
     digest into the overlay content digest and verifies the exact facts.
     """
-    if receipt.get("contractRevision") != _V3_CONTRACT:
+    revision = receipt.get("contractRevision")
+    if revision not in (_V3_CONTRACT, _V4_CONTRACT):
         raise LicenseDecisionError(
             "ENVIRONMENT_LICENSE_DECISION_STALE",
             "the decision does not carry the current file/package/document contract",
         )
+    is_v4 = revision == _V4_CONTRACT
     for key, expected in (
         ("fileLabelSource", "ASSET"),
         ("packageRightsSource", "LICENSING_FACT"),
@@ -244,6 +247,17 @@ def _validate_v3_rights(
                 "the file evidence repeats a licence text",
             )
         seen.add(key)
+    if is_v4:
+        expected_texts = {
+            (text.get("path"), text.get("sha256"))
+            for text in (receipt.get("licenseTexts") or [])
+            if isinstance(text, dict)
+        }
+        if seen != expected_texts:
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                "the file evidence does not project every derived licence text exactly",
+            )
 
     try:
         atoms = policy.branch_atoms(receipt.get("selectedBranch"))
@@ -252,6 +266,67 @@ def _validate_v3_rights(
             "ENVIRONMENT_LICENSE_DECISION_STALE",
             f"the selected licence branch is not exact: {error}",
         ) from error
+    if is_v4:
+        licensing_facts = receipt.get("licensingFacts")
+        license_texts = receipt.get("licenseTexts")
+        if (
+            not isinstance(licensing_facts, list)
+            or not isinstance(license_texts, list)
+            or len(licensing_facts) != len(atoms)
+            or len(license_texts) != len(atoms)
+        ):
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                "the selected licensing facts or derived texts are incomplete",
+            )
+        facts_by_atom: dict[Any, dict[str, Any]] = {}
+        texts_by_atom: dict[Any, dict[str, Any]] = {}
+        for fact in licensing_facts:
+            if not isinstance(fact, dict):
+                raise LicenseDecisionError(
+                    "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                    "a selected licensing fact is malformed",
+                )
+            atom = fact.get("atom")
+            entry = asset_by_path.get(fact.get("path"))
+            if (
+                entry is None
+                or atom not in atoms
+                or entry.get("role") != "licensing"
+                or entry.get("license") != atom
+                or entry.get("purpose") not in ("header", "source-version")
+                or entry.get("sha256") != fact.get("sha256")
+                or fact.get("license") != atom
+            ):
+                raise LicenseDecisionError(
+                    "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                    "a selected licensing fact is not the exact authenticated fact",
+                )
+            facts_by_atom[atom] = fact
+        for text in license_texts:
+            if not isinstance(text, dict):
+                raise LicenseDecisionError(
+                    "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                    "a derived licence text is malformed",
+                )
+            atom = text.get("atom")
+            entry = text_by_path.get(text.get("path"))
+            if (
+                entry is None
+                or atom not in atoms
+                or entry.get("sha256") != text.get("sha256")
+                or not _file_text_supports(entry.get("license"), atom)
+            ):
+                raise LicenseDecisionError(
+                    "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                    "a derived licence text is not the exact supporting text",
+                )
+            texts_by_atom[atom] = text
+        if set(facts_by_atom) != set(atoms) or set(texts_by_atom) != set(atoms):
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                "the selected facts and derived texts do not cover every atom",
+            )
     rights = receipt.get("packageRights")
     if not isinstance(rights, list) or not rights:
         raise LicenseDecisionError(
@@ -332,15 +407,42 @@ def _validate_v3_rights(
                 "ENVIRONMENT_LICENSE_DECISION_INVALID",
                 "a documentation grant text is not the exact supporting asset",
             )
-        expected[path] = {
-            "path": path,
-            "license": document.get("license"),
-            "outputSha256": document.get("outputSha256"),
-            "licenseTextPath": document.get("licenseTextPath"),
-            "licenseTextSha256": document.get("licenseTextSha256"),
-            "textAssetLicense": text_entry.get("license"),
-            "grantSource": "OUTPUT_FILE_ASSET",
-        }
+        if is_v4:
+            fact_path = document.get("licensingFactPath") or ""
+            fact_sha256 = document.get("licensingFactSha256") or ""
+            if fact_path:
+                fact = asset_by_path.get(fact_path)
+                if (
+                    fact is None
+                    or fact.get("role") != "licensing"
+                    or fact.get("license") != document.get("license")
+                    or fact.get("sha256") != fact_sha256
+                ):
+                    raise LicenseDecisionError(
+                        "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                        "a documentation licensing fact is not the exact authenticated fact",
+                    )
+            expected[path] = {
+                "path": path,
+                "license": document.get("license"),
+                "outputSha256": document.get("outputSha256"),
+                "licenseTextPath": document.get("licenseTextPath"),
+                "licenseTextSha256": document.get("licenseTextSha256"),
+                "licensingFactPath": fact_path,
+                "licensingFactSha256": fact_sha256,
+                "textAssetLicense": text_entry.get("license"),
+                "grantSource": "OUTPUT_FILE_ASSET",
+            }
+        else:
+            expected[path] = {
+                "path": path,
+                "license": document.get("license"),
+                "outputSha256": document.get("outputSha256"),
+                "licenseTextPath": document.get("licenseTextPath"),
+                "licenseTextSha256": document.get("licenseTextSha256"),
+                "textAssetLicense": text_entry.get("license"),
+                "grantSource": "OUTPUT_FILE_ASSET",
+            }
     if len(grants) != len(expected):
         raise LicenseDecisionError(
             "ENVIRONMENT_LICENSE_DECISION_INVALID",

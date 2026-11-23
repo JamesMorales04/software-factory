@@ -1390,6 +1390,10 @@ fn office_api_router(app: Arc<App>) -> Router {
             "/intake/requests/{id}/subscription-admission",
             post(create_intake_subscription_admission),
         )
+        .route(
+            "/intake/requests/{id}/funding-readiness",
+            get(intake_funding_readiness),
+        )
         .route("/intake/requests/{id}/assess", post(assess_intake_request))
         .route(
             "/intake/requests/{id}/approve",
@@ -1797,6 +1801,10 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/intake/requests/{id}/subscription-admission",
             post(create_intake_subscription_admission),
+        )
+        .route(
+            "/intake/requests/{id}/funding-readiness",
+            get(intake_funding_readiness),
         )
         .route("/intake/requests/{id}/assess", post(assess_intake_request))
         .route(
@@ -10890,6 +10898,40 @@ async fn autonomous_intake_state(
         }));
     }
     if operation_blocked {
+        // A Core-validated environment with a signed identity receipt but no
+        // frozen spec and no active decision is the licence gate, not a generic
+        // planning failure. This projection is deterministic; it grants nothing.
+        if let Ok(environment) = app.db.latest_environment_plan(&record.id).await
+            && environment.status == "CORE_VALIDATED"
+            && app
+                .db
+                .latest_identity_facts_receipt(&environment.plan_sha256)
+                .await
+                .is_ok()
+        {
+            let decisions = app
+                .db
+                .license_decisions(&record.project_id)
+                .await
+                .unwrap_or_default();
+            let active = decisions.iter().any(|decision| {
+                factory_native::planning::license_decision::license_decision_matches_plan(
+                    decision,
+                    &record.lead_request_id,
+                    &environment.plan_sha256,
+                    environment.revision,
+                ) && factory_native::planning::license_decision::license_decision_is_active_accepted(
+                    decision,
+                )
+            });
+            if !active {
+                return Ok(Some(AutonomousIntakeState {
+                    state: IntakeState::Blocked,
+                    detail: "Autonomous preparation is blocked at the licence gate; an exact licence evidence review and decision for the current plan, identity receipt and approved Owner delegation are required. Historical reviews are not reused."
+                        .into(),
+                }));
+            }
+        }
         let context = agentic_triage_context(app, record).await?;
         let readiness = planning_readiness(app, &record.id, plan.revision, &context).await?;
         let detail = if !readiness.missing_artifacts.is_empty() {
@@ -16791,6 +16833,14 @@ fn environment_review_failure_is_recoverable(code: &str) -> bool {
         "ENVIRONMENT_BUILDER_UNAVAILABLE"
             | "ENVIRONMENT_BUILD_FAILED"
             | "ENVIRONMENT_BUILD_TIMEOUT"
+            | "ENVIRONMENT_LICENSE_UNKNOWN"
+            | "LICENSE_PLAN_REQUIRED"
+            | "LICENSE_IDENTITY_FACTS_REQUIRED"
+            | "LICENSE_IDENTITY_FACTS_UNAVAILABLE"
+            | "LICENSE_SOURCE_EVIDENCE_INVALID"
+            | "LICENSE_EVIDENCE_REQUIRED"
+            | "LICENSE_EVIDENCE_MODEL_UNAVAILABLE"
+            | "LICENSE_DECISION_STALE"
             | "ENVIRONMENT_LEAD_MODEL_UNAVAILABLE"
             | "AGENTIC_MODEL_UNAVAILABLE"
             | "AGENTIC_LEAD_OUTPUT_BOUND_INSUFFICIENT"
@@ -19427,7 +19477,18 @@ async fn record_license_decision(
         .create_license_decision(&verified, &input.idempotency_key)
         .await
     {
-        Ok(record) => Json(record).into_response(),
+        Ok(record) => {
+            // A durable exact decision is the prerequisite the autonomous
+            // runner was waiting for. Re-enqueue the same request once; it
+            // revalidates every authority and readiness guard before any
+            // overlay, freeze or Campaign start. REVIEW_PLAN never auto-starts.
+            if intake.mode == factory_native::intake::IntakeMode::Autonomous
+                && intake.campaign_id.is_none()
+            {
+                enqueue_autopilot(&app, &intake.id).await;
+            }
+            Json(record).into_response()
+        }
         Err(error) => api_error(error),
     }
 }
@@ -20894,6 +20955,19 @@ fn autopilot_step_error(step: &str, status: StatusCode, value: &Value) -> Error 
         "ENVIRONMENT_BUILDER_UNAVAILABLE" => "ENVIRONMENT_BUILDER_UNAVAILABLE",
         "ENVIRONMENT_BUILD_FAILED" => "ENVIRONMENT_BUILD_FAILED",
         "ENVIRONMENT_BUILD_TIMEOUT" => "ENVIRONMENT_BUILD_TIMEOUT",
+        "ENVIRONMENT_LICENSE_UNKNOWN" => "ENVIRONMENT_LICENSE_UNKNOWN",
+        "LICENSE_PLAN_REQUIRED" => "LICENSE_PLAN_REQUIRED",
+        "LICENSE_IDENTITY_FACTS_REQUIRED" => "LICENSE_IDENTITY_FACTS_REQUIRED",
+        "LICENSE_IDENTITY_FACTS_UNAVAILABLE" => "LICENSE_IDENTITY_FACTS_UNAVAILABLE",
+        "LICENSE_SOURCE_EVIDENCE_INVALID" => "LICENSE_SOURCE_EVIDENCE_INVALID",
+        "LICENSE_EVIDENCE_REQUIRED" => "LICENSE_EVIDENCE_REQUIRED",
+        "LICENSE_EVIDENCE_MODEL_UNAVAILABLE" => "LICENSE_EVIDENCE_MODEL_UNAVAILABLE",
+        "LICENSE_DELEGATION_REQUIRED" => "LICENSE_DELEGATION_REQUIRED",
+        "LICENSE_DELEGATION_EXPIRED" => "LICENSE_DELEGATION_EXPIRED",
+        "LICENSE_DELEGATION_REVOKED" => "LICENSE_DELEGATION_REVOKED",
+        "LICENSE_DECISION_INVALID" => "LICENSE_DECISION_INVALID",
+        "LICENSE_DECISION_STALE" => "LICENSE_DECISION_STALE",
+        "LICENSE_LEAD_TERMINAL" => "LICENSE_LEAD_TERMINAL",
         "SPEC_DRAFT_REQUIRED" => "SPEC_DRAFT_REQUIRED",
         "SPEC_NOT_FROZEN" => "SPEC_NOT_FROZEN",
         "SPEC_REVISION_CHANGED" => "SPEC_REVISION_CHANGED",
@@ -20991,6 +21065,13 @@ fn autopilot_stop(error: &Error) -> AutopilotStop {
             // withdrawal or a new request. Keeping the Lead READY lets a later
             // reversal approval become effective without inventing authority.
             "PLAN_REVIEW_REQUIRED" | "PLAN_REVIEW_REJECTED" => AutopilotStop::WaitOwner,
+            // The licence delegation is protected Owner authority. An invalid
+            // model review is not retried automatically; it waits for an
+            // operator/audit decision instead of terminalizing the Lead.
+            "LICENSE_DELEGATION_REQUIRED"
+            | "LICENSE_DELEGATION_EXPIRED"
+            | "LICENSE_DELEGATION_REVOKED"
+            | "LICENSE_DECISION_INVALID" => AutopilotStop::WaitOwner,
             "AUTOPILOT_ASSESSMENT_IN_PROGRESS"
             | "ASSESSMENT_OUTCOME_UNKNOWN"
             | "ASSESSMENT_TRANSIENT"
@@ -21000,6 +21081,14 @@ fn autopilot_stop(error: &Error) -> AutopilotStop {
             | "ENVIRONMENT_BUILDER_UNAVAILABLE"
             | "ENVIRONMENT_BUILD_FAILED"
             | "ENVIRONMENT_BUILD_TIMEOUT"
+            | "ENVIRONMENT_LICENSE_UNKNOWN"
+            | "LICENSE_PLAN_REQUIRED"
+            | "LICENSE_IDENTITY_FACTS_REQUIRED"
+            | "LICENSE_IDENTITY_FACTS_UNAVAILABLE"
+            | "LICENSE_SOURCE_EVIDENCE_INVALID"
+            | "LICENSE_EVIDENCE_REQUIRED"
+            | "LICENSE_EVIDENCE_MODEL_UNAVAILABLE"
+            | "LICENSE_DECISION_STALE"
             | "ENVIRONMENT_LEAD_MODEL_UNAVAILABLE"
             | "INFERENCE_AUTHORIZATION_REQUIRED"
             | "SUBSCRIPTION_ADMISSION_REQUIRED"
@@ -21529,6 +21618,123 @@ async fn prepare_autonomous_environment(
     }
 }
 
+/// The licence gate is a bounded, recoverable preparation gate. It is never a
+/// generic terminal autopilot failure.
+fn is_autopilot_licence_gate(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::IntakeConflict { code, .. }
+            if matches!(
+                *code,
+                "ENVIRONMENT_LICENSE_UNKNOWN"
+                    | "LICENSE_PLAN_REQUIRED"
+                    | "LICENSE_IDENTITY_FACTS_REQUIRED"
+                    | "LICENSE_IDENTITY_FACTS_UNAVAILABLE"
+                    | "LICENSE_SOURCE_EVIDENCE_INVALID"
+                    | "LICENSE_EVIDENCE_REQUIRED"
+                    | "LICENSE_EVIDENCE_MODEL_UNAVAILABLE"
+                    | "LICENSE_DELEGATION_REQUIRED"
+                    | "LICENSE_DELEGATION_EXPIRED"
+                    | "LICENSE_DELEGATION_REVOKED"
+                    | "LICENSE_DECISION_INVALID"
+                    | "LICENSE_DECISION_STALE"
+            )
+    )
+}
+
+/// Reuse the existing authenticated licence review and decision transitions.
+/// The runner never creates or renews an Owner delegation, never widens scope
+/// and never retries an ambiguous dispatch. A missing Owner delegation is a
+/// truthful wait; an invalid typed review is a stop.
+async fn run_autonomous_licence_step(
+    app: &Arc<App>,
+    record: &factory_native::db::IntakeRequestRecord,
+) -> Result<(), Error> {
+    let plan = app
+        .db
+        .latest_environment_plan(&record.id)
+        .await
+        .map_err(|error| match error {
+            Error::NotFound => Error::IntakeConflict {
+                code: "LICENSE_PLAN_REQUIRED",
+                message: "an exact EnvironmentPlan is required before the licence review".into(),
+            },
+            other => other,
+        })?;
+    let receipt = app
+        .db
+        .latest_identity_facts_receipt(&plan.plan_sha256)
+        .await
+        .map_err(|error| match error {
+            Error::NotFound => Error::IntakeConflict {
+                code: "LICENSE_IDENTITY_FACTS_REQUIRED",
+                message: "the signed identity-facts receipt is required before the licence review"
+                    .into(),
+            },
+            other => other,
+        })?;
+    let delegation = app
+        .db
+        .current_license_delegation_for_plan(
+            &record.project_id,
+            &record.id,
+            &plan.plan_sha256,
+            &receipt.nonce,
+        )
+        .await?
+        .ok_or_else(|| Error::IntakeConflict {
+            code: "LICENSE_DELEGATION_REQUIRED",
+            message:
+                "an approved, current Owner licence delegation for this exact request/plan/receipt is required"
+                    .into(),
+        })?;
+
+    let review_key = format!(
+        "license-evidence-review:autopilot:{}:{}:{}",
+        record.id, plan.plan_sha256, delegation.id
+    );
+    let review_response = request_license_evidence_review(
+        State(Arc::clone(app)),
+        internal_operator_headers(app),
+        AxumPath(record.id.clone()),
+        Json(LicenseEvidenceReviewHttpRequest {
+            delegation_id: delegation.id.clone(),
+            idempotency_key: review_key,
+        }),
+    )
+    .await;
+    let review_value = autopilot_response_value(review_response, "licence-review").await?;
+    if review_value
+        .pointer("/review/decision")
+        .and_then(Value::as_str)
+        != Some("ACCEPT")
+    {
+        return Err(Error::IntakeConflict {
+            code: "LICENSE_DECISION_INVALID",
+            message:
+                "the typed Lead licence review is not ACCEPT; no decision or freeze is attempted"
+                    .into(),
+        });
+    }
+
+    let decision_key = format!(
+        "license-decision:autopilot:{}:{}:{}",
+        record.id, plan.plan_sha256, delegation.id
+    );
+    let decision_response = record_license_decision(
+        State(Arc::clone(app)),
+        internal_operator_headers(app),
+        AxumPath(record.id.clone()),
+        Json(NewLicenseDecisionRequest {
+            delegation_id: delegation.id.clone(),
+            idempotency_key: decision_key,
+        }),
+    )
+    .await;
+    let _ = autopilot_response_value(decision_response, "licence-decision").await?;
+    Ok(())
+}
+
 /// Author and freeze a formal specification through the same bounded model and
 /// deterministic freeze rules as the Spec Manager endpoints. External
 /// publication remains an explicit operator action and is not performed here.
@@ -21934,7 +22140,18 @@ async fn run_autopilot_inner(app: &Arc<App>, id: &str) -> Result<(), Error> {
     // through the same Core transitions as the operator endpoints. No step here
     // grants authority: the exact start below still revalidates policy, scope,
     // funding, charter and readiness.
-    prepare_autonomous_request(app, &record).await?;
+    match prepare_autonomous_request(app, &record).await {
+        Ok(()) => {}
+        Err(error) if is_autopilot_licence_gate(&error) => {
+            // A persisted identity receipt plus an existing exact Owner
+            // delegation allows one bounded reuse of the normal licence
+            // review/decision transitions. The second preparation is the one
+            // authorized freeze retry; it is not a blind loop.
+            run_autonomous_licence_step(app, &record).await?;
+            prepare_autonomous_request(app, &record).await?;
+        }
+        Err(error) => return Err(error),
+    }
     // Re-check immediately before the start call so an incomplete plan becomes
     // a truthful autopilot blocker instead of a doomed Campaign.
     ensure_planning_ready_or_error(app, &record).await?;
@@ -22015,6 +22232,96 @@ async fn promote_accepted_repairs(app: Arc<App>) {
         }
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
+}
+
+/// Request-scoped funding readiness. This is a read-only description of the
+/// recorded admission and the existing scope guard; it never authorizes a
+/// provider call or a Campaign start.
+async fn intake_funding_readiness(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    use factory_native::funding_status::{
+        RequestFundingFacts, RequestFundingProviderFacts, project_request_scoped,
+    };
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let intake = match app.db.intake_request(&id).await {
+        Ok(intake) => intake,
+        Err(error) => return api_error(error),
+    };
+    let profile = match app
+        .db
+        .execution_profile_revision(&intake.profile_id, &intake.profile_revision_id)
+        .await
+    {
+        Ok(profile) => profile,
+        Err(error) => return api_error(error),
+    };
+    let Some(content) = profile.content.v2() else {
+        return api_error(Error::IntakeConflict {
+            code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
+            message: "a legacy V1 execution profile has no request funding route".into(),
+        });
+    };
+    let lead = &content.roles.lead;
+    let settings = match app.db.provider_settings(&lead.provider).await {
+        Ok(settings) => Some(settings),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let admission = match app
+        .db
+        .subscription_scope_admission_for_request(&intake.id)
+        .await
+    {
+        Ok(admission) => admission,
+        Err(error) => return api_error(error),
+    };
+    let mut scope_admitted = match app
+        .db
+        .subscription_scope_admitted(&intake.id, &lead.provider, &lead.model)
+        .await
+    {
+        Ok(admitted) => admitted,
+        Err(error) => return api_error(error),
+    };
+    if !scope_admitted && intake.lead_request_id != intake.id {
+        scope_admitted = match app
+            .db
+            .subscription_scope_admitted(&intake.lead_request_id, &lead.provider, &lead.model)
+            .await
+        {
+            Ok(admitted) => admitted,
+            Err(error) => return api_error(error),
+        };
+    }
+    let provider_facts = settings.map(|settings| {
+        let canonical_route = lead.provider != "opencode-go"
+            || factory_native::provider_catalog::is_canonical_opencode_go_base_url(
+                &settings.base_url,
+            )
+            || factory_native::provider_catalog::is_test_upstream_url(&settings.base_url);
+        RequestFundingProviderFacts {
+            configured: true,
+            enabled: settings.enabled,
+            settings_revision: settings.revision.to_string(),
+            canonical_route,
+        }
+    });
+    let status = project_request_scoped(&RequestFundingFacts {
+        intake_request_id: &intake.id,
+        lead_request_id: &intake.lead_request_id,
+        provider: &lead.provider,
+        model: &lead.model,
+        provider_facts: provider_facts.as_ref(),
+        admission: admission.as_ref(),
+        scope_admitted,
+        now_ms: chrono::Utc::now().timestamp_millis(),
+    });
+    Json(status).into_response()
 }
 
 async fn create_intake_request(
@@ -24122,6 +24429,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+        for router in [api_router(app.clone()), office_api_router(app.clone())] {
+            let unauthenticated = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri("/intake/requests/missing/funding-readiness")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+            let missing = router
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri("/intake/requests/missing/funding-readiness")
+                        .header("authorization", "Bearer operator-token")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        }
 
         app.db.close().await;
         let _ = std::fs::remove_file(path);
@@ -32191,6 +32526,66 @@ mod tests {
             assert!(!environment_review_failure_is_recoverable(
                 "ENVIRONMENT_HASH_MISMATCH"
             ));
+            assert!(environment_review_failure_is_recoverable(
+                "ENVIRONMENT_LICENSE_UNKNOWN"
+            ));
+            assert!(environment_review_failure_is_recoverable(
+                "LICENSE_EVIDENCE_REQUIRED"
+            ));
+            assert!(environment_review_failure_is_recoverable(
+                "LICENSE_IDENTITY_FACTS_REQUIRED"
+            ));
+        }
+
+        #[test]
+        fn licence_gate_is_a_typed_wait_and_never_a_generic_terminal_failure() {
+            for code in [
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                "LICENSE_EVIDENCE_REQUIRED",
+                "LICENSE_IDENTITY_FACTS_REQUIRED",
+                "LICENSE_IDENTITY_FACTS_UNAVAILABLE",
+                "LICENSE_DECISION_STALE",
+            ] {
+                assert_eq!(
+                    autopilot_stop(&Error::IntakeConflict {
+                        code,
+                        message: "licence gate".into()
+                    }),
+                    AutopilotStop::WaitRecoverable,
+                    "{code}"
+                );
+                let error = autopilot_step_error(
+                    "environment-review",
+                    StatusCode::CONFLICT,
+                    &json!({"code": code, "error": "licence gate"}),
+                );
+                assert!(
+                    matches!(&error, Error::IntakeConflict { code: mapped, .. } if *mapped == code),
+                    "{code} lost its typed code: {error}"
+                );
+            }
+            for code in [
+                "LICENSE_DELEGATION_REQUIRED",
+                "LICENSE_DELEGATION_EXPIRED",
+                "LICENSE_DELEGATION_REVOKED",
+                "LICENSE_DECISION_INVALID",
+            ] {
+                assert_eq!(
+                    autopilot_stop(&Error::IntakeConflict {
+                        code,
+                        message: "owner licence decision".into()
+                    }),
+                    AutopilotStop::WaitOwner,
+                    "{code}"
+                );
+            }
+            assert_eq!(
+                autopilot_stop(&Error::IntakeConflict {
+                    code: "LICENSE_LEAD_TERMINAL",
+                    message: "lead terminal".into()
+                }),
+                AutopilotStop::Terminal
+            );
         }
 
         #[test]

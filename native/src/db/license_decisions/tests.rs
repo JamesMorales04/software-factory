@@ -146,8 +146,12 @@ fn review() -> LicenseDecisionReview {
         source_store_path: SOURCE_PATH.into(),
         source_output_hash: SOURCE_HASH.into(),
         license_expression: "GPL-2.0-or-later".into(),
-        software_texts: vec![],
-        software_text_sha256: "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6"
+        software_texts: vec![crate::planning::license_decision::SoftwareTextEvidence {
+            path: "ed.h".into(),
+            license: "GPL-2.0-or-later".into(),
+            sha256: "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58".into(),
+        }],
+        software_text_sha256: "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58"
             .into(),
         selected_branch: "GPL-2.0-or-later".into(),
         documentation: vec![
@@ -755,7 +759,7 @@ async fn the_builder_overlay_is_reverified_and_carries_the_exact_source_proof() 
     assert_eq!(json["decisionContentSha256"], record.content_sha256);
     assert_eq!(
         json["contractRevision"],
-        "license-review-v3-file-package-rights"
+        "license-review-v4-selected-grant-derived-text"
     );
     assert_eq!(json["fileLabelSource"], "ASSET");
     assert_eq!(json["packageRightsSource"], "LICENSING_FACT");

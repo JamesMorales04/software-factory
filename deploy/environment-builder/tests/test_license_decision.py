@@ -356,6 +356,66 @@ class LicenseDecisionTests(unittest.TestCase):
             with self.assertRaises(license_decision.LicenseDecisionError):
                 license_decision.validate_license_decision_receipt(missing, plan())
 
+    def test_v4_selected_fact_and_derived_text_are_exact(self) -> None:
+        v4 = receipt()
+        asset = json.loads(license_decision.ASSET_FILE.read_text(encoding="utf-8"))
+        identity = asset["identities"][0]
+        grant = next(
+            entry
+            for entry in identity["licenseEvidence"]
+            if entry["role"] == "licensing"
+            and entry["license"] == identity["license"]
+        )
+        copying = next(
+            entry
+            for entry in identity["licenseEvidence"]
+            if entry["path"] == "COPYING"
+        )
+        v4["contractRevision"] = license_decision._V4_CONTRACT
+        v4["licensingFacts"] = [
+            {
+                "atom": identity["license"],
+                "path": grant["path"],
+                "sha256": grant["sha256"],
+                "license": grant["license"],
+                "purpose": grant["purpose"],
+                "role": "licensing",
+            }
+        ]
+        v4["licenseTexts"] = [
+            {
+                "atom": identity["license"],
+                "path": copying["path"],
+                "sha256": copying["sha256"],
+                "license": copying["license"],
+            }
+        ]
+        for document, grant_entry in zip(
+            v4["documentation"], v4["documentationGrants"], strict=True
+        ):
+            is_gpl = document["license"] == identity["license"]
+            document["licensingFactPath"] = grant["path"] if is_gpl else ""
+            document["licensingFactSha256"] = grant["sha256"] if is_gpl else ""
+            grant_entry["licensingFactPath"] = document["licensingFactPath"]
+            grant_entry["licensingFactSha256"] = document["licensingFactSha256"]
+        def seal(value: dict) -> dict:
+            value["contentSha256"] = license_decision._sha_value(
+                {key: item for key, item in value.items() if key != "contentSha256"}
+            )
+            return value
+
+        license_decision.validate_license_decision_receipt(seal(v4), plan())
+
+        wrong_fact = json.loads(json.dumps(v4))
+        wrong_fact["licensingFacts"][0]["path"] = copying["path"]
+        with self.assertRaises(license_decision.LicenseDecisionError):
+            license_decision.validate_license_decision_receipt(seal(wrong_fact), plan())
+
+        wrong_text = json.loads(json.dumps(v4))
+        wrong_text["licenseTexts"][0]["sha256"] = "e" * 64
+        with self.assertRaises(license_decision.LicenseDecisionError):
+            license_decision.validate_license_decision_receipt(seal(wrong_text), plan())
+
     def test_v3_file_evidence_is_exact_and_has_no_family_shortcut(self) -> None:
         changed = receipt()
         changed["fileEvidence"][0]["assetLicense"] = "GPL-2.0-or-later"
