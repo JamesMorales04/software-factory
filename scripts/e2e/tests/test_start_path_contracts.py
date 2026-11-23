@@ -151,6 +151,55 @@ class OneshotPrerequisiteTests(unittest.TestCase):
             common.wait_oneshot(compose, "init", 0.2)
 
 
+class EnvironmentBuilderBundleDeterminismTests(unittest.TestCase):
+    """The bundle digest is the builder identity and must survive a restart.
+
+    The producer tarred every runtime-generated mount, so `/etc/hosts`,
+    `/etc/hostname` and mtimes changed on each container start. Because the
+    plan builder descriptor is the bundle SHA-256, every restart silently
+    invalidated an approved plan before the broker could build.
+    """
+
+    def producer(self) -> str:
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML is not installed in the development image")
+        compose = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
+        entrypoint = compose["services"]["environment-builder-bundle"]["entrypoint"]
+        return "\n".join(entrypoint) if isinstance(entrypoint, list) else str(entrypoint)
+
+    def test_members_are_sorted_and_metadata_is_stable(self) -> None:
+        producer = self.producer()
+        self.assertIn("--sort=name", producer)
+        self.assertIn("--mtime=@0", producer)
+        self.assertIn("--format=gnu", producer)
+
+    def test_runtime_generated_mounts_are_excluded(self) -> None:
+        producer = self.producer()
+        for generated in ("etc/hosts", "etc/hostname", "etc/resolv.conf"):
+            self.assertIn(f"--exclude=./{generated}", producer)
+
+    def test_cache_mountpoint_mode_is_explicit(self) -> None:
+        producer = self.producer()
+        self.assertIn("chmod 0755 /cache", producer)
+
+    def test_ownership_and_modes_are_not_flattened(self) -> None:
+        producer = self.producer()
+        self.assertNotIn("--owner=", producer)
+        self.assertNotIn("--group=", producer)
+        self.assertNotIn("--no-same-owner", producer)
+
+    def test_digest_is_computed_from_the_final_archive(self) -> None:
+        producer = self.producer()
+        self.assertIn(
+            "sha256sum /bundle/environment-builder-rootfs.tar", producer
+        )
+        self.assertIn(
+            "mv /bundle/environment-builder-rootfs.tar.tmp "
+            "/bundle/environment-builder-rootfs.tar",
+            producer,
+        )
 
 
 class ProjectionShapeTests(unittest.TestCase):

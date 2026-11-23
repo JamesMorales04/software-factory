@@ -171,6 +171,18 @@ Compose build/start is slower than later starts. The builder joins no
 credential network; its fetch phase gets a per-operation internal network and
 the plan's allowlist proxy. Build runs with network disabled.
 
+The producer is deterministic for the same builder image: members are sorted,
+mtimes are fixed (mtime is not functional metadata for this rootfs), the GNU
+format is explicit, and runtime-generated `/etc/hosts`, `/etc/hostname` and
+`/etc/resolv.conf` are excluded because the container runtime supplies its own.
+The `/cache` mountpoint mode is pinned to `0755` because a volume provides it,
+not the image; without that, a historical or differently-umasked volume would
+change the digest. Ownership, modes and symlinks are otherwise preserved; do
+not flatten them to root. The resulting digest is the plan's builder identity,
+so a producer or image change still requires a new plan revision, environment
+review and licence binding through the normal path. Never rewrite a digest or
+rebind an approved plan.
+
 The Supervisor mounts the same bundle read-only only to read the exact builder
 digest. `FACTORY_SUPERVISOR_ENVIRONMENT_BUILDER_IMAGE` and
 `FACTORY_SUPERVISOR_ENVIRONMENT_BUILDER_DIGEST_FILE` pin the image identity it
