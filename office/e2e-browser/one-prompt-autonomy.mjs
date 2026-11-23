@@ -1257,17 +1257,18 @@ async function runFundingObservation() {
     return;
   }
   const body = await bodyText();
-  if (
-    !/funding|subscription|admissib|entitlement|missing evidence|extra usage/i.test(
-      body,
-    )
-  ) {
+  const showsFunding = /funding/i.test(body);
+  const showsTruth =
+    /admissib/i.test(body) &&
+    /(missing evidence|entitlement|core.?verif)/i.test(body);
+  if (!(showsFunding && showsTruth)) {
     record.assertions.funding_projection = "BLOCKED";
     record.findings.push({
       kind: "office-funding-projection-missing",
       detail:
-        "Core exposes the truthful funding fields but Office does not display funding/admissibility/missing evidence",
+        "Core exposes the truthful funding fields but Office does not display funding + admissibility + missing evidence/entitlement/core-verifiable",
       required_owner: "b786195c",
+      observed: { showsFunding, showsTruth },
     });
     record.result = "BLOCKED";
     return;
