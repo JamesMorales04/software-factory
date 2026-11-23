@@ -357,6 +357,19 @@ async function requireLicenseFixtureOrBlock() {
     });
     return false;
   }
+  if (process.env.FACTORY_UAT_ED_HELPER?.trim() !== "1") {
+    record.result = "BLOCKED";
+    record.stage = "environment-license-trigger";
+    record.error = "ENVIRONMENT_LICENSE_TRIGGER_MISSING";
+    record.findings.push({
+      kind: "environment-license-trigger-missing",
+      detail:
+        "the fixture phase exists but the Compose environment builder has no bounded ed/helper trigger that returns ENVIRONMENT_LICENSE_UNKNOWN; positive/license lanes stay BLOCKED",
+      required_owner: "98e2f199-2100-4907-8f16-a93e3038c321",
+      expected_marker: "FACTORY_UAT_ED_HELPER=1",
+    });
+    return false;
+  }
   return true;
 }
 

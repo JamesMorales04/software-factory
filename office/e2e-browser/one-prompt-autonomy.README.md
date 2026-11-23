@@ -152,6 +152,10 @@ The lane expects but does not implement:
   `ENVIRONMENT_LICENSE_UNKNOWN` for the exact `ed` identity. Until Core98
   provides a bounded test-builder hook or exact flake, the positive lane stays
   `BLOCKED` even though the fixture phase exists.
+- The harness requires `FACTORY_UAT_ED_HELPER=1` before the positive/licence
+  lanes may proceed. Without that marker it returns
+  `BLOCKED/ENVIRONMENT_LICENSE_TRIGGER_MISSING`; the marker must be wired to the
+  actual Core98 builder hook, not only set in the browser container.
 
 Expected counter contract:
 
