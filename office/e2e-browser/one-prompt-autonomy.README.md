@@ -142,9 +142,16 @@ The lane expects but does not implement:
   chosen by Core (`softwareTexts` = the exact selected fact, e.g. `ed.h` with
   its sha); Core derives the `COPYING` license-text asset.
 - A negative variant for the `license-header` lane that produces a typed STOP
-  (wrong role/sha), no Campaign and no retry.
+  (wrong role/sha), no Campaign and no retry. The harness writes
+  `fixtureVariant:"license-header"` (positive: `"positive"`) in
+  `/context/context.json`; the integrated fixture reads that key (or the
+  `FACTORY_UAT_NEGATIVE` fallback).
 - The fixture project/environment that actually exercises the licence review
-  for the one prompt; no hard-coded family/suffix shortcut.
+  for the one prompt; no hard-coded family/suffix shortcut. The harness does
+  not yet have the **environment trigger** that makes the real builder return
+  `ENVIRONMENT_LICENSE_UNKNOWN` for the exact `ed` identity. Until Core98
+  provides a bounded test-builder hook or exact flake, the positive lane stays
+  `BLOCKED` even though the fixture phase exists.
 
 Expected counter contract:
 

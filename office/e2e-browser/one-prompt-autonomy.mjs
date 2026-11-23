@@ -473,6 +473,9 @@ function writeModelContext(projectId, projectConfig) {
     intakeRequestId: "",
     requestId: "",
     actionId: "",
+    // Per-request fixture variant read by Core98's fixture for the negative
+    // licence-header lane. Positive/default is explicit, never inferred.
+    fixtureVariant: negative === "license-header" ? "license-header" : "positive",
     objective,
     baseRevision: projectConfig.baseCommit,
     projectConfigHash: projectConfig.configHash,
