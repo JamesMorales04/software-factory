@@ -38,8 +38,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createServer as createTcpServer } from "node:net";
-import { connect } from "node:net";
+import { connect, createServer as createTcpServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -51,13 +50,13 @@ import {
   assertLeaseProjection,
   assertLicenseWaitOwner,
   assertNoFixtureErrors,
-  HOME_LICENSE_SELECTORS,
-  REQUIRED_LICENSE_WAIT_SELECTORS,
   assertNoManualControls,
   assertNoPreKnownRequestId,
   assertStableSnapshot,
+  HOME_LICENSE_SELECTORS,
   isWorkflowPath,
   normalizeCorePath,
+  REQUIRED_LICENSE_WAIT_SELECTORS,
   validateDriverCalls,
   validatePageMutations,
 } from "./one-prompt-autonomy-contract.mjs";
@@ -73,8 +72,7 @@ const gitRepository =
   "http://git-fixture:8080/repo.git";
 const fixtureUrl =
   process.env.FACTORY_MODEL_FIXTURE_URL?.trim() || "http://model-fixture:8080";
-const timeoutMs =
-  Number(process.env.FACTORY_UAT_TIMEOUT_SECS || "1800") * 1000;
+const timeoutMs = Number(process.env.FACTORY_UAT_TIMEOUT_SECS || "1800") * 1000;
 const snapshotPath =
   process.env.FACTORY_UAT_SNAPSHOT?.trim() ||
   join(evidenceDir, "oneprompt-snapshot.json");
@@ -86,11 +84,14 @@ const objective =
   "Add a deterministic one-prompt candidate in src/provider.txt and cover it with the frozen checks.";
 const candidateSha = process.env.FACTORY_UAT_CANDIDATE?.trim() || "";
 const composeProject =
-  process.env.FACTORY_UAT_COMPOSE_PROJECT?.trim() || "unknown-oneprompt-project";
+  process.env.FACTORY_UAT_COMPOSE_PROJECT?.trim() ||
+  "unknown-oneprompt-project";
 
 assertNoPreKnownRequestId(process.env);
 if (process.env.FACTORY_COOKIE_JAR) {
-  fail("FACTORY_COOKIE_JAR is not part of this contract; use FACTORY_STORAGE_STATE");
+  fail(
+    "FACTORY_COOKIE_JAR is not part of this contract; use FACTORY_STORAGE_STATE",
+  );
 }
 if (!["run", "verify-restart"].includes(phase)) {
   fail(`unsupported FACTORY_UAT_PHASE: ${phase}`);
@@ -122,10 +123,6 @@ const MANUAL_CONTROL_LABELS = [
   "Habilitar ejecución gobernada",
   "Open Director plan review (Compile plan / Record participant plan)",
   "Abrir la revisión del plan en el Director (Compilar plan / Registrar plan de participantes)",
-];
-const AUTOPILOT_LABELS = [
-  "Autopilot owns these deterministic steps in Core.",
-  "El autopilot posee estos pasos deterministas en Core.",
 ];
 const OPEN_CAMPAIGN_LABELS = ["Open Campaign", "Abrir Campaña"];
 const WAITING_OWNER_LABELS = [
@@ -334,7 +331,9 @@ async function core(method, path, body, { driver = true } = {}) {
   );
   record.driver_calls.push({ method, path: normalizeCorePath(path) });
   if (result.status >= 400) {
-    fail(`Core ${method} ${path} -> ${result.status}: ${JSON.stringify(result.payload).slice(0, 700)}`);
+    fail(
+      `Core ${method} ${path} -> ${result.status}: ${JSON.stringify(result.payload).slice(0, 700)}`,
+    );
   }
   return result.payload;
 }
@@ -349,7 +348,7 @@ async function readFixtureDiagnostics() {
 
 async function requireLicenseFixtureOrBlock() {
   const diagnostics = await readFixtureDiagnostics();
-  if (!Object.prototype.hasOwnProperty.call(diagnostics.counters ?? {}, "license_evidence_review")) {
+  if (!Object.hasOwn(diagnostics.counters ?? {}, "license_evidence_review")) {
     record.result = "BLOCKED";
     record.stage = "license-fixture";
     record.error = "LICENSE_FIXTURE_PHASE_MISSING";
@@ -383,7 +382,8 @@ async function enrollIfNeeded({ requireFresh }) {
   const home = page.getByRole("heading", { name: "Home", level: 1 });
   if (await isVisible(setup)) {
     const bootstrap = process.env.FACTORY_BOOTSTRAP_CODE?.trim();
-    if (!bootstrap) fail("FACTORY_BOOTSTRAP_CODE is required for first-run enrollment");
+    if (!bootstrap)
+      fail("FACTORY_BOOTSTRAP_CODE is required for first-run enrollment");
     await setup.waitFor({ timeout: 30_000 });
     await page.getByLabel("One-time owner confirmation").fill(bootstrap);
     await page.getByLabel("This device name").fill("One-prompt autonomy lane");
@@ -393,7 +393,9 @@ async function enrollIfNeeded({ requireFresh }) {
     return;
   }
   if (requireFresh && process.env.FACTORY_UAT_ALLOW_ENROLLED !== "1") {
-    fail("the stack is already enrolled; the one-prompt lane requires a fresh disposable stack");
+    fail(
+      "the stack is already enrolled; the one-prompt lane requires a fresh disposable stack",
+    );
   }
   await home.waitFor({ timeout: 30_000 });
 }
@@ -423,7 +425,9 @@ async function configureProjectAndProfile(projectId) {
   });
   if (!projectConfig.active) fail("project configuration is not active");
   if (JSON.stringify(projectConfig.allowedPaths) !== JSON.stringify(["src"])) {
-    fail(`unexpected allowed paths: ${JSON.stringify(projectConfig.allowedPaths)}`);
+    fail(
+      `unexpected allowed paths: ${JSON.stringify(projectConfig.allowedPaths)}`,
+    );
   }
   record.assertions.project_configuration = "PASS";
 
@@ -473,11 +477,14 @@ async function configureProjectAndProfile(projectId) {
     auto_start: { enabled: true, risk_classes: ["R0"] },
   });
   const autoStart = profile.autoStart ?? profile.auto_start;
-  if (autoStart?.enabled !== true) fail("the execution profile is not autonomous");
+  if (autoStart?.enabled !== true)
+    fail("the execution profile is not autonomous");
   if (!(autoStart.riskClasses ?? autoStart.risk_classes ?? []).includes("R0")) {
     fail("the execution profile does not enable R0 auto-start");
   }
-  await core("POST", `/execution-profiles/${profile.id}/default`, { scope: "global" });
+  await core("POST", `/execution-profiles/${profile.id}/default`, {
+    scope: "global",
+  });
   record.ids.execution_profile = profile.id;
   record.assertions.execution_profile_discovery = "PASS";
   return { projectConfig, profile };
@@ -492,7 +499,8 @@ function writeModelContext(projectId, projectConfig) {
     actionId: "",
     // Per-request fixture variant read by Core98's fixture for the negative
     // licence-header lane. Positive/default is explicit, never inferred.
-    fixtureVariant: negative === "license-header" ? "license-header" : "positive",
+    fixtureVariant:
+      negative === "license-header" ? "license-header" : "positive",
     objective,
     baseRevision: projectConfig.baseCommit,
     projectConfigHash: projectConfig.configHash,
@@ -565,11 +573,15 @@ function writeRequestContext(requestId, created, template) {
 async function homeAndSubmit(projectId, profile) {
   await page.getByRole("link", { name: "New request", exact: true }).click();
   await page.getByRole("heading", { name: "Home", level: 1 }).waitFor();
-  const projectOptions = await page.locator("#home-project option").allTextContents();
+  const projectOptions = await page
+    .locator("#home-project option")
+    .allTextContents();
   if (!projectOptions.some((text) => text.includes(projectId))) {
     fail("the imported Project is not discoverable in Home");
   }
-  const profileOptions = await page.locator("#home-profile option").allTextContents();
+  const profileOptions = await page
+    .locator("#home-profile option")
+    .allTextContents();
   if (!profileOptions.some((text) => text.includes(profile.name))) {
     fail("the autonomous profile is not discoverable in Home");
   }
@@ -584,7 +596,8 @@ async function homeAndSubmit(projectId, profile) {
   });
   await dialog.waitFor({ timeout: 30_000 });
   const policyText = await page.locator(".home-policy").innerText();
-  if (!policyText.includes("src")) fail("policy scope does not show the src allowed path");
+  if (!policyText.includes("src"))
+    fail("policy scope does not show the src allowed path");
   if (!policyText.toLowerCase().includes("autonomous start enabled")) {
     fail("policy scope does not show autonomous start enabled");
   }
@@ -644,9 +657,14 @@ async function capturePlanAndEnvironment(requestId) {
   const planning = await waitFor(
     "completed planning materials",
     async () => {
-      const value = await core("GET", `/agentic/requests/${requestId}/planning`);
+      const value = await core(
+        "GET",
+        `/agentic/requests/${requestId}/planning`,
+      );
       if (value.reviewStatus === "PENDING" && value.materialsReady === true) {
-        fail(`owner-required plan review blocked the one-prompt positive lane: ${JSON.stringify(value)}`);
+        fail(
+          `owner-required plan review blocked the one-prompt positive lane: ${JSON.stringify(value)}`,
+        );
       }
       if (
         value.materialsReady === true &&
@@ -661,19 +679,23 @@ async function capturePlanAndEnvironment(requestId) {
     timeoutMs,
     1000,
   );
-  if (planning.materialsReady !== true) fail("planning materials are not ready");
-  if (planning.reviewApproved !== true) fail("current plan review is not approved");
-  if (planning.reviewCurrent === false) fail("plan review is stale for the current revision");
+  if (planning.materialsReady !== true)
+    fail("planning materials are not ready");
+  if (planning.reviewApproved !== true)
+    fail("current plan review is not approved");
+  if (planning.reviewCurrent === false)
+    fail("plan review is stale for the current revision");
   if ((planning.missingArtifacts ?? []).length > 0) {
     fail(`planning still misses ${planning.missingArtifacts.join(", ")}`);
   }
-  if (planning.participantPlan?.ready !== true) fail("participant plan is not ready");
-  record.assertions.start_ready = planning.startReady === true
-    ? "PASS"
-    : "OBSERVED_VIA_CAMPAIGN";
+  if (planning.participantPlan?.ready !== true)
+    fail("participant plan is not ready");
+  record.assertions.start_ready =
+    planning.startReady === true ? "PASS" : "OBSERVED_VIA_CAMPAIGN";
   record.assertions.review_current = planning.reviewCurrent ?? "NOT_EXPOSED";
-  record.plan.graph_sha256 = (await core("GET", `/agentic/requests/${requestId}/plan`))
-    .graph?.graph_sha256;
+  record.plan.graph_sha256 = (
+    await core("GET", `/agentic/requests/${requestId}/plan`)
+  ).graph?.graph_sha256;
   if (!record.plan.graph_sha256) fail("WorkGraph is missing");
   const spec = await waitFor(
     "frozen specification",
@@ -707,7 +729,9 @@ async function capturePlanAndEnvironment(requestId) {
   record.plan.environment_spec_sha256 = environment.specSha256 ?? null;
   record.plan.environment_plan_sha256 = environment.planSha256 ?? null;
   record.assertions.environment_frozen = "PASS";
-  record.assertions.spec_frozen = record.plan.spec_sha256 ? "PASS" : "NOT_REQUIRED";
+  record.assertions.spec_frozen = record.plan.spec_sha256
+    ? "PASS"
+    : "NOT_REQUIRED";
   return { request, planning };
 }
 
@@ -742,7 +766,9 @@ async function waitForCampaignAndGate(campaignId) {
     2000,
   );
   const campaign = candidateCampaign.campaign;
-  const authorization = assertCampaignAuthorization(candidateCampaign.authorization);
+  const authorization = assertCampaignAuthorization(
+    candidateCampaign.authorization,
+  );
   if (!["AUTHORIZED", "RUNNING", "COMPLETED"].includes(campaign.status)) {
     fail(`Campaign status is not authorized: ${campaign.status}`);
   }
@@ -803,14 +829,23 @@ async function waitForCampaignAndGate(campaignId) {
   );
   const changedPaths = diff.changed_paths ?? diff.changedPaths ?? [];
   if (!changedPaths.includes("src/provider.txt")) {
-    fail(`candidate diff does not include src/provider.txt: ${JSON.stringify(changedPaths)}`);
+    fail(
+      `candidate diff does not include src/provider.txt: ${JSON.stringify(changedPaths)}`,
+    );
   }
   const task = (candidateCampaign.tasks ?? []).find(
     (item) => item.candidate_id === candidate.id,
   );
   if (task?.status !== "SUCCEEDED") fail(`Campaign task is ${task?.status}`);
   record.assertions.candidate_lineage = "PASS";
-  return { campaign: candidateCampaign, candidate, attempt, gate, verifier, reviewer };
+  return {
+    campaign: candidateCampaign,
+    candidate,
+    attempt,
+    gate,
+    verifier,
+    reviewer,
+  };
 }
 
 async function captureProjectionAndBody(requestId) {
@@ -842,11 +877,12 @@ async function captureProjectionAndBody(requestId) {
   return { projection, body };
 }
 
-async function collectSnapshot(requestId, campaignId, requestProjection) {
+async function collectSnapshot(campaignId, requestProjection) {
   const diagnostics = await readFixtureDiagnostics();
   assertNoFixtureErrors(diagnostics);
   const reservations = await core("GET", "/provider/turn_reservations");
-  if (!Array.isArray(reservations)) fail("provider reservations are not a list");
+  if (!Array.isArray(reservations))
+    fail("provider reservations are not a list");
   const campaignDetail = await core("GET", `/campaigns/${campaignId}`);
   const gate = await core(
     "GET",
@@ -873,13 +909,15 @@ async function collectSnapshot(requestId, campaignId, requestProjection) {
 
 async function runPositive() {
   stage = "license-fixture";
-  if (negative !== "no-policy" && !(await requireLicenseFixtureOrBlock())) return;
+  if (negative !== "no-policy" && !(await requireLicenseFixtureOrBlock()))
+    return;
   stage = "first-run-enrollment";
   await enrollIfNeeded({ requireFresh: true });
   stage = "project-import";
   const projectId = await importProject();
   stage = "project-profile-setup";
-  const { projectConfig, profile } = await configureProjectAndProfile(projectId);
+  const { projectConfig, profile } =
+    await configureProjectAndProfile(projectId);
   stage = "model-context";
   const template = writeModelContext(projectId, projectConfig);
   const before = await readFixtureDiagnostics();
@@ -912,8 +950,13 @@ async function runPositive() {
   const projection = await waitForRequestExecution(requestId);
   const body = await bodyText();
   assertNoManualControls(body, MANUAL_CONTROL_LABELS);
-  if (body.includes(WAITING_OWNER_LABELS[0]) || body.includes(WAITING_OWNER_LABELS[1])) {
-    fail("positive one-prompt lane reached waiting-owner instead of auto-start");
+  if (
+    body.includes(WAITING_OWNER_LABELS[0]) ||
+    body.includes(WAITING_OWNER_LABELS[1])
+  ) {
+    fail(
+      "positive one-prompt lane reached waiting-owner instead of auto-start",
+    );
   }
   stage = "campaign-gate";
   const campaignId = projection.campaignId;
@@ -926,11 +969,7 @@ async function runPositive() {
   assertNoFixtureErrors(after);
   record.counters.after = after.counters;
   record.counters.delta = assertCounterDelta(before.counters, after.counters);
-  const snapshot = await collectSnapshot(
-    requestId,
-    campaignId,
-    completed.projection,
-  );
+  const snapshot = await collectSnapshot(campaignId, completed.projection);
   writeJson(snapshotPath, snapshot);
   const state = await context.storageState();
   writeJson(storageStatePath, state);
@@ -954,15 +993,22 @@ async function runVerifyRestart() {
   await page.goto(`${proxy.url}/#/requests/${before.ids.request_id}`, {
     waitUntil: "domcontentloaded",
   });
-  if (await isVisible(page.getByRole("heading", { name: "Set up this Factory" }))) {
-    fail("the enrolled session did not survive the Core restart; no second bootstrap is allowed");
+  if (
+    await isVisible(page.getByRole("heading", { name: "Set up this Factory" }))
+  ) {
+    fail(
+      "the enrolled session did not survive the Core restart; no second bootstrap is allowed",
+    );
   }
   await page
     .getByRole("heading", { name: "Request", level: 1 })
     .waitFor({ timeout: 30_000 })
     .catch(() => {});
   stage = "restart-state";
-  const projection = await core("GET", `/intake/requests/${before.ids.request_id}`);
+  const projection = await core(
+    "GET",
+    `/intake/requests/${before.ids.request_id}`,
+  );
   const campaign = await core("GET", `/campaigns/${before.ids.campaign_id}`);
   const gate = await core(
     "GET",
@@ -1035,7 +1081,14 @@ async function runVerifyRestart() {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForTimeout(1000);
   const body = await bodyText();
-  if (await isVisible(page.getByRole("heading", { name: "Enable autonomous R0 execution", level: 3 }))) {
+  if (
+    await isVisible(
+      page.getByRole("heading", {
+        name: "Enable autonomous R0 execution",
+        level: 3,
+      }),
+    )
+  ) {
     fail("the policy confirmation was requested again after restart");
   }
   assertNoManualControls(body, MANUAL_CONTROL_LABELS);
@@ -1044,7 +1097,11 @@ async function runVerifyRestart() {
   record.plan = { ...after.plan };
   record.counters.after = after.counters;
   record.counters.before = before.counters;
-  assert.deepEqual(after.counters, before.counters, "counter changed after restart");
+  assert.deepEqual(
+    after.counters,
+    before.counters,
+    "counter changed after restart",
+  );
   record.counters.delta = Object.fromEntries(
     Object.keys(after.counters).map((key) => [
       key,
@@ -1062,12 +1119,14 @@ async function runVerifyRestart() {
 async function runNegativeLicenseHeader() {
   // This lane depends on the Core98 fixture variant. It never mutates product
   // state itself; it only submits one prompt and reads the typed blocker.
-  if (negative !== "license-header") fail("license lane requires FACTORY_UAT_NEGATIVE=license-header");
+  if (negative !== "license-header")
+    fail("license lane requires FACTORY_UAT_NEGATIVE=license-header");
   stage = "license-fixture";
   if (!(await requireLicenseFixtureOrBlock())) return;
   await enrollIfNeeded({ requireFresh: true });
   const projectId = await importProject();
-  const { projectConfig, profile } = await configureProjectAndProfile(projectId);
+  const { projectConfig, profile } =
+    await configureProjectAndProfile(projectId);
   writeModelContext(projectId, projectConfig);
   const before = await readFixtureDiagnostics();
   assertCountersBaseline(before.counters);
@@ -1099,9 +1158,12 @@ async function runNegativeLicenseHeader() {
     ]),
   );
   if ((delta.license_evidence_review ?? 0) !== 1) {
-    fail("licence-header negative did not execute exactly one licence evidence review");
+    fail(
+      "licence-header negative did not execute exactly one licence evidence review",
+    );
   }
-  if ((delta.other ?? 0) !== 0) fail("licence-header negative produced an unknown prompt");
+  if ((delta.other ?? 0) !== 0)
+    fail("licence-header negative produced an unknown prompt");
   record.assertions.typed_license_stop = "PASS";
   record.result = "PASS";
 }
@@ -1111,7 +1173,8 @@ async function runLeaseNegative() {
   if (!(await requireLicenseFixtureOrBlock())) return;
   await enrollIfNeeded({ requireFresh: true });
   const projectId = await importProject();
-  const { projectConfig, profile } = await configureProjectAndProfile(projectId);
+  const { projectConfig, profile } =
+    await configureProjectAndProfile(projectId);
   const template = writeModelContext(projectId, projectConfig);
   const before = await readFixtureDiagnostics();
   assertCountersBaseline(before.counters);
@@ -1134,7 +1197,10 @@ async function runLeaseNegative() {
     1000,
   );
   const current = await core("GET", `/intake/requests/${requestId}`);
-  record.lease = assertLeaseProjection(current.state, participants.participants);
+  record.lease = assertLeaseProjection(
+    current.state,
+    participants.participants,
+  );
   record.assertions.lease_vs_request = "PASS";
   record.result = "PASS";
 }
@@ -1144,7 +1210,8 @@ async function runLicenseWaitOwner() {
   if (!(await requireLicenseFixtureOrBlock())) return;
   await enrollIfNeeded({ requireFresh: true });
   const projectId = await importProject();
-  const { projectConfig, profile } = await configureProjectAndProfile(projectId);
+  const { projectConfig, profile } =
+    await configureProjectAndProfile(projectId);
   const template = writeModelContext(projectId, projectConfig);
   const before = await readFixtureDiagnostics();
   assertCountersBaseline(before.counters);
@@ -1160,7 +1227,9 @@ async function runLicenseWaitOwner() {
       const value = await core("GET", `/intake/requests/${requestId}`);
       if (value.campaignId) fail("licence wait-owner lane created a Campaign");
       if (value.state === "FAILED") {
-        fail(`request FAILED instead of a truthful licence wait: ${JSON.stringify(value)}`);
+        fail(
+          `request FAILED instead of a truthful licence wait: ${JSON.stringify(value)}`,
+        );
       }
       const detail = value.stateDetail ?? value.state_detail ?? "";
       if (value.state === "BLOCKED" && /licen[cs]e gate/i.test(detail)) {
@@ -1195,10 +1264,9 @@ async function runLicenseWaitOwner() {
     "GET",
     `/agentic/requests/${requestId}/environment`,
   ).catch(() => ({ status: "MISSING" }));
-  const spec = await core(
-    "GET",
-    `/agentic/requests/${requestId}/spec`,
-  ).catch(() => ({ frozen: null }));
+  const spec = await core("GET", `/agentic/requests/${requestId}/spec`).catch(
+    () => ({ frozen: null }),
+  );
   const licenseAuthority =
     projection.licenseAuthority ?? projection.license_authority ?? null;
   try {
@@ -1219,7 +1287,8 @@ async function runLicenseWaitOwner() {
     record.findings.push({
       kind: "license-authority-contract-gap",
       detail: record.error,
-      required_owner: "98e2f199-2100-4907-8f16-a93e3038c321 / b786195c-79ee-4af3-bb8a-5f62aa23c05e",
+      required_owner:
+        "98e2f199-2100-4907-8f16-a93e3038c321 / b786195c-79ee-4af3-bb8a-5f62aa23c05e",
     });
     return;
   }
@@ -1247,7 +1316,8 @@ async function runLicenseWaitOwner() {
       kind: "license-authority-projection-missing",
       detail:
         "Core projection does not expose licenseAuthority {required,state,source,delegationId,pin,useContext,economicCriterion,deadline}",
-      required_owner: "98e2f199-2100-4907-8f16-a93e3038c321 / b786195c-79ee-4af3-bb8a-5f62aa23c05e",
+      required_owner:
+        "98e2f199-2100-4907-8f16-a93e3038c321 / b786195c-79ee-4af3-bb8a-5f62aa23c05e",
     });
     return;
   }
@@ -1298,7 +1368,9 @@ async function main() {
   page.on("console", (message) => {
     if (message.type() === "error") record.console.errors.push(message.text());
   });
-  page.on("pageerror", (error) => record.console.page_errors.push(String(error)));
+  page.on("pageerror", (error) =>
+    record.console.page_errors.push(String(error)),
+  );
   page.on("requestfailed", (request) => {
     record.console.failed_requests.push(
       `${request.method()} ${request.url()} ${request.failure()?.errorText ?? ""}`,
@@ -1338,7 +1410,9 @@ async function main() {
     record.assertions.page_mutations = "BLOCKED_BEFORE_VALIDATION";
   } else {
     record.assertions.driver_calls = validateDriverCalls(record.driver_calls);
-    const pageMutations = record.page_mutations.filter((entry) => !entry.driver);
+    const pageMutations = record.page_mutations.filter(
+      (entry) => !entry.driver,
+    );
     if (
       phase === "verify-restart" ||
       negative === "no-policy" ||
@@ -1362,10 +1436,14 @@ async function main() {
     }
   }
   if (record.console.errors.length > 0) {
-    fail(`browser console errors: ${record.console.errors.slice(0, 3).join(" | ")}`);
+    fail(
+      `browser console errors: ${record.console.errors.slice(0, 3).join(" | ")}`,
+    );
   }
   if (record.console.page_errors.length > 0) {
-    fail(`browser page errors: ${record.console.page_errors.slice(0, 3).join(" | ")}`);
+    fail(
+      `browser page errors: ${record.console.page_errors.slice(0, 3).join(" | ")}`,
+    );
   }
   const expectedGatePoll = (url) =>
     /\/core-api\/quality\/candidates\/[^/]+\/gate$/.test(url);
@@ -1396,7 +1474,8 @@ async function runFundingObservation() {
     record.assertions.funding_projection = "BLOCKED";
     record.findings.push({
       kind: "funding-endpoint-unavailable",
-      detail: "GET /funding/subscription/opencode-go did not return a projection",
+      detail:
+        "GET /funding/subscription/opencode-go did not return a projection",
       required_owner: "b786195c",
     });
     record.result = "BLOCKED";
@@ -1460,9 +1539,9 @@ try {
   record.error = error instanceof Error ? error.message : String(error);
   record.finished_at = new Date().toISOString();
   if (page) {
-    await shot(`failure-${phase}-${stage.replace(/[^a-z0-9-]+/gi, "-")}.png`).catch(
-      () => {},
-    );
+    await shot(
+      `failure-${phase}-${stage.replace(/[^a-z0-9-]+/gi, "-")}.png`,
+    ).catch(() => {});
   }
   writeJson(join(evidenceDir, `oneprompt-${phase}.json`), record);
   process.stderr.write(`one-prompt lane failed at ${stage}: ${record.error}\n`);

@@ -55,7 +55,10 @@ export const REQUIRED_MODEL_PHASES = [
   "license_evidence_review",
 ];
 
-export const OPTIONAL_MODEL_PHASES = ["lead_stack_selection", "semantic_review"];
+export const OPTIONAL_MODEL_PHASES = [
+  "lead_stack_selection",
+  "semantic_review",
+];
 
 export function normalizeCorePath(value) {
   if (typeof value !== "string" || value.length === 0) return "";
@@ -103,13 +106,17 @@ export function validateDriverCalls(calls) {
       continue;
     }
     if (!isSetupMutation(path)) {
-      failures.push(`driver mutation outside setup allowlist ${method} ${path}`);
+      failures.push(
+        `driver mutation outside setup allowlist ${method} ${path}`,
+      );
       continue;
     }
     setup.push(`${method} ${path}`);
   }
   if (failures.length > 0) {
-    throw new Error(`one-prompt driver seeded workflow state: ${failures.join("; ")}`);
+    throw new Error(
+      `one-prompt driver seeded workflow state: ${failures.join("; ")}`,
+    );
   }
   return { setup_calls: setup };
 }
@@ -122,7 +129,10 @@ export function validateDriverCalls(calls) {
  * Every other workflow mutation is a failure, including test-support admission
  * seeding and manual assess/plan/approve/licence/decision/freeze/start.
  */
-export function validatePageMutations(requests, { licenseDelegation = "none" } = {}) {
+export function validatePageMutations(
+  requests,
+  { licenseDelegation = "none" } = {},
+) {
   if (!["none", "one"].includes(licenseDelegation)) {
     throw new Error(`invalid licenseDelegation policy ${licenseDelegation}`);
   }
@@ -137,7 +147,10 @@ export function validatePageMutations(requests, { licenseDelegation = "none" } =
     if (method === "POST" && path === "/auth/bootstrap") continue;
     if (method === "POST" && path === "/projects") continue; // UI project import
     if (method === "POST" && path === "/intake/requests") continue;
-    if (method === "POST" && /^\/projects\/[^/]+\/execution-policy$/.test(path)) {
+    if (
+      method === "POST" &&
+      /^\/projects\/[^/]+\/execution-policy$/.test(path)
+    ) {
       continue;
     }
     const decisionCreate = method === "POST" && path === "/agentic/decisions";
@@ -159,14 +172,18 @@ export function validatePageMutations(requests, { licenseDelegation = "none" } =
     failures.push(`unknown page mutation ${key}`);
   }
   if (failures.length > 0) {
-    throw new Error(`one-prompt lane used manual workflow controls: ${failures.join("; ")}`);
+    throw new Error(
+      `one-prompt lane used manual workflow controls: ${failures.join("; ")}`,
+    );
   }
   const intake = counts.get("POST /intake/requests") ?? 0;
   const policy = [...counts.entries()]
     .filter(([key]) => /^POST \/projects\/[^/]+\/execution-policy$/.test(key))
     .reduce((total, [, value]) => total + value, 0);
   if (intake !== 1) {
-    throw new Error(`expected exactly one page POST /intake/requests, observed ${intake}`);
+    throw new Error(
+      `expected exactly one page POST /intake/requests, observed ${intake}`,
+    );
   }
   if (policy !== 1) {
     throw new Error(
@@ -175,7 +192,9 @@ export function validatePageMutations(requests, { licenseDelegation = "none" } =
   }
   const projectImports = counts.get("POST /projects") ?? 0;
   if (projectImports > 1) {
-    throw new Error(`expected at most one UI project import, observed ${projectImports}`);
+    throw new Error(
+      `expected at most one UI project import, observed ${projectImports}`,
+    );
   }
   const decisionCreates = counts.get("POST /agentic/decisions") ?? 0;
   const decisionResolves = [...counts.entries()]
@@ -224,7 +243,9 @@ export function assertCountersBaseline(counters) {
       throw new Error(`fixture counter ${phase} is not a non-negative integer`);
     }
     if (value !== 0) {
-      throw new Error(`fixture counter ${phase} is ${value} before the one prompt`);
+      throw new Error(
+        `fixture counter ${phase} is ${value} before the one prompt`,
+      );
     }
   }
 }
@@ -235,7 +256,11 @@ export function assertCountersBaseline(counters) {
  * required reviewer role; the contract only requires at least one. "other" and
  * any unknown phase must stay zero, and the fixture must report no errors.
  */
-export function assertCounterDelta(before, after, { semanticReviewMinimum = 1 } = {}) {
+export function assertCounterDelta(
+  before,
+  after,
+  { semanticReviewMinimum = 1 } = {},
+) {
   const phases = new Set([...Object.keys(before), ...Object.keys(after)]);
   const delta = {};
   for (const phase of phases) {
@@ -265,9 +290,15 @@ export function assertCounterDelta(before, after, { semanticReviewMinimum = 1 } 
     );
   }
   if ((delta.other ?? 0) !== 0) {
-    throw new Error(`fixture classified ${delta.other} unexpected prompt(s) as other`);
+    throw new Error(
+      `fixture classified ${delta.other} unexpected prompt(s) as other`,
+    );
   }
-  const known = new Set([...REQUIRED_MODEL_PHASES, ...OPTIONAL_MODEL_PHASES, "other"]);
+  const known = new Set([
+    ...REQUIRED_MODEL_PHASES,
+    ...OPTIONAL_MODEL_PHASES,
+    "other",
+  ]);
   for (const phase of phases) {
     if (!known.has(phase) && (delta[phase] ?? 0) !== 0) {
       throw new Error(`fixture executed unknown phase ${phase}`);
@@ -296,7 +327,9 @@ export function assertStableSnapshot(before, after) {
   const problems = [];
   const compare = (label, left, right) => {
     if (JSON.stringify(left) !== JSON.stringify(right)) {
-      problems.push(`${label}: ${JSON.stringify(left)} != ${JSON.stringify(right)}`);
+      problems.push(
+        `${label}: ${JSON.stringify(left)} != ${JSON.stringify(right)}`,
+      );
     }
   };
   compare("request id", before.ids.request_id, after.ids.request_id);
@@ -306,9 +339,21 @@ export function assertStableSnapshot(before, after) {
   compare("run id", before.ids.run_id, after.ids.run_id);
   compare("attempt id", before.ids.attempt_id, after.ids.attempt_id);
   compare("candidate id", before.ids.candidate_id, after.ids.candidate_id);
-  compare("candidate commit", before.ids.candidate_commit, after.ids.candidate_commit);
-  compare("verifier receipt", before.ids.verifier_receipt, after.ids.verifier_receipt);
-  compare("reviewer receipt", before.ids.reviewer_receipt, after.ids.reviewer_receipt);
+  compare(
+    "candidate commit",
+    before.ids.candidate_commit,
+    after.ids.candidate_commit,
+  );
+  compare(
+    "verifier receipt",
+    before.ids.verifier_receipt,
+    after.ids.verifier_receipt,
+  );
+  compare(
+    "reviewer receipt",
+    before.ids.reviewer_receipt,
+    after.ids.reviewer_receipt,
+  );
   compare("gate", before.ids.gate, after.ids.gate);
   compare("plan hash", before.plan.plan_hash, after.plan.plan_hash);
   compare("graph sha256", before.plan.graph_sha256, after.plan.graph_sha256);
@@ -322,11 +367,17 @@ export function assertStableSnapshot(before, after) {
   compare("campaign status", before.campaign_status, after.campaign_status);
   compare("attempt count", before.attempt_count, after.attempt_count);
   compare("fixture counters", before.counters, after.counters);
-  const beforeReservations = (before.reservations ?? []).map(reservationKey).sort();
-  const afterReservations = (after.reservations ?? []).map(reservationKey).sort();
+  const beforeReservations = (before.reservations ?? [])
+    .map(reservationKey)
+    .sort();
+  const afterReservations = (after.reservations ?? [])
+    .map(reservationKey)
+    .sort();
   compare("model reservations", beforeReservations, afterReservations);
   if (problems.length > 0) {
-    throw new Error(`restart changed durable identity/state: ${problems.join("; ")}`);
+    throw new Error(
+      `restart changed durable identity/state: ${problems.join("; ")}`,
+    );
   }
   return { stable: true, reservations: afterReservations.length };
 }
@@ -334,7 +385,9 @@ export function assertStableSnapshot(before, after) {
 export function assertNoManualControls(bodyText, labels) {
   const observed = labels.filter((label) => String(bodyText).includes(label));
   if (observed.length > 0) {
-    throw new Error(`manual controls visible in AUTONOMOUS positive lane: ${observed.join(", ")}`);
+    throw new Error(
+      `manual controls visible in AUTONOMOUS positive lane: ${observed.join(", ")}`,
+    );
   }
 }
 
@@ -348,12 +401,20 @@ export function assertLeaseProjection(requestState, participants) {
     const lease = String(participant.lease_state ?? "");
     const status = String(participant.status ?? "");
     if (!allowed.has(lease)) {
-      throw new Error(`participant ${participant.participant_id ?? "?"} has invalid lease_state ${lease}`);
+      throw new Error(
+        `participant ${participant.participant_id ?? "?"} has invalid lease_state ${lease}`,
+      );
     }
     if (!status) {
-      throw new Error(`participant ${participant.participant_id ?? "?"} has no separate status`);
+      throw new Error(
+        `participant ${participant.participant_id ?? "?"} has no separate status`,
+      );
     }
-    if (requestState === "EXECUTING" && status === "RUNNING" && lease !== "LIVE") {
+    if (
+      requestState === "EXECUTING" &&
+      status === "RUNNING" &&
+      lease !== "LIVE"
+    ) {
       throw new Error(
         `request EXECUTING and participant RUNNING but lease is ${lease}; unexplained lease/request contradiction`,
       );
@@ -389,14 +450,20 @@ export function assertLicenseWaitOwner({
 }) {
   const state = String(projection?.state ?? "");
   if (!["BLOCKED", "WAITING_OWNER"].includes(state)) {
-    throw new Error(`licence wait-owner lane expects BLOCKED/WAITING_OWNER, observed ${state}`);
+    throw new Error(
+      `licence wait-owner lane expects BLOCKED/WAITING_OWNER, observed ${state}`,
+    );
   }
-  const detail = String(projection?.stateDetail ?? projection?.state_detail ?? "");
+  const detail = String(
+    projection?.stateDetail ?? projection?.state_detail ?? "",
+  );
   if (!/licen[cs]e gate/i.test(detail)) {
     throw new Error("projection detail does not name the licence gate");
   }
   if (!/owner delegation/i.test(detail)) {
-    throw new Error("projection detail does not require the Owner licence delegation");
+    throw new Error(
+      "projection detail does not require the Owner licence delegation",
+    );
   }
   if (projection?.campaignId) {
     throw new Error("licence wait-owner lane created a Campaign");
@@ -405,13 +472,17 @@ export function assertLicenseWaitOwner({
     (countersAfter?.license_evidence_review ?? 0) -
     (countersBefore?.license_evidence_review ?? 0);
   if (delta !== 0) {
-    throw new Error(`licence wait-owner lane dispatched ${delta} licence model review(s)`);
+    throw new Error(
+      `licence wait-owner lane dispatched ${delta} licence model review(s)`,
+    );
   }
   if ((licenseDecisions ?? []).length !== 0) {
     throw new Error("licence wait-owner lane persisted a licence decision");
   }
   if (licenseReview?.available === true) {
-    throw new Error("licence wait-owner lane produced an available licence review");
+    throw new Error(
+      "licence wait-owner lane produced an available licence review",
+    );
   }
   const environmentStatus = String(environment?.status ?? "");
   if (environmentStatus === "FROZEN" || environment?.specSha256) {
@@ -427,7 +498,9 @@ export function assertLicenseWaitOwner({
       decision.selected_option === "APPROVE_DELEGATION",
   );
   if (approvedLicenseDelegation) {
-    throw new Error("execution policy confirmation also created a licence delegation");
+    throw new Error(
+      "execution policy confirmation also created a licence delegation",
+    );
   }
   let authorityState = "MISSING_PROJECTION";
   if (licenseAuthority) {
@@ -436,10 +509,18 @@ export function assertLicenseWaitOwner({
     }
     authorityState = String(licenseAuthority.state ?? "UNKNOWN");
     if (authorityState === "APPROVED") {
-      throw new Error("licence authority is APPROVED; use the positive lane, not wait-owner");
+      throw new Error(
+        "licence authority is APPROVED; use the positive lane, not wait-owner",
+      );
     }
-    if (!["MISSING", "REVOKED", "EXPIRED", "MISMATCH", "UNKNOWN"].includes(authorityState)) {
-      throw new Error(`licence wait-owner lane must not see authority state ${authorityState}`);
+    if (
+      !["MISSING", "REVOKED", "EXPIRED", "MISMATCH", "UNKNOWN"].includes(
+        authorityState,
+      )
+    ) {
+      throw new Error(
+        `licence wait-owner lane must not see authority state ${authorityState}`,
+      );
     }
     if (licenseAuthority.source !== "OWNER_DECISION") {
       throw new Error("licence authority source must be OWNER_DECISION");
@@ -501,10 +582,14 @@ export function assertFundingProjection(funding) {
     throw new Error("funding projection is missing");
   }
   if (funding.provider !== "opencode-go") {
-    throw new Error(`funding provider must be opencode-go, observed ${funding.provider}`);
+    throw new Error(
+      `funding provider must be opencode-go, observed ${funding.provider}`,
+    );
   }
   if (funding.route !== "GO_SUBSCRIPTION_INCLUDED") {
-    throw new Error(`funding route is not GO_SUBSCRIPTION_INCLUDED: ${funding.route}`);
+    throw new Error(
+      `funding route is not GO_SUBSCRIPTION_INCLUDED: ${funding.route}`,
+    );
   }
   const coreVerifiable =
     funding.coreVerifiable ?? funding.core_verifiable ?? null;
@@ -526,7 +611,9 @@ export function assertFundingProjection(funding) {
     "EXPLICIT_BOUNDED_SUBSCRIPTION_ADMISSION",
   ]) {
     if (!missing.includes(required)) {
-      throw new Error(`funding projection is missing evidence marker ${required}`);
+      throw new Error(
+        `funding projection is missing evidence marker ${required}`,
+      );
     }
   }
   return {
@@ -549,7 +636,9 @@ export function assertCampaignAuthorization(authorization) {
     throw new Error(`Campaign risk class must be R0, observed ${risk}`);
   }
   if (authorization.provider !== "opencode-go") {
-    throw new Error(`Campaign provider must be opencode-go, observed ${authorization.provider}`);
+    throw new Error(
+      `Campaign provider must be opencode-go, observed ${authorization.provider}`,
+    );
   }
   return {
     risk_class: risk,

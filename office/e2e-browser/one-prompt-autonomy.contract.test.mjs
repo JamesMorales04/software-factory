@@ -68,7 +68,10 @@ const snapshot = (overrides = {}) => ({
 });
 
 test("normalizeCorePath removes origin and /core-api exactly once", () => {
-  assert.equal(normalizeCorePath("http://127.0.0.1:1/core-api/intake/requests"), "/intake/requests");
+  assert.equal(
+    normalizeCorePath("http://127.0.0.1:1/core-api/intake/requests"),
+    "/intake/requests",
+  );
   assert.equal(normalizeCorePath("/core-api/campaigns/x"), "/campaigns/x");
   assert.equal(normalizeCorePath("campaigns/x"), "/campaigns/x");
 });
@@ -177,7 +180,9 @@ test("page must own exactly one intake submit and one policy confirmation", () =
 });
 
 test("pre-known request identifiers are rejected", () => {
-  assert.doesNotThrow(() => assertNoPreKnownRequestId({ FACTORY_UAT_PHASE: "run" }));
+  assert.doesNotThrow(() =>
+    assertNoPreKnownRequestId({ FACTORY_UAT_PHASE: "run" }),
+  );
   assert.throws(
     () => assertNoPreKnownRequestId({ FACTORY_AUTONOMOUS_REQUEST_ID: "req-1" }),
     /discover the request from the UI/,
@@ -250,7 +255,9 @@ test("fixture errors fail the lane", () => {
 
 test("restart stability rejects a second model reservation or changed ID", () => {
   const before = snapshot();
-  assert.doesNotThrow(() => assertStableSnapshot(before, structuredClone(before)));
+  assert.doesNotThrow(() =>
+    assertStableSnapshot(before, structuredClone(before)),
+  );
   const extra = structuredClone(before);
   extra.reservations.push({
     reservation_id: "reservation-2",
@@ -259,17 +266,25 @@ test("restart stability rejects a second model reservation or changed ID", () =>
     input_tokens: 1,
     output_tokens: 1,
   });
-  assert.throws(() => assertStableSnapshot(before, extra), /model reservations/);
+  assert.throws(
+    () => assertStableSnapshot(before, extra),
+    /model reservations/,
+  );
   const changed = structuredClone(before);
   changed.ids.campaign_id = "campaign-2";
   assert.throws(() => assertStableSnapshot(before, changed), /campaign id/);
   const counter = structuredClone(before);
   counter.counters.planner = 2;
-  assert.throws(() => assertStableSnapshot(before, counter), /fixture counters/);
+  assert.throws(
+    () => assertStableSnapshot(before, counter),
+    /fixture counters/,
+  );
 });
 
 test("manual controls are rejected only when visible", () => {
-  assert.doesNotThrow(() => assertNoManualControls("Autopilot owns these steps", ["Run assessment"]));
+  assert.doesNotThrow(() =>
+    assertNoManualControls("Autopilot owns these steps", ["Run assessment"]),
+  );
   assert.throws(
     () => assertNoManualControls("Run assessment", ["Run assessment"]),
     /manual controls visible/,
@@ -286,7 +301,10 @@ test("lease and request are separate; contradiction is rejected", () => {
       status_source: "provider-session",
     },
   ];
-  assert.equal(assertLeaseProjection("EXECUTING", runningLive).participants.length, 1);
+  assert.equal(
+    assertLeaseProjection("EXECUTING", runningLive).participants.length,
+    1,
+  );
   const runningReleased = structuredClone(runningLive);
   runningReleased[0].lease_state = "RELEASED";
   assert.throws(
@@ -295,14 +313,19 @@ test("lease and request are separate; contradiction is rejected", () => {
   );
   const completedReleased = structuredClone(runningReleased);
   completedReleased[0].status = "COMPLETED";
-  assert.doesNotThrow(() => assertLeaseProjection("EXECUTING", completedReleased));
+  assert.doesNotThrow(() =>
+    assertLeaseProjection("EXECUTING", completedReleased),
+  );
   const completedLive = structuredClone(runningLive);
   assert.throws(
     () => assertLeaseProjection("COMPLETED", completedLive),
     /still shows a LIVE lease/,
   );
   assert.throws(
-    () => assertLeaseProjection("COMPLETED", [{ status: "COMPLETED", lease_state: "BROKEN" }]),
+    () =>
+      assertLeaseProjection("COMPLETED", [
+        { status: "COMPLETED", lease_state: "BROKEN" },
+      ]),
     /invalid lease_state/,
   );
 });
@@ -454,7 +477,11 @@ test("licence wait-owner requires zero licence model/decision/freeze/Campaign", 
     /dispatched 1 licence model/,
   );
   assert.throws(
-    () => assertLicenseWaitOwner({ ...base, projection: { ...base.projection, campaignId: "c" } }),
+    () =>
+      assertLicenseWaitOwner({
+        ...base,
+        projection: { ...base.projection, campaignId: "c" },
+      }),
     /created a Campaign/,
   );
   assert.throws(
@@ -490,7 +517,10 @@ test("funding projection must be truthful, not just enabled", () => {
     coreVerifiable: false,
     admissible: false,
     entitlement: "NOT_RECORDED",
-    quota: { state: "UNKNOWN", reason: "NO_PROVIDER_QUOTA_OBSERVATION_REQUIRED" },
+    quota: {
+      state: "UNKNOWN",
+      reason: "NO_PROVIDER_QUOTA_OBSERVATION_REQUIRED",
+    },
     missingEvidence: [
       "OWNER_CONFIRMED_EXTRA_USAGE_ASSUMPTION",
       "EXPLICIT_BOUNDED_SUBSCRIPTION_ADMISSION",
@@ -533,7 +563,8 @@ test("campaign authorization requires exact R0 and the configured route", () => 
     },
   );
   assert.throws(
-    () => assertCampaignAuthorization({ riskClass: "R1", provider: "opencode-go" }),
+    () =>
+      assertCampaignAuthorization({ riskClass: "R1", provider: "opencode-go" }),
     /must be R0/,
   );
   assert.throws(
