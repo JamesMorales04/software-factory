@@ -325,6 +325,84 @@ export function assertLeaseProjection(requestState, participants) {
   return { request_state: requestState, participants: facts };
 }
 
+export function assertLicenseWaitOwner({
+  projection,
+  countersBefore,
+  countersAfter,
+  licenseDecisions,
+  licenseReview,
+  environment,
+  spec,
+  ownerDecisions,
+  licenseAuthority,
+}) {
+  const state = String(projection?.state ?? "");
+  if (!["BLOCKED", "WAITING_OWNER"].includes(state)) {
+    throw new Error(`licence wait-owner lane expects BLOCKED/WAITING_OWNER, observed ${state}`);
+  }
+  const detail = String(projection?.stateDetail ?? projection?.state_detail ?? "");
+  if (!/licen[cs]e gate/i.test(detail)) {
+    throw new Error("projection detail does not name the licence gate");
+  }
+  if (!/owner delegation/i.test(detail)) {
+    throw new Error("projection detail does not require the Owner licence delegation");
+  }
+  if (projection?.campaignId) {
+    throw new Error("licence wait-owner lane created a Campaign");
+  }
+  const delta =
+    (countersAfter?.license_evidence_review ?? 0) -
+    (countersBefore?.license_evidence_review ?? 0);
+  if (delta !== 0) {
+    throw new Error(`licence wait-owner lane dispatched ${delta} licence model review(s)`);
+  }
+  if ((licenseDecisions ?? []).length !== 0) {
+    throw new Error("licence wait-owner lane persisted a licence decision");
+  }
+  if (licenseReview?.available === true) {
+    throw new Error("licence wait-owner lane produced an available licence review");
+  }
+  const environmentStatus = String(environment?.status ?? "");
+  if (environmentStatus === "FROZEN" || environment?.specSha256) {
+    throw new Error("licence wait-owner lane froze an environment");
+  }
+  if (spec?.frozen || spec?.spec?.spec_sha256) {
+    throw new Error("licence wait-owner lane froze a specification");
+  }
+  const approvedLicenseDelegation = (ownerDecisions ?? []).find(
+    (decision) =>
+      decision.matter === "LICENSE_IDENTITY_EVIDENCE_DELEGATION" &&
+      decision.status === "APPROVED" &&
+      decision.selected_option === "APPROVE_DELEGATION",
+  );
+  if (approvedLicenseDelegation) {
+    throw new Error("execution policy confirmation also created a licence delegation");
+  }
+  let authorityState = "MISSING_PROJECTION";
+  if (licenseAuthority) {
+    if (licenseAuthority.required !== true) {
+      throw new Error("licence authority projection must be required:true");
+    }
+    authorityState = String(licenseAuthority.state ?? "UNKNOWN");
+    if (!["MISSING", "REVOKED", "EXPIRED", "MISMATCH"].includes(authorityState)) {
+      throw new Error(`licence wait-owner lane must not see authority state ${authorityState}`);
+    }
+    if (licenseAuthority.source !== "OWNER_DECISION") {
+      throw new Error("licence authority source must be OWNER_DECISION");
+    }
+  }
+  return {
+    state,
+    detail,
+    license_authority_state: authorityState,
+    license_model_calls: 0,
+    license_decisions: 0,
+    environment_status: environmentStatus || "MISSING",
+    campaign_id: null,
+    approved_license_delegation: false,
+  };
+}
+
 export function assertFundingProjection(funding) {
   if (!funding || typeof funding !== "object") {
     throw new Error("funding projection is missing");

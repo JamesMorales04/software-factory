@@ -46,6 +46,14 @@ Negative/edge lanes:
   `RUNNING` participant cannot silently show `RELEASED`/`EXPIRED`; a
   `COMPLETED` request cannot still show a `LIVE` lease. It does not mutate
   workflow state.
+- `FACTORY_UAT_NEGATIVE=license-wait-owner`: one prompt reaches the licence
+  gate without a pre-existing Owner licence delegation. It asserts zero
+  `license_evidence_review` model calls, zero licence decisions, no environment
+  freeze, no spec freeze and no Campaign. It requires the b786 `licenseAuthority`
+  projection (`required`, `state` `MISSING/REVOKED/EXPIRED/MISMATCH`,
+  `source:"OWNER_DECISION"`, delegation/pin/useContext/criterion/deadline) and
+  UI selectors `home-licence-blocked`/`home-licence-authority-state`; if the
+  product does not expose them yet, the lane records `BLOCKED`, never PASS.
 
 **Positive busy-gate:** the positive and `license-header` lanes are `BLOCKED`
 with `LICENSE_FIXTURE_PHASE_MISSING` until Core98 adds
@@ -67,6 +75,20 @@ fabricate a licence decision. A real positive one-prompt lane requires either
 the product UI to include the explicit licence criterion in the same Owner
 confirmation or a pre-existing authorized delegation; otherwise the positive
 lane remains BLOCKED.
+
+The proposed read contract is `licenseAuthority {required,state,delegationId,pin,
+useContext,economicCriterion,deadline,revokedAt,source:"OWNER_DECISION"}` with
+fail-closed `LICENSE_AUTHORITY_REQUIRED`; normal MISSING recovery uses the
+existing `createAgenticOwnerDecision` + `resolveAgenticOwnerDecision` matter
+`LICENSE_IDENTITY_EVIDENCE_DELEGATION`. The proposed UI selectors are
+`home-policy-license-authority`, `home-licence-authority-state`,
+`home-licence-pin`, `home-licence-use-context`, `home-licence-criterion`,
+`home-licence-deadline`, `home-licence-confirm`, `home-licence-blocked`,
+`home-licence-resume`, `licenses-delegation-create`,
+`licenses-delegation-approve-{id}`, `licenses-delegation-approve-confirm`.
+The harness does not invent a second confirmation; a dual execution+licence
+record must be implemented by product and reviewed by 98/70 before this lane is
+allowed to pass.
 
 ## Commands
 

@@ -13,6 +13,7 @@ import {
   assertCountersBaseline,
   assertFundingProjection,
   assertLeaseProjection,
+  assertLicenseWaitOwner,
   assertNoFixtureErrors,
   assertNoManualControls,
   assertNoPreKnownRequestId,
@@ -271,6 +272,85 @@ test("lease and request are separate; contradiction is rejected", () => {
   assert.throws(
     () => assertLeaseProjection("COMPLETED", [{ status: "COMPLETED", lease_state: "BROKEN" }]),
     /invalid lease_state/,
+  );
+});
+
+test("licence wait-owner requires zero licence model/decision/freeze/Campaign", () => {
+  const base = {
+    projection: {
+      state: "BLOCKED",
+      stateDetail:
+        "Autonomous preparation is blocked at the licence gate; an exact licence evidence review and decision for the current plan, identity receipt and approved Owner delegation are required.",
+      campaignId: null,
+    },
+    countersBefore: { license_evidence_review: 0 },
+    countersAfter: { license_evidence_review: 0 },
+    licenseDecisions: [],
+    licenseReview: { available: false },
+    environment: { status: "CORE_VALIDATED", specSha256: null },
+    spec: { frozen: null },
+    ownerDecisions: [],
+  };
+  const result = assertLicenseWaitOwner(base);
+  assert.equal(result.license_model_calls, 0);
+  assert.equal(result.campaign_id, null);
+  assert.equal(result.license_authority_state, "MISSING_PROJECTION");
+  assert.equal(
+    assertLicenseWaitOwner({
+      ...base,
+      licenseAuthority: {
+        required: true,
+        state: "MISSING",
+        source: "OWNER_DECISION",
+      },
+    }).license_authority_state,
+    "MISSING",
+  );
+  assert.throws(
+    () =>
+      assertLicenseWaitOwner({
+        ...base,
+        licenseAuthority: {
+          required: true,
+          state: "APPROVED",
+          source: "OWNER_DECISION",
+        },
+      }),
+    /must not see authority state APPROVED/,
+  );
+  assert.throws(
+    () =>
+      assertLicenseWaitOwner({
+        ...base,
+        countersAfter: { license_evidence_review: 1 },
+      }),
+    /dispatched 1 licence model/,
+  );
+  assert.throws(
+    () => assertLicenseWaitOwner({ ...base, projection: { ...base.projection, campaignId: "c" } }),
+    /created a Campaign/,
+  );
+  assert.throws(
+    () =>
+      assertLicenseWaitOwner({
+        ...base,
+        ownerDecisions: [
+          {
+            matter: "LICENSE_IDENTITY_EVIDENCE_DELEGATION",
+            status: "APPROVED",
+            selected_option: "APPROVE_DELEGATION",
+          },
+        ],
+      }),
+    /also created a licence delegation/,
+  );
+  assert.throws(
+    () =>
+      assertLicenseWaitOwner({
+        ...base,
+        projection: { ...base.projection, stateDetail: "blocked" },
+      }),
+    /does not name the licence gate/,
   );
 });
 

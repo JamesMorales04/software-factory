@@ -49,6 +49,7 @@ import {
   assertCountersBaseline,
   assertFundingProjection,
   assertLeaseProjection,
+  assertLicenseWaitOwner,
   assertNoFixtureErrors,
   assertNoManualControls,
   assertNoPreKnownRequestId,
@@ -99,6 +100,7 @@ if (
     "license-header",
     "funding-false",
     "lease-vs-request",
+    "license-wait-owner",
   ].includes(negative)
 ) {
   fail(`unsupported FACTORY_UAT_NEGATIVE: ${negative}`);
@@ -1135,6 +1137,119 @@ async function runLeaseNegative() {
   record.result = "PASS";
 }
 
+async function runLicenseWaitOwner() {
+  stage = "license-fixture";
+  if (!(await requireLicenseFixtureOrBlock())) return;
+  await enrollIfNeeded({ requireFresh: true });
+  const projectId = await importProject();
+  const { projectConfig, profile } = await configureProjectAndProfile(projectId);
+  const template = writeModelContext(projectId, projectConfig);
+  const before = await readFixtureDiagnostics();
+  assertCountersBaseline(before.counters);
+  record.counters.before = before.counters;
+  await homeAndSubmit(projectId, profile);
+  const requestId = await enablePolicyAndOpenRequest();
+  const created = await core("GET", `/intake/requests/${requestId}`);
+  writeRequestContext(requestId, created, template);
+  stage = "license-wait-owner";
+  const projection = await waitFor(
+    "licence wait-owner projection",
+    async () => {
+      const value = await core("GET", `/intake/requests/${requestId}`);
+      if (value.campaignId) fail("licence wait-owner lane created a Campaign");
+      if (value.state === "FAILED") {
+        fail(`request FAILED instead of a truthful licence wait: ${JSON.stringify(value)}`);
+      }
+      const detail = value.stateDetail ?? value.state_detail ?? "";
+      if (value.state === "BLOCKED" && /licen[cs]e gate/i.test(detail)) {
+        return value;
+      }
+      return null;
+    },
+    timeoutMs,
+    2000,
+  );
+  const countersAfter = await readFixtureDiagnostics();
+  assertNoFixtureErrors(countersAfter);
+  record.counters.after = countersAfter.counters;
+  record.counters.delta = {
+    license_evidence_review:
+      (countersAfter.counters.license_evidence_review ?? 0) -
+      (before.counters.license_evidence_review ?? 0),
+  };
+  const licenseDecisions = await core(
+    "GET",
+    `/agentic/license-decisions?project_id=${projectId}`,
+  ).catch(() => ({ decisions: [] }));
+  const ownerDecisions = await core(
+    "GET",
+    `/agentic/decisions?project_id=${projectId}`,
+  ).catch(() => ({ decisions: [] }));
+  const licenseReview = await core(
+    "GET",
+    `/agentic/requests/${requestId}/license-evidence-review`,
+  ).catch(() => ({ available: false }));
+  const environment = await core(
+    "GET",
+    `/agentic/requests/${requestId}/environment`,
+  ).catch(() => ({ status: "MISSING" }));
+  const spec = await core(
+    "GET",
+    `/agentic/requests/${requestId}/spec`,
+  ).catch(() => ({ frozen: null }));
+  const licenseAuthority =
+    projection.licenseAuthority ?? projection.license_authority ?? null;
+  record.license = assertLicenseWaitOwner({
+    projection,
+    countersBefore: before.counters,
+    countersAfter: countersAfter.counters,
+    licenseDecisions: licenseDecisions.decisions ?? licenseDecisions,
+    licenseReview,
+    environment,
+    spec,
+    ownerDecisions: ownerDecisions.decisions ?? ownerDecisions,
+    licenseAuthority,
+  });
+  const body = await bodyText();
+  const uiSelector = page.locator('[data-testid="home-licence-blocked"]');
+  const uiVisible = await isVisible(uiSelector);
+  const uiAuthorityState = page.locator(
+    '[data-testid="home-licence-authority-state"]',
+  );
+  const uiStateVisible = await isVisible(uiAuthorityState);
+  record.license.ui = {
+    home_licence_blocked: uiVisible,
+    home_licence_authority_state: uiStateVisible,
+    body_mentions_owner_delegation: /owner delegation/i.test(body),
+  };
+  assertNoManualControls(body, MANUAL_CONTROL_LABELS);
+  if (record.license.license_authority_state === "MISSING_PROJECTION") {
+    record.assertions.license_authority = "BLOCKED_MISSING_PROJECTION";
+    record.result = "BLOCKED";
+    record.findings.push({
+      kind: "license-authority-projection-missing",
+      detail:
+        "Core projection does not expose licenseAuthority {required,state,source,delegationId,pin,useContext,economicCriterion,deadline}",
+      required_owner: "98e2f199-2100-4907-8f16-a93e3038c321 / b786195c-79ee-4af3-bb8a-5f62aa23c05e",
+    });
+    return;
+  }
+  if (!uiVisible || !uiStateVisible) {
+    record.assertions.license_authority_ui = "BLOCKED_MISSING_SELECTORS";
+    record.result = "BLOCKED";
+    record.findings.push({
+      kind: "license-authority-ui-missing",
+      detail:
+        "UI selectors home-licence-blocked/home-licence-authority-state are not present",
+      required_owner: "b786195c-79ee-4af3-bb8a-5f62aa23c05e",
+    });
+    return;
+  }
+  record.assertions.license_wait_owner = "PASS";
+  record.assertions.license_authority = "PASS";
+  record.result = "PASS";
+}
+
 async function main() {
   const chromium = await loadChromium();
   const executablePath = chromiumExecutable();
@@ -1182,6 +1297,8 @@ async function main() {
       await runFundingObservation();
     } else if (negative === "lease-vs-request") {
       await runLeaseNegative();
+    } else if (negative === "license-wait-owner") {
+      await runLicenseWaitOwner();
     } else {
       await runPositive();
     }
