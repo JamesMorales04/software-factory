@@ -88,6 +88,7 @@ export function RequestWorkspace() {
   const messageKey = useRef(newIdempotencyKey());
   const pollFailureCount = useRef(0);
   const pollResumeAt = useRef(0);
+  const latestRequestId = useRef(requestId);
 
   const load = useCallback(
     async (background = false) => {
@@ -138,15 +139,17 @@ export function RequestWorkspace() {
   }, [requestId]);
 
   useEffect(() => {
+    latestRequestId.current = requestId;
     let active = true;
-    const requestScope = requestId;
     coreApi
       .getProviderExtraUsage("opencode-go")
       .then((view) => {
-        if (active && requestScope === requestId) setExtraUsage(view);
+        if (active && latestRequestId.current === requestId)
+          setExtraUsage(view);
       })
       .catch(() => {
-        if (active && requestScope === requestId) setExtraUsage(null);
+        if (active && latestRequestId.current === requestId)
+          setExtraUsage(null);
       });
     return () => {
       active = false;

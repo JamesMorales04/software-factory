@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { DirectorTableRegion } from "../components/office/DirectorTableRegion";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Input, Select, Textarea } from "../components/ui/Field";
@@ -2182,10 +2183,7 @@ export function Director() {
                       })}
                     </span>
                   </div>
-                  <section
-                    className="director-table-wrap"
-                    aria-label={t("director.table.agents")}
-                  >
+                  <DirectorTableRegion label={t("director.table.agents")}>
                     <table className="director-table">
                       <thead>
                         <tr>
@@ -2204,14 +2202,20 @@ export function Director() {
                             key={`${assignment.role}-${assignment.specialization}`}
                           >
                             <th scope="row">{assignment.role}</th>
-                            <td>{assignment.specialization}</td>
-                            <td>{assignment.count}</td>
-                            <td>
+                            <td
+                              data-label={t("director.agents.specialization")}
+                            >
+                              {assignment.specialization}
+                            </td>
+                            <td data-label={t("director.agents.count")}>
+                              {assignment.count}
+                            </td>
+                            <td data-label={t("director.agents.access")}>
                               {assignment.readOnly
                                 ? t("director.agents.readOnly")
                                 : t("director.agents.write")}
                             </td>
-                            <td>
+                            <td data-label={t("director.agents.tools")}>
                               <span className="muted">
                                 {assignment.toolPack.join(", ")}
                               </span>
@@ -2220,7 +2224,7 @@ export function Director() {
                         ))}
                       </tbody>
                     </table>
-                  </section>
+                  </DirectorTableRegion>
                   <div className="director-context">
                     <h3>{t("director.context.title")}</h3>
                     <dl className="director-facts">
@@ -2266,10 +2270,7 @@ export function Director() {
                       description={t("director.specs.emptyDescription")}
                     />
                   ) : (
-                    <section
-                      className="director-table-wrap"
-                      aria-label={t("director.table.specs")}
-                    >
+                    <DirectorTableRegion label={t("director.table.specs")}>
                       <table className="director-table">
                         <thead>
                           <tr>
@@ -2287,11 +2288,13 @@ export function Director() {
                               <th scope="row">
                                 <code>{spec.id}</code>
                               </th>
-                              <td>{spec.description}</td>
-                              <td>
+                              <td data-label={t("director.specs.description")}>
+                                {spec.description}
+                              </td>
+                              <td data-label={t("director.specs.status")}>
                                 <Badge tone="neutral">{spec.status}</Badge>
                               </td>
-                              <td>
+                              <td data-label={t("director.specs.paths")}>
                                 <span className="muted">
                                   {spec.allowedPaths.join(", ")}
                                 </span>
@@ -2300,7 +2303,7 @@ export function Director() {
                           ))}
                         </tbody>
                       </table>
-                    </section>
+                    </DirectorTableRegion>
                   )}
                 </Panel>
               </>

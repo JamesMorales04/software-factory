@@ -159,7 +159,7 @@
 }
 
 .director-table-wrap {
-  overflow-x: auto;
+  overflow-x: visible;
 }
 
 .director-table {
@@ -197,6 +197,50 @@
   .director-portfolio {
     position: static;
     max-height: none;
+  }
+
+  .director-table-wrap {
+    overflow-x: visible;
+  }
+
+  .director-table {
+    table-layout: auto;
+  }
+
+  .director-table thead {
+    display: none;
+  }
+
+  .director-table tbody,
+  .director-table tr,
+  .director-table th,
+  .director-table td {
+    display: block;
+  }
+
+  .director-table tr {
+    padding: var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+  }
+
+  .director-table tr + tr {
+    margin-top: var(--space-3);
+  }
+
+  .director-table th[scope="row"],
+  .director-table td {
+    padding: var(--space-2) 0;
+    border: 0;
+  }
+
+  .director-table td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 2px;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
   }
 }
 
