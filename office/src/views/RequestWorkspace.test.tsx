@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   getRequestTrace: vi.fn(),
   getAgenticSpec: vi.fn(),
   getProviderExtraUsage: vi.fn(),
+  getIntakeFundingReadiness: vi.fn(),
   declareProviderExtraUsage: vi.fn(),
   revokeProviderExtraUsage: vi.fn(),
   createIntakeSubscriptionAdmission: vi.fn(),
@@ -296,6 +297,9 @@ describe("RequestWorkspace", () => {
       active: false,
       declaration: null,
     });
+    mocks.getIntakeFundingReadiness
+      .mockReset()
+      .mockRejectedValue(new CoreApiError(404, "not found"));
     mocks.declareProviderExtraUsage.mockReset();
     mocks.revokeProviderExtraUsage.mockReset();
     mocks.createIntakeSubscriptionAdmission

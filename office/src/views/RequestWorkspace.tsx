@@ -16,12 +16,13 @@ import {
   CoreApiError,
   coreApi,
   type IntakeRequestProjection,
-  type ProviderExtraUsageView,
   newIdempotencyKey,
+  type ProviderExtraUsageView,
 } from "../coreApi";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
 import { EnvironmentPanel, environmentStatusLabel } from "./EnvironmentPanel";
+import { FundingReadinessPanel } from "./FundingReadiness";
 import { RequestAssessment } from "./RequestAssessment";
 import { RequestPlan } from "./RequestPlan";
 import {
@@ -1034,6 +1035,11 @@ export function RequestWorkspace() {
             </Panel>
           )}
 
+          <FundingReadinessPanel
+            requestId={data.id}
+            refreshKey={data.updatedAt}
+          />
+
           {data.state === "EXECUTING" && (
             <Panel className="request-panel">
               <h2>{t("request.execution.title")}</h2>
@@ -1102,9 +1108,7 @@ export function RequestWorkspace() {
             proposal={data.proposal}
             plan={data.plan}
             specifications={data.specifications}
-            participantState={
-              data.planning?.participantPlan.workGraphState
-            }
+            participantState={data.planning?.participantPlan.workGraphState}
           />
           <EnvironmentPanel
             environment={data.environment ?? null}

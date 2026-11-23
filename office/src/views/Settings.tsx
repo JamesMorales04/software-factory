@@ -23,6 +23,7 @@ import { formatTimestamp } from "../format";
 import { LanguageSwitcher, useI18n } from "../i18n";
 import { AccessDevices } from "./AccessDevices";
 import { ExecutionProfiles } from "./ExecutionProfiles";
+import { ProviderFundingStatus } from "./ProviderFundingStatus";
 
 const TABS = ["profiles", "providers", "runtime", "access"] as const;
 type SettingsTab = (typeof TABS)[number];
@@ -330,6 +331,8 @@ function ProviderCard({
           detail={t("settings.provider.verification.inferenceDetail")}
         />
       </section>
+
+      <ProviderFundingStatus provider={provider.provider} />
 
       <section aria-label={t("settings.provider.catalog.aria")}>
         <div className="section-heading">

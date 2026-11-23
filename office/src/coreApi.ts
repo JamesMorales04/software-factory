@@ -2220,6 +2220,100 @@ export interface IntakeRequestProjection extends IntakeRequestSummary {
   linked_issues?: IssueLinkProjection[] | null;
 }
 
+export type RequestFundingVerdict =
+  | "ADMITTED_FOR_REQUEST"
+  | "SCOPE_REQUIRED"
+  | "ADMISSION_MISSING"
+  | "ADMISSION_INACTIVE"
+  | "ADMISSION_EXPIRED"
+  | "OWNER_ASSUMPTION_INVALID"
+  | "PROVIDER_NOT_CONFIGURED"
+  | "PROVIDER_DISABLED"
+  | "SCOPE_MISMATCH"
+  | "ROUTE_MISMATCH"
+  | "SETTINGS_REVISION_MISMATCH"
+  | "NON_CANONICAL_ROUTE"
+  | "ROUTE_NOT_ADMITTED"
+  | "EXTRA_USAGE_NOT_DISABLED"
+  | "BINDING_REQUIRED";
+
+export interface RequestFundingScope {
+  intakeRequestId: string;
+  leadRequestId: string;
+  complete: boolean;
+}
+
+export interface RequestFundingRouteView {
+  role: string;
+  provider: string;
+  model: string;
+  settingsRevision: string;
+  transport: string;
+  valid: boolean;
+}
+
+export interface RequestFundingDeclarationView {
+  declarationId: string;
+  role: string;
+  provider: string;
+  model: string;
+  settingsRevision: string;
+}
+
+export interface RequestFundingAdmissionView {
+  admissionId: string;
+  state: string;
+  provider: string;
+  model: string;
+  settingsRevision: string;
+  validUntilMs: number;
+  campaignId: string | null;
+  extraUsage: "DISABLED" | "UNKNOWN";
+  confirmedBy: string;
+  statement: string;
+  ownerExtraUsageDeclarations: RequestFundingDeclarationView[];
+  routes: RequestFundingRouteView[];
+  receiptSha256: string;
+}
+
+export interface RequestFundingStatus {
+  schemaVersion: number;
+  scope: RequestFundingScope;
+  provider: string;
+  model: string;
+  requestScoped: boolean;
+  coreVerifiable: boolean;
+  requestScopedAdmissible: boolean;
+  verdict: RequestFundingVerdict;
+  admission: RequestFundingAdmissionView | null;
+  missingEvidence: string[];
+  recovery: string;
+  provenance: string[];
+  note: string;
+}
+
+export type SubscriptionFundingStatus = {
+  scope: "UNSCOPED_PROVIDER_STATUS";
+  requestScoped: false;
+  provider: string;
+  kind: string;
+  route: string;
+  configured: boolean;
+  enabled: boolean;
+  model: string;
+  settingsRevision: number;
+  authenticationClass: string;
+  coreVerifiable: false;
+  admissible: false;
+  entitlement: string;
+  extraUsage: string;
+  balanceFallback: string;
+  noChargeRoute: string;
+  quota: { state: string; reason: string };
+  missingEvidence: string[];
+  note: string;
+};
+
 export interface RequestEnvironmentConstraints {
   nixpkgs?: string;
   toolchains?: Array<{
@@ -4923,6 +5017,14 @@ export const coreApi = {
   getIntakeRequest: (id: string) =>
     request<IntakeRequestProjection>(
       `/intake/requests/${encodeURIComponent(id)}`,
+    ),
+  getIntakeFundingReadiness: (id: string) =>
+    request<RequestFundingStatus>(
+      `/intake/requests/${encodeURIComponent(id)}/funding-readiness`,
+    ),
+  getSubscriptionFunding: (provider: string) =>
+    request<SubscriptionFundingStatus>(
+      `/funding/subscription/${encodeURIComponent(provider)}`,
     ),
   createIntakeRequest: (input: NewIntakeRequest) =>
     request<IntakeRequestProjection>("/intake/requests", {

@@ -74,6 +74,33 @@ vi.mock("../coreApi", () => {
         semanticReviewEnabled: false,
         updatedAt: "2026-10-27T10:00:00Z",
       }),
+      getSubscriptionFunding: vi.fn().mockResolvedValue({
+        scope: "UNSCOPED_PROVIDER_STATUS",
+        requestScoped: false,
+        provider: "codex",
+        kind: "codex",
+        route: "CHATGPT_PLAN_INCLUDED",
+        configured: true,
+        enabled: true,
+        model: "gpt-6-luna",
+        settingsRevision: 3,
+        authenticationClass: "API_KEY",
+        coreVerifiable: false,
+        admissible: false,
+        entitlement: "NOT_RECORDED",
+        extraUsage: "OWNER_ASSUMED_DISABLED_PENDING_ADMISSION",
+        balanceFallback: "NOT_RECORDED",
+        noChargeRoute: "EXACT_SUBSCRIPTION_ROUTE_ONLY",
+        quota: {
+          state: "UNKNOWN",
+          reason: "NO_PROVIDER_QUOTA_OBSERVATION_REQUIRED",
+        },
+        missingEvidence: [
+          "OWNER_CONFIRMED_EXTRA_USAGE_ASSUMPTION",
+          "EXPLICIT_BOUNDED_SUBSCRIPTION_ADMISSION",
+        ],
+        note: "UNSCOPED PROVIDER STATUS: this projection cannot decide a request or Campaign.",
+      }),
       listExecutionProfiles: vi
         .fn()
         .mockResolvedValue({ profiles: [], supportedRoutes: [] }),

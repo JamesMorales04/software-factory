@@ -396,6 +396,62 @@ export const es: Catalog = {
   "request.subscription.revoked": "Confirmación de Extra Usage revocada.",
   "request.subscription.saving": "Confirmando…",
   "request.subscription.confirmed": "Confirmación de suscripción registrada.",
+  "settings.funding.title": "Estado de financiación del proveedor",
+  "settings.funding.hint":
+    "Evidencia de conexión del proveedor no acotada. No puede decidir una solicitud, conceder despacho ni verificar un derecho emitido por el proveedor.",
+  "settings.funding.unavailable":
+    "El estado de financiación del proveedor no está disponible en esta compilación de Core.",
+  "request.funding.title": "Disponibilidad de financiación",
+  "request.funding.hint":
+    "Evidencia de admisión propiedad de Core y acotada a la solicitud. No es derecho emitido por el proveedor ni autoriza el despacho por sí misma.",
+  "request.funding.loading": "Leyendo la disponibilidad de financiación…",
+  "request.funding.unavailable":
+    "Esta compilación de Core no expone la proyección de disponibilidad de financiación acotada a la solicitud. El estado no acotado del proveedor no puede decidir esta solicitud y no se infiere ninguna admisión.",
+  "request.funding.error":
+    "No se pudo leer la disponibilidad de financiación desde Core.",
+  "request.funding.unscopedWarning":
+    "ESTADO NO ACOTADO: esta respuesta no puede decidir una solicitud. Se requiere evidencia de admisión acotada a la solicitud.",
+  "request.funding.admitted":
+    "La guarda de admisión de alcance existente de Core se cumple para esta solicitud exacta. La evidencia emitida por el proveedor sigue sin verificarse.",
+  "request.funding.notAdmitted":
+    "Core no ha admitido esta ruta de solicitud. Revisa la evidencia faltante y el texto de recuperación.",
+  "request.funding.scope": "Alcance",
+  "request.funding.scopeComplete":
+    "Acotado a la solicitud (identidad de intake y Lead presentes)",
+  "request.funding.scopeIncomplete": "Alcance de solicitud incompleto",
+  "request.funding.intake": "Solicitud de intake",
+  "request.funding.lead": "Solicitud de Lead",
+  "request.funding.route": "Ruta",
+  "request.funding.providerEvidence": "Evidencia emitida por el proveedor",
+  "request.funding.providerEvidenceMissing": "NO VERIFICADA",
+  "request.funding.guard": "Guarda de alcance de Core",
+  "request.funding.guardSatisfied": "Cumplida para este alcance exacto",
+  "request.funding.guardNotSatisfied": "No cumplida",
+  "request.funding.admission": "Admisión registrada",
+  "request.funding.admissionId": "Admisión",
+  "request.funding.admissionState": "Estado",
+  "request.funding.settingsRevision": "Revisión de configuración",
+  "request.funding.validUntil": "Válida hasta",
+  "request.funding.extraUsage": "Suposición de Extra Usage",
+  "request.funding.confirmedBy": "Confirmada por",
+  "request.funding.campaign": "Campaña",
+  "request.funding.receipt": "Hash del recibo",
+  "request.funding.declarations":
+    "Declaraciones de Extra Usage del propietario",
+  "request.funding.routes": "Rutas admitidas",
+  "request.funding.noAdmission": "No hay una admisión acotada a la solicitud.",
+  "request.funding.missingEvidence": "Evidencia faltante o bloqueante",
+  "request.funding.noneMissing":
+    "No falta evidencia bloqueante para esta admisión exacta.",
+  "request.funding.provenance": "Procedencia",
+  "request.funding.recovery": "Recuperación",
+  "request.funding.table.declaration": "Declaración",
+  "request.funding.table.role": "Rol",
+  "request.funding.table.provider": "Proveedor",
+  "request.funding.table.model": "Modelo",
+  "request.funding.table.settingsRevision": "Revisión de configuración",
+  "request.funding.table.transport": "Transporte",
+  "request.funding.table.valid": "Válida",
   "request.next.assessing": "Evaluando…",
   "request.next.assessingDescription":
     "Core informa de que hay una evaluación en curso. Esta vista no transmite el progreso; se actualiza desde Core.",
