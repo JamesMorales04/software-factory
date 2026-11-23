@@ -411,6 +411,34 @@ export function assertLicenseWaitOwner({
     if (licenseAuthority.source !== "OWNER_DECISION") {
       throw new Error("licence authority source must be OWNER_DECISION");
     }
+    // The standing Owner grant is project-scoped. Request/plan/receipt
+    // identity is intentionally null before the exact Lead decision; do not
+    // require future identity on the grant.
+    const project = licenseAuthority.project ?? licenseAuthority.projectId;
+    if (!project || (typeof project === "string" && project.trim() === "")) {
+      throw new Error("licence authority grant is missing project");
+    }
+    for (const field of ["pin", "useContext", "economicCriterion"]) {
+      if (
+        typeof licenseAuthority[field] !== "string" ||
+        licenseAuthority[field].trim() === ""
+      ) {
+        throw new Error(`licence authority grant is missing ${field}`);
+      }
+    }
+    if (
+      licenseAuthority.revision === null ||
+      licenseAuthority.revision === undefined ||
+      String(licenseAuthority.revision).trim() === ""
+    ) {
+      throw new Error("licence authority grant is missing revision");
+    }
+    if (
+      typeof licenseAuthority.deadline !== "string" ||
+      licenseAuthority.deadline.trim() === ""
+    ) {
+      throw new Error("licence authority grant is missing deadline");
+    }
   }
   return {
     state,

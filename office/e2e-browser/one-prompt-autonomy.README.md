@@ -90,13 +90,18 @@ The harness does not invent a second confirmation; a dual execution+licence
 record must be implemented by product and reviewed by 98/70 before this lane is
 allowed to pass.
 
-**Contract is not ready.** The exact engine still needs request/plan/receipt/
-revision/project/scope in the authority DTO; the MISSING flow, pre/post-prompt
-confirmation timing and Owner-decision idempotency/unique constraint are
-unresolved (de9 review of d1f08de8). The WaitOwner lane therefore only asserts a
-truthful `WAITING_OWNER`/`BLOCKED` request state with zero licence model/
-decision/freeze/Campaign effects. Missing authority projection or selectors is
-`BLOCKED`, never PASS; it never grants licence authority or implements Option A.
+**Contract is not ready.** The standing Owner grant is project-scoped: project,
+pin, use context, economic criterion, revision and deadline are mandatory;
+request/plan/receipt identity is intentionally null before the exact Lead
+decision and must **not** be required on the grant. The exact Lead decision later
+binds the full identity. The MISSING flow, pre/post-prompt confirmation timing
+and Owner-decision idempotency/unique constraint are unresolved (de9 review of
+d1f08de8). The WaitOwner lane therefore only asserts a truthful
+`WAITING_OWNER`/`BLOCKED` request state with zero licence model/decision/freeze/
+Campaign effects; it omits the licensing-checkbox choice to test absence of
+authority. A normal positive UI must make the explicit licence choice itself.
+Missing authority projection or selectors is `BLOCKED`, never PASS; the harness
+never grants licence authority or implements Option A.
 
 ## Commands
 

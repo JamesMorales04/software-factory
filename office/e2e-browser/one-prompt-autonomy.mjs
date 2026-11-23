@@ -1201,17 +1201,28 @@ async function runLicenseWaitOwner() {
   ).catch(() => ({ frozen: null }));
   const licenseAuthority =
     projection.licenseAuthority ?? projection.license_authority ?? null;
-  record.license = assertLicenseWaitOwner({
-    projection,
-    countersBefore: before.counters,
-    countersAfter: countersAfter.counters,
-    licenseDecisions: licenseDecisions.decisions ?? licenseDecisions,
-    licenseReview,
-    environment,
-    spec,
-    ownerDecisions: ownerDecisions.decisions ?? ownerDecisions,
-    licenseAuthority,
-  });
+  try {
+    record.license = assertLicenseWaitOwner({
+      projection,
+      countersBefore: before.counters,
+      countersAfter: countersAfter.counters,
+      licenseDecisions: licenseDecisions.decisions ?? licenseDecisions,
+      licenseReview,
+      environment,
+      spec,
+      ownerDecisions: ownerDecisions.decisions ?? ownerDecisions,
+      licenseAuthority,
+    });
+  } catch (error) {
+    record.result = "BLOCKED";
+    record.error = error instanceof Error ? error.message : String(error);
+    record.findings.push({
+      kind: "license-authority-contract-gap",
+      detail: record.error,
+      required_owner: "98e2f199-2100-4907-8f16-a93e3038c321 / b786195c-79ee-4af3-bb8a-5f62aa23c05e",
+    });
+    return;
+  }
   const body = await bodyText();
   const selectorVisibility = {};
   for (const selector of HOME_LICENSE_SELECTORS) {
