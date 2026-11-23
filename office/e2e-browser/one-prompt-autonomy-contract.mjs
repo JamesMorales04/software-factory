@@ -464,20 +464,17 @@ export function assertLicenseWaitOwner({
         throw new Error(`licence authority grant is missing ${field}`);
       }
     }
-    // Authority revision is NOT the execution-profile revision. Never accept
-    // scope.profileRevision as a substitute; the two values are tested as
-    // different below.
-    const authorityRevision =
-      licenseAuthority.authorityRevision ??
-      licenseAuthority.delegationRevision ??
-      licenseAuthority.revision;
+    // Canonical field: authorityRevision. It is NOT the execution-profile
+    // revision; never accept scope.profileRevision or legacy aliases. The name
+    // is pending final b786/98 signature, but no fallback shim is kept.
+    const authorityRevision = licenseAuthority.authorityRevision;
     if (
       authorityRevision === null ||
       authorityRevision === undefined ||
       String(authorityRevision).trim() === ""
     ) {
       throw new Error(
-        "licence authority grant is missing authorityRevision (scope.profileRevision is not authority revision)",
+        "licence authority grant is missing authorityRevision (scope.profileRevision is not authority revision; no aliases)",
       );
     }
     if (

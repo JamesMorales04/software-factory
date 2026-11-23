@@ -95,7 +95,9 @@ pin, use context, economic criterion, authority revision and deadline are
 mandatory; request/plan/receipt identity is intentionally null before the exact
 Lead decision and must **not** be required on the grant. `scope.profileRevision`
 is an execution-profile revision and is **not** a substitute for
-`authorityRevision`. The exact Lead decision later binds the full identity. The
+`authorityRevision`. The harness uses one canonical field name,
+`authorityRevision`, with no `revision`/`delegationRevision` aliases; the final
+b786/98 signature must confirm that name and its datatype atomically. The exact Lead decision later binds the full identity. The
 MISSING flow, pre/post-prompt confirmation timing and Owner-decision
 idempotency/unique constraint are unresolved (de9 review of d1f08de8). The
 WaitOwner lane therefore only asserts a truthful `WAITING_OWNER`/`BLOCKED`
