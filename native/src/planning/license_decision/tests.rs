@@ -1371,7 +1371,7 @@ fn real_plan_and_frozen_spec_build_the_typed_binding() {
         sbom_sha256: plan.license_inventory.sbom_sha256.clone(),
         builder_image: plan.builder.image.clone(),
         builder_image_digest: plan.builder.digest.clone(),
-        resource_policy: plan.resources.clone(),
+        resource_policy: plan.resources,
         network_policy: plan.network.clone(),
         status: crate::planning::environment::EnvironmentSpecStatus::Frozen,
         frozen_at: "2026-11-20T20:00:00Z".into(),

@@ -40488,8 +40488,7 @@ mod tests {
             let before_calls = fixture.app.db.model_calls(100).await.unwrap().len();
             let refused = build_environment_before_freeze(&fixture.app, &plan, &spec, None, &[])
                 .await
-                .err()
-                .expect("a forged pointer must not yield identity evidence");
+                .expect_err("a forged pointer must not yield identity evidence");
             let body = axum::body::to_bytes(refused.into_body(), 16 * 1024)
                 .await
                 .unwrap();

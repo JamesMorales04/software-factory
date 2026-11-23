@@ -929,7 +929,7 @@ mod tests {
                 sbom_sha256: plan.license_inventory.sbom_sha256.clone(),
                 builder_image: plan.builder.image.clone(),
                 builder_image_digest: plan.builder.digest.clone(),
-                resource_policy: plan.resources.clone(),
+                resource_policy: plan.resources,
                 network_policy: plan.network.clone(),
                 status: EnvironmentSpecStatus::Frozen,
                 frozen_at: "2026-11-20T20:00:00Z".into(),
@@ -1571,8 +1571,7 @@ mod tests {
             let fixture = Fixture::new();
             let error = review_license_evidence_with(&gateway, &database, fixture.request(None))
                 .await
-                .err()
-                .expect("an untyped payload is not a review");
+                .expect_err("an untyped payload is not a review");
             assert!(error.to_string().contains("invalid assessment"));
             assert_eq!(gateway.calls(), 1);
         }

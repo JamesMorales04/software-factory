@@ -357,7 +357,7 @@ mod tests {
         let grants = authorize(
             &roots,
             PIN,
-            &[observation.clone()],
+            std::slice::from_ref(&observation),
             &[accept(&observation)],
             "review-1",
         )
@@ -378,7 +378,7 @@ mod tests {
             authorize(
                 &roots,
                 PIN,
-                &[observation.clone()],
+                std::slice::from_ref(&observation),
                 &[accept(&observation)],
                 "review-1"
             ),
@@ -395,7 +395,7 @@ mod tests {
             authorize(
                 &roots,
                 PIN,
-                &[observation.clone()],
+                std::slice::from_ref(&observation),
                 &[accept(&observation)],
                 "review-1"
             ),
@@ -434,7 +434,7 @@ mod tests {
             authorize(
                 &roots,
                 "github:NixOS/nixpkgs/other",
-                &[observation.clone()],
+                std::slice::from_ref(&observation),
                 &[accept(&observation)],
                 "review-1"
             ),
@@ -446,7 +446,7 @@ mod tests {
             authorize(
                 &tampered,
                 PIN,
-                &[observation.clone()],
+                std::slice::from_ref(&observation),
                 &[accept(&observation)],
                 "review-1"
             ),
@@ -464,14 +464,20 @@ mod tests {
             rationale: "invented".into(),
         };
         assert_eq!(
-            authorize(&roots, PIN, &[observation.clone()], &[invented], "review-1"),
+            authorize(
+                &roots,
+                PIN,
+                std::slice::from_ref(&observation),
+                &[invented],
+                "review-1"
+            ),
             Err(HelperPerimeterError::MissingDecision)
         );
         assert_eq!(
             authorize(
                 &roots,
                 PIN,
-                &[observation.clone()],
+                std::slice::from_ref(&observation),
                 &[accept(&observation), accept(&observation)],
                 "review-1"
             ),
