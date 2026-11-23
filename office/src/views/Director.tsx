@@ -1154,7 +1154,10 @@ export function Director() {
                     )}
                   </div>
                   {detail.participantState === "WORK_GRAPH_NOT_PLANNED" && (
-                    <div className="ui-callout ui-callout--attention" role="status">
+                    <div
+                      className="ui-callout ui-callout--attention"
+                      role="status"
+                    >
                       <p>
                         <strong>
                           {t("director.participants.workGraphNotPlannedTitle")}
@@ -1167,7 +1170,10 @@ export function Director() {
                     </div>
                   )}
                   {detail.participantState === "PLANNED_PENDING" && (
-                    <div className="ui-callout ui-callout--attention" role="status">
+                    <div
+                      className="ui-callout ui-callout--attention"
+                      role="status"
+                    >
                       <p>
                         <strong>
                           {t("director.participants.plannerPendingTitle")}
@@ -2176,8 +2182,10 @@ export function Director() {
                       })}
                     </span>
                   </div>
-                  {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable table region must be keyboard reachable (WCAG 2.1.1) */}
-                  <div className="director-table-wrap" role="region" aria-label={t("director.table.agents")} tabIndex={0}>
+                  <section
+                    className="director-table-wrap"
+                    aria-label={t("director.table.agents")}
+                  >
                     <table className="director-table">
                       <thead>
                         <tr>
@@ -2212,7 +2220,7 @@ export function Director() {
                         ))}
                       </tbody>
                     </table>
-                  </div>
+                  </section>
                   <div className="director-context">
                     <h3>{t("director.context.title")}</h3>
                     <dl className="director-facts">
@@ -2258,8 +2266,10 @@ export function Director() {
                       description={t("director.specs.emptyDescription")}
                     />
                   ) : (
-                    // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable table region must be keyboard reachable (WCAG 2.1.1)
-                    <div className="director-table-wrap" role="region" aria-label={t("director.table.specs")} tabIndex={0}>
+                    <section
+                      className="director-table-wrap"
+                      aria-label={t("director.table.specs")}
+                    >
                       <table className="director-table">
                         <thead>
                           <tr>
@@ -2290,7 +2300,7 @@ export function Director() {
                           ))}
                         </tbody>
                       </table>
-                    </div>
+                    </section>
                   )}
                 </Panel>
               </>

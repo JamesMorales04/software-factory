@@ -270,7 +270,7 @@ export function LicenseDecisions() {
     } finally {
       setLoading(false);
     }
-  }, [projectId, t]);
+  }, [projectId, requestId, t]);
 
   useEffect(() => {
     void load();

@@ -386,14 +386,15 @@ try {
   assert.equal(seeded.seeded, true);
 
   const extraUsage = seeded.requests?.extraUsageSubmitted;
-  assert.ok(Array.isArray(extraUsage) && extraUsage.length === 2, JSON.stringify(seeded.requests));
+  assert.ok(
+    Array.isArray(extraUsage) && extraUsage.length === 2,
+    JSON.stringify(seeded.requests),
+  );
   const [extraUsageFirst, extraUsageSecond] = extraUsage;
   const openSubscription = async () => {
-    await page
-      .locator("details.request-subscription")
-      .evaluate((element) => {
-        element.open = true;
-      });
+    await page.locator("details.request-subscription").evaluate((element) => {
+      element.open = true;
+    });
   };
   await check(
     "WP10-EU-000",
@@ -435,9 +436,7 @@ try {
         .getByRole("checkbox", { name: /I confirm Extra Usage is OFF/ })
         .waitFor();
       assert.equal(
-        await page
-          .getByText(/Extra Usage is confirmed OFF/)
-          .count(),
+        await page.getByText(/Extra Usage is confirmed OFF/).count(),
         0,
       );
     },
@@ -450,12 +449,8 @@ try {
       await page
         .getByRole("checkbox", { name: /I confirm Extra Usage is OFF/ })
         .check();
-      await page
-        .getByRole("button", { name: "Confirm once and save" })
-        .click();
-      await page
-        .getByText(/Extra Usage confirmation saved/)
-        .waitFor();
+      await page.getByRole("button", { name: "Confirm once and save" }).click();
+      await page.getByText(/Extra Usage confirmation saved/).waitFor();
       await page.getByText(/Extra Usage is confirmed OFF/).waitFor();
       assert.equal(
         await page
@@ -506,9 +501,9 @@ try {
       const [admissionResponse] = await Promise.all([
         page.waitForResponse(
           (response) =>
-            response.url().includes(
-              `/requests/${extraUsageSecond}/subscription-admission`,
-            ),
+            response
+              .url()
+              .includes(`/requests/${extraUsageSecond}/subscription-admission`),
           { timeout: 20_000 },
         ),
         page.getByRole("button", { name: "Confirm subscription" }).click(),
@@ -519,9 +514,7 @@ try {
         200,
         `admission ${admissionResponse.status()}: ${admissionBody}`,
       );
-      await page
-        .getByText(/Subscription confirmation recorded/)
-        .waitFor();
+      await page.getByText(/Subscription confirmation recorded/).waitFor();
     },
   );
   await check(
@@ -539,16 +532,12 @@ try {
       await page
         .getByRole("button", { name: "Revoke Extra Usage confirmation" })
         .click();
-      await page
-        .getByText(/Extra Usage confirmation revoked/)
-        .waitFor();
+      await page.getByText(/Extra Usage confirmation revoked/).waitFor();
       await page
         .getByRole("checkbox", { name: /I confirm Extra Usage is OFF/ })
         .waitFor();
       assert.equal(
-        await page
-          .getByText(/Extra Usage is confirmed OFF/)
-          .count(),
+        await page.getByText(/Extra Usage is confirmed OFF/).count(),
         0,
       );
     },
@@ -597,7 +586,9 @@ try {
       });
       await checkbox.focus();
       assert.equal(
-        await checkbox.evaluate((element) => element === document.activeElement),
+        await checkbox.evaluate(
+          (element) => element === document.activeElement,
+        ),
         true,
       );
       const overflow = await page.evaluate(
@@ -614,8 +605,7 @@ try {
         {
           candidate: process.env.FACTORY_SOURCE_SHA || null,
           consoleErrors: consoleErrors.map((entry) =>
-            entry.text.includes("401") &&
-            entry.url.includes("extra-usage")
+            entry.text.includes("401") && entry.url.includes("extra-usage")
               ? { ...entry, expected: true }
               : entry,
           ),

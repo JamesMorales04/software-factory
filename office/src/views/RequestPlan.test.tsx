@@ -77,7 +77,9 @@ describe("RequestPlan", () => {
     renderPlan([], [], "WORK_GRAPH_NOT_PLANNED");
 
     expect(screen.getByText("Planner pending.")).toBeDefined();
-    expect(screen.getAllByText("WORK_GRAPH_NOT_PLANNED").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("WORK_GRAPH_NOT_PLANNED").length,
+    ).toBeGreaterThan(0);
     expect(screen.queryByText("unit-1")).toBeNull();
     expect(screen.queryByText("No work units recorded.")).toBeNull();
   });

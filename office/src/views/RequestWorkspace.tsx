@@ -139,13 +139,14 @@ export function RequestWorkspace() {
 
   useEffect(() => {
     let active = true;
+    const requestScope = requestId;
     coreApi
       .getProviderExtraUsage("opencode-go")
       .then((view) => {
-        if (active) setExtraUsage(view);
+        if (active && requestScope === requestId) setExtraUsage(view);
       })
       .catch(() => {
-        if (active) setExtraUsage(null);
+        if (active && requestScope === requestId) setExtraUsage(null);
       });
     return () => {
       active = false;

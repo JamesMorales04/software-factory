@@ -4101,7 +4101,8 @@ export const en = {
 
   "director.participants.plannerPendingTitle": "Planner plan pending.",
   "director.participants.plannerPending":
-    "A validated WorkGraph exists but Core could not compile the participant plan yet. The causal problem is shown below; no unit or Campaign start is invented.",  "director.participants.unassigned": "Not assigned",
+    "A validated WorkGraph exists but Core could not compile the participant plan yet. The causal problem is shown below; no unit or Campaign start is invented.",
+  "director.participants.unassigned": "Not assigned",
   "director.participants.noRoles":
     "No reviewer roles are recorded for this route.",
   "director.participants.independentReceipts":
@@ -4121,7 +4122,8 @@ export const en = {
     "{count} independent reviewer receipt(s) aggregated",
   "nav.licenses": "Licenses",
   "licenses.title": "Licenses, identity and evidence",
-  "licenses.description": "Exact Lead decisions under the Owner delegation. No licence is approved by name or package family; every allow is bound to the exact identity, evidence, use context and revision.",
+  "licenses.description":
+    "Exact Lead decisions under the Owner delegation. No licence is approved by name or package family; every allow is bound to the exact identity, evidence, use context and revision.",
   "licenses.retry": "Retry",
   "licenses.loading": "Loading licence decisions",
   "licenses.error": "Licence decisions could not be loaded.",
@@ -4130,11 +4132,14 @@ export const en = {
   "licenses.useContext": "Use context",
   "licenses.sourceProof": "Source proof",
   "licenses.review.error": "The exact licence review action failed.",
-  "licenses.review.emptyDescription": "Create an intake request for this Project before reviewing an exact licence decision.",
+  "licenses.review.emptyDescription":
+    "Create an intake request for this Project before reviewing an exact licence decision.",
   "licenses.review.emptyTitle": "No request",
   "licenses.review.paid": "payment required: denied",
-  "licenses.review.delegationRequired": "Approve the Owner delegation below to enable the review.",
-  "licenses.review.required": "An approved Owner delegation is required before a review.",
+  "licenses.review.delegationRequired":
+    "Approve the Owner delegation below to enable the review.",
+  "licenses.review.required":
+    "An approved Owner delegation is required before a review.",
   "licenses.review.recorded": "Exact decision recorded.",
   "licenses.review.record": "Record exact decision",
   "licenses.review.available": "Lead review recorded.",
@@ -4166,16 +4171,19 @@ export const en = {
   "licenses.status": "Status",
   "licenses.delegation.title": "Owner delegation",
   "licenses.delegation.create": "Create delegation",
-  "licenses.delegation.created": "Delegation recorded. Approve it below to activate it.",
+  "licenses.delegation.created":
+    "Delegation recorded. Approve it below to activate it.",
   "licenses.delegation.approve": "Approve delegation",
   "licenses.delegation.approved": "Delegation approved.",
   "licenses.delegation.revoked": "Delegation revoked.",
   "licenses.delegation.error": "The delegation action failed.",
   "licenses.delegation.emptyTitle": "No licence delegation",
-  "licenses.delegation.emptyDescription": "Create one exact Owner delegation for this Project; a model or chat message cannot create it.",
+  "licenses.delegation.emptyDescription":
+    "Create one exact Owner delegation for this Project; a model or chat message cannot create it.",
   "licenses.decisions.title": "Lead decisions",
   "licenses.decisions.emptyTitle": "No Lead decisions",
-  "licenses.decisions.emptyDescription": "A decision appears only after the exact evidence review and Core verification.",
+  "licenses.decisions.emptyDescription":
+    "A decision appears only after the exact evidence review and Core verification.",
   "licenses.decision.revoked": "Decision revoked.",
   "nav.charter": "Owner charter",
   "charter.title": "Owner charter",

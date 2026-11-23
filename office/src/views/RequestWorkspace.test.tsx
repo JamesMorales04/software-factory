@@ -880,7 +880,9 @@ describe("RequestWorkspace", () => {
     });
     await userEvent.click(revoke);
     await waitFor(() =>
-      expect(mocks.revokeProviderExtraUsage).toHaveBeenCalledWith("opencode-go"),
+      expect(mocks.revokeProviderExtraUsage).toHaveBeenCalledWith(
+        "opencode-go",
+      ),
     );
     expect(
       await screen.findByText(/Extra Usage confirmation revoked/),
@@ -907,9 +909,7 @@ describe("RequestWorkspace", () => {
     const checkbox = await screen.findByRole("checkbox", {
       name: /I confirm Extra Usage is OFF/,
     });
-    expect(
-      screen.queryByText(/Extra Usage is confirmed OFF/),
-    ).toBeNull();
+    expect(screen.queryByText(/Extra Usage is confirmed OFF/)).toBeNull();
     await userEvent.click(checkbox);
     await userEvent.click(
       screen.getByRole("button", { name: "Confirm once and save" }),

@@ -551,14 +551,17 @@ describe("Director", () => {
     expect(screen.queryByRole("button", { name: "Run assessment" })).toBeNull();
   });
 
-  it("makes horizontal table regions keyboard focusable", async () => {
+  it("uses labeled table sections without a noninteractive tab stop", async () => {
     renderDirector();
     await screen.findAllByText("Implement the ICS exporter");
     const wraps = Array.from(document.querySelectorAll(".director-table-wrap"));
     expect(wraps.length).toBeGreaterThan(0);
     for (const wrap of wraps) {
-      expect(wrap.getAttribute("tabindex")).toBe("0");
-      expect(wrap.getAttribute("role")).toBe("region");
+      expect(wrap.tagName).toBe("SECTION");
+      expect(wrap.getAttribute("aria-label")).toBeTruthy();
+      expect(wrap.getAttribute("role")).toBeNull();
+      expect(wrap.getAttribute("tabindex")).toBeNull();
+      expect(wrap.querySelector("table.director-table")).not.toBeNull();
     }
   });
 

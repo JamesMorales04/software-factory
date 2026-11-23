@@ -4251,7 +4251,8 @@ export const es: Catalog = {
 
   "director.participants.plannerPendingTitle": "Plan del Planner pendiente.",
   "director.participants.plannerPending":
-    "Existe un WorkGraph validado pero Core aún no pudo compilar el participant plan. Abajo se muestra el problema causal; no se inventa unidad ni start de Campaign.",  "director.participants.unassigned": "Sin asignar",
+    "Existe un WorkGraph validado pero Core aún no pudo compilar el participant plan. Abajo se muestra el problema causal; no se inventa unidad ni start de Campaign.",
+  "director.participants.unassigned": "Sin asignar",
   "director.participants.noRoles":
     "No hay roles de revisión registrados para esta ruta.",
   "director.participants.independentReceipts":
@@ -4271,7 +4272,8 @@ export const es: Catalog = {
     "{count} recibo(s) de revisores independientes agregados",
   "nav.licenses": "Licencias",
   "licenses.title": "Licencias, identidad y evidencia",
-  "licenses.description": "Decisiones exactas del Lead bajo la delegación del Owner. Ninguna licencia se aprueba por nombre o familia; cada permiso queda atado a la identidad, evidencia, contexto de uso y revisión exactos.",
+  "licenses.description":
+    "Decisiones exactas del Lead bajo la delegación del Owner. Ninguna licencia se aprueba por nombre o familia; cada permiso queda atado a la identidad, evidencia, contexto de uso y revisión exactos.",
   "licenses.retry": "Reintentar",
   "licenses.loading": "Cargando decisiones de licencia",
   "licenses.error": "No se pudieron cargar las decisiones de licencia.",
@@ -4280,11 +4282,14 @@ export const es: Catalog = {
   "licenses.useContext": "Contexto de uso",
   "licenses.sourceProof": "Prueba de origen",
   "licenses.review.error": "La acción de revisión exacta falló.",
-  "licenses.review.emptyDescription": "Crea una solicitud de intake para este proyecto antes de revisar una decisión exacta de licencia.",
+  "licenses.review.emptyDescription":
+    "Crea una solicitud de intake para este proyecto antes de revisar una decisión exacta de licencia.",
   "licenses.review.emptyTitle": "Sin solicitud",
   "licenses.review.paid": "pago requerido: denegado",
-  "licenses.review.delegationRequired": "Aprueba la delegación del Owner para habilitar la revisión.",
-  "licenses.review.required": "Se requiere una delegación del Owner aprobada antes de la revisión.",
+  "licenses.review.delegationRequired":
+    "Aprueba la delegación del Owner para habilitar la revisión.",
+  "licenses.review.required":
+    "Se requiere una delegación del Owner aprobada antes de la revisión.",
   "licenses.review.recorded": "Decisión exacta registrada.",
   "licenses.review.record": "Registrar decisión exacta",
   "licenses.review.available": "Revisión del Lead registrada.",
@@ -4299,10 +4304,12 @@ export const es: Catalog = {
   "licenses.license": "Licencia",
   "licenses.branch": "Rama elegida",
   "licenses.obligations": "Obligaciones",
-  "licenses.documentation.licensingFact": "Hecho de licencia (seleccionado por el Lead)",
+  "licenses.documentation.licensingFact":
+    "Hecho de licencia (seleccionado por el Lead)",
   "licenses.documentation.derivedText": "Texto exacto derivado",
   "licenses.documentation.directText": "selección directa de texto",
-  "licenses.documentation.modelSelection": "Selección cruda del modelo (sólo auditoría)",
+  "licenses.documentation.modelSelection":
+    "Selección cruda del modelo (sólo auditoría)",
   "licenses.documentation.derivation": "Derivación",
   "licenses.evidence.title": "Procedencia de la evidencia de licencia",
   "licenses.evidence.facts": "Hechos de licencia",
@@ -4316,16 +4323,19 @@ export const es: Catalog = {
   "licenses.status": "Estado",
   "licenses.delegation.title": "Delegación del Owner",
   "licenses.delegation.create": "Crear delegación",
-  "licenses.delegation.created": "Delegación registrada. Apruébala abajo para activarla.",
+  "licenses.delegation.created":
+    "Delegación registrada. Apruébala abajo para activarla.",
   "licenses.delegation.approve": "Aprobar delegación",
   "licenses.delegation.approved": "Delegación aprobada.",
   "licenses.delegation.revoked": "Delegación revocada.",
   "licenses.delegation.error": "La acción de delegación falló.",
   "licenses.delegation.emptyTitle": "Sin delegación de licencias",
-  "licenses.delegation.emptyDescription": "Crea una delegación exacta del Owner para este Proyecto; un modelo o un chat no pueden crearla.",
+  "licenses.delegation.emptyDescription":
+    "Crea una delegación exacta del Owner para este Proyecto; un modelo o un chat no pueden crearla.",
   "licenses.decisions.title": "Decisiones del Lead",
   "licenses.decisions.emptyTitle": "Sin decisiones del Lead",
-  "licenses.decisions.emptyDescription": "Una decisión aparece solo tras la revisión exacta de evidencia y la verificación de Core.",
+  "licenses.decisions.emptyDescription":
+    "Una decisión aparece solo tras la revisión exacta de evidencia y la verificación de Core.",
   "licenses.decision.revoked": "Decisión revocada.",
   "nav.charter": "Charter del owner",
   "charter.title": "Charter del owner",

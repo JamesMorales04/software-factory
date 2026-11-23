@@ -42,9 +42,7 @@ export function RequestPlan({
   const hasLeadUnits = !hasGraphUnits && leadUnits.length > 0;
   const unitCount = hasGraphUnits ? specifications.length : leadUnits.length;
   const plannerPending =
-    proposal !== null &&
-    unitCount === 0 &&
-    participantState !== "NOT_REQUIRED";
+    proposal !== null && unitCount === 0 && participantState !== "NOT_REQUIRED";
 
   return (
     <Panel className="request-panel" as="section">
