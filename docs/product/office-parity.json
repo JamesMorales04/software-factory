@@ -1349,10 +1349,10 @@
       ],
       "core_api": [
         "GET /projects",
-        "GET /agentic/decisions?project_id={id}",
+        "GET /agentic/decisions",
         "POST /agentic/decisions",
         "POST /agentic/decisions/{id}/resolve",
-        "GET /agentic/license-decisions?project_id={id}",
+        "GET /agentic/license-decisions",
         "GET /agentic/requests/{id}/license-evidence-review",
         "POST /agentic/license-decisions/{id}/revoke",
         "POST /agentic/license-delegations/{id}/revoke"
