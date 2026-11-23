@@ -119,6 +119,8 @@ test("page must own exactly one intake submit and one policy confirmation", () =
     intake_posts: 1,
     policy_posts: 1,
     project_imports: 1,
+    license_delegation_creates: 0,
+    license_delegation_resolves: 0,
   });
   assert.throws(
     () => validatePageMutations([{ method: "POST", path: "/intake/requests" }]),
@@ -141,6 +143,36 @@ test("page must own exactly one intake submit and one policy confirmation", () =
         { method: "POST", path: "/projects/project-1/execution-policy" },
       ]),
     /exactly one page POST/,
+  );
+  assert.throws(
+    () =>
+      validatePageMutations([
+        { method: "POST", path: "/intake/requests" },
+        { method: "POST", path: "/projects/project-1/execution-policy" },
+        { method: "POST", path: "/agentic/decisions" },
+      ]),
+    /manual workflow controls/,
+  );
+  assert.throws(
+    () =>
+      validatePageMutations([
+        { method: "POST", path: "/intake/requests" },
+        { method: "POST", path: "/projects/project-1/execution-policy" },
+        { method: "PUT", path: "/unknown/mutation" },
+      ]),
+    /unknown page mutation/,
+  );
+  assert.deepEqual(
+    validatePageMutations(
+      [
+        { method: "POST", path: "/intake/requests" },
+        { method: "POST", path: "/projects/project-1/execution-policy" },
+        { method: "POST", path: "/agentic/decisions" },
+        { method: "POST", path: "/agentic/decisions/decision-1/resolve" },
+      ],
+      { licenseDelegation: "one" },
+    ).license_delegation_creates,
+    1,
   );
 });
 
@@ -361,6 +393,39 @@ test("licence wait-owner requires zero licence model/decision/freeze/Campaign", 
         },
       }),
     /missing project/,
+  );
+  assert.doesNotThrow(() =>
+    assertLicenseWaitOwner({
+      ...base,
+      licenseAuthority: {
+        required: true,
+        state: "MISSING",
+        source: "OWNER_DECISION",
+        scope: { projectId: "project-1", profileRevision: 7 },
+        authorityRevision: 3,
+        pin: "github:NixOS/nixpkgs/pin",
+        useContext: "commercial-development",
+        economicCriterion: "no-mandatory-fee-commercial-use",
+        deadline: "2026-12-01T00:00:00Z",
+      },
+    }),
+  );
+  assert.throws(
+    () =>
+      assertLicenseWaitOwner({
+        ...base,
+        licenseAuthority: {
+          required: true,
+          state: "MISSING",
+          source: "OWNER_DECISION",
+          scope: { projectId: "project-1", profileRevision: 7 },
+          pin: "github:NixOS/nixpkgs/pin",
+          useContext: "commercial-development",
+          economicCriterion: "no-mandatory-fee-commercial-use",
+          deadline: "2026-12-01T00:00:00Z",
+        },
+      }),
+    /scope.profileRevision is not authority revision/,
   );
   assert.throws(
     () =>

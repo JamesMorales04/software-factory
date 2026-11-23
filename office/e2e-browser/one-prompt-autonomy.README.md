@@ -91,17 +91,19 @@ record must be implemented by product and reviewed by 98/70 before this lane is
 allowed to pass.
 
 **Contract is not ready.** The standing Owner grant is project-scoped: project,
-pin, use context, economic criterion, revision and deadline are mandatory;
-request/plan/receipt identity is intentionally null before the exact Lead
-decision and must **not** be required on the grant. The exact Lead decision later
-binds the full identity. The MISSING flow, pre/post-prompt confirmation timing
-and Owner-decision idempotency/unique constraint are unresolved (de9 review of
-d1f08de8). The WaitOwner lane therefore only asserts a truthful
-`WAITING_OWNER`/`BLOCKED` request state with zero licence model/decision/freeze/
-Campaign effects; it omits the licensing-checkbox choice to test absence of
-authority. A normal positive UI must make the explicit licence choice itself.
-Missing authority projection or selectors is `BLOCKED`, never PASS; the harness
-never grants licence authority or implements Option A.
+pin, use context, economic criterion, authority revision and deadline are
+mandatory; request/plan/receipt identity is intentionally null before the exact
+Lead decision and must **not** be required on the grant. `scope.profileRevision`
+is an execution-profile revision and is **not** a substitute for
+`authorityRevision`. The exact Lead decision later binds the full identity. The
+MISSING flow, pre/post-prompt confirmation timing and Owner-decision
+idempotency/unique constraint are unresolved (de9 review of d1f08de8). The
+WaitOwner lane therefore only asserts a truthful `WAITING_OWNER`/`BLOCKED`
+request state with zero licence model/decision/freeze/Campaign effects; it omits
+the licensing-checkbox choice to test absence of authority. A normal positive UI
+must make the explicit licence choice itself; only the positive lane may require
+`home-licence-confirm`. Missing authority projection or selectors is `BLOCKED`,
+never PASS; the harness never grants licence authority or implements Option A.
 
 ## Commands
 
@@ -175,7 +177,13 @@ run; those exist only for diagnostics/resume and are not acceptance evidence.
 - Driver workflow mutations are a hard failure: `/intake/requests`, `/assess`,
   `/plan`, `/participants`, `/environment*`, `/license*`, `/decision`,
   `/spec*`, `/approve`, `/start`, `/campaigns*`, `/runs*`,
+  `/agentic/decisions`, `/agentic/decisions/*/resolve`,
   `/test-support/subscription-dispatch-admissions`.
+- Page mutations are fail-closed: only `POST /auth/bootstrap`, project import,
+  one intake submit, one execution-policy confirmation, and (for a future
+  positive lane only) exactly one Owner decision create+resolve are allowed.
+  Any unknown mutating route fails the lane. The WaitOwner negative blocks any
+  decision create/resolve, including `PENDING`/`DENIED` attempts.
 - The page must own exactly one `POST /intake/requests` and exactly one
   `POST /projects/*/execution-policy`. No request ID is accepted from
   environment/deep link; it is discovered from the post-submit URL.

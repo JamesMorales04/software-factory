@@ -9,6 +9,8 @@ const WORKFLOW_PATHS = [
   /^\/intake\/requests\/[^/]+\/(assess|approve|subscription-admission|message|cancel)$/,
   /^\/agentic\/requests\/[^/]+\/(plan|participants|environment(\/review|\/recompile)?|spec(\/freeze|\/publish|\/refresh)?|plan-review|license-evidence-review|license-decision)$/,
   /^\/agentic\/requests\/[^/]+\/(findings\/[^/]+\/disposition|knowledge|skills\/[^/]+\/adopt)$/,
+  /^\/agentic\/decisions$/,
+  /^\/agentic\/decisions\/[^/]+\/resolve$/,
   /^\/campaigns$/,
   /^\/campaigns\/[^/]+\/(authorize|runs|cancel|repair)$/,
   /^\/runs\/[^/]+\/attempts$/,
@@ -41,7 +43,8 @@ export const HOME_LICENSE_SELECTORS = [
 // Initial MISSING/wait-owner does not necessarily show the partial-recovery
 // resume control; record it but do not require it for the first wait state.
 export const REQUIRED_LICENSE_WAIT_SELECTORS = HOME_LICENSE_SELECTORS.filter(
-  (selector) => selector !== "home-licence-resume",
+  (selector) =>
+    selector !== "home-licence-resume" && selector !== "home-licence-confirm",
 );
 
 export const REQUIRED_MODEL_PHASES = [
@@ -119,7 +122,10 @@ export function validateDriverCalls(calls) {
  * Every other workflow mutation is a failure, including test-support admission
  * seeding and manual assess/plan/approve/licence/decision/freeze/start.
  */
-export function validatePageMutations(requests) {
+export function validatePageMutations(requests, { licenseDelegation = "none" } = {}) {
+  if (!["none", "one"].includes(licenseDelegation)) {
+    throw new Error(`invalid licenseDelegation policy ${licenseDelegation}`);
+  }
   const counts = new Map();
   const failures = [];
   for (const request of requests) {
@@ -128,23 +134,29 @@ export function validatePageMutations(requests) {
     if (isReadOnlyMethod(method)) continue;
     const key = `${method} ${path}`;
     counts.set(key, (counts.get(key) ?? 0) + 1);
+    if (method === "POST" && path === "/auth/bootstrap") continue;
     if (method === "POST" && path === "/projects") continue; // UI project import
     if (method === "POST" && path === "/intake/requests") continue;
     if (method === "POST" && /^\/projects\/[^/]+\/execution-policy$/.test(path)) {
+      continue;
+    }
+    const decisionCreate = method === "POST" && path === "/agentic/decisions";
+    const decisionResolve =
+      method === "POST" && /^\/agentic\/decisions\/[^/]+\/resolve$/.test(path);
+    if (decisionCreate || decisionResolve) {
+      if (licenseDelegation === "none") {
+        failures.push(`page workflow mutation ${key}`);
+      }
       continue;
     }
     if (isWorkflowPath(path)) {
       failures.push(`page workflow mutation ${key}`);
       continue;
     }
-    if (isSetupMutation(path)) {
-      // The dedicated lane performs setup from the driver with the marker.
-      // A page-originated setup mutation is not expected but is not a
-      // workflow-seeding failure; record it for review.
-      continue;
-    }
-    // Non-Core page mutations (for example Vite assets) are ignored by the
-    // caller before this function is reached.
+    // Unknown mutating routes fail closed. Setup is driver-owned and carries
+    // the driver marker; a page-originated setup or arbitrary mutation is not
+    // part of the accepted UI contract.
+    failures.push(`unknown page mutation ${key}`);
   }
   if (failures.length > 0) {
     throw new Error(`one-prompt lane used manual workflow controls: ${failures.join("; ")}`);
@@ -165,7 +177,28 @@ export function validatePageMutations(requests) {
   if (projectImports > 1) {
     throw new Error(`expected at most one UI project import, observed ${projectImports}`);
   }
-  return { intake_posts: intake, policy_posts: policy, project_imports: projectImports };
+  const decisionCreates = counts.get("POST /agentic/decisions") ?? 0;
+  const decisionResolves = [...counts.entries()]
+    .filter(([key]) => /^POST \/agentic\/decisions\/[^/]+\/resolve$/.test(key))
+    .reduce((total, [, value]) => total + value, 0);
+  if (licenseDelegation === "one") {
+    if (decisionCreates !== 1 || decisionResolves !== 1) {
+      throw new Error(
+        `expected exactly one Owner decision create+resolve for the licence delegation, observed ${decisionCreates}/${decisionResolves}`,
+      );
+    }
+  } else if (decisionCreates !== 0 || decisionResolves !== 0) {
+    throw new Error(
+      `licence delegation decision mutation is not allowed in this lane: ${decisionCreates}/${decisionResolves}`,
+    );
+  }
+  return {
+    intake_posts: intake,
+    policy_posts: policy,
+    project_imports: projectImports,
+    license_delegation_creates: decisionCreates,
+    license_delegation_resolves: decisionResolves,
+  };
 }
 
 export function assertNoPreKnownRequestId(env) {
@@ -414,7 +447,12 @@ export function assertLicenseWaitOwner({
     // The standing Owner grant is project-scoped. Request/plan/receipt
     // identity is intentionally null before the exact Lead decision; do not
     // require future identity on the grant.
-    const project = licenseAuthority.project ?? licenseAuthority.projectId;
+    const scope = licenseAuthority.scope ?? {};
+    const project =
+      licenseAuthority.project ??
+      licenseAuthority.projectId ??
+      scope.projectId ??
+      scope.project_id;
     if (!project || (typeof project === "string" && project.trim() === "")) {
       throw new Error("licence authority grant is missing project");
     }
@@ -426,12 +464,21 @@ export function assertLicenseWaitOwner({
         throw new Error(`licence authority grant is missing ${field}`);
       }
     }
+    // Authority revision is NOT the execution-profile revision. Never accept
+    // scope.profileRevision as a substitute; the two values are tested as
+    // different below.
+    const authorityRevision =
+      licenseAuthority.authorityRevision ??
+      licenseAuthority.delegationRevision ??
+      licenseAuthority.revision;
     if (
-      licenseAuthority.revision === null ||
-      licenseAuthority.revision === undefined ||
-      String(licenseAuthority.revision).trim() === ""
+      authorityRevision === null ||
+      authorityRevision === undefined ||
+      String(authorityRevision).trim() === ""
     ) {
-      throw new Error("licence authority grant is missing revision");
+      throw new Error(
+        "licence authority grant is missing authorityRevision (scope.profileRevision is not authority revision)",
+      );
     }
     if (
       typeof licenseAuthority.deadline !== "string" ||
