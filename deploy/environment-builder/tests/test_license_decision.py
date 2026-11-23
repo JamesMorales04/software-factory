@@ -41,23 +41,57 @@ def receipt() -> dict:
     docs = [
         item
         for item in identity["outputFiles"]
-        if item.get("purpose") == "documentation" and item.get("license") == "GFDL-1.3-or-later"
+        if item.get("purpose") == "documentation"
     ]
     fdl = next(
         entry for entry in identity["licenseEvidence"] if entry["path"] == "doc/fdl.texi"
+    )
+    copying = next(
+        entry for entry in identity["licenseEvidence"] if entry["path"] == "COPYING"
     )
     documentation = [
         {
             "path": item["path"],
             "license": item["license"],
             "outputSha256": item["sha256"],
-            "licenseTextPath": fdl["path"],
-            "licenseTextSha256": fdl["sha256"],
+            "licenseTextPath": (
+                fdl["path"] if item["license"] == "GFDL-1.3-or-later" else copying["path"]
+            ),
+            "licenseTextSha256": (
+                fdl["sha256"] if item["license"] == "GFDL-1.3-or-later" else copying["sha256"]
+            ),
             "obligations": list(catalog.entries[item["license"]].obligations),
-            "verdict": "UNKNOWN_CLASSIFIED",
+            "verdict": (
+                "UNKNOWN_CLASSIFIED"
+                if item["license"] == "GFDL-1.3-or-later"
+                else "ALLOWED"
+            ),
         }
         for item in docs
     ]
+    grant = next(
+        entry
+        for entry in identity["licenseEvidence"]
+        if entry["role"] == "licensing" and entry["license"] == identity["license"]
+    )
+    documentation_grants = []
+    for document in documentation:
+        text = next(
+            entry
+            for entry in identity["licenseEvidence"]
+            if entry["path"] == document["licenseTextPath"]
+        )
+        documentation_grants.append(
+            {
+                "path": document["path"],
+                "license": document["license"],
+                "outputSha256": document["outputSha256"],
+                "licenseTextPath": document["licenseTextPath"],
+                "licenseTextSha256": document["licenseTextSha256"],
+                "textAssetLicense": text["license"],
+                "grantSource": "OUTPUT_FILE_ASSET",
+            }
+        )
     payload = {
         "decision": "ACCEPT",
         "status": "ACTIVE",
@@ -79,6 +113,31 @@ def receipt() -> dict:
         "sourceEvidenceSha256": license_decision._sha_value(
             source_proof(identity, evidence)
         ),
+        "decisionContentSha256": "d" * 64,
+        "contractRevision": license_decision._V3_CONTRACT,
+        "fileLabelSource": "ASSET",
+        "packageRightsSource": "LICENSING_FACT",
+        "documentationGrantSource": "OUTPUT_FILE_ASSET",
+        "modelTextLicenseIgnored": True,
+        "modelObligationsIgnored": True,
+        "fileEvidence": [
+            {
+                "path": copying["path"],
+                "sha256": copying["sha256"],
+                "assetLicense": copying["license"],
+                "role": "license-text",
+            }
+        ],
+        "packageRights": [
+            {
+                "atom": identity["license"],
+                "license": grant["license"],
+                "path": grant["path"],
+                "sha256": grant["sha256"],
+                "source": identity["source"],
+            }
+        ],
+        "documentationGrants": documentation_grants,
         "identityFactsReceiptDigest": "f" * 64,
         "catalogSha256": catalog.sha256,
         "profileSha256": profile.sha256,
@@ -102,7 +161,11 @@ def receipt() -> dict:
 
 class LicenseDecisionTests(unittest.TestCase):
     def test_exact_decision_is_accepted(self) -> None:
-        identity = license_decision.validate_license_decision_receipt(receipt(), plan())
+        exact = receipt()
+        self.assertNotEqual(
+            exact["decisionContentSha256"], exact["contentSha256"]
+        )
+        identity = license_decision.validate_license_decision_receipt(exact, plan())
         self.assertEqual(identity["name"], "ed")
         self.assertEqual(identity["license"], "GPL-2.0-or-later")
 
@@ -271,6 +334,82 @@ class LicenseDecisionTests(unittest.TestCase):
         changed["documentation"][0]["obligations"] = ["notice"]
         with self.assertRaises(license_decision.LicenseDecisionError):
             license_decision.validate_license_decision_receipt(changed, plan())
+
+    def test_v3_contract_and_fact_projection_is_required(self) -> None:
+        missing_contract = receipt()
+        del missing_contract["contractRevision"]
+        with self.assertRaises(license_decision.LicenseDecisionError) as caught:
+            license_decision.validate_license_decision_receipt(
+                missing_contract, plan()
+            )
+        self.assertEqual(
+            caught.exception.code, "ENVIRONMENT_LICENSE_DECISION_STALE"
+        )
+
+        for field, value in (
+            ("fileEvidence", None),
+            ("packageRights", []),
+            ("documentationGrants", []),
+        ):
+            missing = receipt()
+            missing[field] = value
+            with self.assertRaises(license_decision.LicenseDecisionError):
+                license_decision.validate_license_decision_receipt(missing, plan())
+
+    def test_v3_file_evidence_is_exact_and_has_no_family_shortcut(self) -> None:
+        changed = receipt()
+        changed["fileEvidence"][0]["assetLicense"] = "GPL-2.0-or-later"
+        with self.assertRaises(license_decision.LicenseDecisionError):
+            license_decision.validate_license_decision_receipt(changed, plan())
+
+        changed = receipt()
+        changed["fileEvidence"][0]["sha256"] = "f" * 64
+        with self.assertRaises(license_decision.LicenseDecisionError):
+            license_decision.validate_license_decision_receipt(changed, plan())
+
+    def test_v3_package_rights_are_exact_and_source_bound(self) -> None:
+        changed = receipt()
+        changed["packageRights"][0]["license"] = "GPL-2.0-only"
+        with self.assertRaises(license_decision.LicenseDecisionError):
+            license_decision.validate_license_decision_receipt(changed, plan())
+
+        changed = receipt()
+        changed["packageRights"][0]["source"]["storePath"] = "/nix/store/wrong"
+        with self.assertRaises(license_decision.LicenseDecisionError):
+            license_decision.validate_license_decision_receipt(changed, plan())
+
+    def test_v3_documentation_grants_are_exact(self) -> None:
+        changed = receipt()
+        changed["documentationGrants"][0]["outputSha256"] = "f" * 64
+        with self.assertRaises(license_decision.LicenseDecisionError):
+            license_decision.validate_license_decision_receipt(changed, plan())
+
+        changed = receipt()
+        changed["documentation"][0]["outputSha256"] = "f" * 64
+        with self.assertRaises(license_decision.LicenseDecisionError):
+            license_decision.validate_license_decision_receipt(changed, plan())
+
+    def test_v3_decision_digest_is_bound_by_the_overlay_digest(self) -> None:
+        changed = receipt()
+        changed["decisionContentSha256"] = "e" * 64
+        with self.assertRaises(license_decision.LicenseDecisionError) as caught:
+            license_decision.validate_license_decision_receipt(changed, plan())
+        self.assertEqual(
+            caught.exception.code, "ENVIRONMENT_LICENSE_DECISION_STALE"
+        )
+
+    def test_v3_requires_the_current_source_and_model_authority_markers(self) -> None:
+        for field, value in (
+            ("fileLabelSource", "MODEL"),
+            ("packageRightsSource", "MODEL"),
+            ("documentationGrantSource", "MODEL"),
+            ("modelTextLicenseIgnored", False),
+            ("modelObligationsIgnored", False),
+        ):
+            changed = receipt()
+            changed[field] = value
+            with self.assertRaises(license_decision.LicenseDecisionError):
+                license_decision.validate_license_decision_receipt(changed, plan())
 
 
 if __name__ == "__main__":

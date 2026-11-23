@@ -689,6 +689,30 @@ async fn the_builder_overlay_is_reverified_and_carries_the_exact_source_proof() 
         json["sourceEvidenceSha256"],
         expected_source.canonical_sha256()
     );
+    assert_eq!(json["decisionContentSha256"], record.content_sha256);
+    assert_eq!(
+        json["contractRevision"],
+        "license-review-v3-file-package-rights"
+    );
+    assert_eq!(json["fileLabelSource"], "ASSET");
+    assert_eq!(json["packageRightsSource"], "LICENSING_FACT");
+    assert_eq!(json["documentationGrantSource"], "OUTPUT_FILE_ASSET");
+    assert_eq!(json["modelTextLicenseIgnored"], true);
+    assert_eq!(json["modelObligationsIgnored"], true);
+    assert_eq!(
+        json["packageRights"]
+            .as_array()
+            .expect("package rights are projected")
+            .len(),
+        1
+    );
+    assert_eq!(
+        json["documentationGrants"]
+            .as_array()
+            .expect("documentation grants are projected")
+            .len(),
+        2
+    );
 
     // A different plan, spec, policy, source digest or lifetime refuses.
     assert!(matches!(
@@ -738,6 +762,53 @@ async fn the_builder_overlay_is_reverified_and_carries_the_exact_source_proof() 
     assert!(matches!(
         verify_license_decision_overlay(&stale_source, &context(now)),
         Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
+    ));
+    let mut bad_decision_digest = record.clone();
+    bad_decision_digest.content_sha256 = "f".repeat(64);
+    assert!(matches!(
+        verify_license_decision_overlay(&bad_decision_digest, &context(now)),
+        Err(LicenseDecisionRefusal::DecisionContentDigestMismatch)
+    ));
+    let mut no_contract = record.clone();
+    no_contract
+        .provenance
+        .as_object_mut()
+        .expect("the provenance is an object")
+        .remove("contractRevision");
+    assert!(matches!(
+        verify_license_decision_overlay(&no_contract, &context(now)),
+        Err(LicenseDecisionRefusal::ContractRevisionMismatch)
+    ));
+    let mut bad_file_evidence = record.clone();
+    bad_file_evidence.provenance["fileEvidence"] = serde_json::json!([{
+        "path": "COPYING",
+        "sha256": "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6",
+        "assetLicense": "GPL-2.0-only",
+        "role": "license-text"
+    }]);
+    assert!(matches!(
+        verify_license_decision_overlay(&bad_file_evidence, &context(now)),
+        Err(LicenseDecisionRefusal::FileEvidenceMismatch("fileEvidence"))
+    ));
+    let mut bad_package_source = record.clone();
+    bad_package_source.provenance["packageRights"][0]["source"]["storePath"] =
+        serde_json::json!("/nix/store/wrong");
+    assert!(matches!(
+        verify_license_decision_overlay(&bad_package_source, &context(now)),
+        Err(LicenseDecisionRefusal::PackageRightsMismatch(_))
+    ));
+    let mut bad_documentation_grant = record.clone();
+    bad_documentation_grant.provenance["documentationGrants"][0]["outputSha256"] =
+        serde_json::json!("f".repeat(64));
+    assert!(matches!(
+        verify_license_decision_overlay(&bad_documentation_grant, &context(now)),
+        Err(LicenseDecisionRefusal::DocumentationGrantMismatch(_))
+    ));
+    let mut bad_documentation = record.clone();
+    bad_documentation.documentation[0].output_sha256 = "f".repeat(64);
+    assert!(matches!(
+        verify_license_decision_overlay(&bad_documentation, &context(now)),
+        Err(LicenseDecisionRefusal::DocumentationGrantMismatch(_))
     ));
     let mut candidate = record.clone();
     candidate.candidate = serde_json::json!({

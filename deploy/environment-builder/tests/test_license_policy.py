@@ -407,5 +407,21 @@ class LicensePolicyTests(unittest.TestCase):
         )
 
 
+class BranchAtomTests(unittest.TestCase):
+    def test_selected_branch_atoms_are_exact(self) -> None:
+        self.assertEqual(
+            lp.branch_atoms("GPL-2.0-or-later"), ["GPL-2.0-or-later"]
+        )
+        self.assertEqual(
+            lp.branch_atoms("GPL-2.0-only WITH Classpath-exception-2.0"),
+            ["GPL-2.0-only"],
+        )
+        self.assertEqual(
+            lp.branch_atoms("MIT AND Apache-2.0"), ["MIT", "Apache-2.0"]
+        )
+        with self.assertRaises(ValueError):
+            lp.branch_atoms("MIT OR Apache-2.0")
+
+
 if __name__ == "__main__":
     unittest.main()

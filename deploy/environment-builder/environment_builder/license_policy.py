@@ -459,6 +459,38 @@ def evaluate(
     return _evaluate_expression(parsed, catalog, profile, config)
 
 
+def branch_atoms(value: str) -> list[str]:
+    """Exact atoms of a selected branch, mirroring the Core projection.
+
+    An OR branch is not a single selectable branch. A WITH branch contributes
+    its base licence only; the exception never becomes a package right.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("the selected licence branch is empty")
+    parsed = _ExpressionParser(value.strip()).parse()
+    atoms: list[str] = []
+
+    def collect(expression: tuple) -> None:
+        kind = expression[0]
+        if kind == "atom":
+            atoms.append(expression[1])
+        elif kind == "with":
+            base = expression[1]
+            if base[0] != "atom":
+                raise ValueError("WITH must bind to a single licence id")
+            atoms.append(base[1])
+        elif kind == "and":
+            for part in expression[1]:
+                collect(part)
+        else:
+            raise ValueError("OR is not a single selectable branch")
+
+    collect(parsed)
+    if not atoms:
+        raise ValueError("the selected licence branch has no atom")
+    return atoms
+
+
 def verdict_matrix(
     catalog: LicenseCatalog, profile: LicenseProfile
 ) -> dict[str, dict[str, LicenseDecision]]:

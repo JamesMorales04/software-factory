@@ -47,26 +47,54 @@ reason/principal. Delegation revoke uses
 
 ## Builder plan receipt / STALE (integrator)
 
-The environment plan carries an exact `licenseDecision` receipt per affected
-inventory entry:
+The environment plan carries an exact `licenseDecisions` overlay emitted by
+Core after re-verifying the persisted decision against the current plan, spec,
+inventory, policy, identity-facts receipt, delegation lifetime and source
+proof. The overlay includes the v3 file/package/document rights projection:
 
 ```
 licenseDecision: {
-  decisionId, decisionSha256, decisionStatus,       // ACCEPT / DENIED / STALE
-  identity { pin, name, version, outputStorePath, outputNarHash },
-  licenseExpression, selectedBranch, documentationLicense,
-  obligations, documentationObligations,
-  evidenceSha256, catalogSha256, profileSha256, policySha256,
-  specArtifact, inventoryArtifact, candidateArtifact, identityFactsReceiptDigest
+  id, projectId, planSha256, planRevision, specSha256,
+  inventorySha256, evidenceBundleSha256, candidate,
+  identity { pin, name, version, output, source, licenseEvidence, outputFiles },
+  licenseExpression, selectedBranch,
+  softwareObligations, documentation, documentationObligations,
+  softwareVerdict, evidenceSha256, identityFactsReceiptDigest,
+  catalogSha256, profileSha256, policySha256, stage,
+  useContext, commercialUse, paymentRequired, decision, revision,
+  status, revokedAt, delegationDeadline,
+  decisionContentSha256,                 // domain: stored decision payload
+  contractRevision: "license-review-v3-file-package-rights",
+  fileLabelSource: "ASSET",
+  packageRightsSource: "LICENSING_FACT",
+  documentationGrantSource: "OUTPUT_FILE_ASSET",
+  modelTextLicenseIgnored: true, modelObligationsIgnored: true,
+  fileEvidence, packageRights, documentationGrants,
+  sourceEvidence, sourceEvidenceSha256,
+  contentSha256                          // domain: emitted overlay bytes
 }
 ```
 
-The builder recomputes canonical sorted/compact/LF hashes for the evidence,
-output files, raw `.drv`, cache and receipt, checks the current
-catalogue/profile/policy/spec/inventory/candidate binding and marks a mismatch
-`STALE` (fail closed). It never approves a licence by name, package family or a
-static GFDL profile allow. GFDL is classified in the catalogue but allowed only
-by the exact decision.
+`decisionContentSha256` and the overlay `contentSha256` are different digest
+domains and are never compared for equality. Core rebuilds the stored decision
+payload from the row/provenance and verifies `decisionContentSha256` before it
+emits the overlay. The builder does not read the decision database and does not
+recompute `decisionContentSha256`; it verifies the overlay digest and binds the
+decision digest, plan/receipt, assets, source proof and v3 facts. A changed
+decision digest without a matching overlay digest is rejected.
+
+`fileEvidence`/`packageRights`/`documentationGrants` are exact projections of
+the asset-owned licence facts, selected branch and output grants. The model's
+text label is diagnostic only. A `GPL-2.0-only` text may support the exact
+`GPL-2.0-or-later` grant only through the typed relation; no family, suffix or
+`-only`/`-or-later` shortcut is accepted. The builder marks any mismatch `STALE`
+or `INVALID` (fail closed) and never approves a licence by name, package family
+or a static GFDL profile allow.
+
+Office parity impact: **none**. This is an internal Core-to-builder receipt. No
+Office route, control, label, state, projection or user action changes; the
+existing licence-decision audit surface continues to read the Core decision
+record and does not invent overlay state.
 
 ## Office (integrator)
 

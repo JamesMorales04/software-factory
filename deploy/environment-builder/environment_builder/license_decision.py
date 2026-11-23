@@ -117,6 +117,249 @@ def _exact_list(value: Any, label: str) -> list[str]:
     return value
 
 
+_V3_CONTRACT = "license-review-v3-file-package-rights"
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _file_text_supports(asset_license: Any, right: Any) -> bool:
+    """Exact typed text/grant relation; never a family or suffix shortcut.
+
+    Only the known `X-only` text may accompany the exact `X-or-later` grant.
+    """
+    if not isinstance(asset_license, str) or not isinstance(right, str):
+        return False
+    if asset_license == right:
+        return True
+    if right.endswith("-or-later"):
+        return asset_license == f"{right[:-len('-or-later')]}-only"
+    return False
+
+
+def _validate_v3_rights(
+    receipt: dict[str, Any], identity: dict[str, Any]
+) -> None:
+    """Validate the Core file/package/document rights projection exactly.
+
+    The model's text label is diagnostic; only the asset labels and exact
+    licensing/output facts participate. The builder does not read the decision
+    database and does not recompute ``decisionContentSha256``; it binds that
+    digest into the overlay content digest and verifies the exact facts.
+    """
+    if receipt.get("contractRevision") != _V3_CONTRACT:
+        raise LicenseDecisionError(
+            "ENVIRONMENT_LICENSE_DECISION_STALE",
+            "the decision does not carry the current file/package/document contract",
+        )
+    for key, expected in (
+        ("fileLabelSource", "ASSET"),
+        ("packageRightsSource", "LICENSING_FACT"),
+        ("documentationGrantSource", "OUTPUT_FILE_ASSET"),
+    ):
+        if receipt.get(key) != expected:
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                f"the decision {key} is not the exact Core source",
+            )
+    if (
+        receipt.get("modelTextLicenseIgnored") is not True
+        or receipt.get("modelObligationsIgnored") is not True
+    ):
+        raise LicenseDecisionError(
+            "ENVIRONMENT_LICENSE_DECISION_INVALID",
+            "the decision does not isolate model text from authority",
+        )
+    if not _is_sha256(receipt.get("decisionContentSha256")):
+        raise LicenseDecisionError(
+            "ENVIRONMENT_LICENSE_DECISION_INVALID",
+            "the decision content digest is missing or malformed",
+        )
+
+    entries = identity.get("licenseEvidence")
+    if not isinstance(entries, list):
+        raise LicenseDecisionError(
+            "ENVIRONMENT_LICENSE_DECISION_INVALID",
+            "the exact licence evidence is missing",
+        )
+    text_by_path: dict[str, dict[str, Any]] = {}
+    asset_by_path: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                "a licence evidence entry is malformed",
+            )
+        path = entry.get("path")
+        license_id = entry.get("license")
+        sha = entry.get("sha256")
+        if not all(isinstance(value, str) and value for value in (path, license_id, sha)):
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                "a licence evidence entry lacks exact path/licence/digest",
+            )
+        asset_by_path[path] = entry
+        if (
+            entry.get("purpose") == "license-text"
+            and entry.get("role") == "license-text"
+        ):
+            text_by_path[path] = entry
+
+    file_evidence = receipt.get("fileEvidence")
+    if not isinstance(file_evidence, list):
+        raise LicenseDecisionError(
+            "ENVIRONMENT_LICENSE_DECISION_INVALID",
+            "the file evidence projection is missing",
+        )
+    seen: set[tuple[Any, Any]] = set()
+    for item in file_evidence:
+        if not isinstance(item, dict):
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID", "a file evidence entry is malformed"
+            )
+        path = item.get("path")
+        sha = item.get("sha256")
+        asset_license = item.get("assetLicense")
+        role = item.get("role")
+        entry = text_by_path.get(path) if isinstance(path, str) else None
+        if (
+            role != "license-text"
+            or entry is None
+            or entry.get("sha256") != sha
+            or entry.get("license") != asset_license
+        ):
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                "the file evidence is not an exact authenticated licence text",
+            )
+        key = (path, sha)
+        if key in seen:
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                "the file evidence repeats a licence text",
+            )
+        seen.add(key)
+
+    try:
+        atoms = policy.branch_atoms(receipt.get("selectedBranch"))
+    except ValueError as error:
+        raise LicenseDecisionError(
+            "ENVIRONMENT_LICENSE_DECISION_STALE",
+            f"the selected licence branch is not exact: {error}",
+        ) from error
+    rights = receipt.get("packageRights")
+    if not isinstance(rights, list) or not rights:
+        raise LicenseDecisionError(
+            "ENVIRONMENT_LICENSE_DECISION_INVALID",
+            "the package rights projection is missing",
+        )
+    if [
+        item.get("atom") if isinstance(item, dict) else None for item in rights
+    ] != atoms:
+        raise LicenseDecisionError(
+            "ENVIRONMENT_LICENSE_DECISION_INVALID",
+            "the package rights do not match the selected branch atoms",
+        )
+    for item, atom in zip(rights, atoms, strict=True):
+        if not isinstance(item, dict) or item.get("license") != atom:
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                "a package right is not the exact selected atom",
+            )
+        path = item.get("path")
+        sha = item.get("sha256")
+        grant = next(
+            (
+                entry
+                for entry in entries
+                if entry.get("role") == "licensing"
+                and entry.get("license") == atom
+                and entry.get("path") == path
+                and entry.get("sha256") == sha
+            ),
+            None,
+        )
+        if grant is None or item.get("source") != identity.get("source"):
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                "a package right is not the exact authenticated licensing fact and source",
+            )
+
+    documentation = receipt.get("documentation")
+    grants = receipt.get("documentationGrants")
+    if not isinstance(documentation, list) or not isinstance(grants, list):
+        raise LicenseDecisionError(
+            "ENVIRONMENT_LICENSE_DECISION_INVALID",
+            "the documentation grant projection is missing",
+        )
+    output_by_path = {
+        entry.get("path"): entry
+        for entry in identity.get("outputFiles", [])
+        if isinstance(entry, dict)
+    }
+    expected: dict[str, dict[str, Any]] = {}
+    for document in documentation:
+        if not isinstance(document, dict):
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID", "a documentation entry is malformed"
+            )
+        path = document.get("path")
+        output = output_by_path.get(path)
+        if (
+            output is None
+            or output.get("purpose") != "documentation"
+            or output.get("license") != document.get("license")
+            or output.get("sha256") != document.get("outputSha256")
+        ):
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                "a documentation grant is not an exact output file",
+            )
+        text_entry = asset_by_path.get(document.get("licenseTextPath"))
+        if (
+            text_entry is None
+            or text_entry.get("sha256") != document.get("licenseTextSha256")
+            or not _file_text_supports(
+                text_entry.get("license"), document.get("license")
+            )
+        ):
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                "a documentation grant text is not the exact supporting asset",
+            )
+        expected[path] = {
+            "path": path,
+            "license": document.get("license"),
+            "outputSha256": document.get("outputSha256"),
+            "licenseTextPath": document.get("licenseTextPath"),
+            "licenseTextSha256": document.get("licenseTextSha256"),
+            "textAssetLicense": text_entry.get("license"),
+            "grantSource": "OUTPUT_FILE_ASSET",
+        }
+    if len(grants) != len(expected):
+        raise LicenseDecisionError(
+            "ENVIRONMENT_LICENSE_DECISION_INVALID",
+            "the documentation grants are incomplete or duplicated",
+        )
+    for grant in grants:
+        if not isinstance(grant, dict):
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                "a documentation grant is malformed",
+            )
+        reference = expected.get(grant.get("path"))
+        if reference is None or grant != reference:
+            raise LicenseDecisionError(
+                "ENVIRONMENT_LICENSE_DECISION_INVALID",
+                "a documentation grant is not the exact Core projection",
+            )
+
+
 _NIX32_ALPHABET = "0123456789abcdfghijklmnpqrsvwxyz"
 
 
@@ -289,7 +532,9 @@ def validate_license_decision_receipt(
         if (
             text_entry is None
             or text_entry.get("sha256") != item.get("licenseTextSha256")
-            or text_entry.get("license") != item.get("license")
+            or not _file_text_supports(
+                text_entry.get("license"), item.get("license")
+            )
         ):
             raise LicenseDecisionError(
                 "ENVIRONMENT_LICENSE_DECISION_INVALID",
@@ -311,6 +556,7 @@ def validate_license_decision_receipt(
                 "ENVIRONMENT_LICENSE_DECISION_INVALID",
                 "the documentation obligations are not exact for the identity",
             )
+    _validate_v3_rights(receipt, identity)
     expected_source, expected_source_sha = _source_proof_vector(identity)
     if expected_source is None or expected_source_sha is None:
         raise LicenseDecisionError(
