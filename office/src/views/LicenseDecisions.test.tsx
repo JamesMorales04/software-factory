@@ -100,10 +100,7 @@ describe("LicenseDecisions", () => {
     );
     const input = mocks.createAgenticOwnerDecision.mock.calls[0][0];
     expect(input.matter).toBe("LICENSE_IDENTITY_EVIDENCE_DELEGATION");
-    expect(input.options).toEqual([
-      "APPROVE_DELEGATION",
-      "DENY_DELEGATION",
-    ]);
+    expect(input.options).toEqual(["APPROVE_DELEGATION", "DENY_DELEGATION"]);
     expect(input.evidence).toMatchObject({
       domain: "licenses-identity-evidence",
       economicCriterion: "no-mandatory-fee-commercial-use",
@@ -246,6 +243,10 @@ describe("LicenseDecisions", () => {
         },
       ),
     );
+    // The pre-decision review is the raw model selection; derived exact text is
+    // only shown after Core records the v4 decision.
+    expect(screen.queryByText("Derived exact text")).toBeNull();
+    expect(screen.queryByText("Raw model selection (audit only)")).toBeNull();
   });
 
   it("records an available exact decision with the reservation key", async () => {
@@ -280,7 +281,9 @@ describe("LicenseDecisions", () => {
   it("shows a Core error with retry when the project load fails", async () => {
     mocks.listProjects.mockRejectedValue(new Error("core unavailable"));
     renderView();
-    expect(await screen.findByText("Licence decisions could not be loaded.")).toBeTruthy();
+    expect(
+      await screen.findByText("Licence decisions could not be loaded."),
+    ).toBeTruthy();
     await userEvent.click(screen.getByText("Retry"));
     expect(mocks.listProjects).toHaveBeenCalledTimes(2);
   });
@@ -290,7 +293,9 @@ describe("LicenseDecisions", () => {
     renderView();
     await screen.findByText("Owner delegation");
     await userEvent.click(screen.getByText("Create delegation"));
-    expect(await screen.findByText("The delegation action failed.")).toBeTruthy();
+    expect(
+      await screen.findByText("The delegation action failed."),
+    ).toBeTruthy();
   });
 
   it("shows a revoked exact decision without offering a second revoke", async () => {
@@ -321,9 +326,16 @@ describe("LicenseDecisions", () => {
             {
               path: "doc/fdl.texi",
               license: "GFDL-1.3-or-later",
+              outputSha256: "6".repeat(64),
               licenseTextSha256: "e".repeat(64),
               obligations: ["notice", "source"],
               verdict: "ALLOWED",
+              licenseTextPath: "COPYING",
+              licensingFactPath: "ed.h",
+              licensingFactSha256: "f".repeat(64),
+              modelLicenseTextPath: "ed.h",
+              modelLicenseTextSha256: "f".repeat(64),
+              derivationRule: "SELECTED_LICENSING_FACT_TO_UNIQUE_LICENSE_TEXT",
             },
           ],
           documentationObligations: ["notice", "source"],
@@ -337,6 +349,25 @@ describe("LicenseDecisions", () => {
               stage: "PlanInventoryEvidence",
               planSha256: "8".repeat(64),
             },
+            licensingFacts: [
+              {
+                atom: "GPL-2.0-or-later",
+                path: "ed.h",
+                sha256: "f".repeat(64),
+                license: "GPL-2.0-or-later",
+                purpose: "license",
+                role: "licensing",
+              },
+            ],
+            licenseTexts: [
+              {
+                atom: "GPL-2.0-or-later",
+                path: "COPYING",
+                sha256: "e".repeat(64),
+                license: "GPL-2.0-or-later",
+              },
+            ],
+            derivationRule: "SELECTED_LICENSING_FACT_TO_UNIQUE_LICENSE_TEXT",
           },
           useContext: "commercial-development",
           commercialUse: true,
@@ -360,8 +391,22 @@ describe("LicenseDecisions", () => {
     renderView();
     expect(await screen.findByText("REVOKED")).toBeTruthy();
     expect(screen.queryByText("Revoke")).toBeNull();
-    expect(screen.getByText("PlanInventoryEvidence · 888888888888")).toBeTruthy();
+    expect(
+      screen.getByText("PlanInventoryEvidence · 888888888888"),
+    ).toBeTruthy();
     expect(screen.getByText("999999999999")).toBeTruthy();
     expect(screen.getByText("superseded")).toBeTruthy();
+    expect(screen.getByText("Licensing fact (Lead-selected)")).toBeTruthy();
+    expect(screen.getByText("Derived exact text")).toBeTruthy();
+    expect(screen.getByText("Raw model selection (audit only)")).toBeTruthy();
+    expect(screen.getAllByText("ed.h").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("COPYING").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("SELECTED_LICENSING_FACT_TO_UNIQUE_LICENSE_TEXT")
+        .length,
+    ).toBeGreaterThan(0);
+    await userEvent.click(screen.getByText("Licensing evidence provenance"));
+    expect(screen.getByText("Licensing facts")).toBeTruthy();
+    expect(screen.getByText("Exact license texts")).toBeTruthy();
   });
 });

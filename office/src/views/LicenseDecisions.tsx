@@ -39,9 +39,11 @@ function decisionStage(provenance: Record<string, unknown>): string {
   const stage = provenance.stage;
   if (!stage || typeof stage !== "object") return "—";
   const record = stage as { stage?: unknown; planSha256?: unknown };
-  return [record.stage, shortHash(record.planSha256)]
-    .filter((part) => typeof part === "string" && part !== "—")
-    .join(" · ") || "—";
+  return (
+    [record.stage, shortHash(record.planSha256)]
+      .filter((part) => typeof part === "string" && part !== "—")
+      .join(" · ") || "—"
+  );
 }
 
 function sourceProof(provenance: Record<string, unknown>): string {
@@ -52,6 +54,156 @@ function defaultExpiry(): string {
   return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     .toISOString()
     .slice(0, 10);
+}
+
+function DocumentationEvidence({
+  items,
+  provenance,
+}: {
+  items: LicenseDecisionRecord["documentation"];
+  provenance: LicenseDecisionRecord["provenance"];
+}) {
+  const { t } = useI18n();
+  const facts = provenance.licensingFacts ?? [];
+  const texts = provenance.licenseTexts ?? [];
+  const hasProvenance =
+    facts.length > 0 || texts.length > 0 || Boolean(provenance.derivationRule);
+  return (
+    <div className="license-evidence">
+      {items.map((item) => (
+        <div
+          className="license-evidence-item"
+          key={`${item.path}:${item.license}`}
+        >
+          <strong>{item.path}</strong> · <code>{item.license}</code> ·{" "}
+          {item.verdict}
+          <dl className="license-evidence-grid">
+            <dt>{t("licenses.documentation.licensingFact")}</dt>
+            <dd>
+              {item.licensingFactPath ? (
+                <>
+                  <code>{item.licensingFactPath}</code>{" "}
+                  <span className="muted">
+                    {shortHash(item.licensingFactSha256)}
+                  </span>
+                </>
+              ) : (
+                t("licenses.documentation.directText")
+              )}
+            </dd>
+            <dt>{t("licenses.documentation.derivedText")}</dt>
+            <dd>
+              {item.licenseTextPath ? (
+                <>
+                  <code>{item.licenseTextPath}</code>{" "}
+                  <span className="muted">
+                    {shortHash(item.licenseTextSha256)}
+                  </span>
+                </>
+              ) : (
+                t("common.notRecorded")
+              )}
+            </dd>
+            <dt>{t("licenses.documentation.modelSelection")}</dt>
+            <dd>
+              {item.modelLicenseTextPath ? (
+                <>
+                  <code>{item.modelLicenseTextPath}</code>{" "}
+                  <span className="muted">
+                    {shortHash(item.modelLicenseTextSha256)}
+                  </span>
+                </>
+              ) : (
+                t("common.notRecorded")
+              )}
+            </dd>
+            <dt>{t("licenses.documentation.derivation")}</dt>
+            <dd>
+              {item.derivationRule ? (
+                <code>{item.derivationRule}</code>
+              ) : (
+                t("common.notRecorded")
+              )}
+            </dd>
+          </dl>
+          <p className="muted">{item.obligations.join(", ")}</p>
+        </div>
+      ))}
+      {hasProvenance && (
+        <details className="license-provenance">
+          <summary>{t("licenses.evidence.title")}</summary>
+          {provenance.derivationRule && (
+            <p>
+              <strong>{t("licenses.documentation.derivation")}:</strong>{" "}
+              <code>{provenance.derivationRule}</code>
+            </p>
+          )}
+          {facts.length > 0 && (
+            <>
+              <h4>{t("licenses.evidence.facts")}</h4>
+              <div className="table-responsive">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>{t("licenses.evidence.atom")}</th>
+                      <th>{t("licenses.evidence.path")}</th>
+                      <th>{t("licenses.evidence.license")}</th>
+                      <th>{t("licenses.evidence.purpose")}</th>
+                      <th>{t("licenses.evidence.role")}</th>
+                      <th>{t("licenses.evidence.sha256")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {facts.map((fact) => (
+                      <tr key={`${fact.atom}:${fact.path}:${fact.role}`}>
+                        <td>{fact.atom}</td>
+                        <td>
+                          <code>{fact.path}</code>
+                        </td>
+                        <td>{fact.license}</td>
+                        <td>{fact.purpose}</td>
+                        <td>{fact.role}</td>
+                        <td className="muted">{shortHash(fact.sha256)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+          {texts.length > 0 && (
+            <>
+              <h4>{t("licenses.evidence.texts")}</h4>
+              <div className="table-responsive">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>{t("licenses.evidence.atom")}</th>
+                      <th>{t("licenses.evidence.path")}</th>
+                      <th>{t("licenses.evidence.license")}</th>
+                      <th>{t("licenses.evidence.sha256")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {texts.map((item) => (
+                      <tr key={`${item.atom}:${item.path}`}>
+                        <td>{item.atom}</td>
+                        <td>
+                          <code>{item.path}</code>
+                        </td>
+                        <td>{item.license}</td>
+                        <td className="muted">{shortHash(item.sha256)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </details>
+      )}
+    </div>
+  );
 }
 
 export function LicenseDecisions() {
@@ -135,9 +287,7 @@ export function LicenseDecisions() {
       .then((status) => {
         if (cancelled) return;
         setReview(
-          status.available &&
-            status.reservationId &&
-            status.review
+          status.available && status.reservationId && status.review
             ? {
                 reservationId: status.reservationId,
                 decision: status.review.decision,
@@ -159,7 +309,11 @@ export function LicenseDecisions() {
   }, [requestId]);
 
   async function createDelegation() {
-    if (!projectId || pin.trim().length === 0 || useContext.trim().length === 0) {
+    if (
+      !projectId ||
+      pin.trim().length === 0 ||
+      useContext.trim().length === 0
+    ) {
       return;
     }
     setBusy("create");
@@ -372,7 +526,15 @@ export function LicenseDecisions() {
                   return (
                     <tr key={delegation.id}>
                       <td>
-                        <Badge tone={decisionTone(delegation.status === "APPROVED" ? "ACCEPT" : delegation.status === "DENIED" ? "DENY" : "NEEDS_EVIDENCE")}>
+                        <Badge
+                          tone={decisionTone(
+                            delegation.status === "APPROVED"
+                              ? "ACCEPT"
+                              : delegation.status === "DENIED"
+                                ? "DENY"
+                                : "NEEDS_EVIDENCE",
+                          )}
+                        >
                           {delegation.status}
                         </Badge>
                       </td>
@@ -510,29 +672,32 @@ export function LicenseDecisions() {
                     <td className="mono">{decision.licenseExpression}</td>
                     <td className="mono">{decision.selectedBranch}</td>
                     <td>
-                      {decision.softwareObligations.join(", ")}
-                      {decision.documentation.length > 0
-                        ? ` · ${decision.documentation
-                            .map(
-                              (item) =>
-                                `${item.path}: ${item.license} (${item.obligations.join(", ")})`,
-                            )
-                            .join("; ")}`
-                        : ""}
+                      <div>{decision.softwareObligations.join(", ")}</div>
+                      <DocumentationEvidence
+                        items={decision.documentation}
+                        provenance={decision.provenance}
+                      />
                     </td>
                     <td>{decision.useContext}</td>
-                    <td className="mono">{decisionStage(decision.provenance)}</td>
+                    <td className="mono">
+                      {decisionStage(decision.provenance)}
+                    </td>
                     <td className="mono">{sourceProof(decision.provenance)}</td>
                     <td>
-                      <Badge tone={decisionTone(decision.status === "REVOKED" ? "DENY" : decision.decision)}>
+                      <Badge
+                        tone={decisionTone(
+                          decision.status === "REVOKED"
+                            ? "DENY"
+                            : decision.decision,
+                        )}
+                      >
                         {decision.status === "REVOKED"
                           ? "REVOKED"
                           : decision.decision}
                       </Badge>
-                      {decision.status === "REVOKED" && decision.revocationReason ? (
-                        <div className="muted">
-                          {decision.revocationReason}
-                        </div>
+                      {decision.status === "REVOKED" &&
+                      decision.revocationReason ? (
+                        <div className="muted">{decision.revocationReason}</div>
                       ) : null}
                     </td>
                     <td>

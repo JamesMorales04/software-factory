@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "fragment_for": "docs/product/office-parity.json",
+  "replace": false,
+  "capabilities": {
+    "CAP-011": {
+      "routes_add": ["/licenses"],
+      "core_api_add": [
+        "GET /agentic/license-decisions?project_id={projectId}",
+        "GET /agentic/requests/{id}/license-evidence-review"
+      ],
+      "user_actions_add": [
+        "distinguish the Lead-selected licensing fact, the derived exact license text, and the raw model selection (audit only) in a read-only licence decision",
+        "inspect licensingFacts, licenseTexts and derivationRule provenance without mutating Core state or deriving a new text in Office"
+      ],
+      "states_add": [
+        "v4 decision with derived exact text",
+        "direct text selection with empty licensingFactPath",
+        "historical record without v4 fields shown as not recorded",
+        "pre-decision review without a derived-text claim",
+        "provenance disclosure empty/loading/error inherited from the decision list"
+      ],
+      "acceptance": [
+        "office/src/views/LicenseDecisions.test.tsx"
+      ],
+      "browser_acceptance": "NOT_TESTED until the integrated Core v4 route and a candidate-bound browser/axe run",
+      "notes": "Display-only. COPYING is labelled derived exact text after the decision and never as the model raw choice. No new route, action, mutation or backend field is invented."
+    }
+  }
+}

@@ -3125,9 +3125,42 @@ export interface AgenticOwnerDecision {
 export interface LicenseDecisionDocumentation {
   path: string;
   license: string;
+  outputSha256?: string;
   licenseTextSha256: string;
   obligations: string[];
   verdict: string;
+  /** Derived exact `purpose=license-text` asset selected after a v4 decision. */
+  licenseTextPath?: string;
+  /** Lead-selected `role=licensing` fact; empty for a direct text selection. */
+  licensingFactPath?: string;
+  licensingFactSha256?: string;
+  /** Raw model selection retained for audit only; never the derived text. */
+  modelLicenseTextPath?: string;
+  modelLicenseTextSha256?: string;
+  derivationRule?: string;
+}
+
+export interface LicenseProvenanceFact {
+  atom: string;
+  path: string;
+  sha256: string;
+  license: string;
+  purpose: string;
+  role: string;
+}
+
+export interface LicenseProvenanceText {
+  atom: string;
+  path: string;
+  sha256: string;
+  license: string;
+}
+
+export interface LicenseDecisionProvenance {
+  [key: string]: unknown;
+  licensingFacts?: LicenseProvenanceFact[];
+  licenseTexts?: LicenseProvenanceText[];
+  derivationRule?: string;
 }
 
 export interface LicenseDecisionRecord {
@@ -3157,7 +3190,7 @@ export interface LicenseDecisionRecord {
   evidenceSha256: string;
   identityFactsReceiptDigest: string;
   contentSha256: string;
-  provenance: Record<string, unknown>;
+  provenance: LicenseDecisionProvenance;
   useContext: string;
   commercialUse: boolean;
   paymentRequired: boolean;
