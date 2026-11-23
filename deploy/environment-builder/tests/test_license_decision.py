@@ -416,6 +416,11 @@ class LicenseDecisionTests(unittest.TestCase):
         with self.assertRaises(license_decision.LicenseDecisionError):
             license_decision.validate_license_decision_receipt(seal(wrong_text), plan())
 
+        wrong_file = json.loads(json.dumps(v4))
+        wrong_file["fileEvidence"] = []
+        with self.assertRaises(license_decision.LicenseDecisionError):
+            license_decision.validate_license_decision_receipt(seal(wrong_file), plan())
+
     def test_v3_file_evidence_is_exact_and_has_no_family_shortcut(self) -> None:
         changed = receipt()
         changed["fileEvidence"][0]["assetLicense"] = "GPL-2.0-or-later"

@@ -118,6 +118,14 @@ Stored v3 decisions keep their v3 digest and verification. New decisions use
   compatible text, the exact output grant and the exact documentation
   projection; any mismatch is `ENVIRONMENT_LICENSE_DECISION_INVALID`/`STALE`.
 
+The Owner delegation is project/pin/use/criterion/revision/deadline authority.
+A project-scoped delegation may have `request_id = NULL`; `planSha256` and
+`identityFactsReceipt` are optional context, not required fields. Each Lead
+decision still binds the exact plan/spec/receipt/identity through the review and
+decision context. The autopilot selects an exact request-scoped delegation
+first, then the latest project-scoped one, and fails closed on expiry,
+revocation, pin/use/criterion/revision mismatch or ambiguity.
+
 The autonomous runner uses the same transitions. A licence gate is a typed
 recoverable/owner wait (`ENVIRONMENT_LICENSE_UNKNOWN`, `LICENSE_*`), never a
 generic terminal failure. With an existing approved Owner delegation and the
@@ -125,7 +133,11 @@ signed receipt it may reuse the normal Lead review (gateway exact replay, no
 duplicate dispatch) and deterministic decision, then retry the freeze once. A
 successful decision re-enqueues the same autonomous request; `REVIEW_PLAN` never
 auto-starts. The runner never creates or renews a delegation, never widens
-scope and never retries an ambiguous dispatch. The builder marks any mismatch `STALE`
+scope and never retries an ambiguous dispatch. Its request-scoped admission is
+created only from a current durable Owner Extra Usage declaration covering the
+exact provider, endpoint and credential; without that declaration it returns
+`AUTOPILOT_OWNER_DECLARATION_REQUIRED` as a truthful owner wait and never
+synthesizes an Owner confirmation. The builder marks any mismatch `STALE`
 or `INVALID` (fail closed) and never approves a licence by name, package family
 or a static GFDL profile allow.
 

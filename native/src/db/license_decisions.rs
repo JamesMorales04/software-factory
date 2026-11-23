@@ -626,23 +626,23 @@ impl Database {
         rows.iter().map(decision_from_row).collect()
     }
 
-    /// Resolve one already-approved Owner licence delegation for the exact
-    /// request, plan and signed identity-facts receipt. The runner may use it;
-    /// it never creates, renews or widens a delegation.
-    pub async fn current_license_delegation_for_plan(
+    /// Resolve the current approved Owner licence delegation for a project and
+    /// exact pin. The existing manual decision contract requires matter,
+    /// status, option, deadline and the exact domain/pin/use/criterion/revision
+    /// evidence; plan and identity receipt are bound by the review/decision,
+    /// not by the delegation row. The runner may reuse it; it never creates,
+    /// renews or widens a delegation.
+    pub async fn current_license_delegation(
         &self,
         project_id: &str,
-        request_id: &str,
-        plan_sha256: &str,
-        receipt_nonce: &str,
+        pin: &str,
     ) -> Result<Option<super::AgenticOwnerDecisionRecord>, Error> {
         let now = Utc::now().to_rfc3339();
         let decisions = self
             .agentic_owner_decisions(Some(project_id), false)
             .await?;
         for decision in decisions {
-            if decision.request_id.as_deref() != Some(request_id)
-                || decision.matter != LICENSE_DELEGATION_MATTER
+            if decision.matter != LICENSE_DELEGATION_MATTER
                 || decision.status != "APPROVED"
                 || decision.selected_option.as_deref() != Some(LICENSE_DELEGATION_OPTION)
                 || decision.deadline.as_str() <= now.as_str()
@@ -652,18 +652,7 @@ impl Database {
             let evidence = &decision.evidence;
             if evidence.get("domain").and_then(serde_json::Value::as_str)
                 != Some("licenses-identity-evidence")
-                || evidence
-                    .get("planSha256")
-                    .and_then(serde_json::Value::as_str)
-                    != Some(plan_sha256)
-                || evidence
-                    .get("identityFactsReceipt")
-                    .and_then(serde_json::Value::as_str)
-                    != Some(receipt_nonce)
-                || evidence
-                    .get("pin")
-                    .and_then(serde_json::Value::as_str)
-                    .is_none_or(str::is_empty)
+                || evidence.get("pin").and_then(serde_json::Value::as_str) != Some(pin)
                 || evidence
                     .get("useContext")
                     .and_then(serde_json::Value::as_str)

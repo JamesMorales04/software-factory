@@ -20788,16 +20788,65 @@ async fn ensure_autopilot_subscription_admission(app: &Arc<App>, id: &str) -> Re
     {
         return Ok(());
     }
+    let intake = app.db.intake_request(id).await?;
+    let profile = app
+        .db
+        .execution_profile_revision(&intake.profile_id, &intake.profile_revision_id)
+        .await?;
+    let Some(content) = profile.content.v2() else {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
+            message: "a legacy V1 execution profile cannot request autonomous funding".into(),
+        });
+    };
+    let lead = &content.roles.lead;
+    let settings = match app.db.provider_settings(&lead.provider).await {
+        Ok(settings) => settings,
+        Err(Error::NotFound) => {
+            return Err(Error::IntakeConflict {
+                code: "AUTOPILOT_OWNER_DECLARATION_REQUIRED",
+                message: "the exact provider route is not configured, so no Owner declaration can cover it".into(),
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let declaration = app
+        .db
+        .active_provider_extra_usage_declaration(
+            &lead.provider,
+            &settings.base_url,
+            &settings.credential_fingerprint,
+        )
+        .await?
+        .ok_or_else(|| Error::IntakeConflict {
+            code: "AUTOPILOT_OWNER_DECLARATION_REQUIRED",
+            message:
+                "the autonomous admission requires a current Owner Extra Usage declaration covering the exact provider, endpoint and credential; Core does not synthesize one"
+                    .into(),
+        })?;
+    if declaration.extra_usage != "DISABLED" {
+        return Err(Error::IntakeConflict {
+            code: "AUTOPILOT_OWNER_DECLARATION_REQUIRED",
+            message: "the Owner Extra Usage declaration is not DISABLED".into(),
+        });
+    }
     let now = chrono::Utc::now().timestamp_millis();
     let input = IntakeSubscriptionAdmissionRequest {
-        assumption_id: format!("lead-autopilot:{id}:{now}"),
-        confirmed_by: "Product Owner (autonomous R0 policy)".into(),
+        assumption_id: format!("lead-autopilot:{id}:{}:{now}", declaration.declaration_id),
+        confirmed_by: format!(
+            "owner-extra-usage-declaration:{}",
+            declaration.declaration_id
+        ),
         confirmed_at_ms: now - 1_000,
         valid_until_ms: now + 24 * 60 * 60 * 1_000,
+        // The admission request still carries the assumption flag required by
+        // the existing admission contract; it is derived from the durable
+        // Owner declaration above, never synthesized by the runner.
         extra_usage_disabled: true,
-        statement:
-            "Owner confirmed OpenCode Go Extra Usage is OFF and authorized autonomous R0 subscription execution."
-                .into(),
+        statement: format!(
+            "Owner declaration {} confirms Extra Usage is DISABLED for provider {} at the exact endpoint; the autonomous R0 policy reuses that durable declaration for this request-scoped admission.",
+            declaration.declaration_id, declaration.provider
+        ),
         test_profile_id: "opencode-go-subscription".into(),
         // The admission can expire while an autonomous request is still
         // unfinished. A time-scoped key lets a resume create a fresh active
@@ -20966,6 +21015,8 @@ fn autopilot_step_error(step: &str, status: StatusCode, value: &Value) -> Error 
         "LICENSE_DELEGATION_EXPIRED" => "LICENSE_DELEGATION_EXPIRED",
         "LICENSE_DELEGATION_REVOKED" => "LICENSE_DELEGATION_REVOKED",
         "LICENSE_DECISION_INVALID" => "LICENSE_DECISION_INVALID",
+        "LICENSE_EVIDENCE_REVIEW_INVALID" => "LICENSE_EVIDENCE_REVIEW_INVALID",
+        "AUTOPILOT_OWNER_DECLARATION_REQUIRED" => "AUTOPILOT_OWNER_DECLARATION_REQUIRED",
         "LICENSE_DECISION_STALE" => "LICENSE_DECISION_STALE",
         "LICENSE_LEAD_TERMINAL" => "LICENSE_LEAD_TERMINAL",
         "SPEC_DRAFT_REQUIRED" => "SPEC_DRAFT_REQUIRED",
@@ -21071,7 +21122,9 @@ fn autopilot_stop(error: &Error) -> AutopilotStop {
             "LICENSE_DELEGATION_REQUIRED"
             | "LICENSE_DELEGATION_EXPIRED"
             | "LICENSE_DELEGATION_REVOKED"
-            | "LICENSE_DECISION_INVALID" => AutopilotStop::WaitOwner,
+            | "LICENSE_DECISION_INVALID"
+            | "LICENSE_EVIDENCE_REVIEW_INVALID"
+            | "AUTOPILOT_OWNER_DECLARATION_REQUIRED" => AutopilotStop::WaitOwner,
             "AUTOPILOT_ASSESSMENT_IN_PROGRESS"
             | "ASSESSMENT_OUTCOME_UNKNOWN"
             | "ASSESSMENT_TRANSIENT"
@@ -21637,6 +21690,7 @@ fn is_autopilot_licence_gate(error: &Error) -> bool {
                     | "LICENSE_DELEGATION_EXPIRED"
                     | "LICENSE_DELEGATION_REVOKED"
                     | "LICENSE_DECISION_INVALID"
+                    | "LICENSE_EVIDENCE_REVIEW_INVALID"
                     | "LICENSE_DECISION_STALE"
             )
     )
@@ -21661,7 +21715,7 @@ async fn run_autonomous_licence_step(
             },
             other => other,
         })?;
-    let receipt = app
+    let _receipt = app
         .db
         .latest_identity_facts_receipt(&plan.plan_sha256)
         .await
@@ -21675,17 +21729,12 @@ async fn run_autonomous_licence_step(
         })?;
     let delegation = app
         .db
-        .current_license_delegation_for_plan(
-            &record.project_id,
-            &record.id,
-            &plan.plan_sha256,
-            &receipt.nonce,
-        )
+        .current_license_delegation(&record.project_id, &plan.plan.nix.nixpkgs)
         .await?
         .ok_or_else(|| Error::IntakeConflict {
             code: "LICENSE_DELEGATION_REQUIRED",
             message:
-                "an approved, current Owner licence delegation for this exact request/plan/receipt is required"
+                "an approved, current Owner licence delegation for this project and exact pin is required"
                     .into(),
         })?;
 
@@ -30838,6 +30887,27 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            let settings_after = fixture
+                .app
+                .db
+                .provider_settings("opencode-go")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .declare_provider_extra_usage(factory_native::db::DeclareProviderExtraUsage {
+                    provider: "opencode-go",
+                    base_url: &url,
+                    credential_fingerprint: &settings_after.credential_fingerprint,
+                    principal_id: "operator-token",
+                    statement:
+                        "Owner test declaration: Extra Usage is DISABLED for the deterministic fixture endpoint.",
+                    settings_revision: settings_after.revision,
+                    idempotency_key: "autopilot-owner-extra-usage-declaration",
+                })
+                .await
+                .unwrap();
             // Keep the deterministic lane at DIRECT: a committed stack and
             // engineering documentation remove the FormalSpec floors. The
             // FormalSpec transition is exercised by its own test.
@@ -32569,6 +32639,8 @@ mod tests {
                 "LICENSE_DELEGATION_EXPIRED",
                 "LICENSE_DELEGATION_REVOKED",
                 "LICENSE_DECISION_INVALID",
+                "LICENSE_EVIDENCE_REVIEW_INVALID",
+                "AUTOPILOT_OWNER_DECLARATION_REQUIRED",
             ] {
                 assert_eq!(
                     autopilot_stop(&Error::IntakeConflict {
@@ -35722,6 +35794,58 @@ mod tests {
             assert_eq!(approved["planning"]["ready"], true);
             assert!(approved["campaignId"].is_string());
 
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[tokio::test]
+        async fn autopilot_admission_requires_a_durable_owner_declaration() {
+            let (fixture, app, _calls, intake_id) =
+                autonomous_autopilot_fixture("autopilot-owner-declaration").await;
+            let request = app.db.intake_request(&intake_id).await.unwrap();
+            let settings = app.db.provider_settings("opencode-go").await.unwrap();
+            app.db
+                .revoke_provider_extra_usage(
+                    "opencode-go",
+                    &settings.base_url,
+                    &settings.credential_fingerprint,
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            let (fresh, created) = app
+                .db
+                .create_intake_request(
+                    &request.project_id,
+                    "Admission declaration negative.",
+                    Some(&request.profile_id),
+                    factory_native::intake::IntakeMode::Autonomous,
+                    "autopilot-owner-declaration-fresh",
+                    "operator-token",
+                    &[],
+                )
+                .await
+                .unwrap();
+            assert!(created);
+            let error = ensure_autopilot_subscription_admission(&app, &fresh.id)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    Error::IntakeConflict { code, .. }
+                        if *code == "AUTOPILOT_OWNER_DECLARATION_REQUIRED"
+                ),
+                "{error}"
+            );
+            assert_eq!(
+                autopilot_stop(&error),
+                AutopilotStop::WaitOwner,
+                "a missing Owner declaration is an owner wait, not a terminal failure"
+            );
+            app.db.close().await;
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);
