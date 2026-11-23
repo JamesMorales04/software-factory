@@ -8,7 +8,7 @@ const longValue =
   "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d/candidate/src/very/deep/path/with/a/long/unbroken/identifier";
 
 test("keeps table content reachable without horizontal overflow or a focus trap", async () => {
-  await render(
+  const screen = await render(
     <DirectorTableRegion label="Agent assignments">
       <table className="director-table">
         <thead>
@@ -50,13 +50,14 @@ test("keeps table content reachable without horizontal overflow or a focus trap"
     const head = element.querySelector("thead");
     expect(head).not.toBeNull();
     const display = getComputedStyle(head as HTMLElement).display;
+    expect(display).not.toBe("none");
+    await expect
+      .element(screen.getByRole("columnheader", { name: "Specialization" }))
+      .toBeInTheDocument();
     if (width <= 960) {
-      expect(display).toBe("none");
       expect(
         getComputedStyle(element.querySelector("tr td") as HTMLElement).display,
       ).toBe("block");
-    } else {
-      expect(display).not.toBe("none");
     }
   }
 });
