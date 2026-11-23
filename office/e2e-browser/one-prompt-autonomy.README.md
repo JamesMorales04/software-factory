@@ -50,7 +50,23 @@ Negative/edge lanes:
 **Positive busy-gate:** the positive and `license-header` lanes are `BLOCKED`
 with `LICENSE_FIXTURE_PHASE_MISSING` until Core98 adds
 `license_evidence_review` to the fixture `/counters` (and the v4 response). The
-lane never downgrades that to PARTIAL/PASS.
+lane never downgrades that to PARTIAL/PASS. They are also `BLOCKED` with
+`ENVIRONMENT_LICENSE_TRIGGER_MISSING` until the authorized builder/environment
+ED-helper trigger exists.
+
+**Licence authority is not the execution policy.** The Home policy
+confirmation sends only `autonomous:true` and `subscription_confirmed:true`;
+that is execution/funding, not licence authority. The exact
+`LICENSE_IDENTITY_EVIDENCE_DELEGATION` (project, pin, use context,
+`no-mandatory-fee-commercial-use`, revision, `exact-identity` scope) is a
+separate `agentic_owner_decisions` row created/approved through the `/licenses`
+UI. A fresh stack without a pre-existing approved delegation must produce a
+truthful `WaitOwner`/`BLOCKED` around the licence gate and **no Campaign**. This
+harness must never seed that owner decision, derive it from R0/subscription, or
+fabricate a licence decision. A real positive one-prompt lane requires either
+the product UI to include the explicit licence criterion in the same Owner
+confirmation or a pre-existing authorized delegation; otherwise the positive
+lane remains BLOCKED.
 
 ## Commands
 
