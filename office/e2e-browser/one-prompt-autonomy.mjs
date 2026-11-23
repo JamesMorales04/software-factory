@@ -47,6 +47,8 @@ import {
   assertCampaignAuthorization,
   assertCounterDelta,
   assertCountersBaseline,
+  assertFundingProjection,
+  assertLeaseProjection,
   assertNoFixtureErrors,
   assertNoManualControls,
   assertNoPreKnownRequestId,
@@ -90,7 +92,15 @@ if (process.env.FACTORY_COOKIE_JAR) {
 if (!["run", "verify-restart"].includes(phase)) {
   fail(`unsupported FACTORY_UAT_PHASE: ${phase}`);
 }
-if (!["", "no-policy", "license-header", "funding-false"].includes(negative)) {
+if (
+  ![
+    "",
+    "no-policy",
+    "license-header",
+    "funding-false",
+    "lease-vs-request",
+  ].includes(negative)
+) {
   fail(`unsupported FACTORY_UAT_NEGATIVE: ${negative}`);
 }
 mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
@@ -331,6 +341,23 @@ async function readFixtureDiagnostics() {
   });
   if (!response.ok) fail(`fixture /counters -> ${response.status}`);
   return response.json();
+}
+
+async function requireLicenseFixtureOrBlock() {
+  const diagnostics = await readFixtureDiagnostics();
+  if (!Object.prototype.hasOwnProperty.call(diagnostics.counters ?? {}, "license_evidence_review")) {
+    record.result = "BLOCKED";
+    record.stage = "license-fixture";
+    record.error = "LICENSE_FIXTURE_PHASE_MISSING";
+    record.findings.push({
+      kind: "license-fixture-phase-missing",
+      detail:
+        "Core98 fixture has no license_evidence_review phase/counter; positive and license lanes are BLOCKED, not PASS/PARTIAL",
+      required_owner: "98e2f199-2100-4907-8f16-a93e3038c321",
+    });
+    return false;
+  }
+  return true;
 }
 
 async function enrollIfNeeded({ requireFresh }) {
@@ -779,6 +806,18 @@ async function captureProjectionAndBody(requestId) {
   const body = await bodyText();
   assertNoManualControls(body, MANUAL_CONTROL_LABELS);
   requireAnyLabel(body, OPEN_CAMPAIGN_LABELS, "open campaign link");
+  const participants = await core(
+    "GET",
+    `/office/participants?campaign_id=${record.ids.campaign_id}&limit=50`,
+  );
+  if (!participants.participants?.length) {
+    fail("participants projection is empty for a completed Campaign");
+  }
+  record.lease = assertLeaseProjection(
+    projection.state,
+    participants.participants,
+  );
+  record.assertions.lease_vs_request = "PASS";
   record.assertions.no_routine_manual_controls = "PASS";
   return { projection, body };
 }
@@ -813,6 +852,8 @@ async function collectSnapshot(requestId, campaignId, requestProjection) {
 }
 
 async function runPositive() {
+  stage = "license-fixture";
+  if (negative !== "no-policy" && !(await requireLicenseFixtureOrBlock())) return;
   stage = "first-run-enrollment";
   await enrollIfNeeded({ requireFresh: true });
   stage = "project-import";
@@ -1002,6 +1043,8 @@ async function runNegativeLicenseHeader() {
   // This lane depends on the Core98 fixture variant. It never mutates product
   // state itself; it only submits one prompt and reads the typed blocker.
   if (negative !== "license-header") fail("license lane requires FACTORY_UAT_NEGATIVE=license-header");
+  stage = "license-fixture";
+  if (!(await requireLicenseFixtureOrBlock())) return;
   await enrollIfNeeded({ requireFresh: true });
   const projectId = await importProject();
   const { projectConfig, profile } = await configureProjectAndProfile(projectId);
@@ -1040,6 +1083,39 @@ async function runNegativeLicenseHeader() {
   }
   if ((delta.other ?? 0) !== 0) fail("licence-header negative produced an unknown prompt");
   record.assertions.typed_license_stop = "PASS";
+  record.result = "PASS";
+}
+
+async function runLeaseNegative() {
+  stage = "license-fixture";
+  if (!(await requireLicenseFixtureOrBlock())) return;
+  await enrollIfNeeded({ requireFresh: true });
+  const projectId = await importProject();
+  const { projectConfig, profile } = await configureProjectAndProfile(projectId);
+  const template = writeModelContext(projectId, projectConfig);
+  const before = await readFixtureDiagnostics();
+  assertCountersBaseline(before.counters);
+  await homeAndSubmit(projectId, profile);
+  const requestId = await enablePolicyAndOpenRequest();
+  const created = await core("GET", `/intake/requests/${requestId}`);
+  writeRequestContext(requestId, created, template);
+  stage = "lease-vs-request";
+  const projection = await waitForRequestExecution(requestId);
+  const participants = await waitFor(
+    "participant lease projection",
+    async () => {
+      const page = await core(
+        "GET",
+        `/office/participants?campaign_id=${projection.campaignId}&limit=50`,
+      );
+      return page.participants?.length ? page : null;
+    },
+    120_000,
+    1000,
+  );
+  const current = await core("GET", `/intake/requests/${requestId}`);
+  record.lease = assertLeaseProjection(current.state, participants.participants);
+  record.assertions.lease_vs_request = "PASS";
   record.result = "PASS";
 }
 
@@ -1088,6 +1164,8 @@ async function main() {
       await runNegativeLicenseHeader();
     } else if (negative === "funding-false") {
       await runFundingObservation();
+    } else if (negative === "lease-vs-request") {
+      await runLeaseNegative();
     } else {
       await runPositive();
     }
@@ -1095,26 +1173,33 @@ async function main() {
     await runVerifyRestart();
   }
 
-  record.assertions.driver_calls = validateDriverCalls(record.driver_calls);
-  const pageMutations = record.page_mutations.filter((entry) => !entry.driver);
-  if (
-    phase === "verify-restart" ||
-    negative === "no-policy" ||
-    negative === "funding-false"
-  ) {
-    const unexpected = pageMutations.filter(
-      (entry) => !["GET", "HEAD", "OPTIONS"].includes(entry.method) && isWorkflowPath(entry.path),
-    );
-    if (unexpected.length > 0) {
-      fail(
-        `negative/restart lane performed workflow UI mutation(s): ${unexpected
-          .map((entry) => `${entry.method} ${entry.path}`)
-          .join("; ")}`,
-      );
-    }
-    record.assertions.page_mutations = "NO_WORKFLOW_MUTATION";
+  if (record.result === "BLOCKED") {
+    record.assertions.driver_calls = "BLOCKED_BEFORE_VALIDATION";
+    record.assertions.page_mutations = "BLOCKED_BEFORE_VALIDATION";
   } else {
-    record.assertions.page_mutations = validatePageMutations(pageMutations);
+    record.assertions.driver_calls = validateDriverCalls(record.driver_calls);
+    const pageMutations = record.page_mutations.filter((entry) => !entry.driver);
+    if (
+      phase === "verify-restart" ||
+      negative === "no-policy" ||
+      negative === "funding-false"
+    ) {
+      const unexpected = pageMutations.filter(
+        (entry) =>
+          !["GET", "HEAD", "OPTIONS"].includes(entry.method) &&
+          isWorkflowPath(entry.path),
+      );
+      if (unexpected.length > 0) {
+        fail(
+          `negative/restart lane performed workflow UI mutation(s): ${unexpected
+            .map((entry) => `${entry.method} ${entry.path}`)
+            .join("; ")}`,
+        );
+      }
+      record.assertions.page_mutations = "NO_WORKFLOW_MUTATION";
+    } else {
+      record.assertions.page_mutations = validatePageMutations(pageMutations);
+    }
   }
   if (record.console.errors.length > 0) {
     fail(`browser console errors: ${record.console.errors.slice(0, 3).join(" | ")}`);
@@ -1135,26 +1220,60 @@ async function main() {
 
 async function runFundingObservation() {
   await enrollIfNeeded({ requireFresh: false });
+  stage = "funding-configuration";
+  await core("PUT", "/settings/providers/opencode-go", {
+    model: "deepseek-v4.1-flash",
+    baseUrl: `${fixtureUrl}/v1`,
+    credential: "compose-fixture-credential-0123456789",
+    enabled: true,
+    isDefault: true,
+  });
   stage = "funding-observation";
   const funding = await core("GET", "/funding/subscription/opencode-go").catch(
     () => null,
   );
   if (funding === null) {
-    record.assertions.funding_projection = "NOT_TESTED";
+    record.assertions.funding_projection = "BLOCKED";
     record.findings.push({
       kind: "funding-endpoint-unavailable",
       detail: "GET /funding/subscription/opencode-go did not return a projection",
+      required_owner: "b786195c",
     });
-    record.result = "PARTIAL";
+    record.result = "BLOCKED";
+    return;
+  }
+  let projection;
+  try {
+    projection = assertFundingProjection(funding);
+  } catch (error) {
+    record.assertions.funding_projection = "FAIL";
+    record.error = error instanceof Error ? error.message : String(error);
+    record.findings.push({
+      kind: "funding-projection-not-truthful",
+      detail: record.error,
+      required_owner: "b786195c",
+    });
+    record.result = "BLOCKED";
     return;
   }
   const body = await bodyText();
-  const enabled = funding.enabled ?? funding.available ?? funding.funding ?? null;
-  if (enabled === false && !/funding|subscription|extra usage/i.test(body)) {
-    fail("funding is false but Office does not expose a truthful funding projection");
+  if (
+    !/funding|subscription|admissib|entitlement|missing evidence|extra usage/i.test(
+      body,
+    )
+  ) {
+    record.assertions.funding_projection = "BLOCKED";
+    record.findings.push({
+      kind: "office-funding-projection-missing",
+      detail:
+        "Core exposes the truthful funding fields but Office does not display funding/admissibility/missing evidence",
+      required_owner: "b786195c",
+    });
+    record.result = "BLOCKED";
+    return;
   }
   record.assertions.funding_projection = "PASS";
-  record.funding = { enabled };
+  record.funding = projection;
   record.result = "PASS";
 }
 

@@ -35,11 +35,22 @@ Negative/edge lanes:
   that chooses the header asset (`ed.h`) and must expose a typed blocker,
   no Campaign, no retry/fuzzy map. **Requires the fixture hook owned by Core98;
   do not claim this lane until it is integrated.**
-- `FACTORY_UAT_NEGATIVE=funding-false`: reads `/funding/subscription` and
-  requires a truthful Office projection; owned by b786. If unavailable it is
-  recorded `PARTIAL`/`NOT_TESTED`, never PASS.
-- Lease-vs-request projection is read and recorded; it is not coupled to the
-  positive gate.
+- `FACTORY_UAT_NEGATIVE=funding-false`: reads
+  `/funding/subscription/opencode-go` and asserts the full truthful projection:
+  `coreVerifiable:false`, `admissible:false`, `entitlement`, `quota` and
+  `missingEvidence`; it also requires the Office display. Owned by b786. If the
+  projection or UI is missing it is `BLOCKED`, never PASS.
+- `FACTORY_UAT_NEGATIVE=lease-vs-request`: reads
+  `/office/participants?campaign_id=...` while the request is executing and
+  asserts `lease_state` and request `status` are separate facts. A
+  `RUNNING` participant cannot silently show `RELEASED`/`EXPIRED`; a
+  `COMPLETED` request cannot still show a `LIVE` lease. It does not mutate
+  workflow state.
+
+**Positive busy-gate:** the positive and `license-header` lanes are `BLOCKED`
+with `LICENSE_FIXTURE_PHASE_MISSING` until Core98 adds
+`license_evidence_review` to the fixture `/counters` (and the v4 response). The
+lane never downgrades that to PARTIAL/PASS.
 
 ## Commands
 
@@ -74,6 +85,10 @@ scripts/compose-oneprompt-uat.sh
 `scripts/compose-browser-uat.sh` keeps its historical product lane; only
 `FACTORY_UAT_LANE=oneprompt` dispatches here.
 
+The final acceptance lane must use a **fresh** disposable stack. Do not use
+`FACTORY_UAT_SKIP_START=1` or `FACTORY_UAT_ALLOW_ENROLLED=1` for the accepted
+run; those exist only for diagnostics/resume and are not acceptance evidence.
+
 ## Isolation
 
 - Project must contain `oneprompt`; `software-factory`,
@@ -103,6 +118,9 @@ scripts/compose-oneprompt-uat.sh
 - Driver setup mutations are allow-listed only:
   `/settings/providers/*`, `/settings/runtime`, `/execution-profiles`,
   `/execution-profiles/*/default`, `/projects/*/config`.
+  These are configuration setup, not workflow state; they do not create the
+  intake/Campaign. **Root must explicitly accept this allowlist or request the
+  setup move to Office UI before freeze.**
 - Driver workflow mutations are a hard failure: `/intake/requests`, `/assess`,
   `/plan`, `/participants`, `/environment*`, `/license*`, `/decision`,
   `/spec*`, `/approve`, `/start`, `/campaigns*`, `/runs*`,

@@ -11,6 +11,8 @@ import {
   assertCampaignAuthorization,
   assertCounterDelta,
   assertCountersBaseline,
+  assertFundingProjection,
+  assertLeaseProjection,
   assertNoFixtureErrors,
   assertNoManualControls,
   assertNoPreKnownRequestId,
@@ -238,6 +240,73 @@ test("manual controls are rejected only when visible", () => {
   assert.throws(
     () => assertNoManualControls("Run assessment", ["Run assessment"]),
     /manual controls visible/,
+  );
+});
+
+test("lease and request are separate; contradiction is rejected", () => {
+  const runningLive = [
+    {
+      participant_id: "implementer:1",
+      role: "IMPLEMENTER",
+      status: "RUNNING",
+      lease_state: "LIVE",
+      status_source: "provider-session",
+    },
+  ];
+  assert.equal(assertLeaseProjection("EXECUTING", runningLive).participants.length, 1);
+  const runningReleased = structuredClone(runningLive);
+  runningReleased[0].lease_state = "RELEASED";
+  assert.throws(
+    () => assertLeaseProjection("EXECUTING", runningReleased),
+    /unexplained lease\/request contradiction/,
+  );
+  const completedReleased = structuredClone(runningReleased);
+  completedReleased[0].status = "COMPLETED";
+  assert.doesNotThrow(() => assertLeaseProjection("EXECUTING", completedReleased));
+  const completedLive = structuredClone(runningLive);
+  assert.throws(
+    () => assertLeaseProjection("COMPLETED", completedLive),
+    /still shows a LIVE lease/,
+  );
+  assert.throws(
+    () => assertLeaseProjection("COMPLETED", [{ status: "COMPLETED", lease_state: "BROKEN" }]),
+    /invalid lease_state/,
+  );
+});
+
+test("funding projection must be truthful, not just enabled", () => {
+  const projection = {
+    provider: "opencode-go",
+    route: "GO_SUBSCRIPTION_INCLUDED",
+    configured: true,
+    enabled: true,
+    coreVerifiable: false,
+    admissible: false,
+    entitlement: "NOT_RECORDED",
+    quota: { state: "UNKNOWN", reason: "NO_PROVIDER_QUOTA_OBSERVATION_REQUIRED" },
+    missingEvidence: [
+      "OWNER_CONFIRMED_EXTRA_USAGE_ASSUMPTION",
+      "EXPLICIT_BOUNDED_SUBSCRIPTION_ADMISSION",
+    ],
+  };
+  const result = assertFundingProjection(projection);
+  assert.equal(result.admissible, false);
+  assert.equal(result.core_verifiable, false);
+  assert.throws(
+    () => assertFundingProjection({ ...projection, admissible: true }),
+    /admissible:false/,
+  );
+  assert.throws(
+    () => assertFundingProjection({ ...projection, coreVerifiable: true }),
+    /coreVerifiable:false/,
+  );
+  assert.throws(
+    () => assertFundingProjection({ ...projection, missingEvidence: [] }),
+    /missing evidence marker/,
+  );
+  assert.throws(
+    () => assertFundingProjection({ ...projection, entitlement: "VERIFIED" }),
+    /unexpected funding entitlement/,
   );
 });
 

@@ -287,6 +287,90 @@ export function assertNoManualControls(bodyText, labels) {
   }
 }
 
+export function assertLeaseProjection(requestState, participants) {
+  if (!Array.isArray(participants)) {
+    throw new Error("participants projection is not a list");
+  }
+  const allowed = new Set(["LIVE", "EXPIRED", "RELEASED"]);
+  const facts = [];
+  for (const participant of participants) {
+    const lease = String(participant.lease_state ?? "");
+    const status = String(participant.status ?? "");
+    if (!allowed.has(lease)) {
+      throw new Error(`participant ${participant.participant_id ?? "?"} has invalid lease_state ${lease}`);
+    }
+    if (!status) {
+      throw new Error(`participant ${participant.participant_id ?? "?"} has no separate status`);
+    }
+    if (requestState === "EXECUTING" && status === "RUNNING" && lease !== "LIVE") {
+      throw new Error(
+        `request EXECUTING and participant RUNNING but lease is ${lease}; unexplained lease/request contradiction`,
+      );
+    }
+    if (requestState === "COMPLETED" && lease === "LIVE") {
+      throw new Error(
+        `request COMPLETED but participant ${participant.participant_id ?? "?"} still shows a LIVE lease`,
+      );
+    }
+    facts.push({
+      participant_id: participant.participant_id ?? null,
+      role: participant.role ?? null,
+      status,
+      lease_state: lease,
+      status_source: participant.status_source ?? null,
+      observation_note: participant.observation_note ?? null,
+      failure_reason: participant.failure_reason ?? null,
+    });
+  }
+  return { request_state: requestState, participants: facts };
+}
+
+export function assertFundingProjection(funding) {
+  if (!funding || typeof funding !== "object") {
+    throw new Error("funding projection is missing");
+  }
+  if (funding.provider !== "opencode-go") {
+    throw new Error(`funding provider must be opencode-go, observed ${funding.provider}`);
+  }
+  if (funding.route !== "GO_SUBSCRIPTION_INCLUDED") {
+    throw new Error(`funding route is not GO_SUBSCRIPTION_INCLUDED: ${funding.route}`);
+  }
+  const coreVerifiable =
+    funding.coreVerifiable ?? funding.core_verifiable ?? null;
+  if (coreVerifiable !== false) {
+    throw new Error("funding projection must be coreVerifiable:false");
+  }
+  if (funding.admissible !== false) {
+    throw new Error("funding projection must be admissible:false");
+  }
+  if (funding.entitlement !== "NOT_RECORDED") {
+    throw new Error(`unexpected funding entitlement: ${funding.entitlement}`);
+  }
+  if (funding.quota?.state !== "UNKNOWN") {
+    throw new Error(`unexpected funding quota state: ${funding.quota?.state}`);
+  }
+  const missing = funding.missingEvidence ?? funding.missing_evidence ?? [];
+  for (const required of [
+    "OWNER_CONFIRMED_EXTRA_USAGE_ASSUMPTION",
+    "EXPLICIT_BOUNDED_SUBSCRIPTION_ADMISSION",
+  ]) {
+    if (!missing.includes(required)) {
+      throw new Error(`funding projection is missing evidence marker ${required}`);
+    }
+  }
+  return {
+    provider: funding.provider,
+    route: funding.route,
+    enabled: funding.enabled,
+    configured: funding.configured,
+    core_verifiable: false,
+    admissible: false,
+    entitlement: funding.entitlement,
+    quota: funding.quota,
+    missing_evidence: missing,
+  };
+}
+
 export function assertCampaignAuthorization(authorization) {
   if (!authorization) throw new Error("Campaign authorization is missing");
   const risk = authorization.riskClass ?? authorization.risk_class;
