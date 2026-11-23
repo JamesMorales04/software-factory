@@ -90,6 +90,14 @@ The harness does not invent a second confirmation; a dual execution+licence
 record must be implemented by product and reviewed by 98/70 before this lane is
 allowed to pass.
 
+**Contract is not ready.** The exact engine still needs request/plan/receipt/
+revision/project/scope in the authority DTO; the MISSING flow, pre/post-prompt
+confirmation timing and Owner-decision idempotency/unique constraint are
+unresolved (de9 review of d1f08de8). The WaitOwner lane therefore only asserts a
+truthful `WAITING_OWNER`/`BLOCKED` request state with zero licence model/
+decision/freeze/Campaign effects. Missing authority projection or selectors is
+`BLOCKED`, never PASS; it never grants licence authority or implements Option A.
+
 ## Commands
 
 From the isolated worktree at candidate `8d3fcf15` (no shared worktree):
