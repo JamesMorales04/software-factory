@@ -2457,6 +2457,27 @@ fn verify_against_source_asset(
     })
 }
 
+/// Whether a persisted decision belongs to the exact current plan identity.
+/// A decision for another revision must never gate the new plan's build/identity
+/// step; the full overlay verifier still checks spec, inventory, evidence,
+/// candidate, actor, delegation, receipt and v3 facts for a matching decision.
+pub fn license_decision_matches_plan(
+    record: &LicenseDecisionRecord,
+    lead_request_id: &str,
+    plan_sha256: &str,
+    plan_revision: u32,
+) -> bool {
+    record.lead_request_id == lead_request_id
+        && record.plan_sha256 == plan_sha256
+        && record.plan_revision == plan_revision
+}
+
+/// The decision row must still be an active acceptance. A matching but revoked,
+/// denied or otherwise stale row is never silently treated as absent.
+pub fn license_decision_is_active_accepted(record: &LicenseDecisionRecord) -> bool {
+    record.status == "ACTIVE" && record.decision == "ACCEPT" && record.revoked_at.is_none()
+}
+
 /// Exact context a persisted decision must still satisfy before it can be
 /// delivered to the builder's license overlay. Core supplies the current plan
 /// and, when it exists, the frozen spec.

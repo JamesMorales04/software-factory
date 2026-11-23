@@ -667,6 +667,48 @@ async fn the_builder_overlay_is_reverified_and_carries_the_exact_source_proof() 
         identity_facts: &fixture.facts,
         now,
     };
+    assert!(
+        crate::planning::license_decision::license_decision_matches_plan(
+            &record, "lead-1", PLAN, 1
+        ),
+        "the exact current plan decision is selected"
+    );
+    assert!(
+        !crate::planning::license_decision::license_decision_matches_plan(
+            &record, "lead-1", PLAN, 2
+        ),
+        "a previous revision never gates the new plan"
+    );
+    assert!(
+        !crate::planning::license_decision::license_decision_matches_plan(
+            &record,
+            "lead-1",
+            &"f".repeat(64),
+            1
+        ),
+        "a different plan hash never gates the current plan"
+    );
+    assert!(
+        !crate::planning::license_decision::license_decision_matches_plan(
+            &record, "lead-2", PLAN, 1
+        ),
+        "another Lead never gates this plan"
+    );
+    assert!(crate::planning::license_decision::license_decision_is_active_accepted(&record));
+    let mut revoked_plan_decision = record.clone();
+    revoked_plan_decision.revoked_at = Some(chrono::Utc::now().to_rfc3339());
+    assert!(
+        !crate::planning::license_decision::license_decision_is_active_accepted(
+            &revoked_plan_decision
+        )
+    );
+    let mut denied_plan_decision = record.clone();
+    denied_plan_decision.decision = "DENY".into();
+    assert!(
+        !crate::planning::license_decision::license_decision_is_active_accepted(
+            &denied_plan_decision
+        )
+    );
     let overlay = verify_license_decision_overlay(&record, &context(now))
         .expect("the exact active decision is deliverable");
     let json = overlay.to_json();

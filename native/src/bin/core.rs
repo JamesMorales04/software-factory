@@ -13548,20 +13548,45 @@ async fn freeze_reviewed_environment(
         .await
         .ok()
         .map(|config| std::path::PathBuf::from(config.repository));
-    let has_active_license_decision = app
+    // Only a decision for the exact current plan may gate this build. A
+    // historical decision for a previous revision is not authority for the new
+    // plan; the full overlay verifier still validates every matching decision.
+    let plan_decisions = app
         .db
         .license_decisions(&record.project_id)
         .await
         .unwrap_or_default()
+        .into_iter()
+        .filter(|decision| {
+            factory_native::planning::license_decision::license_decision_matches_plan(
+                decision,
+                &record.lead_request_id,
+                &plan.plan_sha256,
+                plan.revision,
+            )
+        })
+        .collect::<Vec<_>>();
+    let has_license_decision_for_plan = !plan_decisions.is_empty();
+    let active_plan_decisions = plan_decisions
         .iter()
-        .any(|decision| {
-            decision.lead_request_id == record.lead_request_id
-                && decision.status == "ACTIVE"
-                && decision.decision == "ACCEPT"
-                && decision.revoked_at.is_none()
-        });
+        .filter(|decision| {
+            factory_native::planning::license_decision::license_decision_is_active_accepted(
+                decision,
+            )
+        })
+        .collect::<Vec<_>>();
+    if has_license_decision_for_plan && active_plan_decisions.is_empty() {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "a licence decision exists for the current plan but is not active and accepted",
+                "code": "LICENSE_DECISION_STALE",
+            })),
+        )
+            .into_response());
+    }
     let mut license_decisions = Vec::new();
-    if has_active_license_decision {
+    if has_license_decision_for_plan {
         let stored_receipt = app
             .db
             .latest_identity_facts_receipt(&plan.plan_sha256)
@@ -13618,19 +13643,7 @@ async fn freeze_reviewed_environment(
             )
                 .into_response()
         })?;
-        for decision in app
-            .db
-            .license_decisions(&record.project_id)
-            .await
-            .unwrap_or_default()
-        {
-            if decision.lead_request_id != record.lead_request_id
-                || decision.status != "ACTIVE"
-                || decision.decision != "ACCEPT"
-                || decision.revoked_at.is_some()
-            {
-                continue;
-            }
+        for decision in active_plan_decisions {
             let delegation_revoked = app
                 .db
                 .license_delegation_revoked(&decision.delegation_id)
@@ -13652,7 +13665,7 @@ async fn freeze_reviewed_environment(
                 };
             let verified =
                 factory_native::planning::license_decision::verify_license_decision_overlay(
-                    &decision, &context,
+                    decision, &context,
                 )
                 .map_err(|error| {
                     (

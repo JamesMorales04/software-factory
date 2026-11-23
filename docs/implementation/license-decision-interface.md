@@ -91,6 +91,12 @@ text label is diagnostic only. A `GPL-2.0-only` text may support the exact
 or `INVALID` (fail closed) and never approves a licence by name, package family
 or a static GFDL profile allow.
 
+The overlay gate is scoped to the exact current plan identity (`planSha256` and
+`planRevision`). A historical decision for another revision never gates a new
+plan's build/identity step. A decision that does match the current plan but is
+revoked, denied or stale is not treated as absent: it still requires the exact
+identity receipt and fails closed through the full overlay verifier.
+
 Office parity impact: **none**. This is an internal Core-to-builder receipt. No
 Office route, control, label, state, projection or user action changes; the
 existing licence-decision audit surface continues to read the Core decision
