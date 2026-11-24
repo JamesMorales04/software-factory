@@ -72,6 +72,21 @@ RUN nix profile install --profile /home/factory/.nix-profile \
     && cargo --version \
     && python3 --version
 
+# Exact Run10 substrate packages required by the reviewed stdenv/hook
+# composition. They are normal cache.nixos.org paths (signatures verified by
+# Nix); no allowlist, source-origin table or invented reference participates.
+RUN nix copy --from https://cache.nixos.org \
+      /nix/store/rwyj9q50lxgg2krci51hr7afiql2p8km-gnu-config-2024-01-01 \
+      /nix/store/4zpfjm2r6chc8b10c1xa1d6asy100sqv-file-5.45 \
+      /nix/store/5wf9wpdkxs30811kfgkicn9i3nz9jhsh-patchelf-0.15.0 \
+      /nix/store/jangxddrzycnc2rl1wc1sqhqp26yrx4k-patch-2.7.6 \
+      /nix/store/xpsgmdsqym0ydx6hkvpxrp6174s4fwbl-gnumake-4.4.1 \
+    && nix path-info /nix/store/rwyj9q50lxgg2krci51hr7afiql2p8km-gnu-config-2024-01-01 \
+      /nix/store/4zpfjm2r6chc8b10c1xa1d6asy100sqv-file-5.45 \
+      /nix/store/5wf9wpdkxs30811kfgkicn9i3nz9jhsh-patchelf-0.15.0 \
+      /nix/store/jangxddrzycnc2rl1wc1sqhqp26yrx4k-patch-2.7.6 \
+      /nix/store/xpsgmdsqym0ydx6hkvpxrp6174s4fwbl-gnumake-4.4.1 >/dev/null
+
 # Chromium is the generic browser runtime. Project Playwright environments
 # still provide their own matching playwright-driver browsers from the frozen
 # plan; this binary is only the Factory-owned runner target.

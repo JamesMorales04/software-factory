@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "observation": {
+    "schemaVersion": 1,
+    "planSha256": "45f74096950806f7797aac1f191173d80ed7c8f569ff36042258fa85c5171ab1",
+    "specSha256": "",
+    "storePath": "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1",
+    "closureManifestSha256": "294060511213ba226bb3687e28ad65650d8058e4b60fab50157ba19d2ad46d8c",
+    "status": "REALISED"
+  },
+  "canonicalJson": "{\"closureManifestSha256\":\"294060511213ba226bb3687e28ad65650d8058e4b60fab50157ba19d2ad46d8c\",\"planSha256\":\"45f74096950806f7797aac1f191173d80ed7c8f569ff36042258fa85c5171ab1\",\"schemaVersion\":1,\"specSha256\":\"\",\"status\":\"REALISED\",\"storePath\":\"/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1\"}\n",
+  "resolutionKey": "645a31aaaa997b55cc63278c5b4f691b5ad8f87895530d98642797d6683ca199"
+}

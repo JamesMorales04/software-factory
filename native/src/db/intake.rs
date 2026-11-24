@@ -3094,7 +3094,8 @@ mod tests {
             "opencode",
             "deepseek-v4.1-flash",
             "build",
-        );
+        )
+        .expect("validated work graph units");
         let plan_record = db
             .save_agentic_participant_plan(&request.id, Some(&graph.graph_sha256), &plan)
             .await
@@ -3272,6 +3273,12 @@ mod tests {
         let policy = create_policy(&db, &profile, &config).await;
         let _ = policy;
         let request = create_request(&db, &profile, "skill-request").await;
+        // Fixture dates are relative to the test clock. A hardcoded expiry
+        // would silently turn this trust-gate test into an expired-skill test
+        // as wall time advances; this does not extend any product policy.
+        let fixture_now = chrono::Utc::now();
+        let created_at = (fixture_now - chrono::Duration::days(1)).to_rfc3339();
+        let expires_at = (fixture_now + chrono::Duration::days(30)).to_rfc3339();
         let pack = crate::knowledge::KnowledgePack {
             library: "chrono".into(),
             library_id: "/chronotope/chrono".into(),
@@ -3285,7 +3292,7 @@ mod tests {
                 benchmark_score: Some(77.3),
             }],
             pack_sha256: String::new(),
-            fetched_at: "2026-11-09T00:00:00Z".into(),
+            fetched_at: created_at.clone(),
         }
         .seal();
         let saved = db
@@ -3302,8 +3309,8 @@ mod tests {
         let manifest = crate::knowledge::derive_skill_manifest(
             &pack,
             &["rust".into()],
-            "2026-11-09T00:00:00Z",
-            "2026-11-16T00:00:00Z",
+            &created_at,
+            &expires_at,
         )
         .unwrap();
         let skill = db

@@ -1,0 +1,10 @@
+{
+  "schemaRevision": 1,
+  "candidateCommitSha": "dddddddddddddddddddddddddddddddddddddddd",
+  "candidateTreeSha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "actionSpecSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "verdict": "approve",
+  "summary": "The deterministic Compose fixture satisfies the frozen objective.",
+  "confidence": 90,
+  "findings": []
+}

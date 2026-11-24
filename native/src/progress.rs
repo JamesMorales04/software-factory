@@ -1094,6 +1094,70 @@ mod tests {
         assert_eq!(third.stagnant_checkpoints, 0);
     }
 
+    /// Reproduces the E2 generation-2 stagnation with the real progress
+    /// consumer: the deterministic implementer fixture replays the identical
+    /// scripted write after the Worker generation rollover. The artifact is
+    /// already in the work-item history, so it earns no progress, and the next
+    /// checkpoint reaches the frozen Diagnose threshold. The policy is correct;
+    /// a resumed fixture must produce a new artifact (per-session salt) instead
+    /// of replaying the same one.
+    #[test]
+    fn replayed_candidate_after_generation_recovery_reaches_diagnose() {
+        let mut supervisor = supervisor();
+        // Generation 1: read has no evidence, the write is provisional, and the
+        // frozen functional check PASS is verified progress.
+        let read = run(&mut supervisor, "g1-read", &[], None);
+        assert_eq!(read.stagnant_checkpoints, 1);
+        let write = evidence(
+            ProgressKind::CandidateChanged,
+            "provider-candidate",
+            "src/provider.txt",
+            10,
+        );
+        let provisional = run(
+            &mut supervisor,
+            "g1-write",
+            std::slice::from_ref(&write),
+            None,
+        );
+        assert_eq!(
+            provisional.classification,
+            CheckpointClassification::Provisional
+        );
+        let passed = test_evidence(11, "functional", "PASS");
+        let verified = run(
+            &mut supervisor,
+            "g1-check",
+            std::slice::from_ref(&passed),
+            None,
+        );
+        assert_eq!(verified.classification, CheckpointClassification::Verified);
+        assert_eq!(verified.stagnant_checkpoints, 0);
+
+        // Generation 2 restarts the provider process and replays the same script.
+        let read = run(&mut supervisor, "g2-read", &[], None);
+        assert_eq!(read.stagnant_checkpoints, 1);
+        let replay = evidence(
+            ProgressKind::CandidateChanged,
+            "provider-candidate",
+            "src/provider.txt",
+            20,
+        );
+        let diagnosed = run(
+            &mut supervisor,
+            "g2-write",
+            std::slice::from_ref(&replay),
+            None,
+        );
+        assert_eq!(diagnosed.classification, CheckpointClassification::Stagnant);
+        assert_eq!(diagnosed.stagnant_checkpoints, 2);
+        assert_eq!(diagnosed.decision, ContinuationDecision::Diagnose);
+        assert!(
+            !diagnosed.rejected.is_empty(),
+            "a replayed artifact must be rejected: {diagnosed:?}"
+        );
+    }
+
     #[test]
     fn unsuccessful_replan_plus_two_stagnant_checkpoints_escalates() {
         let mut supervisor = supervisor();

@@ -239,6 +239,41 @@ The full contract set (conventions conflict/stale, pin missing, secret,
 sandbox, network, resource, hash mismatch, not frozen, superseded and approval
 codes) is also represented.
 
+### 3.1 Bounded diagnostics preserve the primary cause
+
+A builder command may emit a long diagnostic stream before its final `error:`
+line. `EnvironmentError` keeps its 1,000-character public bound, but a truncated
+message retains a bounded head **and** the trailing cause, separated by an
+explicit `… [truncated] …` marker, rather than keeping only the first 1,000
+characters. The stable `EnvironmentBlockerCode` remains the primary
+identifier; the bounded message is diagnostic text, not authority. This does not
+copy raw stdout, secrets, prompts or source bodies into telemetry and does not
+add a new endpoint, log artifact or durability promise. The builder's own
+bounded build/resolve log remains its diagnostic channel.
+
+A signal-terminated builder process is not automatically a resource limit.
+`SIGKILL` is an `ENVIRONMENT_RESOURCE_LIMIT` only when the cgroup's `oom_kill`
+counter increments (or an explicit resource contract says so); `SIGKILL` without
+that evidence, `SIGTERM`, `SIGSEGV`, `SIGABRT` and unknown signals are
+`ENVIRONMENT_BUILD_FAILED` with the signal and never a licence conclusion. The
+persistent cache is purged only for a storage/cache over-budget or a proven
+cache/filesystem failure, not for a memory OOM, crash or cancellation. The
+builder validates the closure licence only after independently observing each
+path; an unresolved path remains `ENVIRONMENT_LICENSE_UNKNOWN`.
+
+### 3.2 Operation deadlines are not run deadlines
+
+`EnvironmentPlan.resources.timeoutSecs` (default 1800, minimum 30, maximum
+7200) is the builder's **per-operation** timeout. It is not a request or run
+total. Core's broker client and the runtime broker do not derive an aggregate
+request deadline from it: an environment resolve/build may perform many bounded
+operations over a long HTTP request. Connection and control timeouts remain
+short (the runtime broker control client keeps 60 s with a 10 s connect bound;
+dependency/check operations retain their explicit bounds). The detached
+operation task keeps the existing cleanup guard and startup epoch sweep;
+explicit check cancellation and its bounds are unchanged. This change grants no
+additional authority, credential, budget or sandbox capability.
+
 ## 4. Builder interface for WP1-B
 
 WP1-B supplies the containerized Nix/devenv builder and Node/Playwright runtime.
@@ -359,8 +394,15 @@ before any assignment.
 - `cargo test -p factory-native --bin factory-verifier` — 11 passed.
 - `cargo test -p factory-native --bin factory-runtime-broker` — 75 passed.
 - `cargo test -p factory-native --bin factory-supervisor` — 14 passed.
-- `python3 -W error::ResourceWarning -m unittest discover -s
-  deploy/environment-builder/tests` — 87 tests OK.
+- Builder diagnostic suite: from `deploy/environment-builder`,
+  `python3 -m unittest tests.test_builder` — 88/88 passed in the canonical
+  builder image. The full directory
+  (`PYTHONPATH=deploy/environment-builder python3 -m unittest discover -s
+  deploy/environment-builder/tests` from the repository root) discovers 113
+  tests; six pre-existing layout-dependent tests (`test_paths`,
+  `test_disk_budget`, `test_wrapper`) fail in the read-only evidence checkout
+  and are identical on the parent. The older 87-test discovery line was a
+  historical checkpoint.
 - `scripts/environment-builder-real-resolve-smoke.sh` — real Nix resolution
   against the pinned nixpkgs passed: `real-nix-resolve: PASS packages=1
   closure=24`.

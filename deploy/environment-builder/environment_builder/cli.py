@@ -10,6 +10,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -41,6 +42,7 @@ from .nix import (
 from .policy import (
     MAX_ENVIRONMENT_FILE_BYTES,
     NIXPKGS_PREFIX,
+    SOURCE_LICENSE_ORIGINS,
     reject_computed_nixpkgs_import,
     reject_dynamic_config_ast,
     validate_check,
@@ -62,11 +64,14 @@ from .policy import (
     validate_workspace_paths,
 )
 from .receipt import build_receipt, observe_attestation
+from .license_decision import LicenseDecisionError, validate_license_decision_receipt
 from .sbom import build_sbom, license_inventory_copy, sbom_sha256, sbom_text
 from .util import (
+    canonical_json,
     last_nonempty_line,
     now_rfc3339,
     read_json,
+    redact,
     sha256_text,
     tail,
     write_json,
@@ -225,6 +230,13 @@ def _write_failure(
         )
 
 
+def _with_license_decisions(request: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    decisions = request.get("licenseDecisions")
+    if isinstance(decisions, list) and decisions:
+        return {**plan, "licenseDecisions": decisions}
+    return plan
+
+
 def build(args: argparse.Namespace) -> int:
     started = time.monotonic()
     request = _load_request(args.request)
@@ -238,6 +250,7 @@ def build(args: argparse.Namespace) -> int:
         spec, plan, files, resources, actual_nix, digest, frozen_sbom_sha256 = _validate_request(
             request, source_workspace
         )
+        plan = _with_license_decisions(request, plan)
         phase = args.phase
         if phase not in ("fetch", "build"):
             fail("ENVIRONMENT_SPEC_INVALID", "phase must be fetch or build")
@@ -292,6 +305,7 @@ def build(args: argparse.Namespace) -> int:
                 resources["timeoutSecs"],
                 log,
             )
+            license_root = root
             if plan.get("source") == "GENERATED":
                 license_manifest = (
                     closure_manifest(
@@ -306,20 +320,24 @@ def build(args: argparse.Namespace) -> int:
                 license_root = profile or root
                 license_manifest = closure_manifest(license_root)
                 exclude_paths = {license_root}
-            closure_licenses = _closure_license_entries(
-                plan,
-                license_manifest,
-                child_environment(
-                    build_workspace,
-                    run_dir,
-                    offline=phase == "build",
-                    resources=resources,
-                    proxy=proxy if phase == "fetch" else None,
-                ),
-                resources["timeoutSecs"],
-                log,
-                exclude=exclude_paths,
-            )
+            try:
+                closure_licenses = _closure_license_entries(
+                    plan,
+                    license_manifest,
+                    child_environment(
+                        build_workspace,
+                        run_dir,
+                        offline=phase == "build",
+                        resources=resources,
+                        proxy=proxy if phase == "fetch" else None,
+                    ),
+                    resources["timeoutSecs"],
+                    log,
+                    exclude=exclude_paths,
+                )
+            except BuilderError:
+                _write_realisation(run_dir, plan, spec, license_root, license_manifest)
+                raise
             output_sha = environment_digest(
                 spec["specSha256"], spec["platform"], root, manifest, frozen_sbom_sha256
             )
@@ -618,13 +636,94 @@ def _package_metadata(
     return result
 
 
+NESTED_PACKAGE_SET_NAMES: tuple[str, ...] = (
+    "python312Packages",
+    "python311Packages",
+    "python3Packages",
+    "nodePackages",
+)
+#: Evaluate a bounded slice of top-level nixpkgs attributes per Nix process.
+#: A 1,000-attribute slice stayed below the 4 GiB builder budget in the measured
+#: repro; the full 24,882-attribute set exceeded even 8 GiB.
+CLOSURE_TOP_LEVEL_BATCH = 1_000
+
+
+def _selected_package_set_names(plan: dict[str, Any]) -> list[str]:
+    """Return the nested nixpkgs sets implied by the selected plan packages.
+
+    The attribute path is evidence from the plan, not a licence lookup by
+    package name: a selected ``python312Packages.fastapi`` explicitly says that
+    the Python 3.12 package set is in scope. Toolchains are a secondary hint.
+    """
+    selected: list[str] = []
+    packages = plan.get("packages", [])
+    if isinstance(packages, list):
+        for package in packages:
+            if not isinstance(package, dict):
+                continue
+            attr = str(package.get("attr", "")).strip()
+            prefix, _, remainder = attr.partition(".")
+            if remainder and prefix in NESTED_PACKAGE_SET_NAMES:
+                selected.append(prefix)
+    toolchains = plan.get("toolchains", [])
+    if isinstance(toolchains, list):
+        for toolchain in toolchains:
+            if not isinstance(toolchain, dict):
+                continue
+            identifier = str(toolchain.get("id", "")).strip().lower()
+            version = str(toolchain.get("version", "")).strip()
+            if "python" in identifier:
+                if version.startswith("3.12"):
+                    selected.append("python312Packages")
+                elif version.startswith("3.11"):
+                    selected.append("python311Packages")
+                elif version.startswith("3."):
+                    selected.append("python3Packages")
+            if identifier in ("node", "nodejs") or "node" in identifier:
+                selected.append("nodePackages")
+    return sorted(set(selected))
+
+
 def _closure_metadata_expression(
-    nixpkgs_pin: str, closure_paths: list[str]
+    nixpkgs_pin: str,
+    closure_paths: list[str],
+    *,
+    names: list[str] | None = None,
+    package_sets: list[str] | None = None,
 ) -> str:
+    return _nixpkgs_expression_prefix(nixpkgs_pin) + _closure_metadata_body(
+        closure_paths, names=names, package_sets=package_sets
+    )
+
+
+def _closure_metadata_body(
+    closure_paths: list[str],
+    *,
+    names: list[str] | None = None,
+    package_sets: list[str] | None = None,
+) -> str:
+    """Return the pure matching body bound to ``pkgs``.
+
+    Kept separate from the pinned-nixpkgs prefix so a test can evaluate the
+    real matching logic against a synthetic attrset without network or a store.
+    ``names`` and ``package_sets`` scope one invocation to a bounded slice; the
+    default preserves the full traversal for callers that need it.
+    """
     wanted_json = json.dumps(closure_paths)
-    return (
-        _nixpkgs_expression_prefix(nixpkgs_pin)
-        + f"""  wanted = builtins.fromJSON {json.dumps(wanted_json)};
+    names_expression = (
+        "builtins.attrNames pkgs"
+        if names is None
+        else "builtins.fromJSON " + json.dumps(json.dumps(names))
+    )
+    if package_sets is None:
+        package_sets = list(NESTED_PACKAGE_SET_NAMES)
+    if package_sets:
+        nested_expression = "safePackageSet " + "\n    ++ safePackageSet ".join(
+            json.dumps(name) for name in package_sets
+        )
+    else:
+        nested_expression = "[ ]"
+    return f"""  wanted = builtins.fromJSON {json.dumps(wanted_json)};
   licenseOf = p:
     if (p ? meta) && (p.meta ? license) then
       (if builtins.isList p.meta.license then
@@ -636,16 +735,36 @@ def _closure_metadata_expression(
     if (p ? meta) && (p.meta ? unfree) then p.meta.unfree
     else if (p ? meta) && (p.meta ? license) then
       (if builtins.isList p.meta.license then
-        !(lib.all (l: if builtins.isAttrs l then (l.free or true) else true) p.meta.license)
+        !(builtins.all (l: if builtins.isAttrs l then (l.free or true) else true) p.meta.license)
        else if builtins.isAttrs p.meta.license then !(p.meta.license.free or true)
        else false)
     else false;
-  names = builtins.attrNames pkgs;
+  # Presence of an attribute set does not imply that its value is evaluable:
+  # nixpkgs keeps end-of-life aliases that throw. A throwing set must not abort
+  # metadata for every environment; the required plan packages are evaluated
+  # separately and still fail closed, and an unresolved closure path still
+  # fails closed below.
+  safePackageSet = name:
+    if pkgs ? ${{name}} then
+      let attempt = builtins.tryEval pkgs.${{name}};
+      in if attempt.success && builtins.isAttrs attempt.value then [ attempt.value ] else []
+    else [];
+  nestedPackageSets =
+    {nested_expression};
+  names = {names_expression};
   candidates = builtins.concatMap
     (name:
       let attempt = builtins.tryEval pkgs.${{name}};
       in if attempt.success && builtins.isAttrs attempt.value then [ attempt.value ] else [])
-    names;
+    names
+    ++ builtins.concatMap
+      (set:
+        builtins.concatMap
+          (name:
+            let attempt = builtins.tryEval set.${{name}};
+            in if attempt.success && builtins.isAttrs attempt.value then [ attempt.value ] else [])
+          (builtins.attrNames set))
+      nestedPackageSets;
   candidatesWithUnwrapped = builtins.concatMap
     (p:
       if (p ? unwrapped) && builtins.isAttrs p.unwrapped && (p.unwrapped ? outPath)
@@ -663,14 +782,39 @@ in map (p: {{
   (builtins.filter
     (p:
       let attempt = builtins.tryEval (
-        (p ? outPath) && lib.any
+        (p ? outPath) && builtins.any
           (output: builtins.elem output wanted)
           (if p ? outputs then map (name: p.${{name}}.outPath) p.outputs else [ p.outPath ])
       );
       in attempt.success && attempt.value)
     candidatesWithUnwrapped)
 """
+
+
+def _package_attribute_names(
+    nixpkgs_pin: str,
+    *,
+    environment: dict[str, str],
+    timeout: int,
+    log: BuildLog,
+) -> list[str]:
+    """Return the top-level nixpkgs attribute names without forcing packages."""
+    expression = _nixpkgs_expression_prefix(nixpkgs_pin) + "in builtins.attrNames pkgs"
+    observed = nix_eval_json(
+        expression,
+        env=environment,
+        timeout=timeout,
+        log=log,
+        failure_code="ENVIRONMENT_BUILD_FAILED",
     )
+    if not isinstance(observed, list) or not all(
+        isinstance(name, str) for name in observed
+    ):
+        fail(
+            "ENVIRONMENT_BUILD_FAILED",
+            "the package attribute enumeration returned an invalid list",
+        )
+    return observed
 
 
 def _verify_command_executables(
@@ -786,12 +930,111 @@ REVIEWED_SUBSTRATE_IDENTITIES: dict[
         ): {"name": "nix", "version": "2.28.3", "license": "LGPL-2.1-only"},
     }
 }
-# Exact reviewed deriver-less helper identities. Devenv materialises strip.sh
-# without a deriver; any other deriver-less path fails closed.
-REVIEWED_DERIVERLESS_HELPERS: frozenset[str] = frozenset(
-    {
-        "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
-    }
+# Merge the exact source-licence origins into the existing reviewed substrate
+# map. Keys are exact (pin, deriver, store_path); no name or wildcard match.
+for _origin_pin, _origin_entries in SOURCE_LICENSE_ORIGINS.items():
+    REVIEWED_SUBSTRATE_IDENTITIES.setdefault(_origin_pin, {}).update(_origin_entries)
+
+# Exact approved deriver-less helper identities, scoped to one nixpkgs pin.
+# Each non-legacy identity binds the full store path, NAR hash and the
+# sorted referrer-set hash observed in the reviewed inventory. Legacy
+# entries keep their existing path-only acceptance. No suffix, pattern or
+# plan-provided identity is accepted.
+APPROVED_HELPER_IDENTITIES: dict[str, dict[str, dict[str, Any]]] = {
+    "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d": {
+        "/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh": {
+            "name": "move-docs.sh",
+            "narHash": "sha256-LFXKr+/5UKMCEYyEpyotSs23Xr0Vwhzlv6YGyO/dqzI=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": True,
+        },
+        "/nix/store/cickvswrvann041nqxb0rxilc46svw1n-prune-libtool-files.sh": {
+            "name": "prune-libtool-files.sh",
+            "narHash": "sha256-0DC4P4/oI7F2AJ/9K6MUMNP818Ol4i+fvpJt3D2HyJs=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/cmzya9irvxzlkh7lfy6i82gbp0saxqj3-multiple-outputs.sh": {
+            "name": "multiple-outputs.sh",
+            "narHash": "sha256-9xd9l6/GeN1DX0xqIZtdJltbBaUBOAJAuFIlvdduqRc=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/fyaryjvghbkpfnsyw97hb3lyb37s1pd6-move-lib64.sh": {
+            "name": "move-lib64.sh",
+            "narHash": "sha256-SDQRJiS2AfWlONR8W8dEGuNPeLET7IuPLOm5vQBh2C0=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/h9lc1dpi14z7is86ffhl3ld569138595-audit-tmpdir.sh": {
+            "name": "audit-tmpdir.sh",
+            "narHash": "sha256-tMYdNz2xetDsQK1FEy3126+UqdkB8cXN4l/Zgbv3tm0=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/hxv896faph0rqxjq2ycxpcrbnngc95sz-patch-shebangs.sh": {
+            "name": "patch-shebangs.sh",
+            "narHash": "sha256-TRd6N2KO74qqyBQxi1ihprZTMcgR6eAw5Z+HxpwF9Tc=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/jjhw2phnaip4kg0qjas3x3fsaifi8y0w-no-broken-symlinks.sh": {
+            "name": "no-broken-symlinks.sh",
+            "narHash": "sha256-/t5eWNc5nQI9BbgQQFRVf4dy5Ph0lNq7fK24H8Pmjxc=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/kd4xwxjpjxi71jkm6ka0np72if9rm3y0-move-sbin.sh": {
+            "name": "move-sbin.sh",
+            "narHash": "sha256-exQDue2oXLDKVrh7CiPpj7WjA5qhZfskrLzpYkAFiy0=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/m54bmrhj6fqz8nds5zcj97w9s9bckc9v-compress-man-pages.sh": {
+            "name": "compress-man-pages.sh",
+            "narHash": "sha256-nvkpux1XBRA6JnXeEphB25xVbHKTz1bkBF3/K7HGbU0=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/pag6l61paj1dc9sv15l7bm5c17xn5kyk-move-systemd-user-units.sh": {
+            "name": "move-systemd-user-units.sh",
+            "narHash": "sha256-ApvZCwlSSuSA6bGuBQGi+EIncpLHju2Uhro27Mb8wMA=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh": {
+            "name": "strip.sh",
+            "narHash": "sha256-/kocrQCaIGEh7zh26MuHLTtmIp5yJylHriY/yVFhPk4=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": True,
+        },
+        "/nix/store/wgrbkkaldkrlrni33ccvm3b6vbxzb656-make-symlinks-relative.sh": {
+            "name": "make-symlinks-relative.sh",
+            "narHash": "sha256-M5wxSjy928eIoBBePFKFPVHxbvVNJaOSHGej8zueD0A=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/xyff06pkhki3qy1ls77w10s0v79c9il0-reproducible-builds.sh": {
+            "name": "reproducible-builds.sh",
+            "narHash": "sha256-9TquSNTf3+sENOwMmBFmniGPTzbIX9Sn2PFfuJ4i0UA=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+        "/nix/store/z7k98578dfzi6l3hsvbivzm7hfqlk0zc-set-source-date-epoch-to-latest.sh": {
+            "name": "set-source-date-epoch-to-latest.sh",
+            "narHash": "sha256-O6Gjn5FQzTLFmOLmXU5J4i6ei4gvLK7fo6vA+C0lmn0=",
+            "referrerSetSha256": "9411af48f577acf385c1fa31f48899276d4c97aed7575cbc3efb9cf951636949",
+            "legacy": False,
+        },
+    },
+}
+# Legacy path-only identities stay accepted exactly as before, independent of
+# the pin. New identities never fall back to path-only acceptance.
+LEGACY_HELPER_PATHS: frozenset[str] = frozenset(
+    path
+    for identities in APPROVED_HELPER_IDENTITIES.values()
+    for path, identity in identities.items()
+    if identity.get("legacy") is True
 )
 STORE_NAME_VERSION = re.compile(r"^([A-Za-z0-9_+.-]+?)-(\d.*)$")
 
@@ -829,6 +1072,379 @@ def _reviewed_substrate_identity(
     return {"path": path, **identity, "unfree": False}
 
 
+CLOSURE_LICENSE_INVENTORY_FILE = "closure-license-inventory.json"
+#: The broker reads at most 64 KiB from the cache volume before cleanup. Reserve
+#: room for the header; a larger inventory is still written to the file/log but
+#: is explicitly marked as a partial capture, never silently complete.
+CLOSURE_LICENSE_CAPTURE_BYTES = 60 * 1024
+
+
+def _closure_license_value(value: Any) -> Any:
+    return redact(value) if isinstance(value, str) else value
+
+
+def _closure_license_id(violation: dict[str, Any]) -> str:
+    name = str(violation.get("name") or "").strip()
+    version = str(violation.get("version") or "").strip()
+    if name or version:
+        return f"{name}@{version}"
+    return f"index:{violation.get('index')}"
+
+
+def _closure_license_violation(
+    entry: Any, index: int
+) -> dict[str, Any] | None:
+    """Return one typed violation for any closure entry, if it has one."""
+    try:
+        validate_closure_licenses([entry])
+    except BuilderError as error:
+        violation: dict[str, Any] = {
+            "index": index,
+            "code": error.code,
+            "message": redact(error.message),
+        }
+        if isinstance(entry, dict):
+            violation.update(
+                {
+                    "path": _closure_license_value(entry.get("path")),
+                    "name": _closure_license_value(entry.get("name")),
+                    "version": _closure_license_value(entry.get("version")),
+                    "versionState": entry.get("versionState", "known"),
+                    "license": _closure_license_value(entry.get("license")),
+                    "unfree": entry.get("unfree"),
+                }
+            )
+        else:
+            violation["entryType"] = "non-object"
+        return violation
+    return None
+
+
+def _closure_license_inventory_entry(entry: Any, index: int) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        return {"index": index, "entryType": "non-object"}
+    return {
+        "index": index,
+        "path": _closure_license_value(entry.get("path")),
+        "name": _closure_license_value(entry.get("name")),
+        "version": _closure_license_value(entry.get("version")),
+        "versionState": entry.get("versionState", "known"),
+        "license": _closure_license_value(entry.get("license")),
+        "unfree": entry.get("unfree"),
+    }
+
+
+REALISATION_FILE = "realisation.json"
+
+
+def _write_realisation(
+    run_dir: Path,
+    plan: dict[str, Any],
+    spec: dict[str, Any] | None,
+    observed_root: str,
+    manifest: list[dict[str, Any]],
+) -> None:
+    """Bounded non-authority pointer: the broker re-observes and signs facts."""
+    write_json(
+        run_dir / REALISATION_FILE,
+        {
+            "schemaVersion": 1,
+            "planSha256": str(plan.get("planSha256", "")),
+            "specSha256": str((spec or {}).get("specSha256", "")),
+            "storePath": observed_root,
+            "closureManifestSha256": closure_manifest_sha256(manifest),
+            "status": "REALISED",
+        },
+    )
+
+
+def _validate_closure_licenses_reporting_all(
+    entries: list[dict[str, Any]], log: BuildLog
+) -> list[dict[str, Any]]:
+    """Validate fail-closed and retain every entry and every offender.
+
+    The real validator runs first and its original typed code is re-raised, so
+    the gate result and precedence (unfree/denied/unknown) do not change. The
+    complete inventory is written to the existing builder log directory and to
+    ``resolve.log`` before raising; the broker reads the file/log before
+    cleanup. If the 64 KiB broker capture cannot contain the full list, the
+    blocker says so with the expected/observed counts instead of claiming
+    completeness.
+    """
+    try:
+        return validate_closure_licenses(entries)
+    except BuilderError as error:
+        inventory = [
+            _closure_license_inventory_entry(entry, index)
+            for index, entry in enumerate(entries)
+        ]
+        violations = [
+            violation
+            for index, entry in enumerate(entries)
+            if (violation := _closure_license_violation(entry, index)) is not None
+        ]
+        expected = len(entries)
+        observed = len(inventory)
+        ids = sorted({_closure_license_id(violation) for violation in violations})
+        licenses = sorted(
+            {
+                str(violation["license"])
+                for violation in violations
+                if violation.get("license") is not None
+            }
+        )
+        payload: dict[str, Any] = {
+            "schemaVersion": 1,
+            "source": "builder-closure-metadata",
+            "expected": expected,
+            "observed": observed,
+            "complete": observed == expected,
+            "violationCount": len(violations),
+            "ids": ids,
+            "licenses": licenses,
+            "entries": inventory,
+            "violations": violations,
+            "errorCode": error.code,
+            "errorMessage": redact(error.message),
+        }
+        # The broker reads the pretty JSON file from the cache volume before
+        # cleanup. Reserve the 64 KiB read bound; compact log text is separate.
+        payload_without_capture = json.dumps(payload, indent=2, sort_keys=True)
+        capture_complete = (
+            len(payload_without_capture.encode("utf-8")) <= CLOSURE_LICENSE_CAPTURE_BYTES
+        )
+        payload["captureComplete"] = capture_complete
+        payload["captureReason"] = (
+            ""
+            if capture_complete
+            else "inventory exceeds the 60 KiB broker capture bound; header and unique IDs retained"
+        )
+        path = log.path.parent / CLOSURE_LICENSE_INVENTORY_FILE
+        write_json(path, payload)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        compact = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        header = {
+            "schemaVersion": 1,
+            "expected": expected,
+            "observed": observed,
+            "complete": observed == expected,
+            "violationCount": len(violations),
+            "ids": ids,
+            "licenses": licenses,
+            "errorCode": error.code,
+            "file": path.name,
+            "captureComplete": capture_complete,
+        }
+        log.write(
+            "closure-license-inventory: "
+            + json.dumps(header, sort_keys=True)
+            + "\n"
+        )
+        log.write("closure-license-inventory-entries: " + compact + "\n")
+        try:
+            log.path.chmod(0o600)
+        except OSError:
+            pass
+
+        ids_text = ",".join(ids)
+        ids_truncated = len(ids_text) > 400
+        if ids_truncated:
+            ids_text = ids_text[:400] + ",..."
+        licenses_text = ",".join(licenses)
+        licenses_truncated = len(licenses_text) > 200
+        if licenses_truncated:
+            licenses_text = licenses_text[:200] + ",..."
+        prefix = (
+            f"{len(violations)} closure license violations"
+            if violations
+            else "closure inventory check failed"
+        )
+        summary = (
+            f"{prefix}; ids={ids_text or 'none'}; "
+            f"licenses={licenses_text or 'none'}; expected={expected} "
+            f"observed={observed}; inventory={path.name}; "
+            f"capture={'complete' if capture_complete else 'partial'}"
+        )
+        if ids_truncated:
+            summary += "; idsTruncated=true"
+        if licenses_truncated:
+            summary += "; licensesTruncated=true"
+        if not capture_complete:
+            summary += "; " + payload["captureReason"]
+        raise BuilderError(
+            error.code,
+            f"{summary}; first: {error.message}",
+        ) from error
+
+
+MAX_HELPER_MESSAGE_CHARS = 900
+
+
+def _helper_referrer_set_sha256(manifest: list[dict[str, Any]], path: str) -> str:
+    referrers = sorted(
+        str(entry.get("path", ""))
+        for entry in manifest
+        if isinstance(entry, dict) and path in (entry.get("references") or [])
+    )
+    return sha256_text(canonical_json(referrers))
+
+
+def _helper_candidate(
+    manifest: list[dict[str, Any]],
+    entry: dict[str, Any],
+    *,
+    is_regular_file: Any = os.path.isfile,
+) -> dict[str, Any]:
+    path = str(entry.get("path", ""))
+    return {
+        "storePath": path,
+        "narHash": str(entry.get("narHash", "")),
+        "narSize": int(entry.get("narSize", 0) or 0),
+        "referrerSetSha256": _helper_referrer_set_sha256(manifest, path),
+        "regularFile": bool(is_regular_file(path)) and not os.path.islink(path),
+    }
+
+
+def _classify_deriverless_helpers(
+    pin: str,
+    manifest: list[dict[str, Any]],
+    *,
+    exclude: set[str] | None = None,
+    is_regular_file: Any = os.path.isfile,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Split deriver-less paths into approved identities and rejected facts.
+
+    The approved catalog is exact: pin, store path, NAR hash and the sorted
+    referrer-set hash. Legacy entries keep their existing path-only acceptance.
+    Nothing from the plan or workspace can add an identity.
+    """
+
+    approved: list[str] = []
+    rejected: list[dict[str, Any]] = []
+    identities = APPROVED_HELPER_IDENTITIES.get(pin, {})
+    for entry in manifest:
+        if not isinstance(entry, dict):
+            continue
+        path = str(entry.get("path", ""))
+        if path in (exclude or set()):
+            continue
+        deriver_value = entry.get("deriver")
+        deriver = str(deriver_value).strip() if deriver_value is not None else ""
+        if deriver:
+            continue
+        if path in LEGACY_HELPER_PATHS:
+            approved.append(path)
+            continue
+        candidate = _helper_candidate(manifest, entry, is_regular_file=is_regular_file)
+        identity = identities.get(path)
+        if identity is not None and (
+            candidate["narHash"] == identity.get("narHash")
+            and candidate["referrerSetSha256"] == identity.get("referrerSetSha256")
+            and candidate["regularFile"] is True
+        ):
+            approved.append(path)
+            continue
+        rejected.append(candidate)
+    return approved, rejected
+
+
+def _approved_identity_deriver_conflicts(
+    pin: str,
+    manifest: list[dict[str, Any]],
+    *,
+    exclude: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Reject an approved new identity that arrives with a non-empty deriver.
+
+    A package path that happens to equal an approved helper path must not fall
+    through to package/license classification as if it were a different
+    identity. Legacy entries keep their previous path-only treatment.
+    """
+
+    conflicts: list[dict[str, Any]] = []
+    identities = APPROVED_HELPER_IDENTITIES.get(pin, {})
+    for entry in manifest:
+        if not isinstance(entry, dict):
+            continue
+        path = str(entry.get("path", ""))
+        if path in (exclude or set()):
+            continue
+        identity = identities.get(path)
+        if identity is None or identity.get("legacy") is True:
+            continue
+        deriver_value = entry.get("deriver")
+        deriver = str(deriver_value).strip() if deriver_value is not None else ""
+        if not deriver:
+            continue
+        conflicts.append(
+            {
+                "storePath": path,
+                "deriver": deriver,
+                "narHash": str(entry.get("narHash", "")),
+            }
+        )
+    return conflicts
+
+
+def _deriverless_helper_failure(
+    candidates: list[dict[str, Any]], log: BuildLog
+) -> str:
+    """Exhaustive facts through the existing broker capture channel.
+
+    The payload is written to the same ``closure-license-inventory.json`` file
+    the broker already reads from the cache volume before cleanup, so the
+    evidence is retained by an existing mechanism instead of a new one. The
+    cache volume is disposable; what survives is the broker log line carrying
+    the bounded JSON. The blocker message only carries whole entries that fit
+    its contract and states the truncation explicitly.
+    """
+
+    ordered = sorted(candidates, key=lambda candidate: str(candidate["storePath"]))
+    payload: dict[str, Any] = {
+        "schemaVersion": 1,
+        "source": "builder-deriver-less-helpers",
+        "total": len(ordered),
+        "sha256": sha256_text(canonical_json(ordered)),
+        "candidates": ordered,
+    }
+    rendered = json.dumps(payload, indent=2, sort_keys=True)
+    capture_complete = len(rendered.encode("utf-8")) <= CLOSURE_LICENSE_CAPTURE_BYTES
+    payload["captureComplete"] = capture_complete
+    payload["captureReason"] = (
+        ""
+        if capture_complete
+        else "deriver-less helper facts exceed the 60 KiB broker capture bound"
+    )
+    path = log.path.parent / CLOSURE_LICENSE_INVENTORY_FILE
+    write_json(path, payload)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    prefix = (
+        "deriver-less closure paths are not in the exact approved identity catalog; "
+        f"total={payload['total']} "
+        f"sha256={payload['sha256']} captured={CLOSURE_LICENSE_INVENTORY_FILE} "
+        f"captureComplete={'true' if capture_complete else 'false'} "
+    )
+    shown: list[dict[str, Any]] = []
+    for candidate in ordered:
+        attempt = shown + [candidate]
+        body = json.dumps(attempt, sort_keys=True, separators=(",", ":"))
+        if len(prefix) + len(body) + len(" truncated=true") > MAX_HELPER_MESSAGE_CHARS:
+            break
+        shown = attempt
+    truncated = len(shown) < len(ordered)
+    return (
+        prefix
+        + json.dumps(shown, sort_keys=True, separators=(",", ":"))
+        + f" truncated={'true' if truncated else 'false'}"
+    )
+
+
 def _closure_license_entries(
     plan: dict[str, Any],
     manifest: list[dict[str, Any]],
@@ -841,7 +1457,19 @@ def _closure_license_entries(
     pin = str(plan.get("nix", {}).get("nixpkgs", ""))
     if not pin.startswith(NIXPKGS_PREFIX):
         fail("ENVIRONMENT_PIN_MISSING", "the plan has no pinned nixpkgs for closure verification")
+    deriver_conflicts = _approved_identity_deriver_conflicts(
+        pin, manifest, exclude=exclude
+    )
+    if deriver_conflicts:
+        first = deriver_conflicts[0]
+        fail(
+            "ENVIRONMENT_LICENSE_UNKNOWN",
+            "an approved helper identity arrived with a non-empty deriver: "
+            f"{first['storePath']} ({first['deriver']}); "
+            f"total={len(deriver_conflicts)}",
+        )
     substrate_entries: list[dict[str, Any]] = []
+    substrate_paths: set[str] = set()
     paths: set[str] = set()
     for entry in manifest:
         if not isinstance(entry, dict):
@@ -854,29 +1482,121 @@ def _closure_license_entries(
         substrate = _reviewed_substrate_identity(pin, path, deriver)
         if substrate is not None:
             substrate_entries.append(substrate)
+            substrate_paths.add(path)
             continue
-        if not deriver:
-            if path in REVIEWED_DERIVERLESS_HELPERS:
-                continue
-            fail(
-                "ENVIRONMENT_LICENSE_UNKNOWN",
-                f"deriver-less closure path is not a reviewed helper: {path}",
-            )
-        if path:
+        if path and deriver:
             paths.add(path)
+    _approved_helpers, helper_candidates = _classify_deriverless_helpers(
+        pin,
+        manifest,
+        exclude=(exclude or set()) | substrate_paths,
+    )
+    if helper_candidates:
+        fail(
+            "ENVIRONMENT_LICENSE_UNKNOWN",
+            _deriverless_helper_failure(helper_candidates, log),
+        )
     ordered_paths = sorted(paths)
     if not ordered_paths:
         return validate_closure_licenses(substrate_entries)
-    observed = nix_eval_json(
-        _closure_metadata_expression(pin, ordered_paths),
-        env=environment,
-        timeout=timeout,
-        log=log,
-        failure_code="ENVIRONMENT_LICENSE_UNKNOWN",
-    )
-    if not isinstance(observed, list):
-        fail("ENVIRONMENT_LICENSE_UNKNOWN", "closure metadata evaluation did not return a list")
-    observed_entries = [entry for entry in observed if isinstance(entry, dict)]
+    wanted_paths = set(ordered_paths)
+    observed_entries: list[dict[str, Any]] = []
+    seen_entries: set[str] = set()
+    matched_paths: set[str] = set()
+
+    def collect(observed: Any) -> None:
+        if not isinstance(observed, list):
+            fail(
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+                "closure metadata evaluation did not return a list",
+            )
+        for entry in observed:
+            if not isinstance(entry, dict):
+                continue
+            dedupe_key = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+            if dedupe_key in seen_entries:
+                continue
+            seen_entries.add(dedupe_key)
+            observed_entries.append(entry)
+            output_paths = entry.get("outputPaths")
+            if not isinstance(output_paths, list):
+                output_paths = [entry.get("path", "")]
+            for output_path in output_paths:
+                matched_paths.add(str(output_path))
+
+    def evaluate_scope(
+        *, names: list[str] | None, package_sets: list[str] | None
+    ) -> None:
+        try:
+            observed = nix_eval_json(
+                _closure_metadata_expression(
+                    pin, ordered_paths, names=names, package_sets=package_sets
+                ),
+                env=environment,
+                timeout=timeout,
+                log=log,
+                failure_code="ENVIRONMENT_LICENSE_UNKNOWN",
+            )
+        except BuilderError as error:
+            if "wall-clock bound" in error.message:
+                fail(
+                    "ENVIRONMENT_BUILD_TIMEOUT",
+                    "one closure metadata evaluation exceeded the plan's "
+                    f"{timeout}s per-operation timeout",
+                )
+            raise
+        collect(observed)
+
+    # The full nixpkgs universe exceeds the builder's 4 GiB budget (the measured
+    # real traversal was killed at both 4 GiB and 8 GiB). Evaluate only the
+    # nested sets implied by the selected plan packages first; if system paths
+    # remain, traverse the top-level attributes in bounded slices. Each Nix
+    # process exits before the next slice, so no single evaluation holds the
+    # whole universe in memory. The frozen plan's timeout applies to each Nix
+    # operation, not to the aggregate batch loop: a run may take hours.
+    selected_sets = _selected_package_set_names(plan)
+    # Process the sets implied by the plan first, then the remaining known sets
+    # as a correctness fallback for transitive packages from another toolchain.
+    package_sets = selected_sets + [
+        name for name in NESTED_PACKAGE_SET_NAMES if name not in selected_sets
+    ]
+    for package_set in package_sets:
+        if wanted_paths <= matched_paths:
+            break
+        log.write(f"[closure-metadata] package set {package_set}\n")
+        evaluate_scope(names=[], package_sets=[package_set])
+    if not wanted_paths <= matched_paths:
+        try:
+            attribute_names = _package_attribute_names(
+                pin,
+                environment=environment,
+                timeout=timeout,
+                log=log,
+            )
+        except BuilderError as error:
+            if "wall-clock bound" in error.message:
+                fail(
+                    "ENVIRONMENT_BUILD_TIMEOUT",
+                    "package attribute enumeration exceeded the plan's "
+                    f"{timeout}s per-operation timeout",
+                )
+            raise
+        total_batches = max(
+            1,
+            (len(attribute_names) + CLOSURE_TOP_LEVEL_BATCH - 1)
+            // CLOSURE_TOP_LEVEL_BATCH,
+        )
+        for batch_index, start in enumerate(
+            range(0, len(attribute_names), CLOSURE_TOP_LEVEL_BATCH), start=1
+        ):
+            if wanted_paths <= matched_paths:
+                break
+            batch = attribute_names[start : start + CLOSURE_TOP_LEVEL_BATCH]
+            log.write(
+                f"[closure-metadata] top-level batch {batch_index}/{total_batches} "
+                f"names={len(batch)} matched={len(matched_paths)}/{len(wanted_paths)}\n"
+            )
+            evaluate_scope(names=batch, package_sets=[])
     by_path: dict[str, dict[str, Any]] = {}
     for entry in observed_entries:
         output_paths = entry.get("outputPaths")
@@ -894,6 +1614,21 @@ def _closure_license_entries(
         for entry in manifest
         if isinstance(entry, dict)
     }
+    decision_by_path: dict[str, dict[str, Any]] = {}
+    raw_decisions = plan.get("licenseDecisions")
+    if isinstance(raw_decisions, dict):
+        raw_decisions = [raw_decisions]
+    if isinstance(raw_decisions, list):
+        for candidate in raw_decisions:
+            if not isinstance(candidate, dict):
+                fail("ENVIRONMENT_LICENSE_DECISION_INVALID", "a licence decision receipt is not an object")
+            identity = candidate.get("identity")
+            if not isinstance(identity, dict):
+                fail("ENVIRONMENT_LICENSE_DECISION_INVALID", "a licence decision receipt has no identity")
+            output = identity.get("output") if isinstance(identity.get("output"), dict) else {}
+            path = identity.get("outputStorePath") or output.get("storePath")
+            if isinstance(path, str) and path:
+                decision_by_path[path] = candidate
     resolved: list[dict[str, Any]] = []
     for path in ordered_paths:
         observed_entry = by_path.get(path)
@@ -905,6 +1640,22 @@ def _closure_license_entries(
             observed_entry = by_deriver.get(deriver)
         if observed_entry is None:
             deriver = str(manifest_by_path.get(path, {}).get("deriver", "")).strip()
+            decision = decision_by_path.get(path)
+            if decision is not None:
+                try:
+                    identity = validate_license_decision_receipt(decision, plan)
+                except LicenseDecisionError as error:
+                    fail(error.code, error.message)
+                resolved.append(
+                    {
+                        "path": path,
+                        "name": str(identity.get("name", "")),
+                        "version": str(identity.get("version", "")),
+                        "license": str(identity.get("license", "")),
+                        "unfree": False,
+                    }
+                )
+                continue
             reviewed = _reviewed_internal_closure_license(pin, path, deriver)
             if reviewed is not None:
                 resolved.append(reviewed)
@@ -928,7 +1679,7 @@ def _closure_license_entries(
                 "unfree": observed_entry.get("unfree"),
             }
         )
-    return validate_closure_licenses(substrate_entries + resolved)
+    return _validate_closure_licenses_reporting_all(substrate_entries + resolved, log)
 
 
 def resolve(args: argparse.Namespace) -> int:
@@ -1042,14 +1793,21 @@ def resolve(args: argparse.Namespace) -> int:
             # exclude only the exact profile/root wrapper path.
             profile = _environment_profile(build_workspace, run_dir)
             closure_root = profile or root
-            closure_licenses = _closure_license_entries(
-                plan,
-                closure_manifest(closure_root),
-                environment,
-                timeout,
-                log,
-                exclude={closure_root},
-            )
+            closure_manifest_value = closure_manifest(closure_root)
+            try:
+                closure_licenses = _closure_license_entries(
+                    plan,
+                    closure_manifest_value,
+                    environment,
+                    timeout,
+                    log,
+                    exclude={closure_root},
+                )
+            except BuilderError:
+                _write_realisation(
+                    run_dir, plan, None, closure_root, closure_manifest_value
+                )
+                raise
         disk_budget.check()
         resolution = {
             "schemaVersion": SCHEMA_VERSION,
@@ -1126,6 +1884,7 @@ def check(args: argparse.Namespace) -> int:
         spec, plan, files, resources, _actual_nix, _digest, frozen_sbom_sha256 = _validate_request(
             request, source_workspace
         )
+        plan = _with_license_decisions(request, plan)
         validate_fetch_policy(request, plan, "check")
         receipt = _validate_receipt(spec, request.get("receipt"))
         check_spec = validate_check(request.get("check"))

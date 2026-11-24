@@ -12,6 +12,10 @@ use crate::execution::{BoundedOutput, ExecutionError};
 use crate::planning::environment::{
     EnvironmentBuildReceipt, EnvironmentPlan, EnvironmentResolution, EnvironmentSpec,
 };
+use crate::planning::identity_facts::{
+    IdentityFact, IdentityFactsChallenge, IdentityFactsError, IdentityFactsManifest,
+    IdentityFactsMode, IdentityFactsReceipt, MAX_IDENTITY_FACTS, closure_manifest_sha256,
+};
 
 const MAX_ERROR_BYTES: usize = 4096;
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
@@ -362,6 +366,10 @@ pub struct RuntimeBrokerClient {
     token: String,
     owner: ResourceOwner,
     client: reqwest::Client,
+    /// Long-running environment resolve/build calls have no aggregate HTTP
+    /// deadline. The control client above keeps its short timeout for health,
+    /// inventory, cancellation and dependency operations.
+    long_client: reqwest::Client,
 }
 
 impl std::fmt::Debug for RuntimeBrokerClient {
@@ -424,6 +432,10 @@ pub struct ContainerStatus {
 pub enum EnvironmentBrokerOperation {
     Resolve,
     Build,
+    /// Broker-owned observation of the realised store for one exact
+    /// Core-issued identity-facts challenge. It never runs a builder phase and
+    /// never accepts a manifest supplied by the caller.
+    IdentityFacts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -432,6 +444,7 @@ pub enum EnvironmentBuildPhase {
     Resolve,
     Fetch,
     Build,
+    IdentityFacts,
 }
 
 /// One project environment file sent by Core. Generated files are carried in
@@ -462,12 +475,60 @@ pub struct EnvironmentBrokerRequest {
     pub spec: Option<EnvironmentSpec>,
     #[serde(default)]
     pub workspace_files: Vec<EnvironmentWorkspaceFile>,
+    /// Exact Core licence decisions supplied to the builder for this attempt.
+    /// They are an overlay for the builder's closure licence gate; the frozen
+    /// plan hash and workspace files are unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub license_decisions: Vec<serde_json::Value>,
+    /// The Core-issued identity-facts challenge. It is present exactly for an
+    /// `IDENTITY_FACTS` operation; no builder phase may carry one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_facts: Option<IdentityFactsChallenge>,
 }
 
 impl EnvironmentBrokerRequest {
     pub fn validate_shape(&self) -> Result<(), String> {
         if self.schema_version != crate::planning::environment::ENVIRONMENT_SCHEMA_VERSION {
             return Err("unsupported environment broker schema version".into());
+        }
+        match (&self.operation, &self.identity_facts) {
+            (EnvironmentBrokerOperation::IdentityFacts, Some(challenge)) => {
+                challenge
+                    .validate_shape()
+                    .map_err(|error| error.to_string())?;
+                let Some(spec) = &self.spec else {
+                    return Err(
+                        "an identity-facts operation requires the frozen environment spec".into(),
+                    );
+                };
+                if challenge.spec_sha256 != spec.spec_sha256 {
+                    return Err("the identity-facts challenge binds a different frozen spec".into());
+                }
+                if self.phase != Some(EnvironmentBuildPhase::IdentityFacts) {
+                    return Err("an identity-facts operation requires its exact phase".into());
+                }
+                if !challenge
+                    .plan_sha256
+                    .eq_ignore_ascii_case(&self.plan.plan_sha256)
+                {
+                    return Err("the identity-facts challenge binds a different plan hash".into());
+                }
+                if challenge.pin != self.plan.nix.nixpkgs {
+                    return Err("the identity-facts challenge binds a different pin".into());
+                }
+                if challenge.runtime_id != self.digest {
+                    return Err("the identity-facts challenge binds a different runtime".into());
+                }
+            }
+            (EnvironmentBrokerOperation::IdentityFacts, None) => {
+                return Err("an identity-facts operation requires a challenge".into());
+            }
+            (_, Some(_)) => {
+                return Err(
+                    "only an identity-facts operation may carry an identity-facts challenge".into(),
+                );
+            }
+            (_, None) => {}
         }
         if self.workspace_files.len() > MAX_ENVIRONMENT_WORKSPACE_FILES {
             return Err("environment workspace has too many files".into());
@@ -781,6 +842,10 @@ pub struct EnvironmentBrokerResult {
     pub resolution: Option<EnvironmentResolution>,
     #[serde(default)]
     pub receipt: Option<EnvironmentBuildReceipt>,
+    /// Broker-produced, broker-signed identity facts. It is present exactly for
+    /// an `IDENTITY_FACTS` operation that observed at least one complete fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_facts: Option<IdentityFactsReceipt>,
     #[serde(default)]
     pub logs: String,
     #[serde(default)]
@@ -904,6 +969,7 @@ pub fn environment_workspace_files(
 
 pub const ENVIRONMENT_BUILD_ROUTE: &str = "v1/environments/build";
 pub const ENVIRONMENT_RESOLVE_ROUTE: &str = "v1/environments/resolve";
+pub const ENVIRONMENT_IDENTITY_FACTS_ROUTE: &str = "v1/environments/identity-facts";
 pub const ENVIRONMENT_CHECK_ROUTE: &str = "v1/environments/check";
 pub const ENVIRONMENT_CHECK_CANCEL_ROUTE: &str = "v1/environments/check/cancel";
 
@@ -911,6 +977,15 @@ pub const MAX_ENVIRONMENT_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ENVIRONMENT_CHECK_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 impl RuntimeBrokerClient {
     pub fn new(base: &str, token: String, owner: ResourceOwner) -> Result<Self, BrokerError> {
+        Self::with_control_timeout(base, token, owner, Duration::from_secs(60))
+    }
+
+    fn with_control_timeout(
+        base: &str,
+        token: String,
+        owner: ResourceOwner,
+        control_timeout: Duration,
+    ) -> Result<Self, BrokerError> {
         let base = reqwest::Url::parse(base)
             .map_err(|_| BrokerError::Invalid("runtime broker URL".into()))?;
         if base.scheme() != "http"
@@ -932,7 +1007,13 @@ impl RuntimeBrokerClient {
             ));
         }
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(60))
+            .timeout(control_timeout)
+            .connect_timeout(Duration::from_secs(10))
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        let long_client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
@@ -941,6 +1022,7 @@ impl RuntimeBrokerClient {
             token,
             owner,
             client,
+            long_client,
         })
     }
 
@@ -970,10 +1052,20 @@ impl RuntimeBrokerClient {
     /// Read the broker's authenticated-free health projection. It contains no
     /// token or credential, only capability availability.
     pub async fn health(&self) -> Result<serde_json::Value, BrokerError> {
+        self.health_with_timeout(Duration::from_secs(10)).await
+    }
+
+    /// Read the health projection with an explicit bound. Readiness callers use
+    /// a shorter bound than the general control timeout so a hung broker cannot
+    /// exceed an outer health-check deadline.
+    pub async fn health_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, BrokerError> {
         let response = self
             .client
             .get(self.join("health")?)
-            .timeout(Duration::from_secs(10))
+            .timeout(timeout)
             .send()
             .await?;
         if !response.status().is_success() {
@@ -1111,7 +1203,7 @@ impl RuntimeBrokerClient {
     pub async fn environment_build(
         &self,
         input: &EnvironmentBrokerRequest,
-        timeout: Duration,
+        timeout: Option<Duration>,
     ) -> Result<EnvironmentBrokerResult, BrokerError> {
         if self.owner != ResourceOwner::Environment {
             return Err(BrokerError::Invalid(
@@ -1122,15 +1214,17 @@ impl RuntimeBrokerClient {
         let route = match input.operation {
             EnvironmentBrokerOperation::Resolve => ENVIRONMENT_RESOLVE_ROUTE,
             EnvironmentBrokerOperation::Build => ENVIRONMENT_BUILD_ROUTE,
+            EnvironmentBrokerOperation::IdentityFacts => ENVIRONMENT_IDENTITY_FACTS_ROUTE,
         };
-        let response = self
-            .client
+        let mut request = self
+            .long_client
             .post(self.join(route)?)
             .bearer_auth(&self.token)
-            .json(input)
-            .timeout(timeout)
-            .send()
-            .await?;
+            .json(input);
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
+        }
+        let response = request.send().await?;
         if !response.status().is_success() {
             return Err(self.refusal(response).await);
         }
@@ -1155,6 +1249,7 @@ impl RuntimeBrokerClient {
             EnvironmentBrokerOperation::Build => {
                 input.phase.unwrap_or(EnvironmentBuildPhase::Build)
             }
+            EnvironmentBrokerOperation::IdentityFacts => EnvironmentBuildPhase::IdentityFacts,
         };
         if result.operation != input.operation
             || result.phase != expected_phase
@@ -1165,6 +1260,18 @@ impl RuntimeBrokerClient {
             ));
         }
         Ok(result)
+    }
+
+    /// Verify one broker identity-facts receipt with the shared environment
+    /// bearer that only Core and the broker hold. The context-separated MAC
+    /// binds the exact challenge, observed root, complete manifest, fact count
+    /// and output facts.
+    pub fn verify_identity_facts(
+        &self,
+        receipt: &IdentityFactsReceipt,
+        challenge: &IdentityFactsChallenge,
+    ) -> Result<crate::planning::identity_facts::VerifiedIdentityFacts, IdentityFactsError> {
+        crate::planning::identity_facts::verify(receipt, self.token.as_bytes(), challenge)
     }
 
     /// Execute exactly one frozen check through the environment-builder image
@@ -1439,6 +1546,364 @@ impl From<BrokerError> for ExecutionError {
     }
 }
 
+/// Fixed probe script used to resolve the root the environment operation
+/// actually realised. Candidates are the exact profiles the pinned builder
+/// image writes into its spec-keyed cache volume.
+pub const IDENTITY_ROOT_SCRIPT: &str = r#"for p in /cache/workspace/.devenv/gc/shell /cache/workspace/.devenv/profile /cache/profile; do
+  if [ -e "$p" ] || [ -L "$p" ]; then
+    t=$(readlink -f "$p" 2>/dev/null || true)
+    case "$t" in
+      /nix/store/*) printf '%s' "$t"; exit 0 ;;
+    esac
+  fi
+done
+exit 3
+"#;
+
+pub const IDENTITY_FACTS_MAX_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
+const IDENTITY_DERIVERS_PER_QUERY: usize = 128;
+
+/// Narrow execution port for the broker-owned identity-facts producer. The
+/// broker adapts its bounded Podman command runner; a real self-test uses the
+/// same producer against ordinary rootless Podman. No caller supplies a store
+/// path, manifest, Nix argv or container flag.
+pub trait IdentityFactsCommandRunner: Send + Sync {
+    fn run_identity_command<'a>(
+        &'a self,
+        args: Vec<String>,
+        operation: &'a str,
+        limit: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathInfoFact {
+    pub store_path: String,
+    pub deriver: Option<String>,
+    pub nar_hash: String,
+}
+
+fn identity_run_args(image_id: &str, cache_volume: &str, store_volume: &str) -> Vec<String> {
+    vec![
+        "run".to_owned(),
+        "--rm".to_owned(),
+        "--network=none".to_owned(),
+        "--read-only".to_owned(),
+        "--pull=never".to_owned(),
+        "--user=10001:10001".to_owned(),
+        "--cap-drop=all".to_owned(),
+        "--security-opt=no-new-privileges".to_owned(),
+        "--tmpfs=/tmp:rw,noexec,nosuid,size=16m".to_owned(),
+        format!("--volume={cache_volume}:/cache:ro"),
+        format!("--volume={store_volume}:/nix:rw"),
+        "--entrypoint=/bin/sh".to_owned(),
+        image_id.to_owned(),
+        "-c".to_owned(),
+    ]
+}
+
+/// Observe the complete closure of the realised root with fixed Nix argv. The
+/// manifest is complete or the call is refused; it is never truncated.
+pub async fn observe_identity_facts_with(
+    runner: &dyn IdentityFactsCommandRunner,
+    image_id: &str,
+    cache_volume: &str,
+    store_volume: &str,
+    challenge: &IdentityFactsChallenge,
+) -> Result<IdentityFactsManifest, String> {
+    observe_identity_facts_at(
+        runner,
+        image_id,
+        cache_volume,
+        store_volume,
+        challenge,
+        None,
+    )
+    .await
+}
+
+pub async fn observe_identity_facts_with_root(
+    runner: &dyn IdentityFactsCommandRunner,
+    image_id: &str,
+    cache_volume: &str,
+    store_volume: &str,
+    challenge: &IdentityFactsChallenge,
+    root: &str,
+) -> Result<IdentityFactsManifest, String> {
+    observe_identity_facts_at(
+        runner,
+        image_id,
+        cache_volume,
+        store_volume,
+        challenge,
+        Some(root),
+    )
+    .await
+}
+
+async fn observe_identity_facts_at(
+    runner: &dyn IdentityFactsCommandRunner,
+    image_id: &str,
+    cache_volume: &str,
+    store_volume: &str,
+    challenge: &IdentityFactsChallenge,
+    root: Option<&str>,
+) -> Result<IdentityFactsManifest, String> {
+    let root = match root {
+        Some(root) => root.to_owned(),
+        None => {
+            resolve_realized_environment_root_with(runner, image_id, cache_volume, store_volume)
+                .await?
+        }
+    };
+    let path_info = nix_path_info_with(runner, image_id, cache_volume, store_volume, &root).await?;
+    if path_info.is_empty() {
+        return Err("the broker observed an empty environment closure".into());
+    }
+    if path_info.len() > MAX_IDENTITY_FACTS {
+        return Err("the environment closure exceeds the identity-facts technical bound".into());
+    }
+    let mut derivers = std::collections::BTreeSet::new();
+    for info in &path_info {
+        if let Some(deriver) = &info.deriver {
+            derivers.insert(deriver.clone());
+        }
+    }
+    let mut outputs_by_deriver = std::collections::BTreeMap::new();
+    for chunk in derivers
+        .iter()
+        .collect::<Vec<_>>()
+        .chunks(IDENTITY_DERIVERS_PER_QUERY)
+    {
+        let observed =
+            nix_derivation_outputs_with(runner, image_id, cache_volume, store_volume, chunk)
+                .await?;
+        outputs_by_deriver.extend(observed);
+    }
+    let mut facts = Vec::with_capacity(path_info.len());
+    for info in path_info {
+        let outputs = match &info.deriver {
+            Some(deriver) => {
+                let Some(outputs) = outputs_by_deriver.get(deriver) else {
+                    return Err(format!(
+                        "the derivation {deriver} declared no observable outputs for {}",
+                        info.store_path
+                    ));
+                };
+                if outputs.is_empty() {
+                    return Err(format!("the derivation {deriver} declared no output paths"));
+                }
+                outputs.clone()
+            }
+            // A deriver-less path is an explicit realisation without a
+            // derivation. Its own path is the only output; nothing is invented.
+            None => vec![info.store_path.clone()],
+        };
+        facts.push(IdentityFact {
+            store_path: info.store_path,
+            deriver: info.deriver,
+            nar_hash: info.nar_hash,
+            outputs,
+        });
+    }
+    // `QUESTIONS` answers exactly the Core-issued identities in their issued
+    // order. `ENUMERATE` is discovery and must not carry questions.
+    let facts = match challenge.mode {
+        IdentityFactsMode::Enumerate => {
+            if !challenge.questions.is_empty() {
+                return Err("an enumeration challenge must not carry questions".into());
+            }
+            facts
+        }
+        IdentityFactsMode::Questions => {
+            let mut selected = Vec::with_capacity(challenge.questions.len());
+            for question in &challenge.questions {
+                let Some(fact) = facts
+                    .iter()
+                    .find(|fact| fact.store_path == question.store_path)
+                else {
+                    return Err(format!(
+                        "the realised closure does not contain the issued path {}",
+                        question.store_path
+                    ));
+                };
+                if fact.deriver != question.deriver
+                    || fact.nar_hash != question.nar_hash
+                    || fact.outputs != question.outputs
+                {
+                    return Err(format!(
+                        "the observed identity for {} does not match the issued identity",
+                        question.store_path
+                    ));
+                }
+                selected.push(fact.clone());
+            }
+            selected
+        }
+    };
+    Ok(IdentityFactsManifest {
+        observed_root: root,
+        fact_count: facts.len(),
+        closure_manifest_sha256: closure_manifest_sha256(&facts),
+        truncated: false,
+        facts,
+    })
+}
+
+async fn resolve_realized_environment_root_with(
+    runner: &dyn IdentityFactsCommandRunner,
+    image_id: &str,
+    cache_volume: &str,
+    store_volume: &str,
+) -> Result<String, String> {
+    let mut args = identity_run_args(image_id, cache_volume, store_volume);
+    args.push(IDENTITY_ROOT_SCRIPT.to_owned());
+    let output = runner
+        .run_identity_command(args, "environment identity root probe", 8 * 1024)
+        .await?;
+    let root = String::from_utf8_lossy(&output).trim().to_owned();
+    if !is_store_output_path(&root) {
+        return Err("the environment operation produced no realised store root to observe".into());
+    }
+    Ok(root)
+}
+
+async fn nix_path_info_with(
+    runner: &dyn IdentityFactsCommandRunner,
+    image_id: &str,
+    cache_volume: &str,
+    store_volume: &str,
+    root: &str,
+) -> Result<Vec<PathInfoFact>, String> {
+    let mut args = identity_run_args(image_id, cache_volume, store_volume);
+    args.push("exec nix path-info --json --recursive --offline \"$1\"".to_owned());
+    args.push("_".to_owned());
+    args.push(root.to_owned());
+    let output = runner
+        .run_identity_command(
+            args,
+            "environment identity path-info",
+            IDENTITY_FACTS_MAX_OUTPUT_BYTES,
+        )
+        .await?;
+    parse_nix_path_info(&output)
+}
+
+pub fn parse_nix_path_info(bytes: &[u8]) -> Result<Vec<PathInfoFact>, String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|_| "nix path-info did not return valid JSON".to_owned())?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "nix path-info did not return an object".to_owned())?;
+    let mut facts = Vec::with_capacity(object.len());
+    for (path, info) in object {
+        if !is_store_output_path(path) {
+            return Err("nix path-info returned a non-store path".into());
+        }
+        let nar_hash = info
+            .get("narHash")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let deriver = info
+            .get("deriver")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        if nar_hash.is_empty() {
+            return Err(format!("nix path-info returned no NAR hash for {path}"));
+        }
+        if let Some(deriver) = &deriver
+            && (!is_store_output_path(deriver) || !deriver.ends_with(".drv"))
+        {
+            return Err(format!(
+                "nix path-info returned an invalid derivation for {path}"
+            ));
+        }
+        facts.push(PathInfoFact {
+            store_path: path.clone(),
+            deriver,
+            nar_hash,
+        });
+    }
+    facts.sort_by(|left, right| left.store_path.cmp(&right.store_path));
+    Ok(facts)
+}
+
+async fn nix_derivation_outputs_with(
+    runner: &dyn IdentityFactsCommandRunner,
+    image_id: &str,
+    cache_volume: &str,
+    store_volume: &str,
+    derivers: &[&String],
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {
+    let mut args = identity_run_args(image_id, cache_volume, store_volume);
+    args.push("exec nix derivation show --offline \"$@\"".to_owned());
+    args.push("_".to_owned());
+    args.extend(derivers.iter().map(|deriver| (*deriver).clone()));
+    let output = runner
+        .run_identity_command(
+            args,
+            "environment identity derivation show",
+            IDENTITY_FACTS_MAX_OUTPUT_BYTES,
+        )
+        .await?;
+    parse_nix_derivation_outputs(&output)
+}
+
+pub fn parse_nix_derivation_outputs(
+    bytes: &[u8],
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|_| "nix derivation show did not return valid JSON".to_owned())?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "nix derivation show did not return an object".to_owned())?;
+    let mut outputs = std::collections::BTreeMap::new();
+    for (deriver, derivation) in object {
+        if !is_store_output_path(deriver) || !deriver.ends_with(".drv") {
+            return Err("nix derivation show returned an invalid derivation path".into());
+        }
+        let declared = derivation
+            .get("outputs")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| format!("the derivation {deriver} declares no outputs"))?;
+        let mut paths = Vec::new();
+        for output in declared.values() {
+            let path = output
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("the derivation {deriver} has an output without a path"))?;
+            if !is_store_output_path(path) {
+                return Err(format!(
+                    "the derivation {deriver} declared a non-store output"
+                ));
+            }
+            paths.push(path.to_owned());
+        }
+        paths.sort();
+        paths.dedup();
+        outputs.insert(deriver.clone(), paths);
+    }
+    Ok(outputs)
+}
+
+pub fn is_store_output_path(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("/nix/store/") else {
+        return false;
+    };
+    let Some((hash, name)) = rest.split_once('-') else {
+        return false;
+    };
+    hash.len() == 32
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && !name.is_empty()
+        && !name.contains('/')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1669,5 +2134,168 @@ mod tests {
         assert!(extend_bounded(&mut bytes, b"1234", 4));
         assert!(!extend_bounded(&mut bytes, b"5", 4));
         assert_eq!(bytes, b"1234");
+    }
+
+    #[tokio::test]
+    async fn long_environment_client_outlives_the_control_timeout() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buffer = [0u8; 2_048];
+                let _ = socket.read(&mut buffer).await;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let body = "{}";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        let client = RuntimeBrokerClient::with_control_timeout(
+            &format!("http://{address}"),
+            "x".repeat(32),
+            ResourceOwner::Environment,
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        let control = client
+            .client
+            .get(format!("http://{address}/health"))
+            .send()
+            .await;
+        assert!(
+            control.is_err(),
+            "the control client must keep its short timeout"
+        );
+        let long = client
+            .long_client
+            .get(format!("http://{address}/health"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(long.status(), reqwest::StatusCode::OK);
+        server.await.unwrap();
+    }
+
+    struct CannedIdentityRunner;
+
+    impl IdentityFactsCommandRunner for CannedIdentityRunner {
+        fn run_identity_command<'a>(
+            &'a self,
+            _args: Vec<String>,
+            operation: &'a str,
+            _limit: usize,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                let root = format!("/nix/store/{}-root", "c".repeat(32));
+                let drv = format!("/nix/store/{}-root.drv", "d".repeat(32));
+                let helper = format!("/nix/store/{}-helper.sh", "e".repeat(32));
+                match operation {
+                    "environment identity root probe" => Ok(root.into_bytes()),
+                    "environment identity path-info" => {
+                        let mut paths = serde_json::Map::new();
+                        paths.insert(
+                            root.clone(),
+                            serde_json::json!({
+                                "narHash": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                                "deriver": drv,
+                            }),
+                        );
+                        paths.insert(
+                            helper.clone(),
+                            serde_json::json!({
+                                "narHash": "sha256-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+                                "deriver": null,
+                            }),
+                        );
+                        serde_json::to_vec(&serde_json::Value::Object(paths))
+                            .map_err(|error| error.to_string())
+                    }
+                    "environment identity derivation show" => {
+                        let mut derivations = serde_json::Map::new();
+                        derivations.insert(
+                            drv.clone(),
+                            serde_json::json!({"outputs": {"out": {"path": root}}}),
+                        );
+                        serde_json::to_vec(&serde_json::Value::Object(derivations))
+                            .map_err(|error| error.to_string())
+                    }
+                    other => Err(format!("unexpected identity operation {other}")),
+                }
+            })
+        }
+    }
+
+    fn questions_challenge(
+        questions: Vec<crate::planning::identity_facts::IdentityQuestion>,
+    ) -> crate::planning::identity_facts::IdentityFactsChallenge {
+        crate::planning::identity_facts::IdentityFactsChallenge {
+            operation_id: "identity-operation".into(),
+            runtime_id: "sha256:runtime".into(),
+            nonce: "identity-nonce".into(),
+            pin: "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d".into(),
+            plan_sha256: "b".repeat(64),
+            spec_sha256: "c".repeat(64),
+            mode: crate::planning::identity_facts::IdentityFactsMode::Questions,
+            root: crate::planning::identity_facts::OperationRoot::Operation,
+            questions,
+            stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+            resolution_key: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn questions_mode_answers_exactly_the_issued_order() {
+        let root = format!("/nix/store/{}-root", "c".repeat(32));
+        let helper = format!("/nix/store/{}-helper.sh", "e".repeat(32));
+        let drv = format!("/nix/store/{}-root.drv", "d".repeat(32));
+        let questions = vec![
+            crate::planning::identity_facts::IdentityQuestion {
+                store_path: helper.clone(),
+                deriver: None,
+                nar_hash: "sha256-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=".into(),
+                outputs: vec![helper.clone()],
+            },
+            crate::planning::identity_facts::IdentityQuestion {
+                store_path: root.clone(),
+                deriver: Some(drv),
+                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                outputs: vec![root.clone()],
+            },
+        ];
+        let manifest = observe_identity_facts_with(
+            &CannedIdentityRunner,
+            "image",
+            "cache",
+            "store",
+            &questions_challenge(questions.clone()),
+        )
+        .await
+        .expect("the producer answers the issued questions");
+        assert_eq!(manifest.fact_count, 2);
+        assert_eq!(manifest.facts[0].store_path, helper);
+        assert_eq!(manifest.facts[1].store_path, root);
+
+        let mut wrong = questions;
+        wrong[0].nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into();
+        assert!(
+            observe_identity_facts_with(
+                &CannedIdentityRunner,
+                "image",
+                "cache",
+                "store",
+                &questions_challenge(wrong),
+            )
+            .await
+            .is_err(),
+            "an identity that does not match the issued expectation is refused"
+        );
     }
 }

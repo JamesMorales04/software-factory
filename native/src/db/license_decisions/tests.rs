@@ -1,0 +1,942 @@
+use super::*;
+use crate::planning::identity_facts::{
+    BoundIdentityFacts, IdentityFact, IdentityFactsChallenge, IdentityFactsEnvelope,
+    IdentityFactsManifest, IdentityFactsMode, IdentityFactsReceipt, OperationRoot,
+    closure_manifest_sha256, sign, verify,
+};
+use crate::planning::license_decision::{
+    CandidateBinding, LicenseDecisionContext, LicenseDecisionOverlayContext,
+    LicenseDecisionRefusal, LicenseDecisionReview, PolicyBinding, SourceEvidenceProof,
+    identity_facts_receipt_digest, verify_license_decision_overlay, verify_license_evidence_review,
+};
+
+const BEARER: &[u8] = b"scoped-environment-bearer-0123456789abcdef";
+const PIN: &str = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d";
+const PLAN: &str = "c6cb4499d86380bd53dfe1c89a33882213b3e36af7e58250dee9f5d12acc377a";
+const INVENTORY: &str = "16b2df71a8a7996ee5b433655b0c6c1773d23113a350e4b5b8e6074375df2773";
+const EVIDENCE_BUNDLE: &str = "57bfc9052d4417c2a5ce92617936e5550fc461beba3e7e741a212aef5f0fae2e";
+const BASE: &str = "4fdf1b15f862b2564642443a71ef3e25a2785013";
+const OBSERVED_SPEC: &str = "067f8c8948e570e3ac2c8b8c8a9c47a0120759916b19e3c420308ff509d1b901";
+const OUTPUT_PATH: &str = "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1";
+const OUTPUT_DRV: &str = "/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv";
+const OUTPUT_NAR: &str = "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=";
+const SOURCE_DRV: &str = "/nix/store/j151nb5vh176kdrrh1rkilxkdkmvm47w-ed-1.21.1.tar.lz.drv";
+const SOURCE_PATH: &str = "/nix/store/wa88qds9615j2r5imfryzbyg86c97iga-ed-1.21.1.tar.lz";
+const SOURCE_HASH: &str = "sha256-1tDHGSsCsFGckCqTcZBT6GWt5aeEo7Mn2T2IhFeyPEs=";
+const SOURCE_NAR: &str = "sha256-dEsPDHFVSahejFEnqz5gAMxx+ls+idLXQ6qOovYOecE=";
+const REQUEST_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const RESPONSE: &str = r#"{"decision":"ACCEPT"}"#;
+const PROJECT_CONFIG: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const SOURCE_FLAT: &str = "d6d0c7192b02b0519c902a93719053e865ade5a784a3b327d93d888457b23c4b";
+const SOURCE_NAR_NIX32: &str = "1hbr1vva53ma8gbx529ybgx73k00c0zan9siiigahjamf460yjvl";
+const SOURCE_SIZE: u64 = 70136;
+const SOURCE_SIGNATURE: &str = "cache.nixos.org-1:xYwC8Vo2buDIPQNzCyHhC8Kz7Y6riU596Zp3tnRTIicdLtih5xQzAPlip25FtXIsShiTfkl4eABEg4TX0c+ZDA==";
+const SOURCE_CA: &str = "fixed:sha256:0jrwn9bq921xv4kv78w4lzjssrg8af8734raj2f53c025ccwgl6n";
+
+fn source_proof() -> SourceEvidenceProof {
+    SourceEvidenceProof {
+        source_store_path: SOURCE_PATH.into(),
+        source_drv_path: SOURCE_DRV.into(),
+        flat_sha256: SOURCE_FLAT.into(),
+        nar_sri: SOURCE_NAR.into(),
+        nar_size: SOURCE_SIZE,
+        signature: SOURCE_SIGNATURE.into(),
+        output_drv_path: OUTPUT_DRV.into(),
+        output_store_path: OUTPUT_PATH.into(),
+        output_drv_input_drvs: vec![
+            "/nix/store/05q48dcd4lgk4vh7wyk330gr2fr082i2-bootstrap-tools.drv".into(),
+            "/nix/store/37wqz292qyx3z03p4s50lrs32vcgq9f4-bash-5.2p37.drv".into(),
+            SOURCE_DRV.into(),
+            "/nix/store/vxv9n01jpwvh83byh2q72mcf4vqlm3j5-lzip-1.25.drv".into(),
+            "/nix/store/zd1gad3l5xmc1i9hivj0l468srnsmvb2-bootstrap-stage4-stdenv-linux.drv".into(),
+        ],
+        output_drv_aterm_sha256: "294060511213ba226bb3687e28ad65650d8058e4b60fab50157ba19d2ad46d8c"
+            .into(),
+        source_drv_aterm_sha256: "5c1177a7e9a55b0e5fc1860375b211e13560ae88776e3796fee8ec105d9cf52e"
+            .into(),
+        nar_nix32: Some(SOURCE_NAR_NIX32.into()),
+        fingerprint: None,
+        ca: Some(SOURCE_CA.into()),
+    }
+}
+
+fn source_evidence() -> crate::planning::license_decision::VerifiedSourceEvidence {
+    crate::planning::license_decision::VerifiedSourceEvidence::verify(&source_proof())
+        .expect("the pinned cache signature verifies")
+}
+
+struct Fixture {
+    path: std::path::PathBuf,
+    db: Database,
+    decision: VerifiedLicenseDecision,
+    owner_id: String,
+    facts: BoundIdentityFacts,
+}
+
+fn receipt() -> IdentityFactsReceipt {
+    let challenge = IdentityFactsChallenge {
+        operation_id: "operation-1".into(),
+        runtime_id: "runtime-1".into(),
+        nonce: "identity-facts:test".into(),
+        pin: PIN.into(),
+        plan_sha256: PLAN.into(),
+        spec_sha256: OBSERVED_SPEC.into(),
+        mode: IdentityFactsMode::Questions,
+        root: OperationRoot::Operation,
+        questions: vec![
+            crate::planning::identity_facts::IdentityQuestion {
+                store_path: OUTPUT_PATH.into(),
+                deriver: Some(OUTPUT_DRV.into()),
+                nar_hash: OUTPUT_NAR.into(),
+                outputs: vec![OUTPUT_PATH.into()],
+            },
+            crate::planning::identity_facts::IdentityQuestion {
+                store_path: SOURCE_PATH.into(),
+                deriver: Some(SOURCE_DRV.into()),
+                nar_hash: SOURCE_NAR.into(),
+                outputs: vec![SOURCE_PATH.into()],
+            },
+        ],
+        stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+        resolution_key: String::new(),
+    };
+    let facts = vec![
+        IdentityFact {
+            store_path: OUTPUT_PATH.into(),
+            deriver: Some(OUTPUT_DRV.into()),
+            nar_hash: OUTPUT_NAR.into(),
+            outputs: vec![OUTPUT_PATH.into()],
+        },
+        IdentityFact {
+            store_path: SOURCE_PATH.into(),
+            deriver: Some(SOURCE_DRV.into()),
+            nar_hash: SOURCE_NAR.into(),
+            outputs: vec![SOURCE_PATH.into()],
+        },
+    ];
+    let envelope = IdentityFactsEnvelope {
+        schema_version: 1,
+        context: crate::planning::identity_facts::IDENTITY_FACTS_CONTEXT.into(),
+        challenge: challenge.clone(),
+        manifest: IdentityFactsManifest {
+            observed_root: OUTPUT_PATH.into(),
+            fact_count: facts.len(),
+            closure_manifest_sha256: closure_manifest_sha256(&facts),
+            facts,
+            truncated: false,
+        },
+    };
+    let signature = sign(&envelope, BEARER).expect("the fixture receipt signs");
+    IdentityFactsReceipt {
+        envelope,
+        signature,
+    }
+}
+
+fn review() -> LicenseDecisionReview {
+    LicenseDecisionReview {
+        decision: "ACCEPT".into(),
+        pin: PIN.into(),
+        name: "ed".into(),
+        version: "1.21.1".into(),
+        output_drv_path: OUTPUT_DRV.into(),
+        output_store_path: OUTPUT_PATH.into(),
+        output_nar_hash: OUTPUT_NAR.into(),
+        source_drv_path: SOURCE_DRV.into(),
+        source_store_path: SOURCE_PATH.into(),
+        source_output_hash: SOURCE_HASH.into(),
+        license_expression: "GPL-2.0-or-later".into(),
+        software_texts: vec![crate::planning::license_decision::SoftwareTextEvidence {
+            path: "ed.h".into(),
+            license: "GPL-2.0-or-later".into(),
+            sha256: "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58".into(),
+        }],
+        software_text_sha256: "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58"
+            .into(),
+        selected_branch: "GPL-2.0-or-later".into(),
+        documentation: vec![
+            crate::planning::license_decision::DocumentationReview {
+                path: "share/info/ed.info".into(),
+                license: "GFDL-1.3-or-later".into(),
+                output_sha256: "3618c355d1fd6b5ae66048499735d14a0dd0c438b29e5c2e41040f76fd03d19b"
+                    .into(),
+                license_text_path: "doc/fdl.texi".into(),
+                license_text_sha256:
+                    "a7e43ea88ee8fc4722d38482fd1a14c12bfbe2f0512d61980c810627b19cdce5".into(),
+                obligations: vec!["notice".into(), "source".into()],
+            },
+            crate::planning::license_decision::DocumentationReview {
+                path: "share/man/man1/ed.1.gz".into(),
+                license: "GPL-2.0-or-later".into(),
+                output_sha256: "891a6ac40cfdd4e3b58ef59444cd7544d2304feb986752a033270f69ec0a11c2"
+                    .into(),
+                license_text_path: "ed.h".into(),
+                license_text_sha256:
+                    "24f5c4349b47f7e8e8b35dd766d6f0309fca2fbfebb9ccd780788f8d37d51e58".into(),
+                obligations: vec!["notice".into(), "source".into()],
+            },
+        ],
+        use_context: "commercial-development".into(),
+        commercial_use: true,
+        payment_required: false,
+        obligations_reviewed: true,
+        software_obligations: vec!["notice".into(), "source".into()],
+        documentation_obligations: vec!["notice".into(), "source".into()],
+        request_sha256: REQUEST_SHA.into(),
+        response_sha256: super::license_decisions_sha256(RESPONSE.as_bytes()),
+    }
+}
+
+async fn fixture() -> Fixture {
+    let path = std::env::temp_dir().join(format!(
+        "factory-license-decisions-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let db = Database::open(&path).await.unwrap();
+    let now = Utc::now().to_rfc3339();
+    sqlx::query::query(
+        "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+         VALUES ('project-1','/fixture',?1,?2,'')",
+    )
+    .bind(BASE)
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO standing_delegations
+         (id,principal_id,audit_id,project_id,revision,content_hash,content_json,revoked_at,created_at)
+         VALUES ('standing-1','operator','audit-1','project-1',1,?1,'{}',NULL,?2)",
+    )
+    .bind("b".repeat(64))
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO actions
+         (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+         VALUES ('action-1','project-1','objective','provider','model','R0','PLANNED',?1,?2)",
+    )
+    .bind("c".repeat(64))
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO lead_requests
+         (id,project_id,action_id,delegation_id,objective,request_hash,project_config_hash,state,failure_reason,created_at,updated_at)
+         VALUES ('lead-1','project-1','action-1','standing-1','objective',?1,?2,'RUNNING',NULL,?3,?3)",
+    )
+    .bind("d".repeat(64))
+    .bind("e".repeat(64))
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO environment_plans
+         (id,plan_id,project_id,request_id,action_id,campaign_id,revision,base_commit,risk_class,
+          conventions_sha256,plan_sha256,status,source,builder_image,builder_image_digest,
+          license_inventory_sha256,sbom_sha256,lead_review_id,content_json,created_at,updated_at)
+         VALUES ('plan-row','plan-1','project-1',NULL,'action-1',NULL,1,?1,'R0',?2,?3,
+                 'CORE_VALIDATED','GENERATED','','',?4,?5,NULL,'{}',?6,?6)",
+    )
+    .bind(BASE)
+    .bind("c".repeat(64))
+    .bind(PLAN)
+    .bind(INVENTORY)
+    .bind(EVIDENCE_BUNDLE)
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query(
+        "INSERT INTO model_call_reservations
+         (reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,model,
+          purpose,request_sha256,max_input_tokens,max_output_tokens,max_total_tokens,
+          max_cost_micros,response_text,state,expires_at_ms,created_at,updated_at)
+         VALUES ('reservation-1','LEAD','operator','project-1','lead-1','scope-1','provider','model',
+                 'license_evidence_review',?1,1000,1000,2000,1000,?2,'SETTLED',?3,?4,?4)",
+    )
+    .bind(REQUEST_SHA)
+    .bind(RESPONSE)
+    .bind(Utc::now().timestamp_millis() + 60_000)
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let owner = db
+        .create_agentic_owner_decision(&NewAgenticOwnerDecision {
+            project_id: "project-1",
+            request_id: None,
+            campaign_id: None,
+            matter: LICENSE_DELEGATION_MATTER,
+            risk: crate::lead::RiskClass::R0,
+            options: &[LICENSE_DELEGATION_OPTION.into(), "DENY_DELEGATION".into()],
+            evidence: &serde_json::json!({
+                "domain": "licenses-identity-evidence",
+                "pin": PIN,
+                "useContext": "commercial-development",
+                "economicCriterion": "no-mandatory-fee-commercial-use",
+                "revision": 7,
+            }),
+            recommendation: "Delegate the exact licence decision.",
+            deadline: &(Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+        })
+        .await
+        .unwrap();
+    db.resolve_agentic_owner_decision(
+        &owner.id,
+        LICENSE_DELEGATION_OPTION,
+        "Owner delegated the exact decision.",
+        "operator",
+    )
+    .await
+    .unwrap();
+
+    let receipt = receipt();
+    let facts = BoundIdentityFacts::spec_cache_observation(
+        verify(&receipt, BEARER, &receipt.envelope.challenge.clone()).unwrap(),
+    );
+    let binding = PolicyBinding::test_binding(
+        PLAN,
+        1,
+        None,
+        INVENTORY,
+        EVIDENCE_BUNDLE,
+        CandidateBinding::base(BASE).unwrap(),
+        &identity_facts_receipt_digest(facts.verified()),
+    );
+    let reservation = db
+        .lead_license_evidence_reservation("lead-1")
+        .await
+        .unwrap();
+    let delegation = db.agentic_owner_decision(&owner.id).await.unwrap();
+    let source = source_evidence();
+    let context = LicenseDecisionContext {
+        project_id: "project-1",
+        lead_request_id: "lead-1",
+        principal: "operator",
+        request_sha256: REQUEST_SHA,
+        project_config_hash: PROJECT_CONFIG,
+        base_commit: BASE,
+        reservation: &reservation,
+        delegation: &delegation,
+        delegation_revoked: false,
+        identity_facts: &facts,
+        source_evidence: &source,
+        binding: &binding,
+    };
+    let decision = verify_license_evidence_review(&review(), &context).unwrap();
+    Fixture {
+        path,
+        db,
+        decision,
+        owner_id: owner.id,
+        facts,
+    }
+}
+
+#[tokio::test]
+async fn a_verified_decision_is_durable_idempotent_and_revocable() {
+    let fixture = fixture().await;
+    let db = &fixture.db;
+    let first = db
+        .create_license_decision(&fixture.decision, "decision-1")
+        .await
+        .unwrap();
+    assert_eq!(first.status, "ACTIVE");
+    assert_eq!(first.lead_request_sha256, REQUEST_SHA);
+    assert_eq!(first.lead_principal, "operator");
+    assert_eq!(first.delegation_option_sha256.len(), 64);
+    assert_eq!(first.software_obligations, ["notice", "source"]);
+    assert_eq!(first.documentation.len(), 2);
+    assert_eq!(first.plan_sha256, PLAN);
+    assert_eq!(first.plan_revision, 1);
+    assert_eq!(first.inventory_sha256, INVENTORY);
+    assert_eq!(first.spec_sha256, None);
+
+    let replay = db
+        .create_license_decision(&fixture.decision, "decision-1")
+        .await
+        .unwrap();
+    assert_eq!(first, replay);
+
+    // A tampered option binding is refused by the transaction-bound check.
+    let mut tampered = fixture.decision.clone();
+    tampered.delegation_option_sha256 = "f".repeat(64);
+    assert!(matches!(
+        db.create_license_decision(&tampered, "tampered-option")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+
+    // The same key with different content is a conflict, never a silent update.
+    let mut changed_review = review();
+    changed_review.decision = "DENY".into();
+    let changed = {
+        let reservation = db
+            .lead_license_evidence_reservation("lead-1")
+            .await
+            .unwrap();
+        let delegation = db.agentic_owner_decision(&fixture.owner_id).await.unwrap();
+        let facts = BoundIdentityFacts::spec_cache_observation(
+            verify(&receipt(), BEARER, &receipt().envelope.challenge.clone()).unwrap(),
+        );
+        let binding = PolicyBinding::test_binding(
+            PLAN,
+            1,
+            None,
+            INVENTORY,
+            EVIDENCE_BUNDLE,
+            CandidateBinding::base(BASE).unwrap(),
+            &identity_facts_receipt_digest(facts.verified()),
+        );
+        let source = source_evidence();
+        let context = LicenseDecisionContext {
+            project_id: "project-1",
+            lead_request_id: "lead-1",
+            principal: "operator",
+            request_sha256: REQUEST_SHA,
+            project_config_hash: PROJECT_CONFIG,
+            base_commit: BASE,
+            reservation: &reservation,
+            delegation: &delegation,
+            delegation_revoked: false,
+            identity_facts: &facts,
+            source_evidence: &source,
+            binding: &binding,
+        };
+        verify_license_evidence_review(&changed_review, &context).unwrap()
+    };
+    assert!(matches!(
+        db.create_license_decision(&changed, "decision-1").await,
+        Err(Error::Conflict(_))
+    ));
+
+    // Revocation is actor and project bound.
+    assert!(matches!(
+        db.revoke_license_decision(&first.id, "project-2", "operator", "superseded")
+            .await,
+        Err(Error::NotFound)
+    ));
+    let revoked = db
+        .revoke_license_decision(&first.id, "project-1", "operator", "superseded")
+        .await
+        .unwrap();
+    assert_eq!(revoked.status, "REVOKED");
+    assert_eq!(revoked.revoked_by.as_deref(), Some("operator"));
+    assert_eq!(revoked.revocation_reason.as_deref(), Some("superseded"));
+    assert!(matches!(
+        db.revoke_license_decision(&first.id, "project-1", "operator", "different")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+
+    // A revoked delegation fences new decisions.
+    assert!(matches!(
+        db.revoke_license_delegation(&fixture.owner_id, "project-2", "operator", "owner revoke")
+            .await,
+        Err(Error::NotFound)
+    ));
+    db.revoke_license_delegation(&fixture.owner_id, "project-1", "operator", "owner revoke")
+        .await
+        .unwrap();
+    assert!(
+        db.license_delegation_revoked(&fixture.owner_id)
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        db.create_license_decision(&fixture.decision, "decision-2")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+
+    db.close().await;
+    let reopened = Database::open(&fixture.path).await.unwrap();
+    let durable = reopened.license_decision(&first.id).await.unwrap();
+    assert_eq!(durable.revoked_at, revoked.revoked_at);
+    assert_eq!(durable.revoked_by.as_deref(), Some("operator"));
+    reopened.close().await;
+    let _ = std::fs::remove_file(&fixture.path);
+}
+
+#[tokio::test]
+async fn revocation_between_verification_and_persistence_is_refused() {
+    let fixture = fixture().await;
+    let db = &fixture.db;
+    db.revoke_license_delegation(&fixture.owner_id, "project-1", "operator", "owner revoke")
+        .await
+        .unwrap();
+    assert!(matches!(
+        db.create_license_decision(&fixture.decision, "decision-race")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    db.close().await;
+    let _ = std::fs::remove_file(&fixture.path);
+}
+
+#[tokio::test]
+async fn delegation_evidence_lead_state_and_grant_identity_are_revalidated() {
+    let grant_fixture = fixture().await;
+    let first = grant_fixture
+        .db
+        .create_license_decision(&grant_fixture.decision, "grant-key-1")
+        .await
+        .unwrap();
+    // A retry with a different key spelling must not duplicate the grant.
+    let same = grant_fixture
+        .db
+        .create_license_decision(&grant_fixture.decision, "grant-key-2")
+        .await
+        .unwrap();
+    assert_eq!(same.id, first.id);
+    assert_eq!(
+        grant_fixture
+            .db
+            .license_decisions("project-1")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    grant_fixture.db.close().await;
+    let _ = std::fs::remove_file(&grant_fixture.path);
+
+    // A stage plan that is not the exact persisted Lead request plan is refused.
+    let fake_stage_fixture = fixture().await;
+    let mut fake_stage = fake_stage_fixture.decision.clone();
+    let digest = fake_stage.identity_facts_receipt_digest().to_owned();
+    fake_stage.binding = PolicyBinding::test_binding(
+        &"f".repeat(64),
+        1,
+        None,
+        INVENTORY,
+        EVIDENCE_BUNDLE,
+        CandidateBinding::base(BASE).unwrap(),
+        &digest,
+    );
+    assert!(matches!(
+        fake_stage_fixture
+            .db
+            .create_license_decision(&fake_stage, "fake-stage")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    fake_stage_fixture.db.close().await;
+    let _ = std::fs::remove_file(&fake_stage_fixture.path);
+
+    // Delegation evidence changes after verification are refused transactionally.
+    let evidence_fixture = fixture().await;
+    sqlx::query::query("UPDATE agentic_owner_decisions SET evidence_json=?1 WHERE id=?2")
+        .bind(
+            serde_json::json!({
+                "domain": "licenses-identity-evidence",
+                "pin": PIN,
+                "useContext": "commercial-development",
+                "economicCriterion": "no-mandatory-fee-commercial-use",
+                "revision": 8,
+            })
+            .to_string(),
+        )
+        .bind(&evidence_fixture.owner_id)
+        .execute(&evidence_fixture.db.pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        evidence_fixture
+            .db
+            .create_license_decision(&evidence_fixture.decision, "evidence-change")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    evidence_fixture.db.close().await;
+    let _ = std::fs::remove_file(&evidence_fixture.path);
+
+    // A terminal lead cannot receive a new decision.
+    let terminal_fixture = fixture().await;
+    sqlx::query::query("UPDATE lead_requests SET state='FAILED' WHERE id='lead-1'")
+        .execute(&terminal_fixture.db.pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        terminal_fixture
+            .db
+            .create_license_decision(&terminal_fixture.decision, "lead-failed")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    terminal_fixture.db.close().await;
+    let _ = std::fs::remove_file(&terminal_fixture.path);
+
+    // A withdrawal is also terminal even if the state still says RUNNING.
+    let withdrawn_fixture = fixture().await;
+    sqlx::query::query(
+        "INSERT INTO lead_withdrawals(request_id,principal_id,principal_label,reason,created_at)
+         VALUES ('lead-1','operator','operator','withdrawn',?1)",
+    )
+    .bind(Utc::now().to_rfc3339())
+    .execute(&withdrawn_fixture.db.pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        withdrawn_fixture
+            .db
+            .create_license_decision(&withdrawn_fixture.decision, "lead-withdrawn")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    withdrawn_fixture.db.close().await;
+    let _ = std::fs::remove_file(&withdrawn_fixture.path);
+}
+
+#[tokio::test]
+async fn revocation_audit_rows_are_appended_once_and_never_removed() {
+    let fixture = fixture().await;
+    let db = &fixture.db;
+    let decision = db
+        .create_license_decision(&fixture.decision, "audit-key")
+        .await
+        .unwrap();
+    db.revoke_license_decision(&decision.id, "project-1", "operator", "superseded")
+        .await
+        .unwrap();
+    assert!(
+        sqlx::query::query("DELETE FROM license_decision_revocations WHERE decision_id=?1")
+            .bind(&decision.id)
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query::query(
+            "UPDATE license_decisions SET revocation_reason='rewritten' WHERE id=?1"
+        )
+        .bind(&decision.id)
+        .execute(&db.pool)
+        .await
+        .is_err()
+    );
+
+    db.revoke_license_delegation(&fixture.owner_id, "project-1", "operator", "owner revoke")
+        .await
+        .unwrap();
+    assert!(
+        sqlx::query::query("DELETE FROM license_delegation_revocations WHERE delegation_id=?1")
+            .bind(&fixture.owner_id)
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
+    db.close().await;
+    let _ = std::fs::remove_file(&fixture.path);
+}
+
+#[test]
+fn applied_0084_migration_is_byte_identical_to_the_checkpoint() {
+    use crate::planning::lead_classification::sha256_hex;
+    assert_eq!(
+        sha256_hex(include_bytes!(
+            "../../../../migrations/0084_license_decisions.sql"
+        )),
+        "a91e19a36a6e951109c62a9b4073818d308346af5328c323cce1b10a122827e2"
+    );
+    assert!(
+        include_str!("../../../../migrations/0087_license_decision_constraints.sql")
+            .contains("license_decisions_grant_identity_idx")
+    );
+}
+
+#[tokio::test]
+async fn exact_license_review_reservation_is_request_sha_scoped() {
+    let fixture = fixture().await;
+    let exact = fixture
+        .db
+        .lead_license_evidence_reservation_for_request("lead-1", REQUEST_SHA)
+        .await
+        .expect("the exact settled review is selected");
+    assert_eq!(exact.reservation_id, "reservation-1");
+    assert_eq!(exact.request_sha256, REQUEST_SHA);
+    assert!(matches!(
+        fixture
+            .db
+            .lead_license_evidence_reservation_for_request("lead-1", &"f".repeat(64))
+            .await,
+        Err(Error::NotFound)
+    ));
+    fixture.db.close().await;
+    let _ = std::fs::remove_file(fixture.path);
+}
+
+#[tokio::test]
+async fn the_builder_overlay_is_reverified_and_carries_the_exact_source_proof() {
+    let fixture = fixture().await;
+    let db = &fixture.db;
+    let record = db
+        .create_license_decision(&fixture.decision, "decision-overlay")
+        .await
+        .unwrap();
+    let now = chrono::Utc::now();
+    let context = |now: chrono::DateTime<chrono::Utc>| LicenseDecisionOverlayContext {
+        project_id: "project-1",
+        plan_sha256: PLAN,
+        plan_revision: 1,
+        spec_sha256: None,
+        inventory_sha256: INVENTORY,
+        evidence_bundle_sha256: EVIDENCE_BUNDLE,
+        base_commit: BASE,
+        delegation_revoked: false,
+        identity_facts: &fixture.facts,
+        now,
+    };
+    assert!(
+        crate::planning::license_decision::license_decision_matches_plan(
+            &record, "lead-1", PLAN, 1
+        ),
+        "the exact current plan decision is selected"
+    );
+    assert!(
+        !crate::planning::license_decision::license_decision_matches_plan(
+            &record, "lead-1", PLAN, 2
+        ),
+        "a previous revision never gates the new plan"
+    );
+    assert!(
+        !crate::planning::license_decision::license_decision_matches_plan(
+            &record,
+            "lead-1",
+            &"f".repeat(64),
+            1
+        ),
+        "a different plan hash never gates the current plan"
+    );
+    assert!(
+        !crate::planning::license_decision::license_decision_matches_plan(
+            &record, "lead-2", PLAN, 1
+        ),
+        "another Lead never gates this plan"
+    );
+    assert!(crate::planning::license_decision::license_decision_is_active_accepted(&record));
+    let mut revoked_plan_decision = record.clone();
+    revoked_plan_decision.revoked_at = Some(chrono::Utc::now().to_rfc3339());
+    assert!(
+        !crate::planning::license_decision::license_decision_is_active_accepted(
+            &revoked_plan_decision
+        )
+    );
+    let mut denied_plan_decision = record.clone();
+    denied_plan_decision.decision = "DENY".into();
+    assert!(
+        !crate::planning::license_decision::license_decision_is_active_accepted(
+            &denied_plan_decision
+        )
+    );
+    let overlay = verify_license_decision_overlay(&record, &context(now))
+        .expect("the exact active decision is deliverable");
+    let json = overlay.to_json();
+    assert_eq!(json["decision"], "ACCEPT");
+    assert_eq!(json["status"], "ACTIVE");
+    assert_eq!(json["planSha256"], PLAN);
+    assert_eq!(json["identity"]["pin"], PIN);
+    let mut without_digest = json.clone();
+    without_digest
+        .as_object_mut()
+        .expect("the overlay is an object")
+        .remove("contentSha256");
+    assert_eq!(
+        json["contentSha256"],
+        crate::planning::license_decision::canonical_json_sha256(&without_digest)
+    );
+    let expected_source = source_evidence();
+    assert_eq!(json["sourceEvidence"], expected_source.to_json());
+    assert_eq!(
+        json["sourceEvidenceSha256"],
+        expected_source.canonical_sha256()
+    );
+    assert_eq!(json["decisionContentSha256"], record.content_sha256);
+    assert_eq!(
+        json["contractRevision"],
+        "license-review-v4-selected-grant-derived-text"
+    );
+    assert_eq!(json["fileLabelSource"], "ASSET");
+    assert_eq!(json["packageRightsSource"], "LICENSING_FACT");
+    assert_eq!(json["documentationGrantSource"], "OUTPUT_FILE_ASSET");
+    assert_eq!(json["modelTextLicenseIgnored"], true);
+    assert_eq!(json["modelObligationsIgnored"], true);
+    assert_eq!(
+        json["packageRights"]
+            .as_array()
+            .expect("package rights are projected")
+            .len(),
+        1
+    );
+    assert_eq!(
+        json["documentationGrants"]
+            .as_array()
+            .expect("documentation grants are projected")
+            .len(),
+        2
+    );
+
+    // A different plan, spec, policy, source digest or lifetime refuses.
+    assert!(matches!(
+        verify_license_decision_overlay(
+            &record,
+            &LicenseDecisionOverlayContext {
+                plan_sha256: &"f".repeat(64),
+                ..context(now)
+            }
+        ),
+        Err(LicenseDecisionRefusal::PlanBindingMismatch)
+    ));
+    assert!(matches!(
+        verify_license_decision_overlay(
+            &record,
+            &LicenseDecisionOverlayContext {
+                spec_sha256: Some(OBSERVED_SPEC),
+                ..context(now)
+            }
+        ),
+        Err(LicenseDecisionRefusal::SpecBindingMismatch)
+    ));
+    assert!(matches!(
+        verify_license_decision_overlay(
+            &record,
+            &LicenseDecisionOverlayContext {
+                delegation_revoked: true,
+                ..context(now)
+            }
+        ),
+        Err(LicenseDecisionRefusal::DelegationMismatch)
+    ));
+    let mut stale = record.clone();
+    stale.delegation_deadline = (now - chrono::Duration::hours(1)).to_rfc3339();
+    assert!(matches!(
+        verify_license_decision_overlay(&stale, &context(now)),
+        Err(LicenseDecisionRefusal::DelegationMismatch)
+    ));
+    let mut stale_policy = record.clone();
+    stale_policy.catalog_sha256 = "f".repeat(64);
+    assert!(matches!(
+        verify_license_decision_overlay(&stale_policy, &context(now)),
+        Err(LicenseDecisionRefusal::PolicyMismatch)
+    ));
+    let mut stale_source = record.clone();
+    stale_source.provenance["sourceEvidenceSha256"] = serde_json::json!("f".repeat(64));
+    assert!(matches!(
+        verify_license_decision_overlay(&stale_source, &context(now)),
+        Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
+    ));
+    let mut bad_decision_digest = record.clone();
+    bad_decision_digest.content_sha256 = "f".repeat(64);
+    assert!(matches!(
+        verify_license_decision_overlay(&bad_decision_digest, &context(now)),
+        Err(LicenseDecisionRefusal::DecisionContentDigestMismatch)
+    ));
+    let mut no_contract = record.clone();
+    no_contract
+        .provenance
+        .as_object_mut()
+        .expect("the provenance is an object")
+        .remove("contractRevision");
+    assert!(matches!(
+        verify_license_decision_overlay(&no_contract, &context(now)),
+        Err(LicenseDecisionRefusal::ContractRevisionMismatch)
+    ));
+    let mut bad_file_evidence = record.clone();
+    bad_file_evidence.provenance["fileEvidence"] = serde_json::json!([{
+        "path": "COPYING",
+        "sha256": "022e9c2e9cc1aac3622313df6f971fbb39c1d1b0cb45324c16b8a1fe231c5ea6",
+        "assetLicense": "GPL-2.0-only",
+        "role": "license-text"
+    }]);
+    assert!(matches!(
+        verify_license_decision_overlay(&bad_file_evidence, &context(now)),
+        Err(LicenseDecisionRefusal::FileEvidenceMismatch("fileEvidence"))
+    ));
+    let mut bad_package_source = record.clone();
+    bad_package_source.provenance["packageRights"][0]["source"]["storePath"] =
+        serde_json::json!("/nix/store/wrong");
+    assert!(matches!(
+        verify_license_decision_overlay(&bad_package_source, &context(now)),
+        Err(LicenseDecisionRefusal::PackageRightsMismatch(_))
+    ));
+    let mut bad_documentation_grant = record.clone();
+    bad_documentation_grant.provenance["documentationGrants"][0]["outputSha256"] =
+        serde_json::json!("f".repeat(64));
+    assert!(matches!(
+        verify_license_decision_overlay(&bad_documentation_grant, &context(now)),
+        Err(LicenseDecisionRefusal::DocumentationGrantMismatch(_))
+    ));
+    let mut bad_documentation = record.clone();
+    bad_documentation.documentation[0].output_sha256 = "f".repeat(64);
+    assert!(matches!(
+        verify_license_decision_overlay(&bad_documentation, &context(now)),
+        Err(LicenseDecisionRefusal::DocumentationGrantMismatch(_))
+    ));
+    let mut candidate = record.clone();
+    candidate.candidate = serde_json::json!({
+        "kind": "candidate",
+        "candidateSha256": "f".repeat(64)
+    });
+    assert!(matches!(
+        verify_license_decision_overlay(&candidate, &context(now)),
+        Err(LicenseDecisionRefusal::CandidateUnverified)
+    ));
+    // The persisted proof is consumed exactly: no synthetic input, no
+    // tampered ATerm digest, no missing proof.
+    let mut no_source = record.clone();
+    no_source
+        .provenance
+        .as_object_mut()
+        .expect("the provenance is an object")
+        .remove("sourceEvidence");
+    assert!(matches!(
+        verify_license_decision_overlay(&no_source, &context(now)),
+        Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
+    ));
+    let mut no_input = record.clone();
+    no_input.provenance["sourceEvidence"]["outputDrvInputDrvs"] =
+        serde_json::json!(["/nix/store/05q48dcd4lgk4vh7wyk330gr2fr082i2-bootstrap-tools.drv"]);
+    assert!(matches!(
+        verify_license_decision_overlay(&no_input, &context(now)),
+        Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
+    ));
+    let mut bad_aterm = record.clone();
+    bad_aterm.provenance["sourceEvidence"]["outputDrvAtermSha256"] =
+        serde_json::json!("f".repeat(64));
+    assert!(matches!(
+        verify_license_decision_overlay(&bad_aterm, &context(now)),
+        Err(LicenseDecisionRefusal::SourceEvidenceMismatch)
+    ));
+    let mut stale_receipt = record.clone();
+    stale_receipt.identity_facts_receipt_digest = "f".repeat(64);
+    assert!(matches!(
+        verify_license_decision_overlay(&stale_receipt, &context(now)),
+        Err(LicenseDecisionRefusal::ReceiptDigestMismatch)
+    ));
+    let mut stale_stage = record.clone();
+    stale_stage.stage["identityFactsReceiptDigest"] = serde_json::json!("f".repeat(64));
+    assert!(matches!(
+        verify_license_decision_overlay(&stale_stage, &context(now)),
+        Err(LicenseDecisionRefusal::ReceiptDigestMismatch)
+    ));
+    let revoked = db
+        .revoke_license_decision(
+            &record.id,
+            "project-1",
+            "operator",
+            "Owner revoked the decision.",
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        verify_license_decision_overlay(&revoked, &context(now)),
+        Err(LicenseDecisionRefusal::DelegationMismatch)
+    ));
+    db.close().await;
+    let _ = std::fs::remove_file(fixture.path);
+}

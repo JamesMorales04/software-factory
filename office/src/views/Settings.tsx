@@ -23,6 +23,7 @@ import { formatTimestamp } from "../format";
 import { LanguageSwitcher, useI18n } from "../i18n";
 import { AccessDevices } from "./AccessDevices";
 import { ExecutionProfiles } from "./ExecutionProfiles";
+import { ProviderFundingStatus } from "./ProviderFundingStatus";
 
 const TABS = ["profiles", "providers", "runtime", "access"] as const;
 type SettingsTab = (typeof TABS)[number];
@@ -63,6 +64,25 @@ function VerificationStep({
   );
 }
 
+function providerBoundText(value: number | undefined): string {
+  return typeof value === "number" ? String(value) : "";
+}
+
+/**
+ * An omitted bound keeps the current Core value. An empty field is omitted, not
+ * defaulted, so Office never invents a provider limit Core did not report.
+ */
+function parseProviderBound(
+  value: string,
+): { ok: true; value: number | undefined } | { ok: false } {
+  const trimmed = value.trim();
+  if (trimmed === "") return { ok: true, value: undefined };
+  if (!/^\d+$/.test(trimmed)) return { ok: false };
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return { ok: false };
+  return { ok: true, value: parsed };
+}
+
 function ProviderCard({
   provider,
   onChanged,
@@ -73,6 +93,12 @@ function ProviderCard({
   const { t } = useI18n();
   const [model, setModel] = useState(provider.model);
   const [baseUrl, setBaseUrl] = useState(provider.baseUrl);
+  const [maxInput, setMaxInput] = useState(
+    providerBoundText(provider.maxInputTokens),
+  );
+  const [maxOutput, setMaxOutput] = useState(
+    providerBoundText(provider.maxOutputTokens),
+  );
   const [credential, setCredential] = useState("");
   const [enabled, setEnabled] = useState(provider.enabled);
   const [isDefault, setIsDefault] = useState(provider.isDefault);
@@ -92,6 +118,15 @@ function ProviderCard({
   useEffect(() => {
     setModel(provider.model);
     setBaseUrl(provider.baseUrl);
+    // Core projects the stored bound when a settings row exists. If a reload
+    // omits it, keep the value the operator saved instead of clearing it; the
+    // card is keyed by provider, so another provider never inherits it.
+    if (typeof provider.maxInputTokens === "number") {
+      setMaxInput(String(provider.maxInputTokens));
+    }
+    if (typeof provider.maxOutputTokens === "number") {
+      setMaxOutput(String(provider.maxOutputTokens));
+    }
     setEnabled(provider.enabled);
     setIsDefault(provider.isDefault);
     setCatalog(provider.modelDiscovery);
@@ -118,6 +153,19 @@ function ProviderCard({
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
+    const inputBound = parseProviderBound(maxInput);
+    const outputBound = parseProviderBound(maxOutput);
+    if (!inputBound.ok || !outputBound.ok) {
+      setNotice(null);
+      setError(
+        t("settings.provider.boundsInvalid", {
+          field: !inputBound.ok
+            ? t("settings.provider.maxInputTokens")
+            : t("settings.provider.maxOutputTokens"),
+        }),
+      );
+      return;
+    }
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -128,6 +176,14 @@ function ProviderCard({
         ...(credential === "" ? {} : { credential }),
         enabled,
         isDefault,
+        ...(inputBound.value === undefined ||
+        inputBound.value === provider.maxInputTokens
+          ? {}
+          : { maxInputTokens: inputBound.value }),
+        ...(outputBound.value === undefined ||
+        outputBound.value === provider.maxOutputTokens
+          ? {}
+          : { maxOutputTokens: outputBound.value }),
       });
       setCredential("");
       setNotice(t("settings.provider.saved"));
@@ -276,6 +332,8 @@ function ProviderCard({
         />
       </section>
 
+      <ProviderFundingStatus provider={provider.provider} />
+
       <section aria-label={t("settings.provider.catalog.aria")}>
         <div className="section-heading">
           <div>
@@ -422,7 +480,43 @@ function ProviderCard({
               help={t("settings.provider.manualModelHelp")}
               required
             />
+            <Input
+              label={t("settings.provider.maxInputTokens")}
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              value={maxInput}
+              onChange={(event) => setMaxInput(event.target.value)}
+              placeholder={
+                provider.maxInputTokens === undefined
+                  ? t("settings.provider.boundsNotReported")
+                  : undefined
+              }
+            />
+            <Input
+              label={t("settings.provider.maxOutputTokens")}
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              value={maxOutput}
+              onChange={(event) => setMaxOutput(event.target.value)}
+              placeholder={
+                provider.maxOutputTokens === undefined
+                  ? t("settings.provider.boundsNotReported")
+                  : undefined
+              }
+            />
           </div>
+          <p className="muted">{t("settings.provider.boundsHelp")}</p>
+          {typeof provider.leadOutputTokens === "number" &&
+            typeof provider.leadRetryOutputTokens === "number" && (
+              <p className="muted">
+                {t("settings.provider.leadRequirement", {
+                  base: provider.leadOutputTokens,
+                  retry: provider.leadRetryOutputTokens,
+                })}
+              </p>
+            )}
         </details>
         <details className="settings-advanced">
           <summary>{t("settings.provider.connectionDetails")}</summary>

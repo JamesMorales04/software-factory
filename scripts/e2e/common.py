@@ -17,9 +17,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -30,11 +32,20 @@ from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TIMEOUT = 600
+DEFAULT_OPERATION_TIMEOUT = 120
+DEFAULT_READINESS_TIMEOUT = 300
 RUN_SCHEMA = "factory-e2e-run-v1"
 RUN_SENTINEL = "run.json"
 
 
 class ScenarioError(RuntimeError):
+    """A scenario step failed with a diagnosis."""
+
+
+class TerminalScenarioError(ScenarioError):
+    """A wait must abort immediately: the observed state cannot progress."""
+
+
     """A bounded scenario failure with an operator-readable message."""
 
 
@@ -65,6 +76,22 @@ def read_json(path: Path) -> Any:
         raise ScenarioError(f"required JSON file is missing: {path}") from error
     except json.JSONDecodeError as error:
         raise ScenarioError(f"invalid JSON in {path}: {error}") from error
+
+
+def _strip_control_characters(value):
+    """Remove raw control characters so a capture is always strict JSON.
+
+    A Core projection can carry a control character inside a free-form string;
+    writing it verbatim produced a capture that could not be parsed strictly.
+    """
+
+    if isinstance(value, str):
+        return "".join(ch for ch in value if ch == "\n" or ch == "\t" or ord(ch) >= 0x20)
+    if isinstance(value, list):
+        return [_strip_control_characters(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _strip_control_characters(item) for key, item in value.items()}
+    return value
 
 
 def tail(value: str, limit: int = 12_000) -> str:
@@ -103,7 +130,7 @@ def _bounded_run(
     *,
     cwd: Path,
     env: dict[str, str] | None = None,
-    timeout: int = 60,
+    timeout: int | None = 60,
 ) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -211,8 +238,11 @@ class Config:
     restore: bool
     snapshot_dir: Path
     no_build: bool
-    timeout: int
+    operation_timeout: int
+    readiness_timeout: int | None
+    run_timeout: int | None
     scenario: str
+    required_stages: list[str] | None = None
 
     @property
     def base(self) -> str:
@@ -229,6 +259,12 @@ class Config:
     @property
     def cookie_jar(self) -> Path:
         return self.run_dir / "cookies.txt"
+
+    @property
+    def storage_state(self) -> Path:
+        """Playwright storageState JSON exported from the driver cookie jar."""
+
+        return self.run_dir / "cookies.storage.json"
 
     @property
     def state_path(self) -> Path:
@@ -250,6 +286,13 @@ class Config:
                 ),
                 "TMPDIR": str(self.run_dir / "tmp"),
             }
+        )
+        # The autonomous journey binds a real EnvironmentPlan/Spec, so the
+        # test-support placeholder is assigned "0" there; the fixture-only
+        # journeys assign "1". The value is always written explicitly so a host
+        # variable can never leak into the stack.
+        environment["FACTORY_TEST_ENVIRONMENT_BINDING"] = (
+            "0" if self.scenario == "autonomous-intake" else "1"
         )
         ensure_dir(Path(environment["TMPDIR"]))
         return environment
@@ -292,6 +335,164 @@ class State:
         current.append(value)
 
 
+
+_UNSET = object()
+
+
+class SupervisedResult:
+    """Result of a supervised process-group run with durable streaming logs."""
+
+    def __init__(
+        self,
+        returncode: int,
+        stdout: str,
+        stderr: str,
+        log_path: Path,
+        *,
+        timed_out: bool,
+        stdout_path: Path | None = None,
+        stderr_path: Path | None = None,
+    ) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.log_path = log_path
+        self.timed_out = timed_out
+        self.stdout_path = stdout_path
+        self.stderr_path = stderr_path
+
+
+def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+    """Terminate only this process group, reap children and report the exit."""
+
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    process.wait()
+
+
+def run_supervised(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    log_path: Path,
+    timeout: int | None = None,
+    check: bool = True,
+    label: str = "",
+) -> SupervisedResult:
+    """Run one command with streaming durable output and process-group cleanup.
+
+    ``timeout`` is an **explicit operation deadline** only when the caller has an
+    observable contract. Build/start and campaign runs pass ``None``: silence is
+    not treated as no progress and no universal clock is invented. Heartbeats
+    are observability, never a breaker.
+    """
+
+    ensure_dir(log_path.parent)
+    rendered = " ".join(command)
+    log(f"$ {rendered}")
+    started = time.monotonic()
+    stdout_tail = ""
+    stderr_tail = ""
+    timed_out = False
+    stdout_path = log_path.with_suffix(log_path.suffix + ".stdout")
+    stderr_path = log_path.with_suffix(log_path.suffix + ".stderr")
+    stdout_raw = stdout_path.open("w", encoding="utf-8")
+    stderr_raw = stderr_path.open("w", encoding="utf-8")
+    with log_path.open("w", encoding="utf-8") as handle:
+        handle.write(f"$ {rendered}\n")
+        handle.flush()
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+
+        def pump(stream, name: str) -> None:
+            nonlocal stdout_tail, stderr_tail
+            assert stream is not None
+            for line in iter(stream.readline, ""):
+                (stdout_raw if name == "stdout" else stderr_raw).write(line)
+                (stdout_raw if name == "stdout" else stderr_raw).flush()
+                handle.write(("" if name == "stdout" else "ERR ") + line)
+                handle.flush()
+                if name == "stdout":
+                    stdout_tail = (stdout_tail + line)[-8000:]
+                else:
+                    stderr_tail = (stderr_tail + line)[-8000:]
+            stream.close()
+
+        threads = [
+            threading.Thread(target=pump, args=(process.stdout, "stdout"), daemon=True),
+            threading.Thread(target=pump, args=(process.stderr, "stderr"), daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        deadline = None if timeout is None else time.monotonic() + timeout
+        last_heartbeat = time.monotonic()
+        try:
+            while process.poll() is None:
+                now = time.monotonic()
+                if deadline is not None and now >= deadline:
+                    timed_out = True
+                    handle.write(
+                        f"# explicit operation deadline {timeout}s reached; "
+                        "activity=undetermined; terminating our process group\n"
+                    )
+                    handle.flush()
+                    _terminate_process_group(process)
+                    break
+                if now - last_heartbeat >= 30:
+                    handle.write(
+                        f"# heartbeat elapsed={now - started:.0f}s pid={process.pid} "
+                        "activity=undetermined (silent output is allowed)\n"
+                    )
+                    handle.flush()
+                    last_heartbeat = now
+                time.sleep(0.2)
+        except BaseException:
+            _terminate_process_group(process)
+            raise
+        returncode = process.wait()
+        for thread in threads:
+            thread.join(timeout=5)
+        elapsed = time.monotonic() - started
+        handle.write(f"# exit={returncode} elapsed={elapsed:.3f}s timed_out={timed_out}\n")
+    if check and (timed_out or returncode != 0):
+        raise ScenarioError(
+            f"supervised command failed ({returncode}, timed_out={timed_out}): {rendered}\n"
+            f"stdout:\n{tail(stdout_tail)}\nstderr:\n{tail(stderr_tail)}\nlog={log_path}"
+        )
+    stdout_raw.close()
+    stderr_raw.close()
+    return SupervisedResult(
+        returncode,
+        stdout_tail,
+        stderr_tail,
+        log_path,
+        timed_out=timed_out,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+    )
+
+
 class Compose:
     """A thin, logged wrapper around the canonical Compose command."""
 
@@ -317,39 +518,34 @@ class Compose:
         *,
         check: bool = True,
         log_name: str | None = None,
-    ) -> subprocess.CompletedProcess[str]:
+        timeout: int | None | object = _UNSET,
+    ) -> SupervisedResult:
         args = list(arguments)
         command = self.command() + args
-        started = time.monotonic()
-        rendered = " ".join(command)
-        log(f"$ {rendered}")
-        try:
-            result = subprocess.run(
-                command,
-                cwd=self.config.root,
-                env=self.config.environment(),
-                text=True,
-                capture_output=True,
-                timeout=self.config.timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as error:
-            raise ScenarioError(f"command timed out after {self.config.timeout}s: {rendered}") from error
-        except OSError as error:
-            raise ScenarioError(f"command failed to start ({command[0]}): {error}") from error
-        elapsed = time.monotonic() - started
+        log_path = (
+            ensure_dir(self.config.artifacts_dir / "logs") / f"{log_name}.log"
+            if log_name
+            else self.log_path
+        )
+        result = run_supervised(
+            command,
+            cwd=self.config.root,
+            env=self.config.environment(),
+            log_path=log_path,
+            timeout=(
+                self.config.operation_timeout if timeout is _UNSET else timeout
+            ),
+            check=False,
+        )
         with self.log_path.open("a", encoding="utf-8") as handle:
-            handle.write(f"\n$ {rendered}\n{tail(result.stdout)}\n{tail(result.stderr)}\n")
-            handle.write(f"exit={result.returncode} elapsed={elapsed:.3f}s\n")
-        if log_name:
-            ensure_dir(self.config.artifacts_dir / "logs").joinpath(f"{log_name}.log").write_text(
-                f"$ {rendered}\n\nSTDOUT\n{result.stdout}\n\nSTDERR\n{result.stderr}\n",
-                encoding="utf-8",
+            handle.write(
+                f"\n$ {' '.join(command)}\n{tail(result.stdout)}\n{tail(result.stderr)}\n"
+                f"exit={result.returncode} log={log_path}\n"
             )
         if check and result.returncode != 0:
             raise ScenarioError(
-                f"command failed ({result.returncode}): {rendered}\n"
-                f"stdout:\n{tail(result.stdout)}\nstderr:\n{tail(result.stderr)}"
+                f"command failed ({result.returncode}): {' '.join(command)}\n"
+                f"stdout:\n{tail(result.stdout)}\nstderr:\n{tail(result.stderr)}\nlog={log_path}"
             )
         return result
 
@@ -357,12 +553,243 @@ class Compose:
         arguments = ["down"] + (["-v"] if volumes else [])
         return self.run(arguments, check=False, log_name="compose-down")
 
-    def up(self, *, build: bool) -> None:
-        arguments = ["up", "-d"] + (["--build"] if build else [])
-        self.run(arguments, check=False, log_name="compose-up")
+    def _candidate_identity(self) -> tuple[str, str]:
+        """Return the exact clean commit and tree that the build compiles.
+
+        A dirty worktree is refused: HEAD alone does not identify the source
+        that Cargo/Node compiled, so image ids could not be bound honestly.
+        """
+
+        dirty = subprocess.run(
+            ["git", "-C", str(self.config.root), "status", "--porcelain"],
+            text=True,
+            capture_output=True,
+            timeout=self.config.operation_timeout,
+            check=False,
+        )
+        if dirty.returncode != 0:
+            raise ScenarioError(f"cannot inspect the worktree: {tail(dirty.stderr)}")
+        if dirty.stdout.strip():
+            raise ScenarioError(
+                "refusing to build bindings from a dirty worktree: commit or use a clean "
+                "candidate checkout so the source SHA and tree identify the compiled images"
+            )
+        sha = subprocess.run(
+            ["git", "-C", str(self.config.root), "rev-parse", "HEAD"],
+            text=True,
+            capture_output=True,
+            timeout=self.config.operation_timeout,
+            check=False,
+        )
+        tree = subprocess.run(
+            ["git", "-C", str(self.config.root), "rev-parse", "HEAD^{tree}"],
+            text=True,
+            capture_output=True,
+            timeout=self.config.operation_timeout,
+            check=False,
+        )
+        if sha.returncode != 0 or tree.returncode != 0:
+            raise ScenarioError("cannot resolve the candidate SHA/tree")
+        return sha.stdout.strip(), tree.stdout.strip()
+
+    def _candidate_sha(self) -> str:
+        return self._candidate_identity()[0]
+
+    def _compose_services(self) -> list[str]:
+        result = self.run(["config", "--services"], log_name="compose-services")
+        services = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if not services:
+            raise ScenarioError("Compose reported no services")
+        return services
+
+    def _full_stdout(self, result: SupervisedResult) -> str:
+        """Machine parsers read the complete durable stream, never a tail."""
+
+        if result.stdout_path is not None and result.stdout_path.is_file():
+            return result.stdout_path.read_text(encoding="utf-8")
+        return result.stdout
+
+    def _compose_build_plan(self) -> dict[str, dict[str, Any]]:
+        """Return service -> {image, build} from the complete Compose config.
+
+        Only services that declare ``build:`` are candidate-built images. Image
+        only services (fixtures, upstream base images) are resolved by Compose
+        itself and must not be required as if we had built them.
+        """
+
+        result = self.run(["config"], log_name="compose-config")
+        text = self._full_stdout(result)
+        plan: dict[str, dict[str, Any]] = {}
+        in_services = False
+        current: str | None = None
+        for line in text.splitlines():
+            if line == "services:":
+                in_services = True
+                continue
+            if not in_services:
+                continue
+            if line and not line.startswith(" "):
+                break
+            service = re.match(r"^  ([A-Za-z0-9][A-Za-z0-9_.-]*):\s*$", line)
+            if service:
+                current = service.group(1)
+                plan[current] = {"image": "", "build": False}
+                continue
+            if current is None:
+                continue
+            field = re.match(r"^    (build|image):\s*(.*?)\s*$", line)
+            if not field:
+                continue
+            key, value = field.group(1), field.group(2).strip().strip('"')
+            if key == "build":
+                plan[current]["build"] = True
+            else:
+                plan[current]["image"] = value
+        if not plan:
+            raise ScenarioError("Compose reported no services")
+        return plan
+
+    def prebuild_sequential(self) -> dict[str, Any]:
+        """Build every service one at a time, with no total build deadline.
+
+        ``up --build`` fans out parallel builds and produced ten concurrent
+        builds with orphan children after a cancelled parent. This path builds
+        sequentially, streams each build to its own durable log, and records the
+        exact candidate SHA plus the resulting image ids for later binding.
+        """
+
+        plan = self._compose_build_plan()
+        built_services = [name for name, entry in plan.items() if entry["build"]]
+        upstream = {
+            name: entry["image"]
+            for name, entry in plan.items()
+            if not entry["build"] and entry["image"]
+        }
+        if not built_services:
+            raise ScenarioError("Compose reported no candidate-built services")
+        candidate, tree = self._candidate_identity()
+        for index, service in enumerate(built_services, start=1):
+            log(f"sequential prebuild {index}/{len(built_services)}: {service}")
+            result = run_supervised(
+                self.command() + ["build", service],
+                cwd=self.config.root,
+                env=self.config.environment(),
+                log_path=ensure_dir(self.config.artifacts_dir / "logs")
+                / f"build-{index:02d}-{service}.log",
+                timeout=self.config.run_timeout,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise ScenarioError(
+                    f"sequential build failed for {service} ({result.returncode}); "
+                    f"log={result.log_path}"
+                )
+        images = sorted(
+            {
+                plan[service]["image"]
+                for service in built_services
+                if plan[service]["image"]
+            }
+        )
+        if not images:
+            raise ScenarioError("candidate-built services declare no image names")
+        listed = subprocess.run(
+            ["podman", "images", "--format", "{{.Repository}}:{{.Tag}} {{.ID}}"],
+            text=True,
+            capture_output=True,
+            timeout=self.config.operation_timeout,
+            check=False,
+        )
+        if listed.returncode != 0:
+            raise ScenarioError(f"cannot list images: {tail(listed.stderr)}")
+        observed = {}
+        for line in listed.stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2:
+                repository, image_id = parts
+                observed[repository] = image_id
+                # Podman prints an unqualified local image as localhost/<name>.
+                # Compose config prints it without the implicit localhost
+                # namespace, so both spellings identify the same image.
+                if repository.startswith("localhost/"):
+                    observed[repository.split("/", 1)[1]] = image_id
+        missing = [image for image in images if image not in observed]
+        if missing:
+            raise ScenarioError(
+                "sequential prebuild did not produce every Compose image: " + ", ".join(missing)
+            )
+        binding = {
+            "schema": "factory-e2e-prebuild-v1",
+            "candidateSha": candidate,
+            "candidateTree": tree,
+            "createdAt": now_utc(),
+            "services": built_services,
+            "images": {image: observed[image] for image in images},
+            # Image-only Compose services are resolved upstream by Compose at
+            # start. We record identity when it already exists, but never claim
+            # it as candidate-built provenance and never require it here.
+            "upstreamImages": upstream,
+        }
+        write_json(self.config.run_dir / "prebuilt.json", binding)
+        return binding
+
+    def _verify_prebuilt_binding(self) -> None:
+        path = self.config.run_dir / "prebuilt.json"
+        if not path.is_file():
+            raise ScenarioError(
+                "refusing --no-build: no candidate-bound prebuild record exists; run the "
+                "sequential prebuild first"
+            )
+        binding = json.loads(path.read_text(encoding="utf-8"))
+        if binding.get("schema") != "factory-e2e-prebuild-v1":
+            raise ScenarioError("refusing --no-build: prebuild record has an unknown schema")
+        candidate, tree = self._candidate_identity()
+        if binding.get("candidateSha") != candidate or binding.get("candidateTree") != tree:
+            raise ScenarioError(
+                "refusing --no-build: prebuild images are not bound to the current candidate "
+                f"({binding.get('candidateSha')}/{binding.get('candidateTree')} != "
+                f"{candidate}/{tree})"
+            )
+        listed = subprocess.run(
+            ["podman", "images", "--format", "{{.Repository}}:{{.Tag}} {{.ID}}"],
+            text=True,
+            capture_output=True,
+            timeout=self.config.operation_timeout,
+            check=False,
+        )
+        observed = {}
+        for line in listed.stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2:
+                repository, image_id = parts
+                observed[repository] = image_id
+                if repository.startswith("localhost/"):
+                    observed[repository.split("/", 1)[1]] = image_id
+        for image, image_id in (binding.get("images") or {}).items():
+            if observed.get(image) != image_id:
+                raise ScenarioError(
+                    f"refusing --no-build: image {image} is not the built digest {image_id}"
+                )
+
+    def up(self, *, build: bool, services: list[str] | None = None) -> None:
+        if build:
+            self.prebuild_sequential()
+        else:
+            self._verify_prebuilt_binding()
+        command = ["up", "-d", "--no-build"]
+        if services:
+            command.extend(services)
+        self.run(
+            command,
+            check=True,
+            log_name="compose-up",
+            timeout=self.config.run_timeout,
+        )
 
     def start(self) -> None:
-        self.run(["start"], check=False, log_name="compose-start")
+        self.run(
+            ["start"], check=False, log_name="compose-start", timeout=self.config.run_timeout
+        )
 
     def stop(self) -> None:
         self.run(["stop"], check=False, log_name="compose-stop")
@@ -406,6 +833,51 @@ class Compose:
                 return name.strip()
         return ""
 
+    def container_state(self, service: str) -> tuple[str, int] | None:
+        """Return ("exited", code) / ("running", code) for a service, or None."""
+
+        name = self.service_container(service)
+        if not name:
+            return None
+        result = _bounded_run(
+            [
+                "podman",
+                "inspect",
+                "--format",
+                "{{.State.Status}} {{.State.ExitCode}}",
+                name,
+            ],
+            cwd=self.config.root,
+            env=self.config.environment(),
+            timeout=self.config.operation_timeout,
+        )
+        parts = (result.stdout or "").split()
+        if len(parts) != 2:
+            return None
+        try:
+            return parts[0], int(parts[1])
+        except ValueError:
+            return None
+
+    def exec_service(self, service: str, arguments: Iterable[str], *, check: bool = True) -> str:
+        container = self.service_container(service)
+        if not container:
+            raise ScenarioError(f"{service} container is not present")
+        result = subprocess.run(
+            ["podman", "exec", container, *arguments],
+            cwd=self.config.root,
+            env=self.config.environment(),
+            text=True,
+            capture_output=True,
+            timeout=self.config.run_timeout,
+            check=False,
+        )
+        if check and result.returncode != 0:
+            raise ScenarioError(
+                f"{service} exec failed: {tail(result.stderr) or tail(result.stdout)}"
+            )
+        return result.stdout
+
     def exec_core(self, arguments: Iterable[str], *, check: bool = True) -> str:
         core = self.core_container()
         if not core:
@@ -416,7 +888,7 @@ class Compose:
             env=self.config.environment(),
             text=True,
             capture_output=True,
-            timeout=self.config.timeout,
+            timeout=self.config.run_timeout,
             check=False,
         )
         if check and result.returncode != 0:
@@ -490,6 +962,47 @@ class Api:
             os.chmod(self.config.cookie_jar, 0o600)
         except OSError:
             pass
+        self._write_storage_state()
+
+    def storage_state(self) -> dict[str, Any]:
+        """Playwright storageState for the exact session cookies in this jar.
+
+        The browser lane must consume the same authenticated session the driver
+        produced. Exporting from the already-parsed LWP cookie jar avoids a
+        second, divergent cookie parser. Cookie values are never logged.
+        """
+
+        cookies = []
+        for cookie in self.jar:
+            rest = getattr(cookie, "_rest", {}) or {}
+            same_site = rest.get("SameSite") or rest.get("samesite")
+            if same_site not in {"Strict", "Lax", "None"}:
+                same_site = None
+            entry: dict[str, Any] = {
+                "name": cookie.name,
+                "value": cookie.value,
+                "domain": cookie.domain or "",
+                "path": cookie.path or "/",
+                "expires": int(cookie.expires) if cookie.expires else -1,
+                "httpOnly": bool(
+                    cookie.has_nonstandard_attr("HttpOnly")
+                    or rest.get("HttpOnly") in (True, "True", "true")
+                ),
+                "secure": bool(cookie.secure),
+            }
+            if same_site:
+                entry["sameSite"] = same_site
+            cookies.append(entry)
+        return {"cookies": cookies, "origins": []}
+
+    def _write_storage_state(self) -> None:
+        path = self.config.storage_state
+        ensure_dir(path.parent)
+        payload = json.dumps(self.storage_state(), indent=2, sort_keys=True) + "\n"
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(payload, encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        temporary.replace(path)
 
     def csrf(self) -> str:
         for cookie in self.jar:
@@ -558,45 +1071,107 @@ class Api:
         return self.request("GET", path)
 
 
-def wait_url(url: str, timeout: int, *, interval: float = 1.0) -> None:
-    deadline = time.monotonic() + timeout
+def wait_url(url: str, timeout: int | None, *, interval: float = 1.0) -> None:
+    deadline = None if timeout is None else time.monotonic() + timeout
     last_error: Exception | None = None
-    while time.monotonic() < deadline:
+    last_heartbeat = time.monotonic()
+    while deadline is None or time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=5) as response:
                 if response.status < 500:
                     return
         except (urllib.error.URLError, OSError, TimeoutError) as error:
             last_error = error
+        now = time.monotonic()
+        if now - last_heartbeat >= 30:
+            log(f"waiting for {url}: activity=undetermined last_error={last_error!r}")
+            last_heartbeat = now
         time.sleep(interval)
-    raise ScenarioError(f"timed out after {timeout}s waiting for {url}: {last_error}")
+    raise ScenarioError(f"explicit readiness deadline {timeout}s reached for {url}: {last_error}")
 
 
-def wait_core(compose: Compose, url: str, timeout: int, *, interval: float = 1.0) -> None:
-    deadline = time.monotonic() + timeout
+def wait_oneshot(compose: Compose, service: str, timeout: int | None) -> None:
+    """Require a one-shot prerequisite (init/bundles) to finish with exit 0."""
+
+    deadline = None if timeout is None else time.monotonic() + timeout
+    last: tuple[str, int] | None = None
+    while deadline is None or time.monotonic() < deadline:
+        state = compose.container_state(service)
+        if state is None:
+            raise ScenarioError(f"prerequisite {service} container is missing")
+        last = state
+        if state[0] == "exited":
+            if state[1] == 0:
+                return
+            raise ScenarioError(
+                f"prerequisite {service} exited with {state[1]} instead of 0"
+            )
+        time.sleep(1.0)
+    raise ScenarioError(f"prerequisite {service} did not finish: {last!r}")
+
+
+def wait_service(compose: Compose, service: str, url: str, timeout: int | None) -> None:
+    deadline = None if timeout is None else time.monotonic() + timeout
     last_error: Exception | None = None
-    while time.monotonic() < deadline:
+    last_heartbeat = time.monotonic()
+    while deadline is None or time.monotonic() < deadline:
+        try:
+            compose.exec_service(service, ["curl", "-fsS", url], check=True)
+            return
+        except (ScenarioError, OSError, subprocess.TimeoutExpired) as error:
+            last_error = error
+        now = time.monotonic()
+        if now - last_heartbeat >= 30:
+            log(f"waiting for {service} {url}: activity=undetermined last_error={last_error!r}")
+            last_heartbeat = now
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        time.sleep(1.0)
+    raise ScenarioError(f"{service} did not become ready at {url}: {last_error!r}")
+
+
+def wait_core(compose: Compose, url: str, timeout: int | None, *, interval: float = 1.0) -> None:
+    deadline = None if timeout is None else time.monotonic() + timeout
+    last_error: Exception | None = None
+    last_heartbeat = time.monotonic()
+    while deadline is None or time.monotonic() < deadline:
         try:
             compose.exec_core(["curl", "-fsS", url], check=True)
             return
         except (ScenarioError, OSError, subprocess.TimeoutExpired) as error:
             last_error = error
+        now = time.monotonic()
+        if now - last_heartbeat >= 30:
+            log(f"waiting for Core {url}: activity=undetermined last_error={last_error!r}")
+            last_heartbeat = now
         time.sleep(interval)
-    raise ScenarioError(f"timed out after {timeout}s waiting for Core to reach {url}: {last_error}")
+    raise ScenarioError(
+        f"explicit readiness deadline {timeout}s reached waiting for Core {url}: {last_error}"
+    )
 
 
-def wait_until(predicate, timeout: int, description: str, *, interval: float = 1.0) -> Any:
-    deadline = time.monotonic() + timeout
+def wait_until(predicate, timeout: int | None, description: str, *, interval: float = 1.0) -> Any:
+    deadline = None if timeout is None else time.monotonic() + timeout
     last_error: Exception | None = None
-    while time.monotonic() < deadline:
+    last_heartbeat = time.monotonic()
+    while deadline is None or time.monotonic() < deadline:
         try:
             value = predicate()
             if value:
                 return value
+        except TerminalScenarioError:
+            # A terminal state is not a transient polling error: abort now.
+            raise
         except Exception as error:  # noqa: BLE001 - the caller needs the last diagnostic
             last_error = error
+        now = time.monotonic()
+        if now - last_heartbeat >= 30:
+            log(f"waiting for {description}: activity=undetermined last_error={last_error!r}")
+            last_heartbeat = now
         time.sleep(interval)
-    raise ScenarioError(f"timed out after {timeout}s waiting for {description}: {last_error}")
+    raise ScenarioError(
+        f"explicit readiness deadline {timeout}s reached waiting for {description}: {last_error}"
+    )
 
 
 def assert_equal(actual: Any, expected: Any, description: str) -> None:
@@ -707,7 +1282,7 @@ def snapshot_volumes(config: Config, compose: Compose) -> dict[str, Any]:
             ["podman", "volume", "export", volume, "--output", str(archive)],
             cwd=config.root,
             env=config.environment(),
-            timeout=config.timeout,
+            timeout=config.run_timeout,
         )
         if result.returncode != 0:
             raise ScenarioError(f"failed to export volume {volume}: {tail(result.stderr)}")
@@ -843,11 +1418,52 @@ def restore_volumes(config: Config, compose: Compose) -> dict[str, Any]:
             ["podman", "volume", "import", name, str(archive)],
             cwd=config.root,
             env=config.environment(),
-            timeout=config.timeout,
+            timeout=config.run_timeout,
         )
         if imported.returncode != 0:
             raise ScenarioError(f"failed to import volume {name}: {tail(imported.stderr)}")
     return index
+
+
+def _write_diagnostic(directory: Path, name: str, body: str) -> None:
+    """Write one diagnostic artifact without ever raising.
+
+    A diagnostic writer must not replace the primary failure, so a missing
+    directory, a permission error or an odd name is swallowed here.
+    """
+
+    try:
+        directory.joinpath(name).write_text(body, encoding="utf-8")
+    except Exception as error:  # noqa: BLE001 - one artifact must not abort the rest
+        # Never print the original message here: it may carry a secret that the
+        # redaction step has not processed yet.
+        log(f"diagnostic write failed for {name}: {type(error).__name__}")
+
+
+def _diagnostic_file_name(key: str, endpoint: str) -> str:
+    """Flatten an endpoint template into one safe file name.
+
+    Endpoint templates contain slashes and braces; using them verbatim created a
+    path like ``intake_id-/intake/requests/{id}.error.txt`` whose parent
+    directory does not exist, so the error handler raised and masked the primary
+    failure.
+    """
+
+    safe = endpoint.strip("/").replace("/", "-").replace("{", "").replace("}", "")
+    return f"{key}-{safe}.error.txt".replace("/", "-")
+
+
+def _diagnostic_error_text(error: BaseException) -> str:
+    """One bounded, redaction-safe line for a failed diagnostic artifact.
+
+    Redaction happens on the raw message BEFORE newline flattening and the
+    500-character truncation, so a secret cannot survive because the pattern was
+    cut in half. The class name is safe by construction.
+    """
+
+    redacted = redact_text(str(error))
+    flattened = " ".join(redacted.split())[:500]
+    return f"{type(error).__name__}: {flattened}\n"
 
 
 def collect_diagnostics(
@@ -856,7 +1472,10 @@ def collect_diagnostics(
     state: State,
     api: Api | None,
 ) -> None:
-    directory = ensure_dir(config.artifacts_dir / "diagnostics")
+    try:
+        directory = ensure_dir(config.artifacts_dir / "diagnostics")
+    except Exception:  # noqa: BLE001 - diagnostics are best effort
+        return
     commands = [
         (["podman", "ps", "-a", "--filter", f"label=com.docker.compose.project={config.project}"], "podman-ps.txt"),
         (["podman", "volume", "ls", "--filter", f"label=com.docker.compose.project={config.project}"], "podman-volumes.txt"),
@@ -870,11 +1489,17 @@ def collect_diagnostics(
                 timeout=30,
             )
             body = f"$ {' '.join(command)}\n\n{result.stdout}\n\nSTDERR\n{result.stderr}\n"
-        except ScenarioError as error:
-            body = f"$ {' '.join(command)}\ndiagnostic failed: {error}\n"
-        directory.joinpath(name).write_text(body, encoding="utf-8")
+        except Exception as error:  # noqa: BLE001 - one artifact boundary
+            body = f"$ {' '.join(command)}\ndiagnostic failed: {_diagnostic_error_text(error)}"
+        _write_diagnostic(directory, name, body)
     for service in ("core", "supervisor", "worker", "runtime", "model-fixture", "git-fixture"):
-        name = compose.service_container(service)
+        try:
+            name = compose.service_container(service)
+        except Exception as error:  # noqa: BLE001 - lookup is one artifact boundary
+            _write_diagnostic(
+                directory, f"logs-{service}.error.txt", _diagnostic_error_text(error)
+            )
+            continue
         if not name:
             continue
         try:
@@ -885,9 +1510,9 @@ def collect_diagnostics(
                 timeout=30,
             )
             body = f"container={name}\n\n{result.stdout}\n\nSTDERR\n{result.stderr}\n"
-        except ScenarioError as error:
-            body = f"container={name}\ndiagnostic failed: {error}\n"
-        directory.joinpath(f"logs-{service}.txt").write_text(body, encoding="utf-8")
+        except Exception as error:  # noqa: BLE001 - one artifact boundary
+            body = f"container={name}\ndiagnostic failed: {_diagnostic_error_text(error)}"
+        _write_diagnostic(directory, f"logs-{service}.txt", body)
     if api is not None:
         endpoints = {
             "workers.json": "/workers",
@@ -901,7 +1526,9 @@ def collect_diagnostics(
                     encoding="utf-8",
                 )
             except Exception as error:  # noqa: BLE001 - diagnostics must never mask the primary failure
-                directory.joinpath(f"{name}.error.txt").write_text(str(error), encoding="utf-8")
+                _write_diagnostic(
+                    directory, f"{name}.error.txt", _diagnostic_error_text(error)
+                )
         for key, endpoint in (
             ("intake_id", "/intake/requests/{id}"),
             ("campaign_id", "/campaigns/{id}"),
@@ -919,8 +1546,10 @@ def collect_diagnostics(
                     encoding="utf-8",
                 )
             except Exception as error:  # noqa: BLE001
-                directory.joinpath(f"{key}-{endpoint}.error.txt").write_text(
-                    str(error), encoding="utf-8"
+                _write_diagnostic(
+                    directory,
+                    _diagnostic_file_name(key, endpoint),
+                    _diagnostic_error_text(error),
                 )
 
 
@@ -1040,6 +1669,213 @@ def _git_output(root: Path, arguments: list[str]) -> str:
     except (OSError, subprocess.TimeoutExpired):
         return "unknown"
     return result.stdout.strip() if result.returncode == 0 else "unknown"
+
+
+
+
+_SECRET_PATTERN = re.compile(
+    r"(?i)(authorization|cookie|password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+"
+)
+
+
+def redact_value(value):
+    """Redact secret-shaped strings inside a parsed structure before encoding."""
+
+    if isinstance(value, str):
+        return redact_text(value)
+    if isinstance(value, list):
+        return [redact_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_value(item) for key, item in value.items()}
+    return value
+
+
+def redact_text(value: str) -> str:
+    return _SECRET_PATTERN.sub(r"\1=[REDACTED]", value)
+
+
+def finalize_with_capture(capture, cleanup):
+    """Run capture first, then cleanup; never let capture hide the run error.
+
+    ``capture`` and ``cleanup`` are callables supplied by the caller (the real
+    Podman capture or a fake adapter in tests). A capture failure is reported
+    and the cleanup still runs. The original failure/cancellation is not
+    replaced by a capture error.
+    """
+
+    capture_result = None
+    capture_error = None
+    try:
+        capture_result = capture()
+    except BaseException as error:  # noqa: BLE001 - preserve the run outcome
+        capture_error = error
+        log(f"final evidence capture failed: {error}")
+    cleanup_result = cleanup()
+    return capture_result, cleanup_result, capture_error
+
+
+def capture_final_evidence(
+    config: Config,
+    compose: Compose,
+    state: State,
+    api: Api | None,
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    """Capture durable pre-cleanup evidence without blocking cleanup.
+
+    Every artifact is bounded and best effort. Missing permissions, an absent
+    cgroup or an unavailable endpoint are recorded as NOT_CAPTURED with the
+    reason. No prompts, cookies or credentials are written; free text is
+    redacted. This is observability, not product telemetry.
+    """
+
+    directory = ensure_dir(config.artifacts_dir / "final-capture")
+    summary: dict[str, Any] = {"reason": reason, "at": now_utc(), "artifacts": {}}
+
+    def record(name: str, status: str, detail: str = "", body: str = "") -> None:
+        summary["artifacts"][name] = {"status": status, "detail": detail}
+        if body:
+            path = directory / name
+            path.write_text(redact_text(body), encoding="utf-8")
+            os.chmod(path, 0o600)
+
+    def record_json(name: str, status: str, value) -> None:
+        """Write a structured capture as strict JSON, redacting before encoding.
+
+        Redaction happens on the parsed values, never on serialized text: a regex
+        over JSON text injected a raw newline inside a string and produced a file
+        that was not strict JSON. The write is atomic and strictly re-parsed
+        before it replaces the target.
+        """
+
+        payload = json.dumps(redact_value(value), indent=2, sort_keys=True)
+        json.loads(payload)  # fail closed if the encoder ever emits invalid JSON
+        path = directory / name
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(payload, encoding="utf-8")
+        json.loads(temporary.read_text(encoding="utf-8"))
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        summary["artifacts"][name] = {"status": status, "detail": ""}
+
+    def podman(arguments: list[str], timeout: int = 30):
+        return _bounded_run(
+            ["podman", *arguments],
+            cwd=config.root,
+            env=config.environment(),
+            timeout=timeout,
+        )
+
+    containers: list[str] = []
+    try:
+        listed = podman(
+            ["ps", "-a", "--filter", f"label=com.docker.compose.project={config.project}",
+             "--format", "{{.Names}}"]
+        )
+        containers = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+        record("containers.txt", "CAPTURED", body="\n".join(containers) + "\n")
+    except Exception as error:  # noqa: BLE001
+        record("containers.txt", "NOT_CAPTURED", f"podman ps failed: {error}")
+
+    for name in containers:
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+        try:
+            logs = podman(["logs", "--tail", "400", name])
+            record(f"{safe}.log", "CAPTURED", body=f"{logs.stdout}\n{logs.stderr}")
+        except Exception as error:  # noqa: BLE001
+            record(f"{safe}.log", "NOT_CAPTURED", f"logs failed: {error}")
+        try:
+            inspected = podman(
+                ["inspect", name, "--format",
+                 "{{.State.Status}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|"
+                 "{{.HostConfig.Memory}}|{{.HostConfig.PidsLimit}}|{{.State.CgroupPath}}"]
+            )
+            record(f"{safe}.inspect", "CAPTURED", body=inspected.stdout + "\n")
+        except Exception as error:  # noqa: BLE001
+            record(f"{safe}.inspect", "NOT_CAPTURED", f"inspect failed: {error}")
+        try:
+            stats = podman(["stats", "--no-stream", "--format",
+                            "{{.MemUsage}}|{{.MemPerc}}|{{.CPUPerc}}", name])
+            record(f"{safe}.stats", "CAPTURED", body=stats.stdout + "\n")
+        except Exception as error:  # noqa: BLE001
+            record(f"{safe}.stats", "NOT_CAPTURED", f"stats failed: {error}")
+        # cgroup memory evidence, best effort. The path comes from inspect.
+        try:
+            cgroup = podman(
+                ["inspect", name, "--format", "{{.State.CgroupPath}}"]
+            ).stdout.strip()
+            if not cgroup:
+                record(f"{safe}.memory", "NOT_CAPTURED", "cgroup path is empty")
+            else:
+                body = []
+                for leaf in ("memory.events", "memory.peak", "memory.max", "memory.current"):
+                    path = Path("/sys/fs/cgroup") / cgroup.lstrip("/") / leaf
+                    if path.is_file():
+                        body.append(f"{leaf}: {path.read_text(encoding='utf-8').strip()}")
+                    else:
+                        body.append(f"{leaf}: NOT_CAPTURED")
+                record(f"{safe}.memory", "CAPTURED", body="\n".join(body) + "\n")
+        except Exception as error:  # noqa: BLE001
+            record(f"{safe}.memory", "NOT_CAPTURED", f"cgroup read failed: {error}")
+
+    core = compose.service_container("core")
+    if core:
+        try:
+            health = podman(
+                ["exec", core, "curl", "-fsS", "--max-time", "5",
+                 "http://127.0.0.1:8765/health"], timeout=20
+            )
+            record("health.txt", "CAPTURED", body=health.stdout + "\n")
+        except Exception as error:  # noqa: BLE001
+            record("health.txt", "NOT_CAPTURED", f"health failed: {error}")
+    else:
+        record("health.txt", "NOT_CAPTURED", "core container absent")
+
+    if api is not None:
+        try:
+            calls = api.get("/model/calls")
+            rows = calls if isinstance(calls, list) else (
+                calls.get("calls") or calls.get("items") or []
+            )
+            body = "\n".join(
+                f"{row.get('purpose')}|{row.get('state') or row.get('status')}|{row.get('createdAt') or row.get('created_at')}"
+                for row in rows
+            )
+            record("model-calls.txt", "CAPTURED", body=body + "\n")
+        except Exception as error:  # noqa: BLE001
+            record("model-calls.txt", "NOT_CAPTURED", f"api failed: {error}")
+        intake_id = state.get("intake_id")
+        if intake_id:
+            try:
+                projection = api.get(f"/intake/requests/{intake_id}")
+                record_json("projection.json", "CAPTURED", projection)
+            except Exception as error:  # noqa: BLE001
+                record("projection.json", "NOT_CAPTURED", f"projection failed: {error}")
+        else:
+            record("projection.json", "NOT_CAPTURED", "no intake id in state")
+
+    fixture = compose.service_container("model-fixture")
+    if fixture:
+        script = (
+            "import urllib.request;"
+            "print(urllib.request.urlopen('http://127.0.0.1:8080/counters', timeout=5)"
+            ".read().decode())"
+        )
+        try:
+            result = podman(["exec", fixture, "python3", "-c", script], timeout=20)
+            record("fixture-counters.json", "CAPTURED", body=result.stdout + "\n")
+        except Exception as error:  # noqa: BLE001
+            record("fixture-counters.json", "NOT_CAPTURED", f"counters failed: {error}")
+    else:
+        record("fixture-counters.json", "NOT_CAPTURED", "model fixture absent")
+
+    directory.joinpath("capture.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    os.chmod(directory / "capture.json", 0o600)
+    log(f"final evidence captured: {directory}")
+    return summary
 
 
 def cleanup(config: Config, compose: Compose) -> dict[str, Any]:

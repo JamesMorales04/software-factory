@@ -131,6 +131,13 @@ impl ModelGateway {
         self.config.bound_role
     }
 
+    /// Exact request identity used by the gateway's durable replay fence. This
+    /// is the single digest implementation shared with callers that must select
+    /// a matching settled reservation before deciding whether to replay.
+    pub fn request_sha256(&self, request: &ModelCallRequest<'_>) -> String {
+        request_digest(&self.config, request)
+    }
+
     /// The effective role policy after route, provider and Core intersection.
     pub fn role_policy(&self, role: ModelCallRole) -> ModelCallPolicy {
         match role {

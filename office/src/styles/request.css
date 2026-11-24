@@ -437,3 +437,36 @@
     width: 100%;
   }
 }
+
+.request-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.request-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.request-table th,
+.request-table td {
+  border-bottom: 1px solid var(--border);
+  padding: var(--space-2);
+  text-align: left;
+  vertical-align: top;
+}
+
+.request-table th {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.request-table td code {
+  overflow-wrap: anywhere;
+}
+
+.request-funding h3,
+.request-funding h4 {
+  margin: var(--space-4) 0 var(--space-2);
+}

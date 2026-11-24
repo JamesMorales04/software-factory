@@ -13,7 +13,10 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -60,6 +63,10 @@ pub enum ExecutionError {
     Sandbox(#[from] SandboxError),
     #[error("workspace already has a different identity")]
     Conflict,
+    /// A rejected workspace allocation with a bounded, non-secret reason used
+    /// by the Supervisor response and the next real-lifecycle probe.
+    #[error("workspace allocation conflict: {0}")]
+    ConflictReason(&'static str),
     #[error("workspace not found")]
     NotFound,
 }
@@ -968,6 +975,80 @@ impl VolumeBackend for RootlessPodmanVolumes {
     }
 }
 
+/// One in-flight Supervisor-proxied environment check.
+///
+/// The lease is the check's only finalization identity: it carries the
+/// workspace volume and the unguessable check token, so a stale generation can
+/// neither cancel nor release a newer registration. `orphaned` is set only when
+/// the task that owns the check disappears without finalizing, which lets a
+/// newer generation ask the backend that owns the check whether any live
+/// container remains before takeover.
+/// Cancellation is requested first and only becomes confirmed once the backend
+/// that owns the check reports it gone.
+const CHECK_CANCEL_NONE: u8 = 0;
+const CHECK_CANCEL_REQUESTED: u8 = 1;
+const CHECK_CANCEL_CONFIRMED: u8 = 2;
+
+#[derive(Clone)]
+pub struct EnvironmentCheckLease {
+    workspace_id: String,
+    generation: i64,
+    volume: String,
+    token: String,
+    orphaned: Arc<AtomicBool>,
+    /// Cancellation state lives in the lease, not in a process-wide token map,
+    /// so an aborted task cannot leave orphaned tokens behind.
+    cancellation: Arc<AtomicU8>,
+}
+
+impl EnvironmentCheckLease {
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
+    pub fn generation(&self) -> i64 {
+        self.generation
+    }
+
+    pub fn volume(&self) -> &str {
+        &self.volume
+    }
+
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// True only when the owning task is gone. A check that is merely
+    /// unresponsive is still owned and must stay fail-closed.
+    pub fn is_orphaned(&self) -> bool {
+        self.orphaned.load(Ordering::SeqCst)
+    }
+
+    pub fn mark_orphaned(&self) {
+        self.orphaned.store(true, Ordering::SeqCst);
+    }
+
+    /// True once cancellation was requested for this exact check.
+    pub fn cancellation_requested(&self) -> bool {
+        self.cancellation.load(Ordering::SeqCst) != CHECK_CANCEL_NONE
+    }
+
+    /// True only once the owning backend confirmed the check is gone.
+    pub fn cancellation_confirmed(&self) -> bool {
+        self.cancellation.load(Ordering::SeqCst) == CHECK_CANCEL_CONFIRMED
+    }
+
+    fn mark_cancel_requested(&self) {
+        self.cancellation
+            .fetch_max(CHECK_CANCEL_REQUESTED, Ordering::SeqCst);
+    }
+
+    fn mark_cancel_confirmed(&self) {
+        self.cancellation
+            .fetch_max(CHECK_CANCEL_CONFIRMED, Ordering::SeqCst);
+    }
+}
+
 pub struct WorkspaceManager<B: VolumeBackend> {
     workspace_root: PathBuf,
     state_root: PathBuf,
@@ -977,10 +1058,16 @@ pub struct WorkspaceManager<B: VolumeBackend> {
     operation_locks:
         Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     active: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
-    /// Workspace volume for an in-flight Supervisor-proxied environment check.
-    /// The broker owns the check container, so cancellation is addressed by the
-    /// volume rather than a guessed container name.
-    active_checks: Arc<std::sync::Mutex<std::collections::HashMap<String, (String, String)>>>,
+    /// In-flight Supervisor-proxied environment checks, keyed by workspace. The
+    /// broker owns the check container, so cancellation is addressed by the
+    /// lease volume and token rather than a guessed container name.
+    active_checks: Arc<std::sync::Mutex<std::collections::HashMap<String, EnvironmentCheckLease>>>,
+    /// Check-token cancellations. A check token is unguessable and unique per
+    /// check, so a late cancellation of an older check can never block a newer
+    /// Generation of the last revocation observed for a workspace. A check may
+    /// only start for a generation that has not been revoked, and a revocation
+    /// of an older generation can never block a newer one.
+    check_revocations: Arc<std::sync::Mutex<std::collections::HashMap<String, i64>>>,
     cancelled: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
@@ -1016,6 +1103,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             operation_locks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             active: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             active_checks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            check_revocations: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             cancelled: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         })
     }
@@ -1028,13 +1116,72 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         let _write = self.lock.lock().await;
         if let Some(mut record) = self.load_record(&input.attempt_id)? {
             let authorized = self.authorize_repository(&record.repository)?;
-            if record.generation != input.generation
-                || !record.base_commit.eq_ignore_ascii_case(&input.base_commit)
+            if !record.base_commit.eq_ignore_ascii_case(&input.base_commit)
                 || !authorized
                     .to_string_lossy()
                     .eq_ignore_ascii_case(&input.repository)
             {
-                return Err(ExecutionError::Conflict);
+                return Err(ExecutionError::ConflictReason(
+                    "repository_or_base_mismatch",
+                ));
+            }
+            let recovering_generation = record.generation != input.generation;
+            if recovering_generation {
+                // A restart can leave the durable workspace record under the
+                // previous lease generation while Core legitimately issues a
+                // newer generation for the same Attempt. Recover only a newer
+                // lease whose older generation is no longer live; a live
+                // execution, an older lease, or a completed candidate remains a
+                // conflict. Updating the generation invalidates the old
+                // workspace capability.
+                let active = self
+                    .active
+                    .lock()
+                    .unwrap()
+                    .contains_key(&record.workspace_id);
+                let check = self
+                    .active_checks
+                    .lock()
+                    .unwrap()
+                    .get(&record.workspace_id)
+                    .cloned();
+                if input.generation <= record.generation {
+                    return Err(ExecutionError::ConflictReason("generation_not_newer"));
+                }
+                if record.status == WorkspaceStatus::Completed {
+                    return Err(ExecutionError::ConflictReason("completed_workspace"));
+                }
+                if active {
+                    return Err(ExecutionError::ConflictReason("active_execution"));
+                }
+                if let Some(check) = check {
+                    if !check.is_orphaned() {
+                        return Err(ExecutionError::ConflictReason("active_environment_check"));
+                    }
+                    // The task that owned this check is gone, so no handler can
+                    // finalize it. Release the registration only after the
+                    // backend that owns the check confirms that no live check
+                    // container remains; an unreachable or ambiguous backend
+                    // stays fail-closed under the same typed reason.
+                    if self.cancel_environment_check(&check).await.is_err() {
+                        return Err(ExecutionError::ConflictReason("active_environment_check"));
+                    }
+                }
+                if record.container.is_some() {
+                    return Err(ExecutionError::ConflictReason("stale_container_reference"));
+                }
+                // The record carries no live container reference and no
+                // operation/check is registered. Remove any stale volume before
+                // recreating it under the newer generation.
+                self.backend.remove_volume(&record.volume).await?;
+                record.generation = input.generation;
+                record.status = WorkspaceStatus::Allocated;
+                record.candidate = None;
+                record.snapshot_sha256 = None;
+                record.error = None;
+                record.updated_at_ms = now_ms();
+                record.capability_expires_at_ms = (now_ms() as i64)
+                    .saturating_add(MAX_EXECUTION_RUNTIME.as_millis() as i64 + 60_000);
             }
             if record.status == WorkspaceStatus::Completed {
                 let candidate = record.candidate.clone().ok_or_else(|| {
@@ -1051,8 +1198,14 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
                 self.write_record(&record)?;
                 return Ok(record.handle());
             }
-            if let Ok(workspace) = self.open_existing(&record) {
-                workspace.reset_to_base()?;
+            if let Ok(mut workspace) = self.open_existing(&record) {
+                if let Err(error) = workspace.reset_to_base() {
+                    let _ = workspace.cleanup();
+                    if recovering_generation {
+                        let _ = self.remove_record(&record.attempt_id);
+                    }
+                    return Err(error.into());
+                }
                 record.status = WorkspaceStatus::Allocated;
                 record.candidate = None;
                 record.snapshot_sha256 = None;
@@ -1061,10 +1214,22 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
                 record.updated_at_ms = now_ms();
                 record.capability_expires_at_ms = (now_ms() as i64)
                     .saturating_add(MAX_EXECUTION_RUNTIME.as_millis() as i64 + 60_000);
-                self.write_record(&record)?;
-                self.backend
+                if let Err(error) = self.write_record(&record) {
+                    if recovering_generation {
+                        let _ = self.remove_record(&record.attempt_id);
+                    }
+                    return Err(error);
+                }
+                if let Err(error) = self
+                    .backend
                     .create_volume(&record.volume, &record.workspace_id)
-                    .await?;
+                    .await
+                {
+                    if recovering_generation {
+                        let _ = self.remove_record(&record.attempt_id);
+                    }
+                    return Err(error);
+                }
                 return Ok(record.handle());
             }
             let _ = self.backend.remove_volume(&record.volume).await;
@@ -1112,12 +1277,16 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
     pub async fn write_files(
         &self,
         workspace_id: &str,
+        generation: i64,
         input: &WriteFilesRequest,
     ) -> Result<WorkspaceHandle, ExecutionError> {
         validate_workspace_id(workspace_id)?;
         validate_files(&input.allowed_paths, &input.files)?;
         let _write = self.lock.lock().await;
-        let mut record = self.find_by_id(workspace_id)?;
+        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
+        if self.cancelled.lock().unwrap().remove(workspace_id) {
+            return Err(ExecutionError::Conflict);
+        }
         if record.status != WorkspaceStatus::Allocated {
             return Err(ExecutionError::Conflict);
         }
@@ -1132,43 +1301,117 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         Ok(record.handle())
     }
 
-    /// Register one in-flight environment check. A second check for the same
-    /// workspace conflicts instead of replacing the volume another builder
-    /// check is currently reading.
-    pub fn begin_environment_check(
+    /// Register one in-flight environment check and return its finalization
+    /// lease. A second check for the same workspace conflicts instead of
+    /// replacing the volume another builder check is currently reading.
+    pub async fn begin_environment_check(
         &self,
         workspace_id: &str,
+        generation: i64,
         volume: &str,
         check_token: &str,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<EnvironmentCheckLease, ExecutionError> {
         validate_workspace_id(workspace_id)?;
+        let _write = self.lock.lock().await;
+        self.find_by_id_fenced(workspace_id, generation)?;
         validate_volume_name(volume)?;
         if !crate::runtime_broker::is_valid_check_token(check_token) {
             return Err(ExecutionError::Invalid(
                 "environment check token is invalid".into(),
             ));
         }
+        if self.check_generation_cancelled(workspace_id, generation) {
+            return Err(ExecutionError::Conflict);
+        }
+        let existing = self
+            .active_checks
+            .lock()
+            .unwrap()
+            .get(workspace_id)
+            .cloned();
+        if let Some(existing) = existing {
+            if !existing.is_orphaned() {
+                return Err(ExecutionError::Conflict);
+            }
+            // The owning task is gone, so this registration can never be
+            // finalized by a handler. Release it only after the backend that
+            // owns the check confirms there is no live container; otherwise the
+            // registration stays and the retry remains fail-closed.
+            if self.cancel_environment_check(&existing).await.is_err() {
+                return Err(ExecutionError::Conflict);
+            }
+        }
         let mut checks = self.active_checks.lock().unwrap();
         if checks.contains_key(workspace_id) {
             return Err(ExecutionError::Conflict);
         }
-        checks.insert(
-            workspace_id.to_owned(),
-            (volume.to_owned(), check_token.to_owned()),
-        );
+        let lease = EnvironmentCheckLease {
+            workspace_id: workspace_id.to_owned(),
+            generation,
+            volume: volume.to_owned(),
+            token: check_token.to_owned(),
+            orphaned: Arc::new(AtomicBool::new(false)),
+            cancellation: Arc::new(AtomicU8::new(CHECK_CANCEL_NONE)),
+        };
+        checks.insert(workspace_id.to_owned(), lease.clone());
+        Ok(lease)
+    }
+
+    /// Finalize the check that `lease` identifies. Returns true when that exact
+    /// check was cancelled.
+    ///
+    /// A cancellation is only honoured once the backend that owns the check has
+    /// confirmed termination. If cancellation was requested but never confirmed,
+    /// the registration is kept fail-closed and marked orphaned so a later
+    /// allocation or same-generation registration can retry the same
+    /// authority-backed cancellation. A stale lease cannot release a newer
+    /// registration for the same workspace.
+    pub fn end_environment_check(&self, lease: &EnvironmentCheckLease) -> bool {
+        if lease.cancellation_requested() && !lease.cancellation_confirmed() {
+            lease.mark_orphaned();
+            return true;
+        }
+        self.remove_check_registration(lease);
+        lease.cancellation_requested()
+    }
+
+    fn remove_check_registration(&self, lease: &EnvironmentCheckLease) -> bool {
+        let mut checks = self.active_checks.lock().unwrap();
+        match checks.get(lease.workspace_id()) {
+            Some(current) if current.token() == lease.token() => {
+                checks.remove(lease.workspace_id());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn check_generation_cancelled(&self, workspace_id: &str, generation: i64) -> bool {
+        self.check_revocations
+            .lock()
+            .unwrap()
+            .get(workspace_id)
+            .is_some_and(|revoked| *revoked == generation)
+    }
+
+    /// Cancel one environment check through the backend that owns its container
+    /// and release the registration only after that backend reports the check
+    /// as gone. Any error leaves the registration in place, so allocation keeps
+    /// returning the typed conflict instead of taking over a volume that may
+    /// still be in use.
+    pub async fn cancel_environment_check(
+        &self,
+        lease: &EnvironmentCheckLease,
+    ) -> Result<(), ExecutionError> {
+        validate_workspace_id(lease.workspace_id())?;
+        validate_volume_name(lease.volume())?;
+        lease.mark_cancel_requested();
+        self.backend
+            .cancel_environment_check(lease.volume(), lease.token())
+            .await?;
+        lease.mark_cancel_confirmed();
+        self.remove_check_registration(lease);
         Ok(())
-    }
-
-    /// Unregister a finished environment check. Returns true when the check was
-    /// cancelled and clears the cancellation marker for that operation.
-    pub fn end_environment_check(&self, workspace_id: &str) -> bool {
-        self.active_checks.lock().unwrap().remove(workspace_id);
-        self.cancelled.lock().unwrap().remove(workspace_id)
-    }
-
-    /// True when the workspace cancellation marker is set.
-    pub fn environment_check_cancelled(&self, workspace_id: &str) -> bool {
-        self.cancelled.lock().unwrap().contains(workspace_id)
     }
 
     /// Replace a workspace volume with an exact snapshot. `podman volume
@@ -1200,13 +1443,17 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
     pub async fn stage_workspace_for_check(
         &self,
         workspace_id: &str,
+        generation: i64,
+        check: Option<&EnvironmentCheckLease>,
     ) -> Result<(), ExecutionError> {
         validate_workspace_id(workspace_id)?;
         let _write = self.lock.lock().await;
-        if self.cancelled.lock().unwrap().contains(workspace_id) {
+        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
+        if check.is_some_and(|lease| lease.cancellation_requested())
+            || self.check_generation_cancelled(workspace_id, generation)
+        {
             return Err(ExecutionError::Conflict);
         }
-        let mut record = self.find_by_id(workspace_id)?;
         if record.status != WorkspaceStatus::Allocated {
             return Err(ExecutionError::Conflict);
         }
@@ -1220,7 +1467,9 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         .map_err(|error| ExecutionError::Invalid(format!("snapshot task: {error}")))??;
         self.replace_workspace_volume(&record.workspace_id, &record.volume, &snapshot.bytes)
             .await?;
-        if self.cancelled.lock().unwrap().contains(workspace_id) {
+        if check.is_some_and(|lease| lease.cancellation_requested())
+            || self.check_generation_cancelled(workspace_id, generation)
+        {
             return Err(ExecutionError::Conflict);
         }
         record.updated_at_ms = now_ms();
@@ -1231,6 +1480,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
     pub async fn run_tool(
         &self,
         workspace_id: &str,
+        generation: i64,
         input: &ToolRunRequest,
     ) -> Result<ExecutionResult, ExecutionError> {
         validate_workspace_id(workspace_id)?;
@@ -1242,10 +1492,10 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             ));
         }
         let _write = self.lock.lock().await;
+        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if self.cancelled.lock().unwrap().remove(workspace_id) {
             return Err(ExecutionError::Conflict);
         }
-        let mut record = self.find_by_id(workspace_id)?;
         if record.status != WorkspaceStatus::Allocated {
             return Err(ExecutionError::Conflict);
         }
@@ -1363,6 +1613,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
     pub async fn acquire_dependencies(
         &self,
         workspace_id: &str,
+        generation: i64,
         input: &crate::dependency_service::DependencyAcquireRequest,
     ) -> Result<crate::dependency_service::DependencyAcquireReceipt, ExecutionError> {
         validate_workspace_id(workspace_id)?;
@@ -1379,10 +1630,10 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         let container = format!("{DEPENDENCY_CONTAINER_PREFIX}{}", Uuid::new_v4());
         let (workspace, volume) = {
             let _write = self.lock.lock().await;
+            let mut record = self.find_by_id_fenced(workspace_id, generation)?;
             if self.cancelled.lock().unwrap().remove(workspace_id) {
                 return Err(ExecutionError::Conflict);
             }
-            let mut record = self.find_by_id(workspace_id)?;
             if record.status != WorkspaceStatus::Allocated {
                 return Err(ExecutionError::Conflict);
             }
@@ -1420,7 +1671,12 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         .await;
         self.active.lock().unwrap().remove(workspace_id);
         let _ = self.backend.remove_container(&container).await;
-        if self.cancelled.lock().unwrap().remove(workspace_id) {
+        let cancelled = {
+            let _write = self.lock.lock().await;
+            self.find_by_id_fenced(workspace_id, generation)?;
+            self.cancelled.lock().unwrap().remove(workspace_id)
+        };
+        if cancelled {
             self.fail_dependency_acquisition(
                 workspace_id,
                 &container,
@@ -1439,7 +1695,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         };
         {
             let _write = self.lock.lock().await;
-            let record = self.find_by_id(workspace_id)?;
+            let record = self.find_by_id_unfenced(workspace_id)?;
             if record.status != WorkspaceStatus::Running
                 || record.container.as_deref() != Some(container.as_str())
             {
@@ -1463,11 +1719,11 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             return Err(ExecutionError::Archive(error));
         }
         let _write = self.lock.lock().await;
+        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if self.cancelled.lock().unwrap().remove(workspace_id) {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(ExecutionError::Conflict);
         }
-        let mut record = self.find_by_id(workspace_id)?;
         if record.status != WorkspaceStatus::Running
             || record.container.as_deref() != Some(container.as_str())
         {
@@ -1500,7 +1756,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
 
     async fn fail_dependency_acquisition(&self, workspace_id: &str, container: &str, error: &str) {
         let _write = self.lock.lock().await;
-        let Ok(mut record) = self.find_by_id(workspace_id) else {
+        let Ok(mut record) = self.find_by_id_unfenced(workspace_id) else {
             return;
         };
         if record.status == WorkspaceStatus::Running
@@ -1520,11 +1776,15 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
     pub async fn discard_outside_scope(
         &self,
         workspace_id: &str,
+        generation: i64,
         allowed_paths: &[String],
     ) -> Result<usize, ExecutionError> {
         validate_workspace_id(workspace_id)?;
         let _write = self.lock.lock().await;
-        let record = self.find_by_id(workspace_id)?;
+        let record = self.find_by_id_fenced(workspace_id, generation)?;
+        if self.cancelled.lock().unwrap().remove(workspace_id) {
+            return Err(ExecutionError::Conflict);
+        }
         if record.status != WorkspaceStatus::Allocated {
             return Ok(0);
         }
@@ -1538,13 +1798,14 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
     pub async fn finalize_workspace(
         &self,
         workspace_id: &str,
+        generation: i64,
     ) -> Result<CandidateRevision, ExecutionError> {
         validate_workspace_id(workspace_id)?;
         let _write = self.lock.lock().await;
+        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if self.cancelled.lock().unwrap().remove(workspace_id) {
             return Err(ExecutionError::Conflict);
         }
-        let mut record = self.find_by_id(workspace_id)?;
         if record.status == WorkspaceStatus::Completed {
             return record.candidate.ok_or_else(|| {
                 ExecutionError::Invalid("completed workspace has no candidate".into())
@@ -1569,15 +1830,16 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
     pub async fn apply_files(
         &self,
         workspace_id: &str,
+        generation: i64,
         input: &ApplyFilesRequest,
     ) -> Result<CandidateRevision, ExecutionError> {
         validate_workspace_id(workspace_id)?;
         validate_files(&input.allowed_paths, &input.files)?;
         let _write = self.lock.lock().await;
+        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if self.cancelled.lock().unwrap().remove(workspace_id) {
             return Err(ExecutionError::Conflict);
         }
-        let mut record = self.find_by_id(workspace_id)?;
         if record.status == WorkspaceStatus::Completed {
             return record.candidate.ok_or_else(|| {
                 ExecutionError::Invalid("completed workspace has no candidate".into())
@@ -1615,6 +1877,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
     pub async fn execute(
         &self,
         workspace_id: &str,
+        generation: i64,
         input: &ExecuteWorkspace,
         max_runtime: Duration,
     ) -> Result<ExecutionResult, ExecutionError> {
@@ -1625,10 +1888,10 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             ));
         }
         let _write = self.lock.lock().await;
+        let mut record = self.find_by_id_fenced(workspace_id, generation)?;
         if self.cancelled.lock().unwrap().remove(workspace_id) {
             return Err(ExecutionError::Conflict);
         }
-        let mut record = self.find_by_id(workspace_id)?;
         if record.status == WorkspaceStatus::Completed {
             let candidate = record.candidate.clone().ok_or_else(|| {
                 ExecutionError::Invalid("completed workspace has no candidate".into())
@@ -1755,24 +2018,39 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         })
     }
 
-    pub async fn cancel_active(&self, workspace_id: &str) -> Result<bool, ExecutionError> {
+    pub async fn cancel_active(
+        &self,
+        workspace_id: &str,
+        generation: i64,
+    ) -> Result<bool, ExecutionError> {
         validate_workspace_id(workspace_id)?;
-        self.cancelled
+        self.find_by_id_fenced(workspace_id, generation)?;
+        // Record the revocation against this generation. A later generation is
+        // unaffected, so a stale revocation can neither block a newer check nor
+        // be cleared by a stale finalizer.
+        self.check_revocations
             .lock()
             .unwrap()
-            .insert(workspace_id.to_owned());
+            .insert(workspace_id.to_owned(), generation);
         let check = self
             .active_checks
             .lock()
             .unwrap()
             .get(workspace_id)
             .cloned();
-        if let Some((volume, check_token)) = check {
-            return self
-                .backend
-                .cancel_environment_check(&volume, &check_token)
-                .await;
+        if let Some(check) = check {
+            // Check cancellation is scoped to its unguessable token and may
+            // release the registration only after the owning backend confirms
+            // the check container is gone. It deliberately does not arm the
+            // workspace-wide revocation marker used by execution cancellation:
+            // that marker would otherwise leak into the next generation.
+            self.cancel_environment_check(&check).await?;
+            return Ok(true);
         }
+        self.cancelled
+            .lock()
+            .unwrap()
+            .insert(workspace_id.to_owned());
         let container = self.active.lock().unwrap().get(workspace_id).cloned();
         if let Some(container) = container {
             self.backend.remove_container(&container).await?;
@@ -1782,11 +2060,27 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         }
     }
 
-    pub async fn cleanup(&self, workspace_id: &str) -> Result<(), ExecutionError> {
+    pub async fn cleanup(&self, workspace_id: &str, generation: i64) -> Result<(), ExecutionError> {
         validate_workspace_id(workspace_id)?;
-        self.cancelled.lock().unwrap().remove(workspace_id);
         let _write = self.lock.lock().await;
-        let record = self.find_by_id(workspace_id)?;
+        let record = self.find_by_id_fenced(workspace_id, generation)?;
+        // Teardown is only allowed once the backend that owns an outstanding
+        // check confirms it is gone. An unconfirmed cancellation refuses the
+        // cleanup instead of deleting a volume that may still be in use.
+        let check = self
+            .active_checks
+            .lock()
+            .unwrap()
+            .get(workspace_id)
+            .cloned();
+        if let Some(check) = check {
+            self.cancel_environment_check(&check)
+                .await
+                .map_err(|_| ExecutionError::Conflict)?;
+        }
+        self.cancelled.lock().unwrap().remove(workspace_id);
+        // The workspace is gone, so its revocation bookkeeping goes with it.
+        self.check_revocations.lock().unwrap().remove(workspace_id);
         if let Some(container) = &record.container {
             self.backend.remove_container(container).await?;
         }
@@ -1818,25 +2112,50 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
                 WorkspaceStatus::Running => {
                     // The process that owned this execution is gone. Remove the
                     // external resources, then record the failure so an
-                    // idempotent re-allocation can recover the worktree.
+                    // idempotent re-allocation can recover the worktree. If a
+                    // container cannot be removed, retain its exact reference so
+                    // recovery stays fail-closed instead of assuming it is dead.
+                    let mut container_removed = true;
                     if let Some(container) = &record.container
                         && self.backend.remove_container(container).await.is_err()
                     {
                         report.cleanup_failures = report.cleanup_failures.saturating_add(1);
+                        container_removed = false;
+                    }
+                    if let Some(container) = &record.container {
+                        referenced_containers.insert(container.clone());
                     }
                     if self.backend.remove_volume(&record.volume).await.is_err() {
                         report.cleanup_failures = report.cleanup_failures.saturating_add(1);
+                    } else {
+                        referenced_volumes.insert(record.volume.clone());
                     }
                     record.status = WorkspaceStatus::Failed;
                     record.error = Some("Supervisor restarted during execution".into());
-                    record.container = None;
+                    if container_removed {
+                        record.container = None;
+                    }
                     record.updated_at_ms = now_ms();
                     self.write_record(&record)?;
                     report.recovered_running = report.recovered_running.saturating_add(1);
                 }
                 WorkspaceStatus::Failed => {
+                    // A failed record is removable only after its external
+                    // container and volume are confirmed gone. A failed removal
+                    // keeps the record and its exact references for the next
+                    // pass; recovery will reject it while the container is live.
+                    if let Some(container) = &record.container
+                        && self.backend.remove_container(container).await.is_err()
+                    {
+                        report.cleanup_failures = report.cleanup_failures.saturating_add(1);
+                        referenced_containers.insert(container.clone());
+                        referenced_volumes.insert(record.volume.clone());
+                        continue;
+                    }
                     if self.backend.remove_volume(&record.volume).await.is_err() {
                         report.cleanup_failures = report.cleanup_failures.saturating_add(1);
+                        referenced_volumes.insert(record.volume.clone());
+                        continue;
                     }
                     if let Ok(mut workspace) = self.open_existing(&record) {
                         let _ = workspace.cleanup();
@@ -1926,7 +2245,8 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
 
     pub fn status(&self, workspace_id: &str) -> Result<WorkspaceHandle, ExecutionError> {
         validate_workspace_id(workspace_id)?;
-        self.find_by_id(workspace_id).map(|record| record.handle())
+        self.find_by_id_unfenced(workspace_id)
+            .map(|record| record.handle())
     }
 
     /// Narrow accessor for the trusted Supervisor only: resolve the exact
@@ -1934,7 +2254,8 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
     /// The volume name is never accepted from an HTTP client.
     pub fn workspace_volume(&self, workspace_id: &str) -> Result<String, ExecutionError> {
         validate_workspace_id(workspace_id)?;
-        self.find_by_id(workspace_id).map(|record| record.volume)
+        self.find_by_id_unfenced(workspace_id)
+            .map(|record| record.volume)
     }
 
     fn authorize_repository(&self, value: &str) -> Result<PathBuf, ExecutionError> {
@@ -1998,7 +2319,19 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         }
     }
 
-    fn find_by_id(&self, workspace_id: &str) -> Result<WorkspaceRecord, ExecutionError> {
+    fn find_by_id_fenced(
+        &self,
+        workspace_id: &str,
+        generation: i64,
+    ) -> Result<WorkspaceRecord, ExecutionError> {
+        let record = self.find_by_id_unfenced(workspace_id)?;
+        if record.generation != generation {
+            return Err(ExecutionError::Conflict);
+        }
+        Ok(record)
+    }
+
+    fn find_by_id_unfenced(&self, workspace_id: &str) -> Result<WorkspaceRecord, ExecutionError> {
         for record in self.records()? {
             if record.workspace_id == workspace_id {
                 return Ok(record);
@@ -2339,6 +2672,7 @@ mod tests {
         corrupt_export: Mutex<bool>,
         owner: ResourceOwner,
         dependency_barrier: Option<Arc<tokio::sync::Barrier>>,
+        remove_volume_gate: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     }
 
     impl LocalBackend {
@@ -2353,6 +2687,7 @@ mod tests {
                 corrupt_export: Mutex::new(false),
                 owner: ResourceOwner::Supervisor,
                 dependency_barrier: None,
+                remove_volume_gate: None,
             }
         }
         fn with_dependency_barrier(root: PathBuf, barrier: Arc<tokio::sync::Barrier>) -> Self {
@@ -2366,6 +2701,25 @@ mod tests {
                 corrupt_export: Mutex::new(false),
                 owner: ResourceOwner::Supervisor,
                 dependency_barrier: Some(barrier),
+                remove_volume_gate: None,
+            }
+        }
+        fn with_remove_volume_gate(
+            root: PathBuf,
+            started: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Notify>,
+        ) -> Self {
+            Self {
+                volumes: Mutex::new(HashMap::new()),
+                volume_meta: Mutex::new(HashMap::new()),
+                containers: Mutex::new(HashMap::new()),
+                root: Mutex::new(Some(root)),
+                children: Arc::new(Mutex::new(HashMap::new())),
+                inventory: Mutex::new(InventoryMode::Supported),
+                corrupt_export: Mutex::new(false),
+                owner: ResourceOwner::Supervisor,
+                dependency_barrier: None,
+                remove_volume_gate: Some((started, release)),
             }
         }
         fn volume_path(&self, name: &str) -> Result<PathBuf, ExecutionError> {
@@ -2465,6 +2819,10 @@ mod tests {
         }
 
         async fn remove_volume(&self, name: &str) -> Result<(), ExecutionError> {
+            if let Some((started, release)) = &self.remove_volume_gate {
+                started.notify_one();
+                release.notified().await;
+            }
             if let Some(existing) = self.volume_meta.lock().unwrap().get(name)
                 && existing.owner.as_deref() != Some(self.owner.as_str())
             {
@@ -2647,7 +3005,7 @@ mod tests {
     struct Fixture {
         root: PathBuf,
         repository: PathBuf,
-        manager: WorkspaceManager<LocalBackend>,
+        manager: Arc<WorkspaceManager<LocalBackend>>,
     }
 
     impl Fixture {
@@ -2667,19 +3025,56 @@ mod tests {
             git_test(&repository, &["commit", "-qm", "base"]);
             let volume_root = root.join("volumes");
             fs::create_dir(&volume_root).unwrap();
-            let manager = WorkspaceManager::new(
-                root.join("work"),
-                root.join("state"),
-                [repository.clone()],
-                LocalBackend::new(volume_root),
-            )
-            .unwrap();
+            let manager = Arc::new(
+                WorkspaceManager::new(
+                    root.join("work"),
+                    root.join("state"),
+                    [repository.clone()],
+                    LocalBackend::new(volume_root),
+                )
+                .unwrap(),
+            );
             Self {
                 root,
                 repository,
                 manager,
             }
         }
+        fn new_with_remove_volume_gate(
+            started: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Notify>,
+        ) -> Self {
+            let root = std::env::temp_dir().join(format!("factory-execution-{}", Uuid::new_v4()));
+            fs::create_dir_all(&root).unwrap();
+            let repository = root.join("repo");
+            fs::create_dir(&repository).unwrap();
+            git_test(&repository, &["init", "-q"]);
+            git_test(
+                &repository,
+                &["config", "user.email", "test@example.invalid"],
+            );
+            git_test(&repository, &["config", "user.name", "Test"]);
+            fs::write(repository.join("seed.txt"), "base\n").unwrap();
+            git_test(&repository, &["add", "seed.txt"]);
+            git_test(&repository, &["commit", "-qm", "base"]);
+            let volume_root = root.join("volumes");
+            fs::create_dir(&volume_root).unwrap();
+            let manager = Arc::new(
+                WorkspaceManager::new(
+                    root.join("work"),
+                    root.join("state"),
+                    [repository.clone()],
+                    LocalBackend::with_remove_volume_gate(volume_root, started, release),
+                )
+                .unwrap(),
+            );
+            Self {
+                root,
+                repository,
+                manager,
+            }
+        }
+
         fn base(&self) -> String {
             String::from_utf8(
                 StdCommand::new("git")
@@ -2732,10 +3127,12 @@ mod tests {
             argv: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()],
             timeout_secs: 30,
         };
-        let execution =
-            fixture
-                .manager
-                .execute(&handle.workspace_id, &input, Duration::from_secs(30));
+        let execution = fixture.manager.execute(
+            &handle.workspace_id,
+            handle.generation,
+            &input,
+            Duration::from_secs(30),
+        );
         tokio::pin!(execution);
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(300)) => {}
@@ -2744,7 +3141,7 @@ mod tests {
         assert!(
             fixture
                 .manager
-                .cancel_active(&handle.workspace_id)
+                .cancel_active(&handle.workspace_id, handle.generation)
                 .await
                 .unwrap()
         );
@@ -2755,6 +3152,7 @@ mod tests {
             .manager
             .execute(
                 &handle.workspace_id,
+                handle.generation,
                 &ExecuteWorkspace {
                     image: "test/image:1".into(),
                     argv: vec!["/bin/true".into()],
@@ -2767,7 +3165,10 @@ mod tests {
             matches!(retry, Err(ExecutionError::Conflict)),
             "retry was {retry:?}"
         );
-        let _ = fixture.manager.cleanup(&handle.workspace_id).await;
+        let _ = fixture
+            .manager
+            .cleanup(&handle.workspace_id, handle.generation)
+            .await;
     }
 
     #[tokio::test]
@@ -2787,6 +3188,7 @@ mod tests {
             .manager
             .execute(
                 &handle.workspace_id,
+                handle.generation,
                 &ExecuteWorkspace {
                     image: "test/image:1".into(),
                     argv: vec![
@@ -2837,6 +3239,7 @@ mod tests {
             .manager
             .execute(
                 &handle.workspace_id,
+                handle.generation,
                 &ExecuteWorkspace {
                     image: "test/image:1".into(),
                     argv: vec!["/bin/false".into()],
@@ -2847,7 +3250,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(again.candidate, result.candidate);
-        fixture.manager.cleanup(&handle.workspace_id).await.unwrap();
+        fixture
+            .manager
+            .cleanup(&handle.workspace_id, handle.generation)
+            .await
+            .unwrap();
         assert!(fixture.manager.status(&handle.workspace_id).is_err());
     }
 
@@ -2881,9 +3288,8 @@ mod tests {
         fixture.manager.allocate(&allocation).await.unwrap();
         let mut changed = allocation;
         changed.base_commit = "0".repeat(40);
-        assert!(matches!(
-            fixture.manager.allocate(&changed).await,
-            Err(ExecutionError::Conflict)
+        assert!(is_allocation_conflict(
+            fixture.manager.allocate(&changed).await
         ));
     }
 
@@ -2994,7 +3400,10 @@ mod tests {
                 .iter()
                 .any(|resource| resource.name == orphan)
         );
-        manager.cleanup(&handle.workspace_id).await.unwrap();
+        manager
+            .cleanup(&handle.workspace_id, handle.generation)
+            .await
+            .unwrap();
         let inventory = manager.backend.list_managed().await.unwrap().unwrap();
         assert!(
             !inventory
@@ -3035,6 +3444,7 @@ mod tests {
         let result = manager
             .execute(
                 &handle.workspace_id,
+                handle.generation,
                 &ExecuteWorkspace {
                     image: "alpine:3.20".into(),
                     argv: vec![
@@ -3076,7 +3486,10 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&parent.stdout).trim(), base);
-        manager.cleanup(&handle.workspace_id).await.unwrap();
+        manager
+            .cleanup(&handle.workspace_id, handle.generation)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -3096,6 +3509,7 @@ mod tests {
             .manager
             .execute(
                 &handle.workspace_id,
+                handle.generation,
                 &ExecuteWorkspace {
                     image: "test/image:1".into(),
                     argv: vec![
@@ -3116,6 +3530,756 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn newer_generation_recovers_a_stale_allocated_workspace() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-recovery".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let first = fixture.manager.allocate(&allocation).await.unwrap();
+        let mut next = allocation.clone();
+        next.generation = 2;
+        let recovered = fixture
+            .manager
+            .allocate(&next)
+            .await
+            .expect("a newer lease must recover the stale workspace record");
+        assert_eq!(recovered.generation, 2);
+        assert_eq!(recovered.workspace_id, first.workspace_id);
+        assert_eq!(recovered.status, WorkspaceStatus::Allocated);
+    }
+
+    #[tokio::test]
+    async fn newer_generation_recovers_after_restart_reconcile() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-restart".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let first = fixture.manager.allocate(&allocation).await.unwrap();
+        let mut record = fixture
+            .manager
+            .load_record(&allocation.attempt_id)
+            .unwrap()
+            .unwrap();
+        record.status = WorkspaceStatus::Running;
+        record.container = Some(format!("factory-exec-{}", Uuid::new_v4()));
+        fixture.manager.write_record(&record).unwrap();
+        fixture.manager.reconcile().await.unwrap();
+        let mut next = allocation.clone();
+        next.generation = 2;
+        let recovered = fixture
+            .manager
+            .allocate(&next)
+            .await
+            .expect("a reconciled record must be recoverable by the next lease");
+        assert_eq!(recovered.generation, 2);
+        assert_eq!(recovered.workspace_id, first.workspace_id);
+    }
+
+    #[tokio::test]
+    async fn older_generation_cannot_replace_a_newer_record() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-newer-record".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 2,
+        };
+        fixture.manager.allocate(&allocation).await.unwrap();
+        let mut stale = allocation.clone();
+        stale.generation = 1;
+        assert!(is_allocation_conflict(
+            fixture.manager.allocate(&stale).await
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_live_old_generation_blocks_takeover() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-live".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let first = fixture.manager.allocate(&allocation).await.unwrap();
+        fixture
+            .manager
+            .active
+            .lock()
+            .unwrap()
+            .insert(first.workspace_id.clone(), "live-container".into());
+        let mut next = allocation.clone();
+        next.generation = 2;
+        assert!(
+            is_allocation_conflict(fixture.manager.allocate(&next).await),
+            "a live old generation must not be replaced"
+        );
+        fixture
+            .manager
+            .active
+            .lock()
+            .unwrap()
+            .remove(&first.workspace_id);
+        let recovered = fixture.manager.allocate(&next).await.unwrap();
+        assert_eq!(recovered.generation, 2);
+    }
+
+    #[tokio::test]
+    async fn newer_generation_does_not_reset_a_completed_candidate() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-completed".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let handle = fixture.manager.allocate(&allocation).await.unwrap();
+        let completed = fixture
+            .manager
+            .execute(
+                &handle.workspace_id,
+                handle.generation,
+                &ExecuteWorkspace {
+                    image: "test/image:1".into(),
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "printf 'completed\\n' > completed.txt".into(),
+                    ],
+                    timeout_secs: 30,
+                },
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        assert!(completed.candidate.is_some());
+        let mut next = allocation.clone();
+        next.generation = 2;
+        assert!(is_allocation_conflict(
+            fixture.manager.allocate(&next).await
+        ));
+        let record = fixture
+            .manager
+            .load_record(&allocation.attempt_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.generation, 1);
+        assert_eq!(record.status, WorkspaceStatus::Completed);
+        assert_eq!(record.candidate, completed.candidate);
+    }
+
+    #[tokio::test]
+    async fn newer_generation_still_requires_the_same_repository_and_base() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-binding".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        fixture.manager.allocate(&allocation).await.unwrap();
+        let mut wrong_base = allocation.clone();
+        wrong_base.generation = 2;
+        wrong_base.base_commit = "0".repeat(40);
+        assert!(is_allocation_conflict(
+            fixture.manager.allocate(&wrong_base).await
+        ));
+        let mut wrong_repository = allocation.clone();
+        wrong_repository.generation = 2;
+        wrong_repository.repository = "/tmp/not-the-registered-repository".into();
+        assert!(is_allocation_conflict(
+            fixture.manager.allocate(&wrong_repository).await
+        ));
+    }
+
+    #[tokio::test]
+    async fn concurrent_newer_leases_keep_one_record_and_one_volume() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-concurrent".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let first = fixture.manager.allocate(&allocation).await.unwrap();
+        let mut second = allocation.clone();
+        second.generation = 2;
+        let mut third = allocation.clone();
+        third.generation = 3;
+        let (two, three) = tokio::join!(
+            fixture.manager.allocate(&second),
+            fixture.manager.allocate(&third)
+        );
+        assert!(
+            three.is_ok(),
+            "the newest lease must be accepted: {three:?}"
+        );
+        if let Ok(handle) = two {
+            assert_eq!(handle.generation, 2);
+        }
+        let record = fixture
+            .manager
+            .load_record(&allocation.attempt_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.generation, 3);
+        assert_eq!(record.workspace_id, first.workspace_id);
+        assert_eq!(
+            fixture.manager.backend.volumes.lock().unwrap().len(),
+            1,
+            "concurrent recovery must not leave two workspace volumes"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_generation_does_not_clear_the_newer_cancellation_marker() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-cancel".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let first = fixture.manager.allocate(&allocation).await.unwrap();
+        let mut next = allocation.clone();
+        next.generation = 2;
+        fixture.manager.allocate(&next).await.unwrap();
+        fixture
+            .manager
+            .cancel_active(&first.workspace_id, 2)
+            .await
+            .unwrap();
+        let execution = ExecuteWorkspace {
+            image: "test/image:1".into(),
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf 'stale\n' > stale.txt".into(),
+            ],
+            timeout_secs: 30,
+        };
+        assert!(matches!(
+            fixture
+                .manager
+                .execute(&first.workspace_id, 1, &execution, Duration::from_secs(30))
+                .await,
+            Err(ExecutionError::Conflict)
+        ));
+        assert!(
+            fixture
+                .manager
+                .cancelled
+                .lock()
+                .unwrap()
+                .contains(&first.workspace_id),
+            "a stale generation must not clear the newer cancellation marker"
+        );
+        assert!(matches!(
+            fixture
+                .manager
+                .execute(&first.workspace_id, 2, &execution, Duration::from_secs(30))
+                .await,
+            Err(ExecutionError::Conflict)
+        ));
+        assert!(
+            !fixture
+                .manager
+                .cancelled
+                .lock()
+                .unwrap()
+                .contains(&first.workspace_id),
+            "the current generation must consume its revocation marker"
+        );
+
+        fixture
+            .manager
+            .cancel_active(&first.workspace_id, 2)
+            .await
+            .unwrap();
+        assert!(matches!(
+            fixture.manager.cleanup(&first.workspace_id, 1).await,
+            Err(ExecutionError::Conflict)
+        ));
+        assert!(
+            fixture
+                .manager
+                .cancelled
+                .lock()
+                .unwrap()
+                .contains(&first.workspace_id),
+            "a stale cleanup must not clear the newer cancellation marker"
+        );
+        fixture
+            .manager
+            .cleanup(&first.workspace_id, 2)
+            .await
+            .unwrap();
+        assert!(
+            !fixture
+                .manager
+                .cancelled
+                .lock()
+                .unwrap()
+                .contains(&first.workspace_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_generation_cleanup_waits_and_is_rejected_after_recovery() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let fixture = Fixture::new_with_remove_volume_gate(started.clone(), release.clone());
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-barrier".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let first = fixture.manager.allocate(&allocation).await.unwrap();
+        let mut next = allocation.clone();
+        next.generation = 2;
+        let recovery = tokio::spawn({
+            let manager = Arc::clone(&fixture.manager);
+            async move { manager.allocate(&next).await }
+        });
+        started.notified().await;
+        assert_eq!(
+            fixture
+                .manager
+                .status(&first.workspace_id)
+                .unwrap()
+                .generation,
+            1,
+            "the durable record must still be generation 1 while recovery waits"
+        );
+        let stale = tokio::spawn({
+            let manager = Arc::clone(&fixture.manager);
+            let workspace_id = first.workspace_id.clone();
+            async move { manager.cleanup(&workspace_id, 1).await }
+        });
+        release.notify_one();
+        assert!(recovery.await.unwrap().is_ok());
+        assert!(matches!(
+            stale.await.unwrap(),
+            Err(ExecutionError::Conflict)
+        ));
+        let recovered = fixture.manager.status(&first.workspace_id).unwrap();
+        assert_eq!(recovered.generation, 2);
+        let volume = fixture
+            .manager
+            .workspace_volume(&first.workspace_id)
+            .unwrap();
+        assert!(
+            fixture.manager.backend.has_volume(&volume),
+            "the recovered generation 2 volume must survive the stale cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn old_generation_write_is_rejected_without_mutating_recovered_data() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-write".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let first = fixture.manager.allocate(&allocation).await.unwrap();
+        let mut next = allocation.clone();
+        next.generation = 2;
+        fixture.manager.allocate(&next).await.unwrap();
+        let write = WriteFilesRequest {
+            allowed_paths: vec!["src".into()],
+            files: vec![AppliedFile {
+                path: "src/generation.txt".into(),
+                content: "old\n".into(),
+            }],
+            reset: true,
+        };
+        assert!(matches!(
+            fixture
+                .manager
+                .write_files(&first.workspace_id, 1, &write)
+                .await,
+            Err(ExecutionError::Conflict)
+        ));
+        let record = fixture
+            .manager
+            .load_record(&allocation.attempt_id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !Path::new(&record.worktree)
+                .join("src/generation.txt")
+                .exists(),
+            "a stale generation must not write into the recovered worktree"
+        );
+        assert!(
+            fixture
+                .manager
+                .write_files(&first.workspace_id, 2, &write)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn active_environment_check_blocks_generation_recovery() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-check".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let first = fixture.manager.allocate(&allocation).await.unwrap();
+        let volume = fixture
+            .manager
+            .workspace_volume(&first.workspace_id)
+            .unwrap();
+        let lease = fixture
+            .manager
+            .begin_environment_check(&first.workspace_id, 1, &volume, "check-token-123456")
+            .await
+            .unwrap();
+        let mut next = allocation.clone();
+        next.generation = 2;
+        assert!(
+            is_allocation_conflict(fixture.manager.allocate(&next).await),
+            "an active environment check must block recovery"
+        );
+        assert!(!fixture.manager.end_environment_check(&lease));
+        assert!(fixture.manager.allocate(&next).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn stale_check_lease_cannot_release_a_newer_registration() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-stale-lease".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let first = fixture.manager.allocate(&allocation).await.unwrap();
+        let volume = fixture
+            .manager
+            .workspace_volume(&first.workspace_id)
+            .unwrap();
+        let stale = fixture
+            .manager
+            .begin_environment_check(&first.workspace_id, 1, &volume, "check-token-123456")
+            .await
+            .unwrap();
+        assert!(!fixture.manager.end_environment_check(&stale));
+        let mut next = allocation.clone();
+        next.generation = 2;
+        fixture.manager.allocate(&next).await.unwrap();
+        let newer = fixture
+            .manager
+            .begin_environment_check(&first.workspace_id, 2, &volume, "check-token-654321")
+            .await
+            .unwrap();
+        assert!(
+            !fixture.manager.end_environment_check(&stale),
+            "a stale generation lease must not release the newer registration"
+        );
+        assert!(
+            matches!(
+                fixture
+                    .manager
+                    .begin_environment_check(&first.workspace_id, 2, &volume, "check-token-777777")
+                    .await,
+                Err(ExecutionError::Conflict)
+            ),
+            "the newer registration must remain in place"
+        );
+        assert!(!fixture.manager.end_environment_check(&newer));
+        assert!(
+            fixture
+                .manager
+                .begin_environment_check(&first.workspace_id, 2, &volume, "check-token-777777")
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_retains_a_container_it_could_not_remove() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "generation-container".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let first = fixture.manager.allocate(&allocation).await.unwrap();
+        let mut record = fixture
+            .manager
+            .load_record(&allocation.attempt_id)
+            .unwrap()
+            .unwrap();
+        record.status = WorkspaceStatus::Running;
+        let container = format!("factory-exec-{}", Uuid::new_v4());
+        record.container = Some(container.clone());
+        fixture.manager.write_record(&record).unwrap();
+        fixture
+            .manager
+            .backend
+            .insert_container(&container, None, Some(&first.workspace_id));
+        let report = fixture.manager.reconcile().await.unwrap();
+        assert!(report.cleanup_failures >= 1);
+        let retained = fixture
+            .manager
+            .load_record(&allocation.attempt_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.container.as_deref(), Some(container.as_str()));
+        let mut next = allocation.clone();
+        next.generation = 2;
+        assert!(
+            is_allocation_conflict(fixture.manager.allocate(&next).await),
+            "recovery must fail closed while a container reference is live"
+        );
+        fixture
+            .manager
+            .backend
+            .containers
+            .lock()
+            .unwrap()
+            .remove(&container);
+        fixture.manager.reconcile().await.unwrap();
+        assert!(
+            fixture
+                .manager
+                .load_record(&allocation.attempt_id)
+                .unwrap()
+                .is_none(),
+            "the failed record must be removed only after cleanup succeeds"
+        );
+        assert!(fixture.manager.allocate(&next).await.is_ok());
+    }
+
+    fn is_allocation_conflict<T>(result: Result<T, ExecutionError>) -> bool {
+        matches!(
+            result,
+            Err(ExecutionError::Conflict | ExecutionError::ConflictReason(_))
+        )
+    }
+
+    async fn allocation_conflict_reason(
+        manager: &Arc<WorkspaceManager<LocalBackend>>,
+        allocation: &WorkspaceAllocation,
+    ) -> &'static str {
+        match manager.allocate(allocation).await {
+            Err(ExecutionError::ConflictReason(reason)) => reason,
+            other => panic!("expected a typed allocation conflict, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn allocation_guards_have_distinct_redacted_reasons() {
+        // repository/base mismatch
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "reason-binding".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base.clone(),
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        fixture.manager.allocate(&allocation).await.unwrap();
+        let mut wrong = allocation.clone();
+        wrong.generation = 2;
+        wrong.base_commit = "0".repeat(40);
+        assert_eq!(
+            allocation_conflict_reason(&fixture.manager, &wrong).await,
+            "repository_or_base_mismatch"
+        );
+
+        // older generation
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let mut allocation = WorkspaceAllocation {
+            attempt_id: "reason-generation".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 2,
+        };
+        fixture.manager.allocate(&allocation).await.unwrap();
+        allocation.generation = 1;
+        assert_eq!(
+            allocation_conflict_reason(&fixture.manager, &allocation).await,
+            "generation_not_newer"
+        );
+
+        // completed candidate
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "reason-completed".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let handle = fixture.manager.allocate(&allocation).await.unwrap();
+        fixture
+            .manager
+            .execute(
+                &handle.workspace_id,
+                handle.generation,
+                &ExecuteWorkspace {
+                    image: "test/image:1".into(),
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "printf 'completed\n' > completed.txt".into(),
+                    ],
+                    timeout_secs: 30,
+                },
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        let mut next = allocation.clone();
+        next.generation = 2;
+        assert_eq!(
+            allocation_conflict_reason(&fixture.manager, &next).await,
+            "completed_workspace"
+        );
+
+        // live in-process execution
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "reason-active".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let handle = fixture.manager.allocate(&allocation).await.unwrap();
+        fixture
+            .manager
+            .active
+            .lock()
+            .unwrap()
+            .insert(handle.workspace_id.clone(), "factory-exec-test".into());
+        let mut next = allocation.clone();
+        next.generation = 2;
+        assert_eq!(
+            allocation_conflict_reason(&fixture.manager, &next).await,
+            "active_execution"
+        );
+
+        // live environment check
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "reason-check".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        let handle = fixture.manager.allocate(&allocation).await.unwrap();
+        let volume = fixture
+            .manager
+            .workspace_volume(&handle.workspace_id)
+            .unwrap();
+        fixture
+            .manager
+            .begin_environment_check(&handle.workspace_id, 1, &volume, "check-token-123456")
+            .await
+            .unwrap();
+        let mut next = allocation.clone();
+        next.generation = 2;
+        assert_eq!(
+            allocation_conflict_reason(&fixture.manager, &next).await,
+            "active_environment_check"
+        );
+
+        // retained stale container reference
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "reason-container".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+            generation: 1,
+        };
+        fixture.manager.allocate(&allocation).await.unwrap();
+        let mut record = fixture
+            .manager
+            .load_record(&allocation.attempt_id)
+            .unwrap()
+            .unwrap();
+        record.container = Some(format!("factory-exec-{}", Uuid::new_v4()));
+        fixture.manager.write_record(&record).unwrap();
+        let mut next = allocation.clone();
+        next.generation = 2;
+        assert_eq!(
+            allocation_conflict_reason(&fixture.manager, &next).await,
+            "stale_container_reference"
+        );
+    }
+
+    #[tokio::test]
     async fn failed_workspace_can_be_reallocated_and_retried() {
         let fixture = Fixture::new();
         let base = fixture.base();
@@ -3132,6 +4296,7 @@ mod tests {
             .manager
             .execute(
                 &handle.workspace_id,
+                handle.generation,
                 &ExecuteWorkspace {
                     image: "test/image:1".into(),
                     argv: vec!["/bin/sh".into(), "-c".into(), "exit 3".into()],
@@ -3149,6 +4314,7 @@ mod tests {
             .manager
             .execute(
                 &reallocated.workspace_id,
+                reallocated.generation,
                 &ExecuteWorkspace {
                     image: "test/image:1".into(),
                     argv: vec![
@@ -3301,7 +4467,11 @@ mod tests {
         let second = fixture.manager.reconcile().await.unwrap();
         assert_eq!(second.removed_orphan_volumes, 0);
         assert_eq!(second.removed_orphan_containers, 0);
-        fixture.manager.cleanup(&handle.workspace_id).await.unwrap();
+        fixture
+            .manager
+            .cleanup(&handle.workspace_id, handle.generation)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -3431,10 +4601,12 @@ mod tests {
             ],
             timeout_secs: 30,
         };
-        let execute =
-            fixture
-                .manager
-                .execute(&handle.workspace_id, &input, Duration::from_secs(60));
+        let execute = fixture.manager.execute(
+            &handle.workspace_id,
+            handle.generation,
+            &input,
+            Duration::from_secs(60),
+        );
         let reconcile = fixture.manager.reconcile();
         tokio::pin!(execute);
         tokio::pin!(reconcile);
@@ -3456,7 +4628,11 @@ mod tests {
         assert_eq!(report.removed_orphan_volumes, 0);
         assert_eq!(report.removed_orphan_containers, 0);
         assert_eq!(report.cleanup_failures, 0);
-        fixture.manager.cleanup(&handle.workspace_id).await.unwrap();
+        fixture
+            .manager
+            .cleanup(&handle.workspace_id, handle.generation)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -3516,6 +4692,7 @@ mod tests {
             .manager
             .execute(
                 &handle.workspace_id,
+                handle.generation,
                 &ExecuteWorkspace {
                     image: "test/image:1".into(),
                     argv: vec![
@@ -3587,9 +4764,12 @@ mod tests {
             ],
             timeout_secs: 30,
         };
-        let execute = fixture
-            .manager
-            .execute(&workspace_id, &input, Duration::from_secs(60));
+        let execute = fixture.manager.execute(
+            &workspace_id,
+            handle.generation,
+            &input,
+            Duration::from_secs(60),
+        );
         let replace = async {
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             loop {
@@ -3735,14 +4915,24 @@ mod tests {
         let first = tokio::spawn({
             let manager = manager.clone();
             let workspace = handles[0].workspace_id.clone();
+            let generation = handles[0].generation;
             let request = request.clone();
-            async move { manager.acquire_dependencies(&workspace, &request).await }
+            async move {
+                manager
+                    .acquire_dependencies(&workspace, generation, &request)
+                    .await
+            }
         });
         let second = tokio::spawn({
             let manager = manager.clone();
             let workspace = handles[1].workspace_id.clone();
+            let generation = handles[1].generation;
             let request = request.clone();
-            async move { manager.acquire_dependencies(&workspace, &request).await }
+            async move {
+                manager
+                    .acquire_dependencies(&workspace, generation, &request)
+                    .await
+            }
         });
         let (first, second) = tokio::time::timeout(Duration::from_secs(10), async {
             tokio::join!(first, second)

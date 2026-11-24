@@ -20,6 +20,7 @@ import { DevicePairClaim } from "./views/DevicePairClaim";
 import { Director } from "./views/Director";
 import { Home } from "./views/Home";
 import { Issues } from "./views/Issues";
+import { LicenseDecisions } from "./views/LicenseDecisions";
 import { ProjectDetail } from "./views/ProjectDetail";
 import { ProjectFiles } from "./views/ProjectFiles";
 import { Projects } from "./views/Projects";
@@ -244,6 +245,7 @@ export function App() {
         <Route path="/specs" element={<Specs />} />
         <Route path="/skills" element={<Skills />} />
         <Route path="/charter" element={<Charter />} />
+        <Route path="/licenses" element={<LicenseDecisions />} />
         <Route path="/campaigns/:campaignId" element={<CampaignDetail />} />
         <Route path="/agents" element={<AgentOffice />} />
         <Route path="/agents/:participantId" element={<AgentOffice />} />

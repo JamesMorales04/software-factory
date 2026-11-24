@@ -44,16 +44,23 @@ use tokio::{
     time,
 };
 
+use factory_native::planning::identity_facts::{
+    IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION, IdentityFactsChallenge,
+    IdentityFactsEnvelope, IdentityFactsManifest, IdentityFactsReceipt, validate_manifest,
+};
+#[cfg(test)]
+use factory_native::planning::identity_facts::{IdentityFactsMode, OperationRoot};
 use factory_native::runtime_broker::{
     ENVIRONMENT_BUILD_ROUTE, ENVIRONMENT_CHECK_CANCEL_ROUTE, ENVIRONMENT_CHECK_ROUTE,
-    ENVIRONMENT_RESOLVE_ROUTE, EnvironmentBrokerOperation, EnvironmentBrokerRequest,
-    EnvironmentCheckRequest, EnvironmentCheckStatus, MAX_ENVIRONMENT_REQUEST_BYTES,
-    MAX_ENVIRONMENT_WORKSPACE_BYTES, MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES,
-    MAX_ENVIRONMENT_WORKSPACE_FILES, MAX_RESOURCE_INVENTORY_BYTES, ManagedResources, ResourceOwner,
-    is_valid_check_token, is_valid_container_name, is_valid_exec_container_name,
-    is_valid_provider_container_name, is_valid_volume_name, legacy_workspace_identity_matches,
-    parse_container_inventory, parse_container_labels, parse_volume_inventory, parse_volume_labels,
-    resource_owner_matches, volume_identity_matches,
+    ENVIRONMENT_IDENTITY_FACTS_ROUTE, ENVIRONMENT_RESOLVE_ROUTE, EnvironmentBrokerOperation,
+    EnvironmentBrokerRequest, EnvironmentCheckRequest, EnvironmentCheckStatus,
+    MAX_ENVIRONMENT_REQUEST_BYTES, MAX_ENVIRONMENT_WORKSPACE_BYTES,
+    MAX_ENVIRONMENT_WORKSPACE_FILE_BYTES, MAX_ENVIRONMENT_WORKSPACE_FILES,
+    MAX_RESOURCE_INVENTORY_BYTES, ManagedResources, ResourceOwner, is_valid_check_token,
+    is_valid_container_name, is_valid_exec_container_name, is_valid_provider_container_name,
+    is_valid_volume_name, legacy_workspace_identity_matches, parse_container_inventory,
+    parse_container_labels, parse_volume_inventory, parse_volume_labels, resource_owner_matches,
+    volume_identity_matches,
 };
 
 const MAX_JSON_BYTES: usize = 2 * 1024 * 1024;
@@ -800,6 +807,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             &format!("/{ENVIRONMENT_RESOLVE_ROUTE}"),
             post(resolve_environment).layer(DefaultBodyLimit::max(MAX_ENVIRONMENT_REQUEST_BYTES)),
+        )
+        .route(
+            &format!("/{ENVIRONMENT_IDENTITY_FACTS_ROUTE}"),
+            post(identity_facts_environment)
+                .layer(DefaultBodyLimit::max(MAX_ENVIRONMENT_REQUEST_BYTES)),
         )
         .route(
             &format!("/{ENVIRONMENT_CHECK_ROUTE}"),
@@ -3425,7 +3437,10 @@ impl EnvironmentBrokerFailure {
     fn response(self) -> Response {
         (
             self.status,
-            Json(json!({"code": self.code, "error": self.message})),
+            Json(json!({
+                "code": self.code,
+                "error": self.message,
+            })),
         )
             .into_response()
     }
@@ -3451,6 +3466,20 @@ async fn resolve_environment(
     Json(input): Json<EnvironmentBrokerRequest>,
 ) -> Response {
     environment_operation(app, headers, input, EnvironmentBrokerOperation::Resolve).await
+}
+
+async fn identity_facts_environment(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<EnvironmentBrokerRequest>,
+) -> Response {
+    environment_operation(
+        app,
+        headers,
+        input,
+        EnvironmentBrokerOperation::IdentityFacts,
+    )
+    .await
 }
 
 const ENVIRONMENT_CHECK_SETUP_GRACE_SECS: u64 = 180;
@@ -3844,6 +3873,7 @@ async fn execute_environment_check(
     .await;
     if let Err(failure) = &outcome
         && failure.code == "ENVIRONMENT_RESOURCE_LIMIT"
+        && environment_failure_is_storage_bound(failure)
         && let Err(purge_error) = purge_environment_cache(&app, &cache_volume).await
     {
         return Err(EnvironmentBrokerFailure::new(
@@ -3852,6 +3882,16 @@ async fn execute_environment_check(
         ));
     }
     outcome
+}
+
+/// The persistent cache is purged only for a storage/cache overrun or an
+/// explicitly reported cache/filesystem failure. A memory OOM, SIGKILL,
+/// cancellation or generic resource failure must not destroy reusable cache.
+fn environment_failure_is_storage_bound(failure: &EnvironmentBrokerFailure) -> bool {
+    let message = failure.message.to_ascii_lowercase();
+    ["disk", "storage", "filesystem", "over-budget", "quota"]
+        .iter()
+        .any(|marker| message.contains(marker))
 }
 
 async fn execute_environment_check_inner(
@@ -3902,7 +3942,7 @@ async fn execute_environment_check_inner(
         "none",
         None,
         &input.plan,
-        deadline,
+        Some(deadline),
         &input.workspace_volume,
         cache_volume,
         "check",
@@ -4219,6 +4259,36 @@ async fn validate_environment_request(
             "ENVIRONMENT_SPEC_INVALID",
             "build operations require a frozen environment spec",
         ));
+    }
+    if input.operation == EnvironmentBrokerOperation::IdentityFacts {
+        // Observation never stages a workspace or runs a builder phase. It
+        // reads only the persistent store and the exact spec-keyed cache
+        // written by the preceding resolve/build operation.
+        let Some(challenge) = &input.identity_facts else {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+                "the identity-facts operation has no challenge",
+            ));
+        };
+        if challenge.runtime_id != input.digest {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+                "the identity-facts challenge binds a different runtime",
+            ));
+        }
+        if challenge.plan_sha256 != input.plan.plan_sha256
+            || challenge.pin != input.plan.nix.nixpkgs
+        {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+                "the identity-facts challenge binds a different plan or pin",
+            ));
+        }
+        return Ok(ValidatedEnvironmentRequest {
+            image_id,
+            workspace: Vec::new(),
+            fetch_hosts: BTreeSet::new(),
+        });
     }
     let workspace = decode_environment_workspace(&input.workspace_files)?;
     let present: BTreeSet<&str> = workspace.iter().map(|(path, _)| path.as_str()).collect();
@@ -4792,40 +4862,29 @@ async fn execute_environment_operation(
     input: EnvironmentBrokerRequest,
     validated: ValidatedEnvironmentRequest,
 ) -> Result<factory_native::runtime_broker::EnvironmentBrokerResult, EnvironmentBrokerFailure> {
+    if input.operation == EnvironmentBrokerOperation::IdentityFacts {
+        return execute_identity_facts_operation(app, input, validated).await;
+    }
     let started = Instant::now();
-    // Fetch and build are separate container phases. Each phase is bounded by
-    // the frozen plan timeout; the operation deadline admits both phases plus a
-    // short cleanup grace only when a broker fetch is actually required.
-    let phase_timeout = u64::from(input.plan.resources.timeout_secs);
-    let phases = if input.operation == EnvironmentBrokerOperation::Build
-        && input.phase != Some(factory_native::runtime_broker::EnvironmentBuildPhase::Fetch)
-        && !input.plan.network.fetch_allowlist.is_empty()
-    {
-        2
-    } else {
-        1
-    };
-    let deadline = started + Duration::from_secs(phase_timeout.saturating_mul(phases));
+    // `timeoutSecs` is the builder's per-operation timeout. It is not a run
+    // deadline: a resolve/build may perform many bounded operations, and the
+    // operation task stays detached from the HTTP request. Explicit cleanup
+    // remains in RunResources; the startup epoch sweep reconciles a broker
+    // restart. There is deliberately no aggregate deadline derived here.
     let mut resources = match input.spec.as_ref() {
         Some(spec) => EnvironmentRunResources::for_spec(Arc::clone(&app), &spec.spec_sha256),
         None => EnvironmentRunResources::new(Arc::clone(&app)),
     };
-    let result = execute_environment_inner(
-        Arc::clone(&app),
-        &input,
-        &validated,
-        &mut resources,
-        deadline,
-    )
-    .await;
-    let resource_limit = result
-        .as_ref()
-        .err()
-        .is_some_and(|failure| failure.code == "ENVIRONMENT_RESOURCE_LIMIT");
+    let result =
+        execute_environment_inner(Arc::clone(&app), &input, &validated, &mut resources, None).await;
+    let storage_limit = result.as_ref().err().is_some_and(|failure| {
+        failure.code == "ENVIRONMENT_RESOURCE_LIMIT"
+            && environment_failure_is_storage_bound(failure)
+    });
     let cache_volume = resources.cache_volume.clone();
     let cache_persistent = resources.cache_persistent;
     let cleanup_confirmed = resources.cleanup().await;
-    let purge_error = if resource_limit && cache_persistent {
+    let purge_error = if storage_limit && cache_persistent {
         purge_environment_cache(&app, &cache_volume).await.err()
     } else {
         None
@@ -4844,6 +4903,7 @@ async fn execute_environment_operation(
                     .unwrap_or_default(),
                 resolution,
                 receipt,
+                identity_facts: None,
                 logs,
                 logs_truncated,
                 cleanup_confirmed,
@@ -4863,12 +4923,193 @@ async fn execute_environment_operation(
     }
 }
 
+async fn execute_identity_facts_operation(
+    app: Arc<App>,
+    input: EnvironmentBrokerRequest,
+    validated: ValidatedEnvironmentRequest,
+) -> Result<factory_native::runtime_broker::EnvironmentBrokerResult, EnvironmentBrokerFailure> {
+    let started = Instant::now();
+    let Some(spec) = input.spec.as_ref() else {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+            "an identity-facts operation requires the frozen environment spec",
+        ));
+    };
+    let Some(challenge) = input.identity_facts.as_ref() else {
+        return Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+            "an identity-facts operation requires a Core-issued challenge",
+        ));
+    };
+    let mut resources = EnvironmentRunResources::for_spec(Arc::clone(&app), &spec.spec_sha256);
+    let result = async {
+        ensure_environment_store(&app, &validated.image_id).await?;
+        create_environment_volume(
+            &app,
+            &resources.workspace_volume,
+            &resources.workspace_volume,
+            false,
+        )
+        .await?;
+        create_environment_volume(&app, &resources.cache_volume, &spec.spec_sha256, true).await?;
+        let manifest = match observe_identity_facts(
+            &app,
+            &validated.image_id,
+            &resources.cache_volume,
+            challenge,
+        )
+        .await
+        {
+            Ok(manifest) => manifest,
+            Err(failure) if failure.code == "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT" => {
+                let bytes = read_environment_output(
+                    &app,
+                    &validated.image_id,
+                    &resources.cache_volume,
+                    "realisation.json",
+                    64 * 1024,
+                )
+                .await?;
+                let runner = AppIdentityFactsRunner(&app);
+                reobserve_from_realisation_pointer(
+                    &runner,
+                    &validated.image_id,
+                    &resources.cache_volume,
+                    challenge,
+                    &spec.spec_sha256,
+                    &bytes,
+                )
+                .await?
+            }
+            Err(failure) => return Err(failure),
+        };
+        validate_manifest(challenge, &manifest).map_err(|error| {
+            EnvironmentBrokerFailure::new("ENVIRONMENT_IDENTITY_FACTS_REFUSED", error.to_string())
+        })?;
+        let Some(token) = app.tokens.token(ResourceOwner::Environment) else {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+                "the environment owner token is unavailable for signing",
+            ));
+        };
+        let envelope = IdentityFactsEnvelope {
+            schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
+            context: IDENTITY_FACTS_CONTEXT.into(),
+            challenge: challenge.clone(),
+            manifest,
+        };
+        let signature = factory_native::planning::identity_facts::sign(&envelope, token.as_bytes())
+            .map_err(|error| {
+                EnvironmentBrokerFailure::new(
+                    "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+                    error.to_string(),
+                )
+            })?;
+        Ok(IdentityFactsReceipt {
+            envelope,
+            signature,
+        })
+    }
+    .await;
+    let cleanup_confirmed = resources.cleanup().await;
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    match result {
+        Ok(identity_facts) => Ok(factory_native::runtime_broker::EnvironmentBrokerResult {
+            schema_version: 1,
+            operation: input.operation,
+            phase: factory_native::runtime_broker::EnvironmentBuildPhase::IdentityFacts,
+            spec_sha256: spec.spec_sha256.clone(),
+            resolution: None,
+            receipt: None,
+            identity_facts: Some(identity_facts),
+            logs: String::new(),
+            logs_truncated: false,
+            cleanup_confirmed,
+            duration_ms,
+        }),
+        Err(failure) => Err(failure),
+    }
+}
+
+struct AppIdentityFactsRunner<'a>(&'a Arc<App>);
+
+impl factory_native::runtime_broker::IdentityFactsCommandRunner for AppIdentityFactsRunner<'_> {
+    fn run_identity_command<'a>(
+        &'a self,
+        args: Vec<String>,
+        operation: &'a str,
+        limit: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+    {
+        Box::pin(async move { self.0.run_bounded(args, operation, limit).await })
+    }
+}
+
+async fn reobserve_from_realisation_pointer(
+    runner: &dyn factory_native::runtime_broker::IdentityFactsCommandRunner,
+    image_id: &str,
+    cache_volume: &str,
+    challenge: &IdentityFactsChallenge,
+    spec_sha256: &str,
+    bytes: &[u8],
+) -> Result<IdentityFactsManifest, EnvironmentBrokerFailure> {
+    let observation: factory_native::planning::identity_facts::RealisationObservation =
+        serde_json::from_slice(bytes).map_err(|_| {
+            EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT",
+                "the builder realisation pointer is malformed",
+            )
+        })?;
+    observation
+        .validate_for(&challenge.plan_sha256, Some(spec_sha256))
+        .map_err(|error| {
+            EnvironmentBrokerFailure::new("ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT", error.to_string())
+        })?;
+    factory_native::runtime_broker::observe_identity_facts_with_root(
+        runner,
+        image_id,
+        cache_volume,
+        ENVIRONMENT_NIX_STORE_VOLUME,
+        challenge,
+        &observation.store_path,
+    )
+    .await
+    .map_err(|message| {
+        EnvironmentBrokerFailure::new("ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT", message)
+    })
+}
+
+async fn observe_identity_facts(
+    app: &Arc<App>,
+    image_id: &str,
+    cache_volume: &str,
+    challenge: &IdentityFactsChallenge,
+) -> Result<IdentityFactsManifest, EnvironmentBrokerFailure> {
+    let runner = AppIdentityFactsRunner(app);
+    factory_native::runtime_broker::observe_identity_facts_with(
+        &runner,
+        image_id,
+        cache_volume,
+        ENVIRONMENT_NIX_STORE_VOLUME,
+        challenge,
+    )
+    .await
+    .map_err(|message| {
+        let code = if message.contains("no realised store root") {
+            "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT"
+        } else {
+            "ENVIRONMENT_IDENTITY_FACTS_REFUSED"
+        };
+        EnvironmentBrokerFailure::new(code, message)
+    })
+}
+
 async fn execute_environment_inner(
     app: Arc<App>,
     input: &EnvironmentBrokerRequest,
     validated: &ValidatedEnvironmentRequest,
     resources: &mut EnvironmentRunResources,
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> Result<
     (
         factory_native::runtime_broker::EnvironmentBuildPhase,
@@ -4958,6 +5199,12 @@ async fn execute_environment_inner(
                         "cannot encode the environment build request",
                     )
                 })?,
+            ));
+        }
+        EnvironmentBrokerOperation::IdentityFacts => {
+            return Err(EnvironmentBrokerFailure::new(
+                "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+                "an identity-facts operation never runs a builder phase",
             ));
         }
     }
@@ -5163,6 +5410,10 @@ async fn execute_environment_inner(
                 logs_truncated,
             ))
         }
+        EnvironmentBrokerOperation::IdentityFacts => Err(EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
+            "an identity-facts operation never runs a builder phase",
+        )),
     }
 }
 
@@ -5713,7 +5964,7 @@ async fn run_environment_container(
     network: &str,
     proxy: Option<&str>,
     plan: &factory_native::planning::environment::EnvironmentPlan,
-    deadline: Instant,
+    deadline: Option<Instant>,
     workspace_volume: &str,
     cache_volume: &str,
     phase: &str,
@@ -5721,15 +5972,24 @@ async fn run_environment_container(
     allow_failure_exit: bool,
     check_token: Option<&str>,
 ) -> Result<ChildOutput, EnvironmentBrokerFailure> {
-    let remaining = deadline
-        .checked_duration_since(Instant::now())
-        .filter(|duration| !duration.is_zero())
-        .ok_or_else(|| {
-            EnvironmentBrokerFailure::new(
-                "ENVIRONMENT_BUILD_TIMEOUT",
-                "the environment operation exceeded its wall-clock bound",
-            )
-        })?;
+    // `deadline` is used only by callers that own an explicit bounded
+    // sub-operation (for example a check or a focused test). The environment
+    // resolve/build path passes None: its builder child performs many
+    // per-operation bounded Nix calls and must not inherit an aggregate cap.
+    let remaining = match deadline {
+        Some(deadline) => Some(
+            deadline
+                .checked_duration_since(Instant::now())
+                .filter(|duration| !duration.is_zero())
+                .ok_or_else(|| {
+                    EnvironmentBrokerFailure::new(
+                        "ENVIRONMENT_BUILD_TIMEOUT",
+                        "the environment operation exceeded its wall-clock bound",
+                    )
+                })?,
+        ),
+        None => None,
+    };
     let cpus = plan.resources.cpu.to_string();
     let memory = format!("{}m", plan.resources.memory_mib);
     let pids = plan.resources.pids.to_string();
@@ -5793,6 +6053,10 @@ async fn run_environment_container(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // If the detached operation task is dropped (broker shutdown), do not
+    // leave the Podman client process alive. Container/volume reconciliation is
+    // completed by the existing cleanup guard and startup epoch sweep.
+    command.kill_on_drop(true);
     // The cancel endpoint uses the same volume lock. Hold it across the
     // tombstone check and container creation so cancellation cannot observe
     // "no container" while the check is about to spawn.
@@ -5835,7 +6099,11 @@ async fn run_environment_container(
     };
     let stdout_task = tokio::spawn(read_bounded(stdout, MAX_STREAM_BYTES));
     let stderr_task = tokio::spawn(read_bounded(stderr, MAX_STREAM_BYTES));
-    let status = match time::timeout(remaining, child.wait()).await {
+    let wait_result = match remaining {
+        Some(remaining) => time::timeout(remaining, child.wait()).await,
+        None => Ok(child.wait().await),
+    };
+    let status = match wait_result {
         Ok(Ok(status)) => status,
         Ok(Err(error)) => {
             stdout_task.abort();
@@ -5918,6 +6186,40 @@ async fn run_environment_container(
                 }
             }
         }
+        // Capture the structured closure inventory through the existing
+        // pre-cleanup cache-volume channel. The runtime log retains the full
+        // bounded JSON for durable e2e diagnostics; the typed blocker retains
+        // its header/IDs. The cache volume itself is disposable.
+        match read_environment_output(
+            app,
+            image_id,
+            cache_volume,
+            "closure-license-inventory.json",
+            64 * 1024,
+        )
+        .await
+        {
+            Ok(inventory) => {
+                let inventory = String::from_utf8_lossy(&inventory);
+                if !inventory.trim().is_empty() {
+                    tracing::warn!(
+                        phase = %phase,
+                        code = %code,
+                        closure_license_inventory = %inventory,
+                        "closure licence inventory captured before environment cleanup"
+                    );
+                    message.push_str("\nclosure-license-inventory: ");
+                    message.push_str(inventory.trim());
+                }
+            }
+            Err(_) => {
+                tracing::warn!(
+                    phase = %phase,
+                    code = %code,
+                    "closure licence inventory is unavailable before environment cleanup"
+                );
+            }
+        }
         let message: String = message.chars().take(8_000).collect();
         return Err(EnvironmentBrokerFailure::new(&code, message));
     }
@@ -5931,14 +6233,31 @@ async fn run_environment_container(
 }
 
 fn failure_from_builder_output(bytes: &[u8]) -> Option<(String, String)> {
-    let value: Value = serde_json::from_slice(bytes).ok()?;
-    let blocker = value.get("blocker")?;
-    let code = blocker.get("code").and_then(Value::as_str)?;
-    let message = blocker
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or("the environment builder failed");
-    Some((code.to_owned(), message.to_owned()))
+    let text = String::from_utf8_lossy(bytes);
+    let mut candidates = vec![text.as_ref()];
+    if let Some(index) = text.find('{') {
+        candidates.push(&text[index..]);
+    }
+    for candidate in candidates {
+        let Ok(value) = serde_json::from_str::<Value>(candidate.trim()) else {
+            continue;
+        };
+        if let Some(blocker) = value.get("blocker") {
+            let code = blocker.get("code").and_then(Value::as_str)?;
+            let message = blocker
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("the environment builder failed");
+            return Some((code.to_owned(), message.to_owned()));
+        }
+        if let (Some(code), Some(message)) = (
+            value.get("code").and_then(Value::as_str),
+            value.get("error").and_then(Value::as_str),
+        ) {
+            return Some((code.to_owned(), message.to_owned()));
+        }
+    }
+    None
 }
 
 async fn run_environment_cat(
@@ -8237,12 +8556,21 @@ exit 1
                 EnvironmentBrokerOperation::Build => {
                     factory_native::runtime_broker::EnvironmentBuildPhase::Build
                 }
+                EnvironmentBrokerOperation::IdentityFacts => {
+                    factory_native::runtime_broker::EnvironmentBuildPhase::IdentityFacts
+                }
             }),
             image: TEST_BUILDER_IMAGE.into(),
             digest: TEST_BUILDER_DIGEST.into(),
             plan,
-            spec: (operation == EnvironmentBrokerOperation::Build).then_some(spec),
+            spec: matches!(
+                operation,
+                EnvironmentBrokerOperation::Build | EnvironmentBrokerOperation::IdentityFacts
+            )
+            .then_some(spec),
             workspace_files: Vec::new(),
+            license_decisions: Vec::new(),
+            identity_facts: None,
         }
     }
 
@@ -8958,7 +9286,7 @@ exit 0
             "none",
             None,
             &plan,
-            Instant::now() + Duration::from_millis(100),
+            Some(Instant::now() + Duration::from_millis(100)),
             "factory-env-ws-timeout",
             "factory-env-cache-timeout",
             "build",
@@ -8977,6 +9305,251 @@ exit 0
             log.contains("rm --force --time=0 factory-env-timeout"),
             "{log}"
         );
+    }
+
+    #[tokio::test]
+    async fn environment_container_without_aggregate_deadline_waits_for_controlled_child() {
+        let directory =
+            std::env::temp_dir().join(format!("factory-env-no-aggregate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log_path = directory.join("podman.log");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  run) sleep 2; exit 0 ;;
+  rm) exit 0 ;;
+  container) [ "$2" = "exists" ] && exit 1 ;;
+esac
+exit 0
+"#,
+            log_path.display()
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let plan_value = environment_plan();
+        let plan: factory_native::planning::environment::EnvironmentPlan =
+            serde_json::from_value(plan_value).unwrap();
+        let started = Instant::now();
+        let result = run_environment_container(
+            &app,
+            TEST_BUILDER_IMAGE_ID,
+            "factory-env-no-aggregate",
+            "none",
+            None,
+            &plan,
+            None,
+            "factory-env-ws-no-aggregate",
+            "factory-env-cache-no-aggregate",
+            "build",
+            "request-build.json",
+            false,
+            None,
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(
+            started.elapsed() >= Duration::from_millis(1_500),
+            "the controlled child was not allowed to make progress"
+        );
+    }
+
+    #[tokio::test]
+    async fn closure_license_inventory_is_captured_before_cleanup_on_failure() {
+        let directory = std::env::temp_dir().join(format!(
+            "factory-env-inventory-capture-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log_path = directory.join("podman.log");
+        let inventory = r#"{"expected":1,"observed":1,"violationCount":1,"ids":["python3@3.12.12"],"captureComplete":true}"#;
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case " $* " in
+  *"/cache/closure-license-inventory.json"*) printf '%s' '{}'; exit 0 ;;
+  *"/cache/resolve.log"*) printf '%s\n' 'resolve diagnostic log'; exit 0 ;;
+  *"/cache/build.log"*) printf '%s\n' 'build diagnostic log'; exit 0 ;;
+  *"/cache/check.log"*) printf '%s\n' 'check diagnostic log'; exit 0 ;;
+esac
+case "$1" in
+  run)
+    printf '%s\n' '{{"status":"FAILED","blocker":{{"code":"ENVIRONMENT_LICENSE_UNKNOWN","message":"Python-2.0"}}}}'
+    exit 2
+    ;;
+  rm) exit 0 ;;
+  container) [ "$2" = "exists" ] && exit 1 ;;
+esac
+exit 0
+"#,
+            log_path.display(),
+            inventory
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        let plan_value = environment_plan();
+        let plan: factory_native::planning::environment::EnvironmentPlan =
+            serde_json::from_value(plan_value).unwrap();
+        let result = run_environment_container(
+            &app,
+            TEST_BUILDER_IMAGE_ID,
+            "factory-env-inventory-capture",
+            "none",
+            None,
+            &plan,
+            None,
+            "factory-env-ws-inventory-capture",
+            "factory-env-cache-inventory-capture",
+            "resolve",
+            "request-resolve.json",
+            false,
+            None,
+        )
+        .await;
+        let error = result.expect_err("the fixture failure must be returned");
+        assert_eq!(error.code, "ENVIRONMENT_LICENSE_UNKNOWN");
+        assert!(
+            error.message.contains("closure-license-inventory"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("python3@3.12.12"),
+            "{}",
+            error.message
+        );
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert!(
+            log.contains("/cache/closure-license-inventory.json"),
+            "{log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_facts_are_observed_with_fixed_nix_queries_and_signed() {
+        let directory = std::env::temp_dir().join(format!(
+            "factory-env-identity-facts-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log_path = directory.join("podman.log");
+        let root = format!("/nix/store/{}-fixture-root", "c".repeat(32));
+        let drv = format!("/nix/store/{}-fixture.drv", "d".repeat(32));
+        let helper = format!("/nix/store/{}-helper.sh", "e".repeat(32));
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{}"
+case "$1" in
+  image)
+    if [ "$2" = "inspect" ]; then
+      case "$4" in
+        *source-digest*) printf '%s\t%s\t%s\n' "{}" "{}" "nix-devenv-environment-v1" ;;
+        *) printf '%s\n' "{}" ;;
+      esac
+      exit 0
+    fi
+    ;;
+  volume)
+    case "$2" in
+      create|import|rm) if [ "$2" = "import" ]; then cat >/dev/null; fi; exit 0 ;;
+      exists) exit 1 ;;
+      inspect) exit 1 ;;
+    esac
+    ;;
+  run)
+    case " $* " in
+      *"readlink -f"*) printf '%s' "{}"; exit 0 ;;
+      *"nix path-info --json --recursive --offline"*)
+        printf '%s' '{{"{}":{{"narHash":"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","deriver":"{}"}},"{}":{{"narHash":"sha256-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=","deriver":null}}}}'
+        exit 0
+        ;;
+      *"nix derivation show --offline"*)
+        printf '%s' '{{"{}":{{"outputs":{{"out":{{"path":"{}"}}}}}}}}'
+        exit 0
+        ;;
+    esac
+    exit 0
+    ;;
+  container) [ "$2" = "exists" ] && exit 1 ;;
+esac
+exit 0
+"#,
+            log_path.display(),
+            TEST_BUILDER_IMAGE_ID,
+            TEST_BUILDER_DIGEST,
+            TEST_BUILDER_IMAGE_ID,
+            root,
+            root,
+            drv,
+            helper,
+            drv,
+            root,
+        );
+        let (podman, _serial) = fake_podman(&script).await;
+        let app = test_app(podman);
+        app.set_environment_builder(EnvironmentBuilderRuntime::ready(
+            TEST_BUILDER_IMAGE.into(),
+            TEST_BUILDER_DIGEST.into(),
+            TEST_BUILDER_IMAGE_ID.into(),
+            "x86_64-linux".into(),
+            "nix-devenv-environment-v1".into(),
+        ));
+        let mut request = environment_request(EnvironmentBrokerOperation::IdentityFacts);
+        let challenge = IdentityFactsChallenge {
+            operation_id: "identity-operation".into(),
+            runtime_id: TEST_BUILDER_DIGEST.into(),
+            nonce: "identity-nonce".into(),
+            pin: request.plan.nix.nixpkgs.clone(),
+            plan_sha256: request.plan.plan_sha256.clone(),
+            spec_sha256: request
+                .spec
+                .as_ref()
+                .expect("the identity request carries the frozen spec")
+                .spec_sha256
+                .clone(),
+            mode: IdentityFactsMode::Enumerate,
+            root: OperationRoot::Operation,
+            questions: Vec::new(),
+            stage: factory_native::planning::identity_facts::IdentityFactsStage::Spec,
+            resolution_key: String::new(),
+        };
+        request.identity_facts = Some(challenge.clone());
+        let response = identity_facts_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(request),
+        )
+        .await;
+        let body = environment_response_body(response).await;
+        assert_eq!(body["phase"], "IDENTITY_FACTS", "{body}");
+        assert_eq!(body["cleanupConfirmed"], true);
+        let receipt: IdentityFactsReceipt =
+            serde_json::from_value(body["identityFacts"].clone()).unwrap();
+        assert_eq!(receipt.envelope.manifest.fact_count, 2);
+        assert_eq!(receipt.envelope.manifest.observed_root, root);
+        assert_eq!(
+            receipt.envelope.manifest.facts[0].deriver.as_deref(),
+            Some(drv.as_str())
+        );
+        assert_eq!(receipt.envelope.manifest.facts[1].deriver, None);
+        assert_eq!(
+            receipt.envelope.manifest.facts[1].outputs,
+            vec![helper.clone()]
+        );
+        factory_native::planning::identity_facts::verify(
+            &receipt,
+            TEST_ENVIRONMENT_TOKEN.as_bytes(),
+            &challenge,
+        )
+        .expect("the broker receipt verifies with the environment bearer");
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert!(
+            log.contains("nix path-info --json --recursive --offline"),
+            "{log}"
+        );
+        assert!(log.contains("nix derivation show --offline"), "{log}");
+        assert!(!log.contains("--privileged"), "{log}");
+        assert!(!log.contains("--network=host"), "{log}");
     }
 
     #[tokio::test]
@@ -9568,6 +10141,66 @@ exit 0
     }
 
     #[tokio::test]
+    async fn environment_build_memory_resource_limit_keeps_the_per_spec_cache() {
+        let (app, log, result_path, _serial) = environment_test_app().await;
+        let mut receipt = environment_receipt();
+        receipt["status"] = json!("FAILED");
+        receipt["blockers"] = json!([{
+            "code": "ENVIRONMENT_RESOURCE_LIMIT",
+            "message": "the environment build exceeded its memory bound"
+        }]);
+        std::fs::write(&result_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        let response = build_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Environment),
+            Json(environment_request(EnvironmentBrokerOperation::Build)),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            environment_response_body(response).await["code"],
+            "ENVIRONMENT_RESOURCE_LIMIT"
+        );
+        let log = std::fs::read_to_string(log).unwrap();
+        assert!(
+            !log.contains("volume rm --force factory-env-cache-"),
+            "a memory resource failure must not purge reusable cache: {log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_check_memory_resource_limit_keeps_the_per_spec_cache() {
+        let result = json!({
+            "schemaVersion": 1,
+            "status": "FAILED",
+            "error": {
+                "code": "ENVIRONMENT_RESOURCE_LIMIT",
+                "message": "the environment check exceeded its memory bound"
+            },
+            "durationMs": 3,
+            "createdAt": "2026-11-11T00:00:00Z"
+        });
+        let (app, workspace, log, _serial) =
+            environment_check_test_app(ResourceOwner::Supervisor, 0, result).await;
+        let response = check_environment(
+            State(Arc::clone(&app)),
+            test_headers(ResourceOwner::Supervisor),
+            Json(environment_check_request(&workspace)),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            environment_response_body(response).await["code"],
+            "ENVIRONMENT_RESOURCE_LIMIT"
+        );
+        let log = std::fs::read_to_string(log).unwrap();
+        assert!(
+            !log.contains("volume rm --force factory-env-cache-"),
+            "a memory resource failure must not purge reusable cache: {log}"
+        );
+    }
+
+    #[tokio::test]
     async fn failed_cache_purge_quarantines_the_cache_and_refuses_reuse() {
         let directory =
             std::env::temp_dir().join(format!("factory-env-quarantine-{}", uuid::Uuid::new_v4()));
@@ -9923,7 +10556,7 @@ exit 0
             "none",
             None,
             &plan,
-            Instant::now() + Duration::from_millis(100),
+            Some(Instant::now() + Duration::from_millis(100)),
             "factory-env-ws-timeout",
             "factory-env-cache-timeout",
             "check",
@@ -10057,5 +10690,263 @@ exit 1
             .map(|(index, _)| &log[index..index + 49])
             .collect::<BTreeSet<_>>();
         assert!(workspaces.len() >= 2, "{log}");
+    }
+}
+
+#[cfg(test)]
+mod secure_identity_negative_tests {
+    use super::*;
+    use factory_native::planning::identity_facts::{
+        IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION, IdentityFact,
+        IdentityFactsChallenge, IdentityFactsEnvelope, IdentityFactsManifest, IdentityFactsMode,
+        IdentityFactsReceipt, IdentityFactsStage, OperationRoot, RealisationObservation,
+        closure_manifest_sha256, sign, verify,
+    };
+
+    fn challenge() -> IdentityFactsChallenge {
+        IdentityFactsChallenge {
+            operation_id: "environment-identity:test".into(),
+            runtime_id: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .into(),
+            nonce: "identity-facts:test".into(),
+            pin: "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d".into(),
+            plan_sha256: "a".repeat(64),
+            spec_sha256: "b".repeat(64),
+            mode: IdentityFactsMode::Enumerate,
+            root: OperationRoot::Operation,
+            questions: Vec::new(),
+            stage: IdentityFactsStage::Spec,
+            resolution_key: String::new(),
+        }
+    }
+
+    fn observation(store_path: &str) -> RealisationObservation {
+        RealisationObservation {
+            schema_version: 1,
+            plan_sha256: "a".repeat(64),
+            spec_sha256: "b".repeat(64),
+            store_path: store_path.into(),
+            closure_manifest_sha256: "c".repeat(64),
+            status: "REALISED".into(),
+        }
+    }
+
+    #[test]
+    fn forged_realisation_roots_or_bindings_are_refused() {
+        assert!(
+            observation("/tmp/not-a-store")
+                .validate_for(&"a".repeat(64), Some(&"b".repeat(64)))
+                .is_err()
+        );
+        assert!(
+            observation("/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1")
+                .validate_for(&"0".repeat(64), Some(&"b".repeat(64)))
+                .is_err()
+        );
+        assert!(
+            observation("/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1")
+                .validate_for(&"a".repeat(64), Some(&"0".repeat(64)))
+                .is_err()
+        );
+        assert!(
+            observation("/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1")
+                .validate_for(&"a".repeat(64), Some(&"b".repeat(64)))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_tampered_broker_receipt_is_refused() {
+        let fact = IdentityFact {
+            store_path: "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1".into(),
+            deriver: Some("/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv".into()),
+            nar_hash: "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=".into(),
+            outputs: vec!["/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1".into()],
+        };
+        let manifest = IdentityFactsManifest {
+            observed_root: fact.store_path.clone(),
+            facts: vec![fact],
+            fact_count: 1,
+            closure_manifest_sha256: closure_manifest_sha256(&[IdentityFact {
+                store_path: "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1".into(),
+                deriver: Some("/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv".into()),
+                nar_hash: "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=".into(),
+                outputs: vec!["/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1".into()],
+            }]),
+            truncated: false,
+        };
+        let envelope = IdentityFactsEnvelope {
+            schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
+            context: IDENTITY_FACTS_CONTEXT.into(),
+            challenge: challenge(),
+            manifest,
+        };
+        let signature = sign(&envelope, b"test-bearer").expect("sign");
+        let mut tampered = IdentityFactsReceipt {
+            envelope: envelope.clone(),
+            signature,
+        };
+        tampered.signature = "0".repeat(64);
+        assert!(verify(&tampered, b"test-bearer", &challenge()).is_err());
+        let valid = IdentityFactsReceipt {
+            envelope: envelope.clone(),
+            signature: sign(&envelope, b"test-bearer").unwrap(),
+        };
+        assert!(verify(&valid, b"test-bearer", &challenge()).is_ok());
+    }
+    #[tokio::test]
+    async fn failure_body_has_no_builder_manifest_channel() {
+        let response = EnvironmentBrokerFailure::new(
+            "ENVIRONMENT_LICENSE_UNKNOWN",
+            "the exact licence blocker",
+        )
+        .response();
+        let body = axum::body::to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("ENVIRONMENT_LICENSE_UNKNOWN"));
+        assert!(!body.contains("identityFactsManifest"));
+        assert!(!body.contains("sourceInOutputInputDrvs"));
+        assert!(!body.contains("signatureValid"));
+    }
+
+    struct FixedQueryRunner {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+        root: String,
+        drv: String,
+    }
+
+    impl factory_native::runtime_broker::IdentityFactsCommandRunner for FixedQueryRunner {
+        fn run_identity_command<'a>(
+            &'a self,
+            args: Vec<String>,
+            _operation: &'a str,
+            _limit: usize,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+        {
+            self.calls.lock().unwrap().push(args.clone());
+            let root = self.root.clone();
+            let drv = self.drv.clone();
+            Box::pin(async move {
+                let command = args.join(" ");
+                if command.contains("path-info") {
+                    Ok(serde_json::to_vec(&serde_json::json!({
+                        root.clone(): {
+                            "narHash": "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=",
+                            "narSize": 1,
+                            "deriver": drv,
+                            "references": [],
+                        }
+                    }))
+                    .unwrap())
+                } else if command.contains("derivation show") {
+                    Ok(serde_json::to_vec(&serde_json::json!({
+                        drv.clone(): {"outputs": {"out": {"path": root}}}
+                    }))
+                    .unwrap())
+                } else {
+                    Err("unexpected fixed query".into())
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn realisation_pointer_fallback_reobserves_or_fails_closed() {
+        let root = "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1".to_string();
+        let drv = "/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv".to_string();
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let runner = FixedQueryRunner {
+            calls: calls.clone(),
+            root: root.clone(),
+            drv: drv.clone(),
+        };
+        let valid = serde_json::to_vec(&observation(&root)).unwrap();
+        let manifest = reobserve_from_realisation_pointer(
+            &runner,
+            "image",
+            "cache",
+            &challenge(),
+            &"b".repeat(64),
+            &valid,
+        )
+        .await
+        .expect("valid pointer re-observed");
+        assert_eq!(manifest.observed_root, root);
+        assert_eq!(calls.lock().unwrap().len(), 2);
+
+        for bytes in [
+            b"".to_vec(),
+            b"{".to_vec(),
+            serde_json::to_vec(&observation("/tmp/not-a-store")).unwrap(),
+            serde_json::to_vec(&{
+                let mut value = observation(&root);
+                value.plan_sha256 = "0".repeat(64);
+                value
+            })
+            .unwrap(),
+            serde_json::to_vec(&{
+                let mut value = observation(&root);
+                value.spec_sha256 = "0".repeat(64);
+                value
+            })
+            .unwrap(),
+        ] {
+            let before = calls.lock().unwrap().len();
+            assert!(
+                reobserve_from_realisation_pointer(
+                    &runner,
+                    "image",
+                    "cache",
+                    &challenge(),
+                    &"b".repeat(64),
+                    &bytes,
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(
+                calls.lock().unwrap().len(),
+                before,
+                "no fixed query on a refused pointer"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn broker_fixed_queries_are_the_only_manifest_producer() {
+        let root = "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1".to_string();
+        let drv = "/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv".to_string();
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let runner = FixedQueryRunner {
+            calls: calls.clone(),
+            root: root.clone(),
+            drv: drv.clone(),
+        };
+        let manifest = factory_native::runtime_broker::observe_identity_facts_with_root(
+            &runner,
+            "image",
+            "cache",
+            "store",
+            &challenge(),
+            &root,
+        )
+        .await
+        .expect("fixed query manifest");
+        assert_eq!(manifest.observed_root, root);
+        assert_eq!(manifest.facts.len(), 1);
+        assert_eq!(manifest.facts[0].deriver.as_deref(), Some(drv.as_str()));
+        let recorded = calls.lock().unwrap().clone();
+        assert!(
+            recorded
+                .iter()
+                .any(|args| args.join(" ").contains("path-info") && args.contains(&root))
+        );
+        assert!(
+            recorded
+                .iter()
+                .any(|args| args.join(" ").contains("derivation show"))
+        );
     }
 }

@@ -96,7 +96,7 @@ async fn restaging_removes_a_file_deleted_from_the_worktree() {
     let volume = manager.workspace_volume(&handle.workspace_id).unwrap();
 
     manager
-        .stage_workspace_for_check(&handle.workspace_id)
+        .stage_workspace_for_check(&handle.workspace_id, handle.generation, None)
         .await
         .expect("first staging");
     let first = root.join("snapshot-1");
@@ -110,7 +110,7 @@ async fn restaging_removes_a_file_deleted_from_the_worktree() {
     std::fs::remove_file(worktree.join("old.txt")).unwrap();
     std::fs::write(worktree.join("modified.txt"), "after\n").unwrap();
     manager
-        .stage_workspace_for_check(&handle.workspace_id)
+        .stage_workspace_for_check(&handle.workspace_id, handle.generation, None)
         .await
         .expect("second staging replaces the volume");
     let second = root.join("snapshot-2");
@@ -124,6 +124,9 @@ async fn restaging_removes_a_file_deleted_from_the_worktree() {
         "after\n"
     );
 
-    manager.cleanup(&handle.workspace_id).await.unwrap();
+    manager
+        .cleanup(&handle.workspace_id, handle.generation)
+        .await
+        .unwrap();
     let _ = std::fs::remove_dir_all(&root);
 }

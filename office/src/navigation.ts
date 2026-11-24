@@ -98,6 +98,13 @@ export const NAV_GROUPS: NavGroup[] = [
           "skills knowledge context7 librarian explorer library docs temporary promotion license review revoke",
       },
       {
+        to: "/licenses",
+        labelKey: "nav.licenses",
+        icon: ShieldCheck,
+        keywords:
+          "licenses licence delegation identity evidence GFDL GPL commercial no fee audit revoke unknown stale denied",
+      },
+      {
         to: "/charter",
         labelKey: "nav.charter",
         icon: ShieldCheck,

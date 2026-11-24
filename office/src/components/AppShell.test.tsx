@@ -299,6 +299,10 @@ describe("AppShell", () => {
     await user.selectOptions(select, "es");
 
     expect(await screen.findByRole("link", { name: "Campañas" })).toBeDefined();
+    const trigger = screen.getByRole("button", {
+      name: "Buscar K: abrir la navegación por comandos",
+    });
+    expect(trigger.textContent).toContain("Buscar K");
     expect(document.querySelector(".topbar-title")?.textContent).toBe(
       "Campañas",
     );
@@ -308,6 +312,28 @@ describe("AppShell", () => {
     await waitFor(() => expect(document.documentElement.lang).toBe("es"));
     expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBe("es");
     expect(screen.getByRole("link", { name: "Nueva solicitud" })).toBeDefined();
+  });
+
+  it("gives the command trigger an accessible name that includes its visible label and shortcut", async () => {
+    renderShell("/");
+    // WCAG label-content-name-mismatch: the visible text renders as
+    // "Search\nK" (innerText), so the accessible name must contain the
+    // contiguous sequence "Search K", not only the two words separately.
+    const trigger = screen.getByRole("button", {
+      name: "Search K: open command navigation",
+    });
+    expect(trigger.getAttribute("aria-label")).toContain("Search K");
+    // WCAG label-content-name-mismatch: axe reads the visible DOM text, so the
+    // contiguous "Search K" sequence must exist in textContent/innerText too,
+    // not only in the accessible name.
+    expect(trigger.textContent).toContain("Search K");
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    await userEvent.keyboard("{Enter}");
+    expect(
+      await screen.findByRole("dialog", { name: "Command navigation" }),
+    ).toBeDefined();
   });
 
   it("opens command navigation with the keyboard and selects a page", async () => {

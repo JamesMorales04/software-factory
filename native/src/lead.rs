@@ -781,6 +781,41 @@ impl LeadPlanProposal {
         self.work_units.len() + self.max_repair_cycles as usize
     }
 
+    /// Validate the resolved executable unit count against the Campaign's
+    /// attempt/session budget. The Planner WorkGraph, not the Lead proposal,
+    /// supplies that count during an explicit start.
+    pub fn validate_resolved_units(&self, unit_count: usize) -> Result<(), LeadError> {
+        if unit_count == 0 || unit_count > MAX_WORK_UNITS {
+            return Err(LeadError::WorkGraph(format!(
+                "resolved WorkGraph requires 1..={MAX_WORK_UNITS} implementation units"
+            )));
+        }
+        if self.budget.max_attempts == 0 {
+            return Err(LeadError::Budget(
+                "Campaign attempt budget must be positive".into(),
+            ));
+        }
+        let implementer_attempts = unit_count
+            .checked_add(self.max_repair_cycles as usize)
+            .and_then(|count| count.checked_mul(self.budget.max_attempts as usize))
+            .ok_or_else(|| LeadError::Budget("implementer attempt count overflow".into()))?;
+        if implementer_attempts > LEGACY_MAX_CAMPAIGN_IMPLEMENTER_RUNS {
+            return Err(LeadError::Budget(
+                "resolved WorkGraph implementer attempts exceed the supported Campaign ceiling"
+                    .into(),
+            ));
+        }
+        let required_sessions = 1usize
+            .checked_add(implementer_attempts)
+            .ok_or_else(|| LeadError::Budget("session count overflow".into()))?;
+        if required_sessions > self.max_sessions as usize {
+            return Err(LeadError::Budget(
+                "resolved WorkGraph exceeds the Campaign session ceiling".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Effective transitive scope for integration or fan-in units.
     pub fn unit_scope(&self, unit_id: &str) -> Option<(Vec<String>, Vec<Capability>)> {
         let by_id: HashMap<&str, &LeadWorkUnit> = self
@@ -921,9 +956,9 @@ impl LeadPlanProposal {
                 "Campaign budgets exceed the delegation or supported bounds".into(),
             ));
         }
-        if self.work_units.is_empty() || self.work_units.len() > MAX_WORK_UNITS {
+        if self.work_units.len() > MAX_WORK_UNITS {
             return Err(LeadError::WorkGraph(format!(
-                "work graph requires 1..={MAX_WORK_UNITS} implementation units"
+                "work graph exceeds the {MAX_WORK_UNITS}-unit bound"
             )));
         }
         self.validate_work_units(grant, project)?;
@@ -1057,9 +1092,9 @@ impl LeadPlanProposal {
                 "Campaign parallel capacity exceeds the delegation or supported bounds".into(),
             ));
         }
-        if self.work_units.is_empty() || self.work_units.len() > MAX_WORK_UNITS {
+        if self.work_units.len() > MAX_WORK_UNITS {
             return Err(LeadError::WorkGraph(format!(
-                "work graph requires 1..={MAX_WORK_UNITS} implementation units"
+                "work graph exceeds the {MAX_WORK_UNITS}-unit bound"
             )));
         }
         self.validate_work_units_against(&grant.allowed_paths, &grant.capabilities, project)?;
@@ -1128,22 +1163,20 @@ impl LeadPlanProposal {
                 &unit.allowed_paths,
             )?;
             unique_values("capabilities", &unit.capabilities)?;
-            if !unit.allowed_paths.is_empty()
-                && !unit
-                    .allowed_paths
-                    .iter()
-                    .all(|path| covered_by(path, grant_paths))
+            if !unit
+                .allowed_paths
+                .iter()
+                .all(|path| covered_by(path, grant_paths))
             {
                 return Err(LeadError::WorkGraph(format!(
                     "WorkUnit {} paths are outside the delegation",
                     unit.id
                 )));
             }
-            if !unit.allowed_paths.is_empty()
-                && !unit
-                    .allowed_paths
-                    .iter()
-                    .all(|path| covered_by(path, &project.allowed_paths))
+            if !unit
+                .allowed_paths
+                .iter()
+                .all(|path| covered_by(path, &project.allowed_paths))
             {
                 return Err(LeadError::WorkGraph(format!(
                     "WorkUnit {} paths are outside the project scope",
@@ -1174,9 +1207,8 @@ impl LeadPlanProposal {
             validate_checks(&unit.negative_cases, true)?;
             paths_by_id.insert(unit.id.as_str(), &unit.allowed_paths);
         }
-        if by_id.is_empty() {
-            return Err(LeadError::WorkGraph("work graph is empty".into()));
-        }
+        // An empty Lead WorkUnits array is valid: the Planner's validated
+        // WorkGraph is the only source of executable units.
         for unit in &self.work_units {
             for dependency in &unit.depends_on {
                 if dependency == &unit.id {
@@ -1508,12 +1540,9 @@ impl LeadAssessment {
                 "a change assessment requires an executable proposal".into(),
             ));
         }
-        if self.intent != Intent::Change
-            && let Some(proposal) = &self.proposal
-            && !proposal.work_units.is_empty()
-        {
+        if self.intent != Intent::Change && self.proposal.is_some() {
             return Err(LeadError::Assessment(
-                "a non-change intent cannot include executable WorkUnits".into(),
+                "a non-change intent cannot include an executable proposal".into(),
             ));
         }
         Ok(())
@@ -2390,7 +2419,7 @@ mod tests {
     #[test]
     fn graph_rejects_invalid_shapes_scope_and_budget() {
         let mut cases: Vec<(&str, LeadPlanProposal)> = Vec::new();
-        cases.push(("empty", proposal(Vec::new())));
+        // An empty WorkUnits array is valid: the Planner owns decomposition.
         cases.push((
             "unknown dependency",
             proposal(vec![{
@@ -2744,11 +2773,73 @@ mod tests {
     }
 
     #[test]
-    fn non_change_intent_cannot_carry_executable_units() {
+    fn non_change_intent_cannot_carry_a_proposal_even_without_units() {
         let mut value = assessment();
         value.intent = Intent::Audit;
+        value.effort_estimate = EffortEstimate {
+            status: EffortStatus::NotRequested,
+            unit: String::new(),
+            min_person_hours: 0,
+            max_person_hours: 0,
+            assumptions: Vec::new(),
+            unknown_reason: String::new(),
+        };
+        value.proposal.as_mut().unwrap().work_units.clear();
+        let error = value.validate(&assessment_input()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "invalid assessment: a non-change intent cannot include an executable proposal"
+        );
         value.proposal.as_mut().unwrap().work_units = vec![unit("api")];
         assert!(value.validate(&assessment_input()).is_err());
+    }
+
+    #[test]
+    fn change_intent_with_work_units_is_accepted() {
+        let mut value = assessment();
+        value.intent = Intent::Change;
+        value.proposal.as_mut().unwrap().work_units = vec![unit("api")];
+        value.validate(&assessment_input()).unwrap();
+    }
+
+    #[test]
+    fn every_declared_work_unit_needs_its_own_path_scope() {
+        let grant = grant();
+        let project = project();
+        let mut value = proposal(vec![unit("api")]);
+        let mut empty = unit("tests");
+        empty.allowed_paths.clear();
+        value.work_units.push(empty);
+        let error = value
+            .validate_work_units_against(&grant.allowed_paths, &grant.capabilities, &project)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("allowedPaths must not be empty"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn resolved_work_graph_units_must_fit_the_session_budget() {
+        let mut value = proposal(vec![unit("api")]);
+        value.budget.max_attempts = 1;
+        value.max_repair_cycles = 0;
+        value.max_sessions = 3;
+        // One assessment plus two implementation attempts fit 3 sessions.
+        value.validate_resolved_units(2).unwrap();
+        // Three units would require a fourth session and are rejected before
+        // any per-unit ActionSpec or attempt is created.
+        let error = value.validate_resolved_units(3).unwrap_err();
+        assert!(matches!(error, LeadError::Budget(_)), "{error}");
+        assert!(value.validate_resolved_units(0).is_err());
+    }
+
+    #[test]
+    fn lead_proposal_may_omit_executable_units() {
+        // P1: the Lead coordinates; the Planner's validated WorkGraph is the
+        // only source of executable units, so an empty Lead WorkUnits array is
+        // valid and must not be replaced by a synthetic unit.
+        assert_valid(&proposal(Vec::new()));
     }
 
     #[test]

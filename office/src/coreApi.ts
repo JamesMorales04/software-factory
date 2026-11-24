@@ -1869,6 +1869,11 @@ export interface ParticipantPlanReadinessView {
   required: boolean;
   present: boolean;
   ready: boolean;
+  workGraphState:
+    | "PLANNED"
+    | "PLANNED_PENDING"
+    | "WORK_GRAPH_NOT_PLANNED"
+    | "NOT_REQUIRED";
   reviewerCount: number;
   requiredReviewerCount: number;
   reviewerRoles: AgenticReviewerRole[];
@@ -2188,6 +2193,8 @@ export interface PlanningReadinessView {
   lane: PlanningLane;
   artifacts: PlanningArtifactRecord[];
   review: PlanReviewRecord | null;
+  reviewCurrent: boolean;
+  reviewRevision: number | null;
   workflow: PlanningWorkflowRun | null;
   missingArtifacts: string[];
   participantPlan: ParticipantPlanReadinessView;
@@ -2195,6 +2202,7 @@ export interface PlanningReadinessView {
   reviewApproved: boolean;
   materialsReady: boolean;
   ready: boolean;
+  startReady: boolean;
 }
 
 export interface IntakeRequestProjection extends IntakeRequestSummary {
@@ -2202,6 +2210,8 @@ export interface IntakeRequestProjection extends IntakeRequestSummary {
   proposal: LeadPlanProposalView | null;
   plan: FrozenLeadPlanRecord | null;
   planning?: PlanningReadinessView;
+  participantPlan?: ParticipantPlanReadinessView;
+  specifications: AgenticSpecification[];
   environment?: EnvironmentStateView | null;
   campaign: CampaignDetail | null;
   messages: IntakeMessage[];
@@ -2209,6 +2219,100 @@ export interface IntakeRequestProjection extends IntakeRequestSummary {
   followUpRequest?: IntakeRequestSummary | null;
   linked_issues?: IssueLinkProjection[] | null;
 }
+
+export type RequestFundingVerdict =
+  | "ADMITTED_FOR_REQUEST"
+  | "SCOPE_REQUIRED"
+  | "ADMISSION_MISSING"
+  | "ADMISSION_INACTIVE"
+  | "ADMISSION_EXPIRED"
+  | "OWNER_ASSUMPTION_INVALID"
+  | "PROVIDER_NOT_CONFIGURED"
+  | "PROVIDER_DISABLED"
+  | "SCOPE_MISMATCH"
+  | "ROUTE_MISMATCH"
+  | "SETTINGS_REVISION_MISMATCH"
+  | "NON_CANONICAL_ROUTE"
+  | "ROUTE_NOT_ADMITTED"
+  | "EXTRA_USAGE_NOT_DISABLED"
+  | "BINDING_REQUIRED";
+
+export interface RequestFundingScope {
+  intakeRequestId: string;
+  leadRequestId: string;
+  complete: boolean;
+}
+
+export interface RequestFundingRouteView {
+  role: string;
+  provider: string;
+  model: string;
+  settingsRevision: string;
+  transport: string;
+  valid: boolean;
+}
+
+export interface RequestFundingDeclarationView {
+  declarationId: string;
+  role: string;
+  provider: string;
+  model: string;
+  settingsRevision: string;
+}
+
+export interface RequestFundingAdmissionView {
+  admissionId: string;
+  state: string;
+  provider: string;
+  model: string;
+  settingsRevision: string;
+  validUntilMs: number;
+  campaignId: string | null;
+  extraUsage: "DISABLED" | "UNKNOWN";
+  confirmedBy: string;
+  statement: string;
+  ownerExtraUsageDeclarations: RequestFundingDeclarationView[];
+  routes: RequestFundingRouteView[];
+  receiptSha256: string;
+}
+
+export interface RequestFundingStatus {
+  schemaVersion: number;
+  scope: RequestFundingScope;
+  provider: string;
+  model: string;
+  requestScoped: boolean;
+  coreVerifiable: boolean;
+  requestScopedAdmissible: boolean;
+  verdict: RequestFundingVerdict;
+  admission: RequestFundingAdmissionView | null;
+  missingEvidence: string[];
+  recovery: string;
+  provenance: string[];
+  note: string;
+}
+
+export type SubscriptionFundingStatus = {
+  scope: "UNSCOPED_PROVIDER_STATUS";
+  requestScoped: false;
+  provider: string;
+  kind: string;
+  route: string;
+  configured: boolean;
+  enabled: boolean;
+  model: string;
+  settingsRevision: number;
+  authenticationClass: string;
+  coreVerifiable: false;
+  admissible: false;
+  entitlement: string;
+  extraUsage: string;
+  balanceFallback: string;
+  noChargeRoute: string;
+  quota: { state: string; reason: string };
+  missingEvidence: string[];
+  note: string;
+};
 
 export interface RequestEnvironmentConstraints {
   nixpkgs?: string;
@@ -2464,6 +2568,11 @@ export interface AgenticPortfolioEntry {
   requestKind: AgenticRequestKind;
   workUnits: number;
   participantCount: number;
+  participantState?:
+    | "PLANNED"
+    | "PLANNED_PENDING"
+    | "NOT_REQUIRED"
+    | "WORK_GRAPH_NOT_PLANNED";
   stackLanguages: string[];
   directorId: string;
   operationManagerId: string;
@@ -2540,6 +2649,34 @@ export interface PlanReviewRecord {
   rationale: string;
   points: number;
   reviewedAt: string;
+}
+
+/**
+ * Core records an owner plan decision before it prepares the environment, so
+ * the response carries the durable decision (`reviewRecorded`) and whether the
+ * Lead rejected the prepared environment (`environmentBlocked`). Both are
+ * optional on the wire: absence means Core did not report the fact, and Office
+ * must not infer it from the HTTP status.
+ */
+export interface AgenticPlanReviewOutcome {
+  review: PlanReviewRecord;
+  reviewRecorded?: boolean;
+  environmentBlocked?: boolean;
+  workflow: PlanningWorkflowRun | null;
+}
+
+/**
+ * A decision Core confirms as recorded even when the later environment phase
+ * failed. This is the only proof Office accepts: the real `reviewRecorded`
+ * field of a real error body. It grants no recovery or execution authority.
+ */
+export interface RecordedPlanReview {
+  reviewRecorded: true;
+  environmentBlocked: boolean;
+  /** PLAN revision the recorded review binds; null when absent or malformed. */
+  reviewRevision: number | null;
+  message: string;
+  code: string | null;
 }
 
 export interface FindingDispositionRecord {
@@ -2737,6 +2874,8 @@ export interface AgenticPlanningProjection {
   };
   artifacts: PlanningArtifactRecord[];
   review: PlanReviewRecord | null;
+  reviewCurrent: boolean;
+  reviewRevision: number | null;
   workflow: PlanningWorkflowRun | null;
   missingArtifacts: string[];
   participantPlan: ParticipantPlanReadinessView;
@@ -2744,6 +2883,7 @@ export interface AgenticPlanningProjection {
   reviewApproved: boolean;
   materialsReady: boolean;
   ready: boolean;
+  startReady: boolean;
 }
 
 export interface AgenticRequestDetail {
@@ -2775,7 +2915,13 @@ export interface AgenticRequestDetail {
   environment?: EnvironmentStateView | null;
   findings: FindingDispositionRecord[];
   stack: AgenticStackProfile;
-  participants: AgenticParticipantPlan;
+  participants: AgenticParticipantPlan | null;
+  participantState?:
+    | "PLANNED"
+    | "PLANNED_PENDING"
+    | "NOT_REQUIRED"
+    | "WORK_GRAPH_NOT_PLANNED";
+  participantProblem?: { code: string; message: string } | null;
   reviewerEvidence: AgenticReviewerEvidence;
   specifications: AgenticSpecification[];
   plan: null | {
@@ -2974,6 +3120,93 @@ export interface AgenticOwnerDecision {
   createdAt: string;
   updatedAt: string;
   resolvedAt: string | null;
+}
+
+export interface LicenseDecisionDocumentation {
+  path: string;
+  license: string;
+  outputSha256?: string;
+  licenseTextSha256: string;
+  obligations: string[];
+  verdict: string;
+  /** Derived exact `purpose=license-text` asset selected after a v4 decision. */
+  licenseTextPath?: string;
+  /** Lead-selected `role=licensing` fact; empty for a direct text selection. */
+  licensingFactPath?: string;
+  licensingFactSha256?: string;
+  /** Raw model selection retained for audit only; never the derived text. */
+  modelLicenseTextPath?: string;
+  modelLicenseTextSha256?: string;
+  derivationRule?: string;
+}
+
+export interface LicenseProvenanceFact {
+  atom: string;
+  path: string;
+  sha256: string;
+  license: string;
+  purpose: string;
+  role: string;
+}
+
+export interface LicenseProvenanceText {
+  atom: string;
+  path: string;
+  sha256: string;
+  license: string;
+}
+
+export interface LicenseDecisionProvenance {
+  [key: string]: unknown;
+  licensingFacts?: LicenseProvenanceFact[];
+  licenseTexts?: LicenseProvenanceText[];
+  derivationRule?: string;
+}
+
+export interface LicenseDecisionRecord {
+  id: string;
+  delegationId: string;
+  projectId: string;
+  leadRequestId: string;
+  leadReservationId: string;
+  leadActorSha256: string;
+  leadRequestSha256: string;
+  leadOutputSha256: string;
+  leadPrincipal: string;
+  delegationMatter: string;
+  delegationOption: string;
+  delegationRevision: number;
+  delegationPin: string;
+  delegationUseContext: string;
+  delegationCriterion: string;
+  delegationDeadline: string;
+  identity: Record<string, unknown>;
+  licenseExpression: string;
+  selectedBranch: string;
+  softwareObligations: string[];
+  documentation: LicenseDecisionDocumentation[];
+  documentationObligations: string[];
+  softwareVerdict: string;
+  evidenceSha256: string;
+  identityFactsReceiptDigest: string;
+  contentSha256: string;
+  provenance: LicenseDecisionProvenance;
+  useContext: string;
+  commercialUse: boolean;
+  paymentRequired: boolean;
+  catalogSha256: string;
+  profileSha256: string;
+  policySha256: string;
+  specArtifact: Record<string, unknown>;
+  inventoryArtifact: Record<string, unknown>;
+  candidateArtifact: Record<string, unknown>;
+  decision: "ACCEPT" | "NEEDS_EVIDENCE" | "DENY";
+  revision: number;
+  status: "ACTIVE" | "REVOKED";
+  createdAt: string;
+  revokedAt: string | null;
+  revocationReason: string | null;
+  revokedBy: string | null;
 }
 
 export interface AgenticKnowledgeSource {
@@ -3279,6 +3512,35 @@ export interface ProviderView {
   revision: number;
   updatedAt: string;
   modelDiscovery: ProviderModelCatalogEntry | null;
+  /**
+   * Effective stored provider caps, projected by Core when a settings row
+   * exists. Absence means "not reported" (no row), not a default that Office
+   * may invent.
+   */
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  /**
+   * The exact structured Lead requirement and its permitted truncation-retry
+   * ceiling, projected by Core so Office does not duplicate the policy.
+   */
+  leadOutputTokens?: number;
+  leadRetryOutputTokens?: number;
+}
+
+export interface ProviderExtraUsageDeclarationView {
+  declarationId: string;
+  declaredAt: string;
+  declaredBy: string;
+  statement: string;
+  revokedAt: string | null;
+}
+
+export interface ProviderExtraUsageView {
+  provider: string;
+  baseUrl: string;
+  credentialBound: boolean;
+  active: boolean;
+  declaration: ProviderExtraUsageDeclarationView | null;
 }
 
 export interface UpdateProviderRequest {
@@ -3287,6 +3549,10 @@ export interface UpdateProviderRequest {
   credential?: string;
   enabled: boolean;
   isDefault: boolean;
+  /** Omit to preserve the current Core value. */
+  maxInputTokens?: number;
+  /** Omit to preserve the current Core value. */
+  maxOutputTokens?: number;
 }
 
 export interface ProviderTestResult extends ProviderModelCatalogEntry {
@@ -3779,6 +4045,34 @@ export class CoreApiError extends Error {
         ? authorization.reason
         : this.code;
   }
+}
+
+/**
+ * Reads the durable decision Core reports after a later phase failed. Only an
+ * explicit `reviewRecorded: true` in the real error body counts; an HTTP
+ * failure on its own is not evidence that anything was persisted.
+ */
+export function recordedPlanReview(cause: unknown): RecordedPlanReview | null {
+  if (!(cause instanceof CoreApiError)) return null;
+  const body = cause.body;
+  if (typeof body !== "object" || body === null) return null;
+  const record = body as Record<string, unknown>;
+  if (record.reviewRecorded !== true) return null;
+  const review =
+    typeof record.review === "object" && record.review !== null
+      ? (record.review as Record<string, unknown>)
+      : null;
+  const revision = review?.planRevision;
+  return {
+    reviewRecorded: true,
+    environmentBlocked: record.environmentBlocked === true,
+    reviewRevision:
+      typeof revision === "number" && Number.isInteger(revision)
+        ? revision
+        : null,
+    message: cause.message,
+    code: cause.code,
+  };
 }
 
 function messageFromBody(status: number, text: string): string {
@@ -4282,6 +4576,26 @@ export const coreApi = {
       `/settings/providers/${encodeURIComponent(provider)}/credential`,
       { method: "DELETE" },
     ),
+  getProviderExtraUsage: (provider: string) =>
+    request<ProviderExtraUsageView>(
+      `/settings/providers/${encodeURIComponent(provider)}/extra-usage`,
+    ),
+  declareProviderExtraUsage: (
+    provider: string,
+    input: { statement: string; idempotency_key: string },
+  ) =>
+    request<ProviderExtraUsageView>(
+      `/settings/providers/${encodeURIComponent(provider)}/extra-usage`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ extra_usage_disabled: true, ...input }),
+      },
+    ),
+  revokeProviderExtraUsage: (provider: string) =>
+    request<ProviderExtraUsageView>(
+      `/settings/providers/${encodeURIComponent(provider)}/extra-usage`,
+      { method: "DELETE" },
+    ),
   providerAudit: (provider: string) =>
     request<{ audit: ProviderAudit[] }>(
       `/settings/providers/${encodeURIComponent(provider)}/audit`,
@@ -4451,13 +4765,13 @@ export const coreApi = {
       rationale: string;
     },
   ) =>
-    request<{
-      review: PlanReviewRecord;
-      workflow: PlanningWorkflowRun | null;
-    }>(`/agentic/requests/${encodeURIComponent(id)}/plan-review`, {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
+    request<AgenticPlanReviewOutcome>(
+      `/agentic/requests/${encodeURIComponent(id)}/plan-review`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ),
   planAgenticRequest: (id: string) =>
     request<{
       graph: AgenticWorkGraphRecord;
@@ -4578,6 +4892,69 @@ export const coreApi = {
       `/agentic/decisions/${encodeURIComponent(id)}/resolve`,
       { method: "POST", body: JSON.stringify({ option, rationale }) },
     ),
+  getLicenseEvidenceReview: (requestId: string) =>
+    request<{
+      available: boolean;
+      reservationId?: string;
+      requestSha256?: string;
+      review?: {
+        decision: string;
+        pin: string;
+        name: string;
+        version: string;
+        licenseExpression: string;
+        selectedBranch: string;
+        useContext: string;
+        paymentRequired: boolean;
+      };
+    }>(
+      `/agentic/requests/${encodeURIComponent(requestId)}/license-evidence-review`,
+    ),
+  requestLicenseEvidenceReview: (
+    requestId: string,
+    input: { delegation_id: string; idempotency_key: string },
+  ) =>
+    request<{
+      reservationId: string;
+      provider: string;
+      model: string;
+      requestSha256: string;
+      review: {
+        decision: string;
+        pin: string;
+        name: string;
+        version: string;
+        licenseExpression: string;
+        selectedBranch: string;
+        useContext: string;
+        paymentRequired: boolean;
+      };
+    }>(
+      `/agentic/requests/${encodeURIComponent(requestId)}/license-evidence-review`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  recordLicenseDecision: (
+    requestId: string,
+    input: { delegation_id: string; idempotency_key: string },
+  ) =>
+    request<LicenseDecisionRecord>(
+      `/agentic/requests/${encodeURIComponent(requestId)}/license-decision`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  listLicenseDecisions: (projectId: string) =>
+    request<{ decisions: LicenseDecisionRecord[] }>(
+      `/agentic/license-decisions?project_id=${encodeURIComponent(projectId)}`,
+    ),
+  revokeLicenseDecision: (id: string, reason: string) =>
+    request<LicenseDecisionRecord>(
+      `/agentic/license-decisions/${encodeURIComponent(id)}/revoke`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  revokeLicenseDelegation: (id: string, reason: string) =>
+    request<{ delegationId: string; revoked: boolean }>(
+      `/agentic/license-delegations/${encodeURIComponent(id)}/revoke`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
   getAgenticKnowledge: (id: string) =>
     request<AgenticKnowledgeResponse>(
       `/agentic/requests/${encodeURIComponent(id)}/knowledge`,
@@ -4674,6 +5051,14 @@ export const coreApi = {
     request<IntakeRequestProjection>(
       `/intake/requests/${encodeURIComponent(id)}`,
     ),
+  getIntakeFundingReadiness: (id: string) =>
+    request<RequestFundingStatus>(
+      `/intake/requests/${encodeURIComponent(id)}/funding-readiness`,
+    ),
+  getSubscriptionFunding: (provider: string) =>
+    request<SubscriptionFundingStatus>(
+      `/funding/subscription/${encodeURIComponent(provider)}`,
+    ),
   createIntakeRequest: (input: NewIntakeRequest) =>
     request<IntakeRequestProjection>("/intake/requests", {
       method: "POST",
@@ -4691,7 +5076,8 @@ export const coreApi = {
       confirmed_by: string;
       confirmed_at_ms: number;
       valid_until_ms: number;
-      extra_usage_disabled: boolean;
+      /** Omit when a durable Owner provider declaration covers the route. */
+      extra_usage_disabled?: boolean;
       statement: string;
       test_profile_id: string;
       idempotency_key: string;

@@ -1,16 +1,18 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type CampaignAuthorization,
   CoreApiError,
+  type EnvironmentStateView,
   type FrozenLeadPlanRecord,
   type IntakeRequestProjection,
   type LeadAssessmentView,
   type LeadPlanProposalView,
   type ParticipantPlanReadinessView,
   type PlanningReadinessView,
+  type PlanReviewRecord,
   type SpecCheck,
 } from "../coreApi";
 import { I18nProvider, type Locale } from "../i18n";
@@ -25,6 +27,11 @@ const mocks = vi.hoisted(() => ({
   repairCampaign: vi.fn(),
   getRequestTrace: vi.fn(),
   getAgenticSpec: vi.fn(),
+  getProviderExtraUsage: vi.fn(),
+  getIntakeFundingReadiness: vi.fn(),
+  declareProviderExtraUsage: vi.fn(),
+  revokeProviderExtraUsage: vi.fn(),
+  createIntakeSubscriptionAdmission: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -142,6 +149,7 @@ const readyParticipantPlan: ParticipantPlanReadinessView = {
   required: true,
   present: true,
   ready: true,
+  workGraphState: "PLANNED",
   reviewerCount: 5,
   requiredReviewerCount: 5,
   reviewerRoles: [
@@ -169,6 +177,8 @@ const readyPlanning: PlanningReadinessView = {
   lane: "FORMAL_SPEC",
   artifacts: [],
   review: null,
+  reviewCurrent: false,
+  reviewRevision: null,
   workflow: null,
   missingArtifacts: [],
   participantPlan: readyParticipantPlan,
@@ -176,6 +186,19 @@ const readyPlanning: PlanningReadinessView = {
   reviewApproved: true,
   materialsReady: true,
   ready: true,
+  startReady: true,
+};
+
+const pendingReview: PlanReviewRecord = {
+  id: "review-pending",
+  requestId: "request-1",
+  planRevision: 1,
+  planSha256: "a".repeat(64),
+  status: "PENDING",
+  principalId: "core:planning",
+  rationale: "Owner decision required.",
+  points: 0,
+  reviewedAt: "2026-11-08T12:00:00Z",
 };
 
 function makeProjection(
@@ -204,6 +227,8 @@ function makeProjection(
     proposal,
     plan,
     planning: readyPlanning,
+    participantPlan: readyParticipantPlan,
+    specifications: [],
     campaign: null,
     messages: [
       {
@@ -265,6 +290,21 @@ describe("RequestWorkspace", () => {
       frozen: null,
       draft: null,
     });
+    mocks.getProviderExtraUsage.mockReset().mockResolvedValue({
+      provider: "opencode-go",
+      baseUrl: "https://opencode.ai/inference/go/openai/v1",
+      credentialBound: true,
+      active: false,
+      declaration: null,
+    });
+    mocks.getIntakeFundingReadiness
+      .mockReset()
+      .mockRejectedValue(new CoreApiError(404, "not found"));
+    mocks.declareProviderExtraUsage.mockReset();
+    mocks.revokeProviderExtraUsage.mockReset();
+    mocks.createIntakeSubscriptionAdmission
+      .mockReset()
+      .mockResolvedValue({ admissionId: "admission-1", state: "ACTIVE" });
     mocks.getRequestTrace.mockReset().mockResolvedValue({
       requestId: "request-1",
       run: null,
@@ -371,6 +411,46 @@ describe("RequestWorkspace", () => {
     expect(await screen.findByText(/Core recorded the approval/)).toBeDefined();
   });
 
+  it("does not enable approval or show start-ready while a required environment is not frozen", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        environment: {
+          required: true,
+          status: "CORE_VALIDATED",
+          plan: null,
+          planId: null,
+          planSha256: null,
+          planRevision: null,
+          conventions: null,
+          reviews: [],
+          leadApproval: null,
+          spec: null,
+          specSha256: null,
+          builder: { descriptor: null, receipt: null },
+          licenseInventory: null,
+          blockers: [],
+        },
+      }),
+    );
+    renderRequest();
+    const approve = await screen.findByRole("button", {
+      name: "Approve frozen plan and start",
+    });
+    expect(screen.getByText(/ENVIRONMENT_PLAN_REQUIRED/)).toBeDefined();
+    expect((approve as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByLabelText("Approval rationale") as HTMLTextAreaElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (
+        screen.getByRole("checkbox", {
+          name: /I reviewed the frozen scope/,
+        }) as HTMLInputElement
+      ).disabled,
+    ).toBe(true);
+  });
+
   it("shows an incomplete plan-review callout and blocks approval", async () => {
     mocks.getIntakeRequest.mockResolvedValue(
       makeProjection({
@@ -416,6 +496,189 @@ describe("RequestWorkspace", () => {
         .getByRole("link", { name: /Open Director plan review/ })
         .getAttribute("href"),
     ).toBe("/director?request=request-1");
+  });
+
+  it("shows autopilot preparation freshness without a routine Director handoff", async () => {
+    const missingEnvironment: EnvironmentStateView = {
+      required: true,
+      status: "MISSING",
+      plan: null,
+      planId: null,
+      planSha256: null,
+      planRevision: null,
+      conventions: null,
+      reviews: [],
+      leadApproval: null,
+      spec: null,
+      specSha256: null,
+      builder: { descriptor: null, receipt: null },
+      licenseInventory: null,
+      blockers: [],
+    };
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        mode: "AUTONOMOUS",
+        environment: missingEnvironment,
+        planning: {
+          ...readyPlanning,
+          missingArtifacts: ["PLAN", "WORKGRAPH"],
+          materialsReady: false,
+          ready: false,
+          participantPlan: {
+            ...readyParticipantPlan,
+            present: false,
+            ready: false,
+            reviewerCount: 0,
+            reviewerRoles: [],
+            missingRoles: readyParticipantPlan.requiredRoles,
+            missingAssignments: readyParticipantPlan.requiredRoles,
+          },
+        },
+      }),
+    );
+    renderRequest();
+
+    expect(
+      await screen.findByText("Plan preparation in progress"),
+    ).toBeDefined();
+    expect(screen.getByText("Environment plan: Missing.")).toBeDefined();
+    expect(
+      screen.getByText(/Autopilot owns these deterministic steps/),
+    ).toBeDefined();
+    expect(
+      screen.queryByRole("link", { name: /Open Director plan review/ }),
+    ).toBeNull();
+  });
+
+  it("does not claim automatic preparation for a BLOCKED Core request with missing artifacts", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        mode: "AUTONOMOUS",
+        state: "BLOCKED",
+        stateDetail:
+          "autopilot: intake conflict PLAN_ARTIFACTS_REQUIRED: required planning artifacts are missing",
+        planning: {
+          ...readyPlanning,
+          missingArtifacts: [
+            "PLAN",
+            "STACK",
+            "ARCHITECTURE",
+            "DOCUMENTATION",
+            "SKILL",
+            "DOD",
+            "WORKGRAPH",
+            "SPEC",
+            "OPENSPEC",
+          ],
+          materialsReady: false,
+          ready: false,
+          reviewStatus: null,
+          reviewApproved: false,
+          startReady: false,
+        },
+      }),
+    );
+    renderRequest();
+
+    expect(await screen.findByText("Plan preparation stopped")).toBeDefined();
+    expect(screen.queryByText("Plan preparation in progress")).toBeNull();
+    expect(screen.queryByText(/Core is preparing/)).toBeNull();
+    expect(screen.queryByText(/refreshes automatically/)).toBeNull();
+    expect(screen.getByText(/PLAN, STACK/)).toBeDefined();
+    expect(screen.getByRole("button", { name: "Retry now" })).toBeDefined();
+  });
+
+  it("hands a ready pending review to the owner without pretending it is still preparing", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        mode: "AUTONOMOUS",
+        planning: {
+          ...readyPlanning,
+          review: pendingReview,
+          reviewCurrent: true,
+          reviewRevision: 1,
+          reviewStatus: "PENDING",
+          reviewApproved: false,
+          ready: false,
+          startReady: false,
+        },
+      }),
+    );
+    renderRequest();
+
+    expect(await screen.findByText("Plan review incomplete")).toBeDefined();
+    expect(
+      screen.getByText(
+        /Core has finished the planning materials and is waiting for the owner plan decision/,
+      ),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("link", { name: /Open Director plan review/ }),
+    ).toBeDefined();
+    expect(
+      screen.queryByText(/Autopilot owns these deterministic steps/),
+    ).toBeNull();
+  });
+
+  it("resumes a stopped owner wait on focus", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        mode: "AUTONOMOUS",
+        planning: {
+          ...readyPlanning,
+          review: pendingReview,
+          reviewCurrent: true,
+          reviewRevision: 1,
+          reviewStatus: "PENDING",
+          reviewApproved: false,
+          ready: false,
+          startReady: false,
+        },
+      }),
+    );
+    renderRequest();
+    expect(await screen.findByText("Plan review incomplete")).toBeDefined();
+    mocks.getIntakeRequest.mockClear();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(mocks.getIntakeRequest).toHaveBeenCalledTimes(1),
+    );
+  });
+
+  it("keeps a pending review with missing materials in preparation", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        mode: "AUTONOMOUS",
+        planning: {
+          ...readyPlanning,
+          missingArtifacts: ["STACK"],
+          materialsReady: false,
+          reviewStatus: "PENDING",
+          reviewApproved: false,
+          ready: false,
+        },
+      }),
+    );
+    renderRequest();
+    expect(
+      await screen.findByText("Plan preparation in progress"),
+    ).toBeDefined();
+    expect(
+      screen.getByText(/Autopilot owns these deterministic steps/),
+    ).toBeDefined();
+    expect(
+      screen.queryByText(
+        /Core has finished the planning materials and is waiting for the owner plan decision/,
+      ),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: /Open Director plan review/ }),
+    ).toBeNull();
   });
 
   it("blocks approval when the participant plan does not match the frozen reviewer plan", async () => {
@@ -468,10 +731,14 @@ describe("RequestWorkspace", () => {
       makeProjection({
         planning: {
           ...readyPlanning,
+          review: pendingReview,
+          reviewCurrent: true,
+          reviewRevision: 1,
           ready: false,
           reviewStatus: "PENDING",
           reviewApproved: false,
           materialsReady: true,
+          startReady: false,
         },
       }),
     );
@@ -492,7 +759,7 @@ describe("RequestWorkspace", () => {
     ).toBe(true);
   });
 
-  it("explains an unavailable authorization and disables approval", async () => {
+  it("explains an unavailable authorization without using it as the approval gate", async () => {
     mocks.getIntakeRequest.mockResolvedValue(
       makeProjection({
         authorization: {
@@ -517,14 +784,145 @@ describe("RequestWorkspace", () => {
     expect(
       (screen.getByLabelText("Approval rationale") as HTMLTextAreaElement)
         .disabled,
-    ).toBe(true);
+    ).toBe(false);
     expect(
       (
         screen.getByRole("checkbox", {
           name: /I reviewed the frozen scope/,
         }) as HTMLInputElement
       ).disabled,
-    ).toBe(true);
+    ).toBe(false);
+    await userEvent.type(
+      screen.getByLabelText("Approval rationale"),
+      "Reviewed the frozen plan and budget.",
+    );
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: /I reviewed the frozen scope/,
+      }),
+    );
+    expect((approve as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("reuses a persisted Extra Usage confirmation without the checkbox", async () => {
+    mocks.getProviderExtraUsage.mockResolvedValue({
+      provider: "opencode-go",
+      baseUrl: "https://opencode.ai/inference/go/openai/v1",
+      credentialBound: true,
+      active: true,
+      declaration: {
+        declarationId: "declaration-1",
+        declaredAt: "2026-11-20T00:00:00Z",
+        declaredBy: "operator-token",
+        statement:
+          "I confirm OpenCode Go Extra Usage is disabled for this provider configuration.",
+        revokedAt: null,
+      },
+    });
+    mocks.getIntakeRequest.mockResolvedValue(submitted);
+    renderRequest();
+    expect(
+      await screen.findByText(/Extra Usage is confirmed OFF/),
+    ).toBeDefined();
+    expect(
+      screen.queryByRole("checkbox", { name: /I confirm Extra Usage is OFF/ }),
+    ).toBeNull();
+    const subscription = screen.getByRole("button", {
+      name: "Confirm subscription",
+    });
+    expect((subscription as HTMLButtonElement).disabled).toBe(false);
+    expect(
+      screen.getByRole("button", { name: "Revoke Extra Usage confirmation" }),
+    ).toBeDefined();
+    await userEvent.click(subscription);
+    await waitFor(() =>
+      expect(mocks.createIntakeSubscriptionAdmission).toHaveBeenCalledWith(
+        "request-1",
+        expect.not.objectContaining({ extra_usage_disabled: true }),
+      ),
+    );
+    await screen.findByText(/Subscription confirmation recorded/);
+  });
+
+  it("revokes the persisted Extra Usage confirmation", async () => {
+    mocks.getProviderExtraUsage.mockResolvedValue({
+      provider: "opencode-go",
+      baseUrl: "https://opencode.ai/inference/go/openai/v1",
+      credentialBound: true,
+      active: true,
+      declaration: {
+        declarationId: "declaration-1",
+        declaredAt: "2026-11-20T00:00:00Z",
+        declaredBy: "operator-token",
+        statement:
+          "I confirm OpenCode Go Extra Usage is disabled for this provider configuration.",
+        revokedAt: null,
+      },
+    });
+    mocks.revokeProviderExtraUsage.mockResolvedValue({
+      provider: "opencode-go",
+      baseUrl: "https://opencode.ai/inference/go/openai/v1",
+      credentialBound: true,
+      active: false,
+      declaration: {
+        declarationId: "declaration-1",
+        declaredAt: "2026-11-20T00:00:00Z",
+        declaredBy: "operator-token",
+        statement:
+          "I confirm OpenCode Go Extra Usage is disabled for this provider configuration.",
+        revokedAt: "2026-11-20T01:00:00Z",
+      },
+    });
+    mocks.getIntakeRequest.mockResolvedValue(submitted);
+    renderRequest();
+    const revoke = await screen.findByRole("button", {
+      name: "Revoke Extra Usage confirmation",
+    });
+    await userEvent.click(revoke);
+    await waitFor(() =>
+      expect(mocks.revokeProviderExtraUsage).toHaveBeenCalledWith(
+        "opencode-go",
+      ),
+    );
+    expect(
+      await screen.findByText(/Extra Usage confirmation revoked/),
+    ).toBeDefined();
+  });
+
+  it("persists the Extra Usage confirmation once and then hides the checkbox", async () => {
+    mocks.getIntakeRequest.mockResolvedValue(submitted);
+    mocks.declareProviderExtraUsage.mockResolvedValue({
+      provider: "opencode-go",
+      baseUrl: "https://opencode.ai/inference/go/openai/v1",
+      credentialBound: true,
+      active: true,
+      declaration: {
+        declarationId: "declaration-1",
+        declaredAt: "2026-11-20T00:00:00Z",
+        declaredBy: "operator-token",
+        statement:
+          "I confirm OpenCode Go Extra Usage is disabled for this provider configuration.",
+        revokedAt: null,
+      },
+    });
+    renderRequest();
+    const checkbox = await screen.findByRole("checkbox", {
+      name: /I confirm Extra Usage is OFF/,
+    });
+    expect(screen.queryByText(/Extra Usage is confirmed OFF/)).toBeNull();
+    await userEvent.click(checkbox);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Confirm once and save" }),
+    );
+    await waitFor(() =>
+      expect(mocks.declareProviderExtraUsage).toHaveBeenCalledWith(
+        "opencode-go",
+        expect.objectContaining({ statement: expect.any(String) }),
+      ),
+    );
+    expect(
+      await screen.findByText(/Extra Usage is confirmed OFF/),
+    ).toBeDefined();
   });
 
   it("runs the assessment Core operation and refreshes the projection", async () => {

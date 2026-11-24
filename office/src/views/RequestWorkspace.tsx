@@ -17,13 +17,16 @@ import {
   coreApi,
   type IntakeRequestProjection,
   newIdempotencyKey,
+  type ProviderExtraUsageView,
 } from "../coreApi";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
-import { EnvironmentPanel } from "./EnvironmentPanel";
+import { EnvironmentPanel, environmentStatusLabel } from "./EnvironmentPanel";
+import { FundingReadinessPanel } from "./FundingReadiness";
 import { RequestAssessment } from "./RequestAssessment";
 import { RequestPlan } from "./RequestPlan";
 import {
+  currentPlanningReview,
   IntakeModeBadge,
   IntakeStateBadge,
   isTerminalIntakeState,
@@ -61,6 +64,7 @@ export function RequestWorkspace() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [pollStalled, setPollStalled] = useState(false);
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -69,6 +73,9 @@ export function RequestWorkspace() {
   const [rationale, setRationale] = useState("");
   const [approvedScope, setApprovedScope] = useState(false);
   const [extraUsageConfirmed, setExtraUsageConfirmed] = useState(false);
+  const [extraUsage, setExtraUsage] = useState<ProviderExtraUsageView | null>(
+    null,
+  );
   const [messageBody, setMessageBody] = useState("");
   const [cancelOpen, setCancelOpen] = useState(false);
   const [repairOpen, setRepairOpen] = useState(false);
@@ -79,6 +86,9 @@ export function RequestWorkspace() {
   const [cancelReason, setCancelReason] = useState("");
   const [authoredSpecFrozen, setAuthoredSpecFrozen] = useState(false);
   const messageKey = useRef(newIdempotencyKey());
+  const pollFailureCount = useRef(0);
+  const pollResumeAt = useRef(0);
+  const latestRequestId = useRef(requestId);
 
   const load = useCallback(
     async (background = false) => {
@@ -95,10 +105,14 @@ export function RequestWorkspace() {
         setLoadError(null);
         setNotFound(false);
         setConnectionError(null);
+        pollFailureCount.current = 0;
+        setPollStalled(false);
         setLastLoadedAt(new Date().toISOString());
       } catch (cause) {
         const message = errorMessage(cause, t("request.load.error"));
         if (background) {
+          pollFailureCount.current += 1;
+          if (pollFailureCount.current >= 6) setPollStalled(true);
           setConnectionError(message);
         } else {
           setLoadError(message);
@@ -125,6 +139,24 @@ export function RequestWorkspace() {
   }, [requestId]);
 
   useEffect(() => {
+    latestRequestId.current = requestId;
+    let active = true;
+    coreApi
+      .getProviderExtraUsage("opencode-go")
+      .then((view) => {
+        if (active && latestRequestId.current === requestId)
+          setExtraUsage(view);
+      })
+      .catch(() => {
+        if (active && latestRequestId.current === requestId)
+          setExtraUsage(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [requestId]);
+
+  useEffect(() => {
     setData(null);
     setLoadError(null);
     setNotFound(false);
@@ -135,14 +167,66 @@ export function RequestWorkspace() {
     setFencedCampaignId(null);
     setRationale("");
     setApprovedScope(false);
+    setExtraUsageConfirmed(false);
     setMessageBody("");
     setCancelOpen(false);
     setCancelReason("");
+    pollFailureCount.current = 0;
+    setPollStalled(false);
     messageKey.current = newIdempotencyKey();
     void load(false);
-    const timer = setInterval(() => void load(true), 5000);
-    return () => clearInterval(timer);
   }, [load]);
+
+  const pollPlanning = data?.planning ?? null;
+  const pollReviewBinding = currentPlanningReview(pollPlanning);
+  const pollReviewStatus = pollReviewBinding.status;
+  const pollWaitingForOwner =
+    pollReviewStatus === "PENDING" && pollPlanning?.materialsReady === true;
+  const pollReviewRejected =
+    pollReviewStatus === "REJECTED" || pollReviewStatus === "CHANGES_REQUESTED";
+  const pollStoppedByState =
+    data !== null &&
+    (isTerminalIntakeState(data.state) ||
+      data.state === "BLOCKED" ||
+      data.state === "FAILED");
+  const pollingActive =
+    data !== null &&
+    !pollStoppedByState &&
+    !pollWaitingForOwner &&
+    !pollReviewRejected &&
+    !pollStalled;
+  const pollResumable = data !== null && !isTerminalIntakeState(data.state);
+
+  useEffect(() => {
+    if (!pollingActive) return;
+    const timer = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      void load(true);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [pollingActive, load]);
+
+  // A stopped read must observe an owner decision or recovery recorded in
+  // another tab/device. Focus/visibility reuse the existing read; a short
+  // dedupe window prevents duplicate requests.
+  useEffect(() => {
+    if (!pollResumable || pollingActive) return;
+    const resume = () => {
+      const now = Date.now();
+      if (now - pollResumeAt.current < 1000) return;
+      pollResumeAt.current = now;
+      void load(true);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") resume();
+    };
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", resume);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [pollResumable, pollingActive, load]);
 
   async function runAction(
     kind: string,
@@ -252,7 +336,37 @@ export function RequestWorkspace() {
   const participantPlanIncomplete =
     participantPlan?.required === true && participantPlan.ready !== true;
   const planningIncomplete =
-    data.state === "AWAITING_APPROVAL" && data.plan !== null && !planningReady;
+    !terminal && !planningReady && (isAutopilot || data.plan !== null);
+  const reviewBinding = currentPlanningReview(planning);
+  const planningReviewStatus = reviewBinding.status;
+  const coreStopped = data.state === "BLOCKED" || data.state === "FAILED";
+  const planningWaitingForOwner =
+    data.state === "AWAITING_APPROVAL" &&
+    planningReviewStatus === "PENDING" &&
+    planning?.materialsReady === true;
+  const planningRejected =
+    planningReviewStatus === "REJECTED" ||
+    planningReviewStatus === "CHANGES_REQUESTED";
+  const planningCalloutTitle = planningWaitingForOwner
+    ? t("request.planning.incompleteTitle")
+    : planningRejected
+      ? t("request.planning.rejectedTitle")
+      : coreStopped
+        ? t("request.planning.stoppedTitle")
+        : isAutopilot
+          ? t("request.planning.preparingTitle")
+          : t("request.planning.incompleteTitle");
+  const planningCalloutBody = planningWaitingForOwner
+    ? t("request.planning.waitingBody")
+    : planningRejected
+      ? t("request.planning.rejectedBody")
+      : coreStopped
+        ? t("request.planning.stoppedBody")
+        : isAutopilot
+          ? t("request.planning.incompleteBodyAutopilot")
+          : t("request.planning.incompleteBody");
+  const environmentReady =
+    !data.environment?.required || data.environment.status === "FROZEN";
   const planningProblemValues = participantPlan
     ? [
         ...participantPlan.missingRoles,
@@ -267,7 +381,7 @@ export function RequestWorkspace() {
     offline ||
     !approvalReady ||
     !planningReady ||
-    !authorizationAvailable ||
+    !environmentReady ||
     rationale.trim() === "" ||
     !approvedScope;
 
@@ -282,8 +396,37 @@ export function RequestWorkspace() {
     );
   }
 
+  async function saveExtraUsageDeclaration() {
+    if (!extraUsageConfirmed) return;
+    await runAction(
+      "extra-usage",
+      async () => {
+        const next = await coreApi.declareProviderExtraUsage("opencode-go", {
+          statement:
+            "I confirm OpenCode Go Extra Usage is disabled for this Factory provider configuration.",
+          idempotency_key: newIdempotencyKey(),
+        });
+        setExtraUsage(next);
+        setExtraUsageConfirmed(false);
+      },
+      t("request.subscription.savedOnce"),
+    );
+  }
+
+  async function revokeExtraUsageDeclaration() {
+    await runAction(
+      "extra-usage",
+      async () => {
+        const next = await coreApi.revokeProviderExtraUsage("opencode-go");
+        setExtraUsage(next);
+      },
+      t("request.subscription.revoked"),
+    );
+  }
+
   async function confirmSubscription() {
-    if (!data || !extraUsageConfirmed) return;
+    const persisted = extraUsage?.active === true;
+    if (!data || (!persisted && !extraUsageConfirmed)) return;
     await runAction(
       "subscription",
       async () => {
@@ -293,7 +436,7 @@ export function RequestWorkspace() {
           confirmed_by: "Product Owner",
           confirmed_at_ms: now,
           valid_until_ms: now + 24 * 60 * 60 * 1000,
-          extra_usage_disabled: true,
+          extra_usage_disabled: persisted ? undefined : true,
           statement:
             "I confirm OpenCode Go Extra Usage is disabled for this Factory subscription route.",
           test_profile_id: "opencode-go-subscription",
@@ -469,6 +612,18 @@ export function RequestWorkspace() {
         </div>
       )}
 
+      {pollStalled && (
+        <div
+          className="ui-callout ui-callout--attention request-callout"
+          role="status"
+        >
+          <p>{t("request.pollingPaused")}</p>
+          <Button size="sm" onClick={() => void load(true)}>
+            {t("request.retryNow")}
+          </Button>
+        </div>
+      )}
+
       {data.stateDetail && (
         <p
           className={`ui-callout ${
@@ -515,8 +670,7 @@ export function RequestWorkspace() {
           role="status"
         >
           <p>
-            <strong>{t("request.planning.incompleteTitle")}</strong>{" "}
-            {t("request.planning.incompleteBody")}
+            <strong>{planningCalloutTitle}</strong> {planningCalloutBody}
           </p>
           {planning === null ? (
             <p>{t("request.planning.unavailable")}</p>
@@ -538,16 +692,27 @@ export function RequestWorkspace() {
                             ? planningProblemValues.join(", ")
                             : t("request.planning.participantAssignments"),
                       })
-                    : t("request.planning.participantMissing")}
+                    : isAutopilot && !coreStopped
+                      ? t("request.planning.participantMissingAutopilot")
+                      : t("request.planning.participantMissing")}
                 </p>
               )}
               {!planning.reviewApproved && (
                 <p>
-                  {planning.reviewStatus === "PENDING"
-                    ? t("request.planning.reviewPending")
-                    : t("request.planning.reviewNotApproved", {
-                        status: planning.reviewStatus ?? "—",
-                      })}
+                  {planning.review && !reviewBinding.current
+                    ? t("request.planning.reviewStale")
+                    : planningReviewStatus === "PENDING"
+                      ? t("request.planning.reviewPending")
+                      : t("request.planning.reviewNotApproved", {
+                          status: planningReviewStatus ?? "—",
+                        })}
+                </p>
+              )}
+              {data.environment && (
+                <p>
+                  {t("request.planning.environment", {
+                    status: environmentStatusLabel(data.environment.status, t),
+                  })}
                 </p>
               )}
               {participantPlan?.present &&
@@ -561,12 +726,63 @@ export function RequestWorkspace() {
                 )}
             </>
           )}
-          <Link
-            className={buttonClass("secondary")}
-            to={`/director?request=${encodeURIComponent(data.id)}`}
-          >
-            {t("request.planning.openDirector")}
-          </Link>
+          {planningWaitingForOwner ? (
+            <>
+              {isAutopilot && (
+                <p className="muted">
+                  {t("request.planning.autopilotWaitingOwner")}
+                </p>
+              )}
+              <Link
+                className={buttonClass("secondary")}
+                to={`/director?request=${encodeURIComponent(data.id)}`}
+              >
+                {t("request.planning.openDirector")}
+              </Link>
+            </>
+          ) : planningRejected ? (
+            <>
+              {isAutopilot && (
+                <p className="muted">
+                  {t("request.planning.autopilotRejected")}
+                </p>
+              )}
+              <Link
+                className={buttonClass("secondary")}
+                to={`/director?request=${encodeURIComponent(data.id)}`}
+              >
+                {t("request.planning.openDirector")}
+              </Link>
+            </>
+          ) : coreStopped ? (
+            <>
+              <p className="muted">{t("request.planning.stoppedRecovery")}</p>
+              <div className="request-form-actions">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void load(true)}
+                >
+                  {t("request.retryNow")}
+                </Button>
+                <Link
+                  className={buttonClass("secondary")}
+                  to={`/director?request=${encodeURIComponent(data.id)}`}
+                >
+                  {t("request.planning.openDirector")}
+                </Link>
+              </div>
+            </>
+          ) : isAutopilot ? (
+            <p className="muted">{t("request.planning.autopilotFreshness")}</p>
+          ) : (
+            <Link
+              className={buttonClass("secondary")}
+              to={`/director?request=${encodeURIComponent(data.id)}`}
+            >
+              {t("request.planning.openDirector")}
+            </Link>
+          )}
         </div>
       )}
 
@@ -638,18 +854,56 @@ export function RequestWorkspace() {
                         <p className="muted">
                           {t("request.subscription.help")}
                         </p>
-                        <Checkbox
-                          label={t("request.subscription.confirm")}
-                          checked={extraUsageConfirmed}
-                          onChange={(event) =>
-                            setExtraUsageConfirmed(event.target.checked)
-                          }
-                          disabled={busy !== null || offline}
-                        />
+                        {extraUsage?.active && extraUsage.declaration ? (
+                          <>
+                            <p className="muted" role="status">
+                              {t("request.subscription.persisted").replace(
+                                "{date}",
+                                formatDate(extraUsage.declaration.declaredAt),
+                              )}
+                            </p>
+                            <p className="muted">
+                              {t("request.subscription.persistedHelp")}
+                            </p>
+                            <Button
+                              variant="secondary"
+                              disabled={busy !== null || offline}
+                              onClick={() => void revokeExtraUsageDeclaration()}
+                            >
+                              {busy === "extra-usage"
+                                ? t("request.subscription.saving")
+                                : t("request.subscription.revoke")}
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <Checkbox
+                              label={t("request.subscription.confirm")}
+                              checked={extraUsageConfirmed}
+                              onChange={(event) =>
+                                setExtraUsageConfirmed(event.target.checked)
+                              }
+                              disabled={busy !== null || offline}
+                            />
+                            <Button
+                              variant="secondary"
+                              disabled={
+                                busy !== null || offline || !extraUsageConfirmed
+                              }
+                              onClick={() => void saveExtraUsageDeclaration()}
+                            >
+                              {busy === "extra-usage"
+                                ? t("request.subscription.saving")
+                                : t("request.subscription.saveOnce")}
+                            </Button>
+                          </>
+                        )}
                         <Button
                           variant="secondary"
                           disabled={
-                            busy !== null || offline || !extraUsageConfirmed
+                            busy !== null ||
+                            offline ||
+                            (!extraUsage?.active && !extraUsageConfirmed)
                           }
                           onClick={() => void confirmSubscription()}
                         >
@@ -732,12 +986,17 @@ export function RequestWorkspace() {
                               t("request.approval.reasonFallback")}
                           </p>
                         )}
+                        {!environmentReady && (
+                          <p className="ui-callout ui-callout--attention">
+                            {t("request.approval.environmentRequired")}
+                          </p>
+                        )}
                         <Textarea
                           label={t("request.approval.rationale")}
                           value={rationale}
                           onChange={(event) => setRationale(event.target.value)}
                           disabled={
-                            !authorizationAvailable || offline || !planningReady
+                            offline || !planningReady || !environmentReady
                           }
                           help={t("request.approval.rationaleHelp")}
                           required
@@ -749,7 +1008,7 @@ export function RequestWorkspace() {
                             setApprovedScope(event.target.checked)
                           }
                           disabled={
-                            !authorizationAvailable || offline || !planningReady
+                            offline || !planningReady || !environmentReady
                           }
                         />
                         <div className="request-form-actions">
@@ -779,6 +1038,11 @@ export function RequestWorkspace() {
               )}
             </Panel>
           )}
+
+          <FundingReadinessPanel
+            requestId={data.id}
+            refreshKey={data.updatedAt}
+          />
 
           {data.state === "EXECUTING" && (
             <Panel className="request-panel">
@@ -844,7 +1108,12 @@ export function RequestWorkspace() {
           )}
 
           <RequestAssessment assessment={data.assessment} />
-          <RequestPlan proposal={data.proposal} plan={data.plan} />
+          <RequestPlan
+            proposal={data.proposal}
+            plan={data.plan}
+            specifications={data.specifications}
+            participantState={data.planning?.participantPlan.workGraphState}
+          />
           <EnvironmentPanel
             environment={data.environment ?? null}
             requestId={data.id}

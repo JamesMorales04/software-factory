@@ -22,6 +22,7 @@ sqlx = { package = "sqlx-core", version = "0.8.6", default-features = false, fea
 sqlx-sqlite = { version = "0.8.6", default-features = false, features = ["bundled", "migrate"] }
 sqlx-macros = { version = "0.8.6", default-features = false, features = ["macros", "migrate", "sqlite", "_rt-tokio"] }
 sha2 = "0.10.9"
+base64 = "0.22.1"
 tar = "0.4.44"
 schemars = "1.2.3"
 jsonschema = { version = "0.60.1", default-features = false }
@@ -40,6 +41,11 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 [[bin]]
 name = "factory-core"
 path = "src/bin/core.rs"
+
+[[bin]]
+name = "factory-policy-probe"
+path = "src/bin/policy_probe.rs"
+required-features = ["test-support"]
 
 [[bin]]
 name = "factory-worker"

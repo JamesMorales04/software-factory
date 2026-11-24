@@ -91,8 +91,15 @@ At freeze, Core deterministically constructs the first executable **ActionSpec**
 from the registered repository/base, original objective, implementer route,
 validated work-unit scope and complete plan checks, and inserts it once with the
 frozen plan. Existing `action_specs` rows remain byte-for-byte valid and
-immutable. Draft Actions cannot execute; draft and spec cannot coexist at initial
-creation. The draft remains as provenance.
+immutable. P1a amendment (Lead coordinates, Planner owns decomposition): when
+the Lead proposal contains no executable units, the validated registered project
+write scope is the root ActionSpec bound. That scope must be non-empty and
+covered by the standing delegation, and the later validated Planner WorkGraph is
+constrained to the same project scope. A proposal that declares units remains
+unit-scoped; an empty per-unit path list is refused rather than widened. The
+derivation is deterministic and grants no model authority. Draft Actions cannot
+execute; draft and spec cannot coexist at initial creation. The draft remains as
+provenance.
 
 Bind the Campaign to the frozen root spec through immutable
 `campaign_execution_bindings(campaign_id PK, plan_id FK, spec_sha256,

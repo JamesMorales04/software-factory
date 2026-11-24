@@ -18,6 +18,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::OnceLock;
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
@@ -26,6 +27,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::lead::SpecCheck;
+use crate::planning::identity_facts::VerifiedIdentityFacts;
+use crate::planning::license_policy::{
+    LicenseContext, LicenseDecision, default_catalog, default_catalog_sha256, default_profile,
+    default_profile_sha256, evaluate,
+};
 use crate::project_import::{git_blob, git_tree, is_commit_id};
 
 pub const ENVIRONMENT_SCHEMA_VERSION: u32 = 1;
@@ -98,6 +104,12 @@ pub enum EnvironmentBlockerCode {
     EnvironmentHashMismatch,
     EnvironmentNotFrozen,
     EnvironmentSuperseded,
+    /// The broker did not return authenticated identity-facts evidence for the
+    /// realised environment. It is an explicit refusal, never an empty success.
+    EnvironmentIdentityEvidenceAbsent,
+    /// The broker or Core refused the identity-facts manifest as incomplete,
+    /// truncated, duplicated, mismatched or bound to another operation.
+    EnvironmentIdentityFactsRefused,
 }
 
 impl EnvironmentBlockerCode {
@@ -128,6 +140,8 @@ impl EnvironmentBlockerCode {
             Self::EnvironmentHashMismatch => "ENVIRONMENT_HASH_MISMATCH",
             Self::EnvironmentNotFrozen => "ENVIRONMENT_NOT_FROZEN",
             Self::EnvironmentSuperseded => "ENVIRONMENT_SUPERSEDED",
+            Self::EnvironmentIdentityEvidenceAbsent => "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT",
+            Self::EnvironmentIdentityFactsRefused => "ENVIRONMENT_IDENTITY_FACTS_REFUSED",
         }
     }
 
@@ -160,6 +174,8 @@ impl EnvironmentBlockerCode {
             "ENVIRONMENT_HASH_MISMATCH" => Self::EnvironmentHashMismatch,
             "ENVIRONMENT_NOT_FROZEN" => Self::EnvironmentNotFrozen,
             "ENVIRONMENT_SUPERSEDED" => Self::EnvironmentSuperseded,
+            "ENVIRONMENT_IDENTITY_EVIDENCE_ABSENT" => Self::EnvironmentIdentityEvidenceAbsent,
+            "ENVIRONMENT_IDENTITY_FACTS_REFUSED" => Self::EnvironmentIdentityFactsRefused,
             _ => return None,
         })
     }
@@ -193,7 +209,21 @@ impl std::fmt::Display for EnvironmentError {
 impl std::error::Error for EnvironmentError {}
 
 fn bounded_error_message(value: String) -> String {
-    value.chars().take(1_000).collect()
+    const MAX_CHARS: usize = 1_000;
+    const HEAD_CHARS: usize = 300;
+    const MARKER: &str = " … [truncated] … ";
+    if value.chars().count() <= MAX_CHARS {
+        return value;
+    }
+    let head: String = value.chars().take(HEAD_CHARS).collect();
+    let tail_chars = MAX_CHARS
+        .saturating_sub(head.chars().count())
+        .saturating_sub(MARKER.chars().count());
+    let value_chars: Vec<char> = value.chars().collect();
+    let tail: String = value_chars[value_chars.len().saturating_sub(tail_chars)..]
+        .iter()
+        .collect();
+    format!("{head}{MARKER}{tail}")
 }
 
 fn invalid(message: impl Into<String>) -> EnvironmentError {
@@ -241,6 +271,18 @@ fn canonical_hash<T: Serialize>(value: &T) -> String {
 
 fn is_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Accept a NAR hash in either its hex or `sha256-<base64>` SRI form.
+fn is_nar_hash(value: &str) -> bool {
+    use base64::Engine as _;
+    if is_sha256(value) {
+        return true;
+    }
+    value
+        .strip_prefix("sha256-")
+        .and_then(|rest| base64::engine::general_purpose::STANDARD.decode(rest).ok())
+        .is_some_and(|decoded| decoded.len() == 32)
 }
 
 fn is_digest(value: &str) -> bool {
@@ -2032,6 +2074,7 @@ impl EnvironmentPlan {
                 "license inventory content does not match its inventory hash",
             ));
         }
+        validate_current_policy_binding(&self.license_inventory)?;
         if !self.license_inventory.blockers.is_empty() {
             return Err(license_blocked(
                 self.license_inventory
@@ -2451,6 +2494,8 @@ pub struct LicenseInventory {
     pub schema_version: u32,
     #[serde(default)]
     pub policy_revision: String,
+    pub catalog_sha256: String,
+    pub profile_sha256: String,
     #[serde(default)]
     pub allow_unfree: bool,
     #[serde(default)]
@@ -2470,6 +2515,8 @@ impl Default for LicenseInventory {
         Self {
             schema_version: ENVIRONMENT_SCHEMA_VERSION,
             policy_revision: LICENSE_POLICY_REVISION.into(),
+            catalog_sha256: default_catalog_sha256().to_owned(),
+            profile_sha256: default_profile_sha256().to_owned(),
             allow_unfree: false,
             entries: Vec::new(),
             overrides: Vec::new(),
@@ -2489,6 +2536,8 @@ impl LicenseInventory {
         canonical_hash(&(
             ENVIRONMENT_SCHEMA_VERSION,
             LICENSE_POLICY_REVISION,
+            &self.catalog_sha256,
+            &self.profile_sha256,
             plan_id,
             false,
             &self.entries,
@@ -2506,65 +2555,22 @@ impl LicenseInventory {
     }
 }
 
-const ALLOWED_SPDX: &[&str] = &[
-    "0BSD",
-    "Apache-2.0",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "BSL-1.0",
-    "CC0-1.0",
-    "ISC",
-    "LGPL-2.1-only",
-    "LGPL-2.1-or-later",
-    "LGPL-3.0-only",
-    "LGPL-3.0-or-later",
-    "MIT",
-    "MIT-0",
-    "MPL-2.0",
-    "Unlicense",
-    "Zlib",
-];
+// Licence classification and context verdicts are the shared, versioned
+// license_catalog.json + license_profile.json pair. The legacy-current profile
+// reproduces the previous selected/closure verdicts. Classification is not
+// acceptance; selected and closure remain distinct contexts.
 
-const DENIED_SPDX: &[&str] = &[
-    "AGPL-3.0-only",
-    "AGPL-3.0-or-later",
-    "BUSL-1.1",
-    "Commons-Clause",
-    "SSPL-1.0",
-];
-
-/// Closure-wide policy accepts common copyleft licences that are not denied,
-/// while still rejecting every unfree/denied/unknown transitive package.
-const CLOSURE_ALLOWED_SPDX: &[&str] = &[
-    "0BSD",
-    "Apache-2.0",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "BSD-4-Clause",
-    "BSL-1.0",
-    "CC0-1.0",
-    "curl",
-    "GPL-2.0-only",
-    "GPL-2.0-or-later",
-    "GPL-3.0-only",
-    "GPL-3.0-or-later",
-    "LGPL-2.0-only",
-    "LGPL-2.0-or-later",
-    "ISC",
-    "LGPL-2.1-only",
-    "LGPL-2.1-or-later",
-    "LGPL-3.0-only",
-    "LGPL-3.0-or-later",
-    "MIT",
-    "MIT-0",
-    "MPL-2.0",
-    "NCSA",
-    "OpenSSL",
-    "PostgreSQL",
-    "publicDomain",
-    "Unlicense",
-    "Zlib",
-];
+fn validate_current_policy_binding(inventory: &LicenseInventory) -> Result<(), EnvironmentError> {
+    if inventory.catalog_sha256 != default_catalog_sha256()
+        || inventory.profile_sha256 != default_profile_sha256()
+    {
+        return Err(EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentHashMismatch,
+            "the license inventory is bound to a different licence catalogue or profile",
+        ));
+    }
+    Ok(())
+}
 
 fn validate_license_expression(value: &str) -> Result<(), EnvironmentError> {
     let value = value.trim();
@@ -2578,31 +2584,20 @@ fn validate_license_expression(value: &str) -> Result<(), EnvironmentError> {
             "the license expression {value} is unknown and blocks the plan"
         )));
     }
-    if DENIED_SPDX.contains(&value) {
-        return Err(license_blocked(format!(
+    match evaluate(
+        value,
+        LicenseContext::Selected,
+        default_catalog(),
+        default_profile(),
+    ) {
+        LicenseDecision::Allowed => Ok(()),
+        LicenseDecision::Denied => Err(license_blocked(format!(
             "the license expression {value} is denied by the frozen policy"
-        )));
+        ))),
+        LicenseDecision::Unknown | LicenseDecision::NotEvaluated => Err(license_blocked(format!(
+            "the license expression {value} is unknown and blocks the plan"
+        ))),
     }
-    if ALLOWED_SPDX.contains(&value) {
-        return Ok(());
-    }
-    // Permit simple SPDX AND/OR expressions where every atom is known.
-    let normalized = value
-        .replace(['(', ')'], " ")
-        .replace(" AND ", " ")
-        .replace(" OR ", " ")
-        .replace(" WITH ", " ");
-    let atoms = normalized.split_whitespace().collect::<Vec<_>>();
-    if !atoms.is_empty()
-        && atoms
-            .iter()
-            .all(|atom| ALLOWED_SPDX.contains(atom) || atom.starts_with("LLVM-exception"))
-    {
-        return Ok(());
-    }
-    Err(license_blocked(format!(
-        "the license expression {value} is unknown and blocks the plan"
-    )))
 }
 
 fn validate_closure_license_expression(value: &str) -> Result<(), EnvironmentError> {
@@ -2613,32 +2608,22 @@ fn validate_closure_license_expression(value: &str) -> Result<(), EnvironmentErr
             format!("the closure license expression {value:?} is unknown"),
         ));
     }
-    if DENIED_SPDX.contains(&value) {
-        return Err(EnvironmentError::new(
+    match evaluate(
+        value,
+        LicenseContext::Closure,
+        default_catalog(),
+        default_profile(),
+    ) {
+        LicenseDecision::Allowed => Ok(()),
+        LicenseDecision::Denied => Err(EnvironmentError::new(
             EnvironmentBlockerCode::EnvironmentLicenseDenied,
             format!("the closure license expression {value} is denied by policy"),
-        ));
+        )),
+        LicenseDecision::Unknown | LicenseDecision::NotEvaluated => Err(EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+            format!("the closure license expression {value} is unknown"),
+        )),
     }
-    if CLOSURE_ALLOWED_SPDX.contains(&value) {
-        return Ok(());
-    }
-    let normalized = value
-        .replace(['(', ')'], " ")
-        .replace(" AND ", " ")
-        .replace(" OR ", " ")
-        .replace(" WITH ", " ");
-    let atoms = normalized.split_whitespace().collect::<Vec<_>>();
-    if !atoms.is_empty()
-        && atoms
-            .iter()
-            .all(|atom| CLOSURE_ALLOWED_SPDX.contains(atom) || atom.starts_with("LLVM-exception"))
-    {
-        return Ok(());
-    }
-    Err(EnvironmentError::new(
-        EnvironmentBlockerCode::EnvironmentLicenseUnknown,
-        format!("the closure license expression {value} is unknown"),
-    ))
 }
 
 fn substrate_license_entries() -> Vec<LicenseEntry> {
@@ -2684,6 +2669,8 @@ fn build_license_inventory(
     let mut inventory = LicenseInventory {
         schema_version: ENVIRONMENT_SCHEMA_VERSION,
         policy_revision: LICENSE_POLICY_REVISION.into(),
+        catalog_sha256: default_catalog_sha256().into(),
+        profile_sha256: default_profile_sha256().into(),
         allow_unfree: false,
         entries: substrate_license_entries(),
         overrides: overrides.to_vec(),
@@ -3561,12 +3548,35 @@ pub type EnvironmentResolutionFuture<'a> = Pin<
     >,
 >;
 
+pub type EnvironmentBuilderRefreshFuture<'a> =
+    Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
+
+pub type EnvironmentIdentityFactsFuture<'a> = Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<
+                    crate::planning::identity_facts::VerifiedIdentityFacts,
+                    EnvironmentError,
+                >,
+            > + Send
+            + 'a,
+    >,
+>;
+
 /// Builder port for the Nix/devenv image and Node/Playwright runtime. The
 /// builder runs outside Core with no Factory/provider/GitHub credentials, no
 /// host network and no host socket. It receives an already frozen spec and must
 /// return evidence bound to that exact hash.
 pub trait EnvironmentBuilder {
     fn descriptor(&self) -> EnvironmentBuilderDescriptor;
+
+    /// Refresh cached availability from the builder control plane. This is a
+    /// read-only readiness probe: it must never replay an environment
+    /// operation whose outcome is ambiguous. Builders without a control plane
+    /// keep their current status.
+    fn refresh<'a>(&'a self) -> EnvironmentBuilderRefreshFuture<'a> {
+        Box::pin(async {})
+    }
 
     /// Resolve and pin a generated environment's lock data before freeze.
     /// Existing committed environments with a lock may skip this step. The
@@ -3585,6 +3595,30 @@ pub trait EnvironmentBuilder {
         plan: &'a EnvironmentPlan,
         workspace: Option<&'a std::path::Path>,
     ) -> EnvironmentBuilderFuture<'a>;
+
+    /// Build with an exact Core licence-decision overlay. The default keeps
+    /// existing builders source-compatible and ignores no decision: a builder
+    /// that does not implement the overlay must use its normal fail-closed path.
+    fn build_with_license_decisions<'a>(
+        &'a self,
+        spec: &'a EnvironmentSpec,
+        plan: &'a EnvironmentPlan,
+        workspace: Option<&'a std::path::Path>,
+        _license_decisions: &'a [serde_json::Value],
+    ) -> EnvironmentBuilderFuture<'a> {
+        self.build(spec, plan, workspace)
+    }
+
+    /// Observe the exact realised environment for one Core-issued
+    /// identity-facts challenge and return the authenticated receipt. The
+    /// broker owns the fixed Nix queries; a builder cannot supply a manifest.
+    /// `EvidenceAbsent` is a typed refusal, never an empty receipt.
+    fn identity_facts<'a>(
+        &'a self,
+        challenge: &'a crate::planning::identity_facts::IdentityFactsChallenge,
+        plan: &'a EnvironmentPlan,
+        spec: &'a EnvironmentSpec,
+    ) -> EnvironmentIdentityFactsFuture<'a>;
 }
 
 pub type SharedEnvironmentBuilder = std::sync::Arc<dyn EnvironmentBuilder + Send + Sync>;
@@ -3621,6 +3655,20 @@ impl EnvironmentBuilder for UnavailableEnvironmentBuilder {
             Err(EnvironmentError::new(
                 EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
                 "no environment builder is configured; no build receipt can be produced",
+            ))
+        })
+    }
+
+    fn identity_facts<'a>(
+        &'a self,
+        _challenge: &'a crate::planning::identity_facts::IdentityFactsChallenge,
+        _plan: &'a EnvironmentPlan,
+        _spec: &'a EnvironmentSpec,
+    ) -> EnvironmentIdentityFactsFuture<'a> {
+        Box::pin(async {
+            Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentIdentityEvidenceAbsent,
+                "no environment builder is configured; no realised environment can be observed",
             ))
         })
     }
@@ -3725,7 +3773,7 @@ impl EnvironmentBuilder for TestEnvironmentBuilder {
     fn build<'a>(
         &'a self,
         spec: &'a EnvironmentSpec,
-        _plan: &'a EnvironmentPlan,
+        plan: &'a EnvironmentPlan,
         _workspace: Option<&'a std::path::Path>,
     ) -> EnvironmentBuilderFuture<'a> {
         Box::pin(async move {
@@ -3738,7 +3786,7 @@ impl EnvironmentBuilder for TestEnvironmentBuilder {
                 builder_image_digest: spec.builder_image_digest.clone(),
                 builder_policy_revision: self.descriptor.policy_revision.clone(),
                 status: EnvironmentBuilderStatus::Succeeded,
-                store_path: String::new(),
+                store_path: crate::planning::identity_facts::fixture_store_path(&plan.plan_sha256),
                 output_sha256: sha256_hex(spec.spec_sha256.as_bytes()),
                 sbom_sha256: spec.sbom_sha256.clone(),
                 log_ref: String::new(),
@@ -3760,6 +3808,40 @@ impl EnvironmentBuilder for TestEnvironmentBuilder {
             Ok(receipt)
         })
     }
+
+    fn identity_facts<'a>(
+        &'a self,
+        challenge: &'a crate::planning::identity_facts::IdentityFactsChallenge,
+        plan: &'a EnvironmentPlan,
+        _spec: &'a EnvironmentSpec,
+    ) -> EnvironmentIdentityFactsFuture<'a> {
+        Box::pin(async move {
+            Ok(crate::planning::identity_facts::fixture_verified_receipt(
+                challenge,
+                &plan.plan_sha256,
+            ))
+        })
+    }
+}
+
+/// A readiness probe must fit inside the Compose Core health-check timeout
+/// (3s) even when the broker accepts the connection but does not answer.
+const READINESS_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn broker_reports_ready(health: &serde_json::Value, image: &str, digest: &str) -> bool {
+    let projection = health.get("environmentBuilder");
+    projection
+        .and_then(|value| value.get("status"))
+        .and_then(serde_json::Value::as_str)
+        == Some("READY")
+        && projection
+            .and_then(|value| value.get("image"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == image)
+        && projection
+            .and_then(|value| value.get("digest"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == digest)
 }
 
 /// Environment builder that calls the trusted runtime broker. The broker owns
@@ -3770,6 +3852,9 @@ pub struct RuntimeBrokerEnvironmentBuilder {
     broker: crate::runtime_broker::RuntimeBrokerClient,
     descriptor: EnvironmentBuilderDescriptor,
     status: std::sync::RwLock<EnvironmentBuilderStatus>,
+    /// Monotonic token for readiness probes. A probe that finishes after a
+    /// newer probe has started must not overwrite the newer result.
+    refresh_generation: std::sync::atomic::AtomicU64,
 }
 
 impl std::fmt::Debug for RuntimeBrokerEnvironmentBuilder {
@@ -3837,25 +3922,15 @@ impl RuntimeBrokerEnvironmentBuilder {
         let broker = RuntimeBrokerClient::new(&broker_url, token, ResourceOwner::Environment)
             .map_err(|error| error.to_string())?;
         // The runtime may still be importing the builder bundle when Core
-        // starts. Retry for a bounded window; never substitute a fake READY.
+        // starts. Probe a bounded number of times; never substitute a fake
+        // READY. A later operation refreshes this cached status, so a broker
+        // that only becomes reachable after this startup window does not leave
+        // Core permanently blocked.
         let mut status = EnvironmentBuilderStatus::Unavailable;
         for attempt in 0..24u32 {
             match broker.health().await {
                 Ok(health) => {
-                    let projection = health.get("environmentBuilder");
-                    let ready = projection
-                        .and_then(|value| value.get("status"))
-                        .and_then(serde_json::Value::as_str)
-                        == Some("READY")
-                        && projection
-                            .and_then(|value| value.get("image"))
-                            .and_then(serde_json::Value::as_str)
-                            .is_some_and(|value| value == descriptor.image)
-                        && projection
-                            .and_then(|value| value.get("digest"))
-                            .and_then(serde_json::Value::as_str)
-                            .is_some_and(|value| value == descriptor.digest);
-                    if ready {
+                    if broker_reports_ready(&health, &descriptor.image, &descriptor.digest) {
                         status = EnvironmentBuilderStatus::Ready;
                         break;
                     }
@@ -3877,7 +3952,73 @@ impl RuntimeBrokerEnvironmentBuilder {
             broker,
             descriptor,
             status: std::sync::RwLock::new(status),
+            refresh_generation: std::sync::atomic::AtomicU64::new(0),
         })))
+    }
+
+    /// Probe the broker once and cache the truthful builder status. A
+    /// non-ready projection, a mismatched image/digest or an unreachable broker
+    /// all remain UNAVAILABLE; a later successful probe can recover.
+    async fn refresh_status(&self) -> EnvironmentBuilderStatus {
+        let generation = self
+            .refresh_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .wrapping_add(1);
+        let status = match self
+            .broker
+            .health_with_timeout(READINESS_PROBE_TIMEOUT)
+            .await
+        {
+            Ok(health)
+                if broker_reports_ready(
+                    &health,
+                    &self.descriptor.image,
+                    &self.descriptor.digest,
+                ) =>
+            {
+                EnvironmentBuilderStatus::Ready
+            }
+            _ => EnvironmentBuilderStatus::Unavailable,
+        };
+        // A probe that finishes after a newer probe started must not overwrite
+        // the newer result. The newest probe is the only writer.
+        if self
+            .refresh_generation
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == generation
+        {
+            self.set_status(status);
+        }
+        status
+    }
+
+    /// Cache the truthful status after one operation attempt. Only a failure
+    /// that proves the broker did not accept the operation may clear readiness.
+    /// An ambiguous failure (timeout, truncated response, reset after send) is
+    /// not retried and must not trigger an automatic recompile on the next
+    /// resume, so it leaves the reachable builder available.
+    fn record_broker_error(&self, error: &crate::runtime_broker::BrokerError) {
+        use crate::runtime_broker::BrokerError;
+        let unavailable = match error {
+            BrokerError::Request(error) => error.is_connect(),
+            BrokerError::InvalidConfiguration(_) => true,
+            BrokerError::RefusedCode { code, .. } => code == "ENVIRONMENT_BUILDER_UNAVAILABLE",
+            BrokerError::Refused(body) => serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("code")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .is_some_and(|code| code == "ENVIRONMENT_BUILDER_UNAVAILABLE"),
+            _ => false,
+        };
+        self.set_status(if unavailable {
+            EnvironmentBuilderStatus::Unavailable
+        } else {
+            EnvironmentBuilderStatus::Ready
+        });
     }
 
     fn status(&self) -> EnvironmentBuilderStatus {
@@ -3901,6 +4042,7 @@ impl RuntimeBrokerEnvironmentBuilder {
         plan: &EnvironmentPlan,
         spec: Option<&EnvironmentSpec>,
         workspace: Option<&std::path::Path>,
+        license_decisions: &[serde_json::Value],
     ) -> Result<crate::runtime_broker::EnvironmentBrokerRequest, EnvironmentError> {
         let workspace_files = crate::runtime_broker::environment_workspace_files(plan, workspace)
             .map_err(|message| {
@@ -3920,18 +4062,69 @@ impl RuntimeBrokerEnvironmentBuilder {
             plan: plan.clone(),
             spec: spec.cloned(),
             workspace_files,
+            license_decisions: license_decisions.to_vec(),
+            identity_facts: None,
         })
     }
 
     async fn call(
         &self,
         request: &crate::runtime_broker::EnvironmentBrokerRequest,
-        timeout: std::time::Duration,
+        timeout: Option<std::time::Duration>,
     ) -> Result<crate::runtime_broker::EnvironmentBrokerResult, EnvironmentError> {
-        self.broker
-            .environment_build(request, timeout)
-            .await
-            .map_err(environment_error_from_broker)
+        match self.broker.environment_build(request, timeout).await {
+            Ok(result) => {
+                self.set_status(EnvironmentBuilderStatus::Ready);
+                Ok(result)
+            }
+            Err(error) => {
+                self.record_broker_error(&error);
+                Err(environment_error_from_broker(error))
+            }
+        }
+    }
+}
+
+impl RuntimeBrokerEnvironmentBuilder {
+    fn build_with_decisions<'a>(
+        &'a self,
+        spec: &'a EnvironmentSpec,
+        plan: &'a EnvironmentPlan,
+        workspace: Option<&'a std::path::Path>,
+        license_decisions: &'a [serde_json::Value],
+    ) -> EnvironmentBuilderFuture<'a> {
+        Box::pin(async move {
+            if self.status() == EnvironmentBuilderStatus::Unavailable {
+                let _ = self.refresh_status().await;
+            }
+            if self.status() == EnvironmentBuilderStatus::Unavailable {
+                return Err(EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
+                    "the runtime environment builder is not available",
+                ));
+            }
+            let request = self.request(
+                crate::runtime_broker::EnvironmentBrokerOperation::Build,
+                Some(crate::runtime_broker::EnvironmentBuildPhase::Build),
+                plan,
+                Some(spec),
+                workspace,
+                license_decisions,
+            )?;
+            self.set_status(EnvironmentBuilderStatus::Building);
+            let result = self.call(&request, None).await;
+            let result = result?;
+            let receipt = result.receipt.ok_or_else(|| {
+                EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentBuildFailed,
+                    "the environment builder returned no receipt",
+                )
+            })?;
+            if let Some(blocker) = receipt.blockers.first() {
+                return Err(EnvironmentError::new(blocker.code, blocker.message.clone()));
+            }
+            Ok(receipt)
+        })
     }
 }
 
@@ -3942,12 +4135,23 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
         descriptor
     }
 
+    fn refresh<'a>(&'a self) -> EnvironmentBuilderRefreshFuture<'a> {
+        Box::pin(async move {
+            if self.status() == EnvironmentBuilderStatus::Unavailable {
+                let _ = self.refresh_status().await;
+            }
+        })
+    }
+
     fn resolve<'a>(
         &'a self,
         plan: &'a EnvironmentPlan,
         workspace: Option<&'a std::path::Path>,
     ) -> EnvironmentResolutionFuture<'a> {
         Box::pin(async move {
+            if self.status() == EnvironmentBuilderStatus::Unavailable {
+                let _ = self.refresh_status().await;
+            }
             if self.status() == EnvironmentBuilderStatus::Unavailable {
                 return Err(EnvironmentError::new(
                     EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
@@ -3960,15 +4164,10 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
                 plan,
                 None,
                 workspace,
+                &[],
             )?;
             self.set_status(EnvironmentBuilderStatus::Building);
-            let result = self
-                .call(
-                    &request,
-                    std::time::Duration::from_secs(u64::from(plan.resources.timeout_secs) + 90),
-                )
-                .await;
-            self.set_status(EnvironmentBuilderStatus::Ready);
+            let result = self.call(&request, None).await;
             let result = result?;
             let resolution = result.resolution.ok_or_else(|| {
                 EnvironmentError::new(
@@ -3987,40 +4186,66 @@ impl EnvironmentBuilder for RuntimeBrokerEnvironmentBuilder {
         plan: &'a EnvironmentPlan,
         workspace: Option<&'a std::path::Path>,
     ) -> EnvironmentBuilderFuture<'a> {
+        self.build_with_decisions(spec, plan, workspace, &[])
+    }
+
+    fn build_with_license_decisions<'a>(
+        &'a self,
+        spec: &'a EnvironmentSpec,
+        plan: &'a EnvironmentPlan,
+        workspace: Option<&'a std::path::Path>,
+        license_decisions: &'a [serde_json::Value],
+    ) -> EnvironmentBuilderFuture<'a> {
+        self.build_with_decisions(spec, plan, workspace, license_decisions)
+    }
+
+    fn identity_facts<'a>(
+        &'a self,
+        challenge: &'a crate::planning::identity_facts::IdentityFactsChallenge,
+        plan: &'a EnvironmentPlan,
+        spec: &'a EnvironmentSpec,
+    ) -> EnvironmentIdentityFactsFuture<'a> {
         Box::pin(async move {
             if self.status() == EnvironmentBuilderStatus::Unavailable {
+                let _ = self.refresh_status().await;
+            }
+            if self.status() == EnvironmentBuilderStatus::Unavailable {
                 return Err(EnvironmentError::new(
-                    EnvironmentBlockerCode::EnvironmentBuilderUnavailable,
-                    "the runtime environment builder is not available",
+                    EnvironmentBlockerCode::EnvironmentIdentityEvidenceAbsent,
+                    "the runtime environment builder is not available; no realised environment can be observed",
                 ));
             }
-            let phase_timeout = u64::from(plan.resources.timeout_secs);
-            let request = self.request(
-                crate::runtime_broker::EnvironmentBrokerOperation::Build,
-                Some(crate::runtime_broker::EnvironmentBuildPhase::Build),
-                plan,
-                Some(spec),
-                workspace,
-            )?;
-            self.set_status(EnvironmentBuilderStatus::Building);
+            let request = crate::runtime_broker::EnvironmentBrokerRequest {
+                schema_version: ENVIRONMENT_SCHEMA_VERSION,
+                operation: crate::runtime_broker::EnvironmentBrokerOperation::IdentityFacts,
+                phase: Some(crate::runtime_broker::EnvironmentBuildPhase::IdentityFacts),
+                image: self.descriptor.image.clone(),
+                digest: self.descriptor.digest.clone(),
+                plan: plan.clone(),
+                spec: Some(spec.clone()),
+                workspace_files: Vec::new(),
+                license_decisions: Vec::new(),
+                identity_facts: Some(challenge.clone()),
+            };
             let result = self
-                .call(
-                    &request,
-                    std::time::Duration::from_secs(phase_timeout.saturating_mul(2) + 180),
-                )
-                .await;
-            self.set_status(EnvironmentBuilderStatus::Ready);
-            let result = result?;
-            let receipt = result.receipt.ok_or_else(|| {
-                EnvironmentError::new(
-                    EnvironmentBlockerCode::EnvironmentBuildFailed,
-                    "the environment builder returned no receipt",
-                )
-            })?;
-            if let Some(blocker) = receipt.blockers.first() {
-                return Err(EnvironmentError::new(blocker.code, blocker.message.clone()));
-            }
-            Ok(receipt)
+                .broker
+                .environment_build(&request, None)
+                .await
+                .map_err(environment_error_from_broker)?;
+            let Some(receipt) = result.identity_facts else {
+                return Err(EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentIdentityEvidenceAbsent,
+                    "the broker returned no identity-facts evidence for the realised environment",
+                ));
+            };
+            self.broker
+                .verify_identity_facts(&receipt, challenge)
+                .map_err(|error| {
+                    EnvironmentError::new(
+                        EnvironmentBlockerCode::EnvironmentIdentityFactsRefused,
+                        error.to_string(),
+                    )
+                })
         })
     }
 }
@@ -4100,14 +4325,262 @@ pub struct VerifiedPackage {
 /// derives this from the actual closure and the pinned nixpkgs metadata, not
 /// from the Core plan, so a constructed nixpkgs config cannot hide an unfree
 /// transitive dependency.
+/// One exact source-file/input pair for a source-licensed identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SourceLicenseInput {
+    pub store_path: String,
+    pub sha256: String,
+    pub source_path: String,
+    pub source_sha256: String,
+}
+
+/// Exact reviewed origin for a source-licensed, unversioned substrate identity.
+///
+/// It binds the identity, pinned source and licence bytes; it is not a licence
+/// decision and never comes from model output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SourceLicenseOrigin {
+    pub pin: String,
+    pub deriver: String,
+    pub store_path: String,
+    pub nar_hash: String,
+    pub source_store_path: String,
+    pub source_nar_sha256: String,
+    pub license_file: String,
+    pub license_file_sha256: String,
+    pub license: String,
+    pub input_sources: Vec<SourceLicenseInput>,
+    pub composition_nar_sha256: String,
+    pub composition_nar_size: u64,
+}
+
+impl SourceLicenseOrigin {
+    fn validate_for(
+        &self,
+        name: &str,
+        path: &str,
+        license: &str,
+        version_state: LicenseVersionState,
+    ) -> Result<(), EnvironmentError> {
+        let mut seen = BTreeSet::new();
+        if name
+            .chars()
+            .any(|character| matches!(character, '*' | '?' | '[' | ']'))
+            || !self.pin.starts_with("github:NixOS/nixpkgs/")
+            || self.store_path != path
+            || !self.deriver.starts_with("/nix/store/")
+            || !self.deriver.ends_with(".drv")
+            || !is_nar_hash(&self.nar_hash)
+            || !self.source_store_path.starts_with("/nix/store/")
+            || !is_nar_hash(&self.source_nar_sha256)
+            || self.license_file != "COPYING"
+            || self.license_file_sha256
+                != "b1269cab8c739a49b41c7f89a679805b200f268246fe9ee077c91da78b602f9e"
+            || self.license != "MIT"
+            || license != "MIT"
+            || !is_nar_hash(&self.composition_nar_sha256)
+            || self.composition_nar_sha256 != self.nar_hash
+            || self.composition_nar_size == 0
+            || self.composition_nar_size > 256 * 1024 * 1024
+            || self.input_sources.is_empty()
+            || self.input_sources.len() > 4096
+        {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "the source license origin is inconsistent",
+            ));
+        }
+        for input in &self.input_sources {
+            if !input.store_path.starts_with("/nix/store/")
+                || !is_sha256(&input.sha256)
+                || !is_sha256(&input.source_sha256)
+                || input.sha256 != input.source_sha256
+                || input.source_path.is_empty()
+                || input.source_path.starts_with('/')
+                || input.source_path.split('/').any(|part| part == "..")
+                || !seen.insert(input.store_path.as_str())
+            {
+                return Err(EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                    "a source license input pair is inconsistent",
+                ));
+            }
+        }
+        let Some(reviewed) = reviewed_source_license_origins().get(&(
+            self.pin.clone(),
+            self.deriver.clone(),
+            self.store_path.clone(),
+        )) else {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "the source license origin is not a reviewed exact origin",
+            ));
+        };
+        if reviewed.name != name
+            || !reviewed.version.is_empty()
+            || reviewed.version_state != LicenseVersionState::Unversioned
+            || version_state != LicenseVersionState::Unversioned
+            || reviewed.license != license
+            || reviewed.unfree
+            || &reviewed.source_origin != self
+        {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "the source license origin does not equal its reviewed exact origin",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Anchor this origin to the authenticated identity-facts manifest.
+    ///
+    /// Only the broker produces and signs the manifest; a caller or model never
+    /// supplies facts. The origin's store path, derivation and NAR hash must
+    /// equal one signed fact, so an origin is bound to the exact observed
+    /// identity rather than to a table alone.
+    pub fn bind_identity_facts(
+        &self,
+        verified: &VerifiedIdentityFacts,
+    ) -> Result<(), EnvironmentError> {
+        if self.pin != verified.receipt().envelope.challenge.pin {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "a source license origin pin differs from the signed challenge pin",
+            ));
+        }
+        let facts = &verified.receipt().envelope.manifest.facts;
+        let Some(fact) = facts.iter().find(|fact| fact.store_path == self.store_path) else {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "a source license origin has no authenticated identity fact",
+            ));
+        };
+        if fact.deriver.as_deref() != Some(self.deriver.as_str())
+            || fact.nar_hash != self.nar_hash
+            || !fact.outputs.iter().any(|output| output == &self.store_path)
+        {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                "a source license origin does not match its authenticated identity fact",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Reviewed exact origins shared with the environment builder.
+///
+/// The data file is compiled into Core, so a caller, model or forged receipt
+/// cannot mint a source-licence origin: an origin is accepted only when it
+/// equals a reviewed entry keyed by exact pin, derivation and store path.
+const SOURCE_LICENSE_ORIGINS_JSON: &str = include_str!(
+    "../../../deploy/environment-builder/environment_builder/source_license_origins.json"
+);
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ReviewedSourceLicenseEntry {
+    name: String,
+    version: String,
+    version_state: LicenseVersionState,
+    license: String,
+    unfree: bool,
+    source_origin: SourceLicenseOrigin,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ReviewedSourceLicenseOrigins {
+    schema_version: u32,
+    evidence: BTreeMap<String, String>,
+    identities: Vec<ReviewedSourceLicenseEntry>,
+}
+
+type ReviewedOriginKey = (String, String, String);
+
+/// Exact provenance keys the asset must carry. They document the reviewed
+/// evidence; they grant no runtime authority.
+const REQUIRED_SOURCE_LICENSE_EVIDENCE: [&str; 4] = [
+    "compositionAuditCanonicalVerifyLogSha256",
+    "compositionAuditSha256Sums",
+    "independentReconstructionSha256Sums",
+    "licenseEvidenceV2Sha256",
+];
+
+fn parse_reviewed_source_license_origins(
+    json: &str,
+) -> Result<BTreeMap<ReviewedOriginKey, ReviewedSourceLicenseEntry>, &'static str> {
+    let document: ReviewedSourceLicenseOrigins = serde_json::from_str(json)
+        .map_err(|_| "the reviewed source license origins are not valid JSON")?;
+    if document.schema_version != 1 {
+        return Err("unsupported reviewed source license origins schema");
+    }
+    if document.evidence.len() != REQUIRED_SOURCE_LICENSE_EVIDENCE.len()
+        || !REQUIRED_SOURCE_LICENSE_EVIDENCE.iter().all(|key| {
+            document
+                .evidence
+                .get(*key)
+                .is_some_and(|value| is_sha256(value))
+        })
+    {
+        return Err("the reviewed source license evidence binding is malformed");
+    }
+    let mut origins: BTreeMap<ReviewedOriginKey, ReviewedSourceLicenseEntry> = BTreeMap::new();
+    for entry in document.identities {
+        let key = (
+            entry.source_origin.pin.clone(),
+            entry.source_origin.deriver.clone(),
+            entry.source_origin.store_path.clone(),
+        );
+        if origins.insert(key, entry).is_some() {
+            return Err("a reviewed source license origin is duplicated");
+        }
+    }
+    if origins.is_empty() {
+        return Err("the reviewed source license origins are empty");
+    }
+    Ok(origins)
+}
+
+fn reviewed_source_license_origins()
+-> &'static BTreeMap<ReviewedOriginKey, ReviewedSourceLicenseEntry> {
+    static ORIGINS: OnceLock<BTreeMap<ReviewedOriginKey, ReviewedSourceLicenseEntry>> =
+        OnceLock::new();
+    ORIGINS.get_or_init(|| {
+        parse_reviewed_source_license_origins(SOURCE_LICENSE_ORIGINS_JSON)
+            .expect("the reviewed source license origins are valid")
+    })
+}
+
+/// Explicit version state of a closure identity.
+///
+/// `version` is never interpreted as a version when this state is
+/// `Unversioned`; the unversioned state is only admitted with an exact reviewed
+/// source origin. An absent state deserialises as `Known`, and a `Known` entry
+/// with an empty version is refused.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum LicenseVersionState {
+    #[default]
+    Known,
+    Unversioned,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ClosureLicense {
     pub path: String,
     pub name: String,
     pub version: String,
+    #[serde(default)]
+    pub version_state: LicenseVersionState,
     pub license: String,
     pub unfree: bool,
+    /// Present only for an exact reviewed unversioned source origin.
+    #[serde(default)]
+    pub source_origin: Option<SourceLicenseOrigin>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -4134,6 +4607,20 @@ pub struct EnvironmentResolution {
 }
 
 impl EnvironmentResolution {
+    /// Reject any source-licence origin that is not anchored in the exact
+    /// authenticated identity-facts manifest of this environment.
+    pub fn validate_source_license_identity(
+        &self,
+        verified: &VerifiedIdentityFacts,
+    ) -> Result<(), EnvironmentError> {
+        for entry in &self.closure_licenses {
+            if let Some(origin) = &entry.source_origin {
+                origin.bind_identity_facts(verified)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), EnvironmentError> {
         if self.schema_version != ENVIRONMENT_SCHEMA_VERSION {
             return Err(invalid("unsupported environment resolution schema version"));
@@ -4183,7 +4670,37 @@ impl EnvironmentResolution {
                 ));
             }
             bounded_text("closure license name", &entry.name, 200)?;
-            bounded_text("closure license version", &entry.version, 128)?;
+            match entry.version_state {
+                LicenseVersionState::Unversioned => {
+                    if !entry.version.is_empty() {
+                        return Err(EnvironmentError::new(
+                            EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                            "an unversioned closure identity must not carry a version",
+                        ));
+                    }
+                    let Some(origin) = &entry.source_origin else {
+                        return Err(EnvironmentError::new(
+                            EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                            "an unversioned closure identity requires an exact source license origin",
+                        ));
+                    };
+                    origin.validate_for(
+                        &entry.name,
+                        &entry.path,
+                        &entry.license,
+                        entry.version_state,
+                    )?;
+                }
+                LicenseVersionState::Known => {
+                    bounded_text("closure license version", &entry.version, 128)?;
+                    if entry.source_origin.is_some() {
+                        return Err(EnvironmentError::new(
+                            EnvironmentBlockerCode::EnvironmentLicenseUnknown,
+                            "a versioned closure identity must not carry a source license origin",
+                        ));
+                    }
+                }
+            }
             if entry.unfree {
                 return Err(license_blocked(format!(
                     "transitive closure package {} {} is unfree",
@@ -4314,6 +4831,7 @@ pub struct EnvironmentExecutionBinding {
 impl EnvironmentExecutionBinding {
     pub fn validate(&self) -> Result<(), EnvironmentError> {
         self.plan.validate(Utc::now())?;
+        validate_current_policy_binding(&self.plan.license_inventory)?;
         self.spec.validate()?;
         self.receipt.validate_for(&self.spec)?;
         if self.spec.plan_sha256 != self.plan.plan_sha256 {
@@ -4571,11 +5089,106 @@ pub fn check_runner_blocker(
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Test-support only: build a valid plan from a throw-away repository so the
+/// compiled policy probe can exercise `EnvironmentPlan::validate` with a real
+/// inventory and stale/forged policy hashes. Not compiled into production.
+#[cfg(feature = "test-support")]
+pub fn policy_probe_plan() -> Result<EnvironmentPlan, EnvironmentError> {
+    use std::process::Command;
+
+    fn git(root: &Path, arguments: &[&str]) -> Result<String, EnvironmentError> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(arguments)
+            .output()
+            .map_err(|error| {
+                EnvironmentError::new(
+                    EnvironmentBlockerCode::EnvironmentPlanInvalid,
+                    format!("policy probe git failed: {error}"),
+                )
+            })?;
+        if !output.status.success() {
+            return Err(EnvironmentError::new(
+                EnvironmentBlockerCode::EnvironmentPlanInvalid,
+                format!("policy probe git {arguments:?} failed"),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let root = std::env::temp_dir().join(format!(
+        "factory-policy-probe-{}-{stamp}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).map_err(|error| {
+        EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentPlanInvalid,
+            format!("policy probe repository: {error}"),
+        )
+    })?;
+    std::fs::write(root.join("README.md"), "# Policy probe\n").map_err(|error| {
+        EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentPlanInvalid,
+            format!("policy probe README: {error}"),
+        )
+    })?;
+    let result = (|| -> Result<EnvironmentPlan, EnvironmentError> {
+        git(&root, &["init", "-q", "-b", "main"])?;
+        git(&root, &["config", "user.name", "Policy Probe"])?;
+        git(&root, &["config", "user.email", "probe@example.invalid"])?;
+        git(&root, &["add", "--all"])?;
+        git(&root, &["commit", "-qm", "base"])?;
+        let base = git(&root, &["rev-parse", "HEAD"])?;
+        let conventions = discover_project_conventions("project-1", &root, &base, Utc::now())?;
+        let mut requirements = EnvironmentRequirements {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            explicit_constraints: ExplicitEnvironmentConstraints::default(),
+            proposal: None,
+            allow_unfree: false,
+            owner_overrides: Vec::new(),
+            resource_limits: ResourceLimits::default(),
+            network: NetworkPolicy::default(),
+        };
+        requirements.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        compile_environment_plan(CompileEnvironmentInput {
+            plan_id: "policy-probe-plan".into(),
+            project_id: "project-1",
+            request_id: "policy-probe-request",
+            action_id: "policy-probe-action",
+            campaign_id: None,
+            revision: 1,
+            risk_class: "R0",
+            conventions: &conventions,
+            requirements: &requirements,
+            builder: EnvironmentBuilderDescriptor {
+                image: "factory/environment-builder".into(),
+                digest: format!("sha256:{}", "a".repeat(64)),
+                platform: DEFAULT_PLATFORM.into(),
+                policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                default_nixpkgs: "github:NixOS/nixpkgs/2222222222222222222222222222222222222222"
+                    .into(),
+                status: EnvironmentBuilderStatus::Ready,
+            },
+            now: Utc::now(),
+        })
+    })();
+    let _ = std::fs::remove_dir_all(&root);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::process::Command;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     fn git(repository: &Path, arguments: &[&str]) -> String {
         let output = Command::new("git")
@@ -4675,8 +5288,44 @@ mod tests {
             path: format!("/nix/store/{}-bash-5.2", "a".repeat(32)),
             name: "bash".into(),
             version: "5.2".into(),
+            version_state: LicenseVersionState::Known,
             license: "GPL-3.0-or-later".into(),
             unfree: false,
+            source_origin: None,
+        }
+    }
+
+    fn reviewed_closure_license(marker: &str) -> ClosureLicense {
+        let reviewed = reviewed_source_license_origins()
+            .values()
+            .find(|entry| entry.name == marker)
+            .expect("the reviewed source license origin exists");
+        ClosureLicense {
+            path: reviewed.source_origin.store_path.clone(),
+            name: reviewed.name.clone(),
+            version: reviewed.version.clone(),
+            version_state: reviewed.version_state,
+            license: reviewed.license.clone(),
+            unfree: reviewed.unfree,
+            source_origin: Some(reviewed.source_origin.clone()),
+        }
+    }
+
+    fn source_license_resolution() -> EnvironmentResolution {
+        let content = "{\"nodes\":{}}".to_string();
+        EnvironmentResolution {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            plan_sha256: "a".repeat(64),
+            files: vec![EnvironmentFile {
+                path: "flake.lock".into(),
+                sha256: sha256_hex(content.as_bytes()),
+                origin: EnvironmentFileOrigin::Generated,
+                content: Some(content),
+            }],
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            packages: Vec::new(),
+            closure_licenses: vec![reviewed_closure_license("stdenv-linux")],
         }
     }
 
@@ -4808,6 +5457,45 @@ mod tests {
         }));
         assert_eq!(conventions.commands.len(), 2);
         assert!(conventions.conflicts.is_empty());
+    }
+
+    #[test]
+    fn committed_python312_flake_is_selected_without_generation() {
+        let pin = "ac62194c3917d5f474c1a844b6fd6da2db95077d";
+        let (repository, base) = repository(&[
+            (
+                "flake.nix",
+                "{\n  description = \"Factory UAT committed environment\";\n  inputs.nixpkgs.url = \"github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d\";\n  outputs = { self, nixpkgs }: {\n    devShells.x86_64-linux.default =\n      (import nixpkgs { system = \"x86_64-linux\"; }).mkShell {\n        buildInputs = [ (import nixpkgs { system = \"x86_64-linux\"; }).python312 ];\n      };\n  };\n}\n",
+            ),
+            ("flake.lock", &flake_lock(pin)),
+            (
+                "pyproject.toml",
+                "[project]\nname = \"factory-e2e\"\nversion = \"0.1.0\"\nrequires-python = \">=3.12\"\nlicense = { text = \"MIT\" }\n",
+            ),
+            ("src/seed.txt", "factory-e2e seed\n"),
+        ]);
+        let conventions =
+            discover_project_conventions("project-1", &repository, &base, now()).unwrap();
+        assert_eq!(
+            conventions.existing_environment,
+            ExistingEnvironmentKind::Flake
+        );
+        let plan = compile(&repository, &base, &requirements());
+        assert_eq!(plan.source, EnvironmentPlanSource::ProjectCommitted);
+        assert!(plan.nix.nixpkgs.ends_with(pin));
+        assert!(plan.files.iter().any(|file| file.path == "flake.nix"));
+        assert!(plan.files.iter().any(|file| file.path == "flake.lock"));
+        assert!(
+            plan.files
+                .iter()
+                .all(|file| file.origin == EnvironmentFileOrigin::Project)
+        );
+        let flake = plan
+            .files
+            .iter()
+            .find(|file| file.path == "flake.nix")
+            .expect("committed flake.nix");
+        assert!(flake.sha256.len() == 64);
     }
 
     #[test]
@@ -5447,8 +6135,10 @@ mod tests {
                 path: format!("/nix/store/{}-secret-tool-1.0", "c".repeat(32)),
                 name: "secret-tool".into(),
                 version: "1.0".into(),
+                version_state: LicenseVersionState::Known,
                 license: "MIT".into(),
                 unfree: true,
+                source_origin: None,
             }],
         });
         plan.refresh_hash();
@@ -5468,6 +6158,459 @@ mod tests {
             error.code,
             EnvironmentBlockerCode::EnvironmentLicenseUnknown
         );
+    }
+
+    const IDENTITY_TEST_BEARER: &[u8] = b"scoped-environment-bearer-0123456789abcdef";
+
+    /// Build a genuinely signed and verified identity-facts receipt over facts
+    /// derived from the reviewed origins. The receipt goes through the real
+    /// `sign`/`verify` HMAC path, never a fixture constructor.
+    fn signed_identity_facts(
+        pin: &str,
+        mutate: impl FnOnce(&mut Vec<crate::planning::identity_facts::IdentityFact>),
+    ) -> VerifiedIdentityFacts {
+        use crate::planning::identity_facts::{
+            IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION, IdentityFact,
+            IdentityFactsChallenge, IdentityFactsEnvelope, IdentityFactsManifest,
+            IdentityFactsMode, IdentityFactsReceipt, OperationRoot, closure_manifest_sha256, sign,
+            verify,
+        };
+        let mut facts: Vec<IdentityFact> = reviewed_source_license_origins()
+            .values()
+            .map(|entry| IdentityFact {
+                store_path: entry.source_origin.store_path.clone(),
+                deriver: Some(entry.source_origin.deriver.clone()),
+                nar_hash: entry.source_origin.nar_hash.clone(),
+                outputs: vec![entry.source_origin.store_path.clone()],
+            })
+            .collect();
+        mutate(&mut facts);
+        let challenge = IdentityFactsChallenge {
+            operation_id: "operation".into(),
+            runtime_id: "sha256:runtime".into(),
+            nonce: "nonce".into(),
+            pin: pin.into(),
+            plan_sha256: "a".repeat(64),
+            spec_sha256: "b".repeat(64),
+            mode: IdentityFactsMode::Enumerate,
+            root: OperationRoot::Operation,
+            questions: Vec::new(),
+            stage: crate::planning::identity_facts::IdentityFactsStage::Spec,
+            resolution_key: String::new(),
+        };
+        let observed_root = facts
+            .first()
+            .expect("the reviewed receipt has facts")
+            .store_path
+            .clone();
+        let manifest = IdentityFactsManifest {
+            observed_root,
+            fact_count: facts.len(),
+            closure_manifest_sha256: closure_manifest_sha256(&facts),
+            truncated: false,
+            facts,
+        };
+        let envelope = IdentityFactsEnvelope {
+            schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
+            context: IDENTITY_FACTS_CONTEXT.into(),
+            challenge: challenge.clone(),
+            manifest,
+        };
+        let receipt = IdentityFactsReceipt {
+            signature: sign(&envelope, IDENTITY_TEST_BEARER).expect("the test signs the envelope"),
+            envelope,
+        };
+        verify(&receipt, IDENTITY_TEST_BEARER, &challenge)
+            .expect("the real verifier accepts the signed receipt")
+    }
+
+    fn reviewed_pin() -> String {
+        reviewed_source_license_origins()
+            .values()
+            .next()
+            .expect("the reviewed origins exist")
+            .source_origin
+            .pin
+            .clone()
+    }
+
+    #[test]
+    fn source_license_origin_must_match_the_signed_identity_facts() {
+        let mut resolution = source_license_resolution();
+        resolution.closure_licenses.push(reviewed_closure_license(
+            "update-autotools-gnu-config-scripts-hook",
+        ));
+        resolution
+            .closure_licenses
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        resolution
+            .validate()
+            .expect("the reviewed origins are consistent");
+        let verified = signed_identity_facts(&reviewed_pin(), |_| {});
+        resolution
+            .validate_source_license_identity(&verified)
+            .expect("the origins bind to the signed facts");
+
+        // The origin pin differs from the signed challenge pin.
+        let mut tampered = resolution.clone();
+        tampered.closure_licenses[0]
+            .source_origin
+            .as_mut()
+            .unwrap()
+            .pin = format!("github:NixOS/nixpkgs/{}", "b".repeat(40));
+        assert!(
+            tampered
+                .validate_source_license_identity(&verified)
+                .is_err()
+        );
+        // The same facts under a different signed challenge pin must not bind.
+        let other_pin =
+            signed_identity_facts(&format!("github:NixOS/nixpkgs/{}", "b".repeat(40)), |_| {});
+        assert!(
+            resolution
+                .validate_source_license_identity(&other_pin)
+                .is_err()
+        );
+
+        type FactMutation =
+            Box<dyn FnOnce(&mut Vec<crate::planning::identity_facts::IdentityFact>)>;
+        let first_path = resolution.closure_licenses[0].path.clone();
+        let fact_mutations: Vec<FactMutation> = vec![
+            Box::new(|facts| {
+                facts[0].nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into();
+            }),
+            Box::new(|facts| {
+                facts[0].deriver = Some(format!("/nix/store/{}-other.drv", "b".repeat(32)));
+            }),
+            Box::new(move |facts| {
+                facts.retain(|fact| fact.store_path != first_path);
+            }),
+        ];
+        for mutate in fact_mutations {
+            let changed = signed_identity_facts(&reviewed_pin(), mutate);
+            assert!(
+                resolution
+                    .validate_source_license_identity(&changed)
+                    .is_err(),
+                "a changed signed fact must be refused"
+            );
+        }
+
+        // The output composition NAR is the signed output NAR, and the licence
+        // evidence fields must stay exact.
+        for mutate in [
+            (|origin: &mut SourceLicenseOrigin| {
+                origin.composition_nar_sha256 =
+                    "sha256-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=".into();
+            }) as fn(&mut SourceLicenseOrigin),
+            |origin: &mut SourceLicenseOrigin| {
+                origin.source_nar_sha256 =
+                    "sha256-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=".into();
+            },
+            |origin: &mut SourceLicenseOrigin| origin.license = "Apache-2.0".into(),
+            |origin: &mut SourceLicenseOrigin| {
+                origin.input_sources[0].sha256 = "b".repeat(64);
+                origin.input_sources[0].source_sha256 = "b".repeat(64);
+            },
+        ] {
+            let mut changed = resolution.clone();
+            mutate(changed.closure_licenses[0].source_origin.as_mut().unwrap());
+            let error = changed.validate().expect_err("a changed origin must fail");
+            assert_eq!(
+                error.code,
+                EnvironmentBlockerCode::EnvironmentLicenseUnknown
+            );
+        }
+    }
+
+    #[test]
+    fn reviewed_source_license_origins_reject_bad_evidence_and_duplicates() {
+        assert_eq!(
+            reviewed_source_license_origins().len(),
+            2,
+            "the compiled reviewed table has exactly two origins"
+        );
+        let document: serde_json::Value =
+            serde_json::from_str(SOURCE_LICENSE_ORIGINS_JSON).expect("the asset is JSON");
+        assert_eq!(
+            document["evidence"].as_object().expect("evidence").len(),
+            4,
+            "the asset declares exactly four evidence bindings"
+        );
+        let render = |value: &serde_json::Value| serde_json::to_string(value).expect("render");
+        assert!(
+            parse_reviewed_source_license_origins(&render(&document)).is_ok(),
+            "the compiled asset parses"
+        );
+
+        let mut extra = document.clone();
+        extra["evidence"]["extraKey"] = "a".repeat(64).into();
+        assert!(parse_reviewed_source_license_origins(&render(&extra)).is_err());
+        let mut missing = document.clone();
+        missing["evidence"]
+            .as_object_mut()
+            .expect("evidence")
+            .remove("independentReconstructionSha256Sums");
+        assert!(parse_reviewed_source_license_origins(&render(&missing)).is_err());
+        let mut wrong = document.clone();
+        wrong["evidence"]["licenseEvidenceV2Sha256"] = "not-a-hash".into();
+        assert!(parse_reviewed_source_license_origins(&render(&wrong)).is_err());
+        let mut duplicate = document.clone();
+        let repeated = duplicate["identities"][0].clone();
+        duplicate["identities"]
+            .as_array_mut()
+            .expect("identities")
+            .push(repeated);
+        assert!(parse_reviewed_source_license_origins(&render(&duplicate)).is_err());
+    }
+
+    #[test]
+    fn unreviewed_structurally_valid_source_origin_fails_closed() {
+        let mut resolution = source_license_resolution();
+        let origin = resolution.closure_licenses[0]
+            .source_origin
+            .as_mut()
+            .expect("reviewed origin");
+        origin.deriver = format!("/nix/store/{}-unreviewed.drv", "f".repeat(32));
+        origin.store_path = format!("/nix/store/{}-unreviewed", "f".repeat(32));
+        resolution.closure_licenses[0].path = origin.store_path.clone();
+        let error = resolution.validate().unwrap_err();
+        assert_eq!(
+            error.code,
+            EnvironmentBlockerCode::EnvironmentLicenseUnknown
+        );
+    }
+
+    #[test]
+    fn exact_source_license_origin_is_required_for_unversioned_entries() {
+        let reviewed = reviewed_source_license_origins();
+        assert_eq!(reviewed.len(), 2, "exactly two reviewed source origins");
+        let mut sizes: Vec<usize> = reviewed
+            .values()
+            .map(|entry| entry.source_origin.input_sources.len())
+            .collect();
+        sizes.sort_unstable();
+        assert_eq!(sizes, vec![3, 16], "per-derivation input source counts");
+        for entry in reviewed.values() {
+            assert_eq!(entry.version, "", "reviewed origins are unversioned");
+            assert_eq!(entry.version_state, LicenseVersionState::Unversioned);
+            assert_eq!(entry.license, "MIT");
+            assert!(!entry.unfree);
+            assert_eq!(
+                entry.source_origin.license_file_sha256,
+                "b1269cab8c739a49b41c7f89a679805b200f268246fe9ee077c91da78b602f9e"
+            );
+        }
+        let resolution = source_license_resolution();
+        resolution.validate().unwrap();
+
+        type Mutation = Box<dyn Fn(&mut ClosureLicense)>;
+        let mutations: Vec<Mutation> = vec![
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().pin =
+                    format!("github:NixOS/nixpkgs/{}", "b".repeat(40))
+            }),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().deriver =
+                    format!("/nix/store/{}-other.drv", "b".repeat(32))
+            }),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().store_path =
+                    format!("/nix/store/{}-other", "b".repeat(32))
+            }),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().nar_hash =
+                    "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into()
+            }),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().source_store_path =
+                    format!("/nix/store/{}-other-source", "b".repeat(32))
+            }),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().source_nar_sha256 =
+                    "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into()
+            }),
+            Box::new(|entry| entry.source_origin.as_mut().unwrap().license_file = "LICENSE".into()),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().license_file_sha256 = "b".repeat(64)
+            }),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().input_sources[0].sha256 = "b".repeat(64)
+            }),
+            Box::new(|entry| entry.source_origin.as_mut().unwrap().composition_nar_size = 0),
+            Box::new(|entry| entry.name = "stdenv*".into()),
+            Box::new(|entry| entry.name = "gnu-config".into()),
+            Box::new(|entry| {
+                entry.source_origin.as_mut().unwrap().input_sources[0].source_path =
+                    "pkgs/other.sh".into()
+            }),
+            Box::new(|entry| entry.version = "1.0".into()),
+            Box::new(|entry| entry.version_state = LicenseVersionState::Known),
+        ];
+        for mutate in mutations {
+            let mut changed = resolution.clone();
+            mutate(&mut changed.closure_licenses[0]);
+            assert!(
+                changed.validate().is_err(),
+                "mutated source origin must fail closed"
+            );
+        }
+        let mut missing = resolution.clone();
+        missing.closure_licenses[0].source_origin = None;
+        assert!(
+            missing.validate().is_err(),
+            "unversioned without origin must fail"
+        );
+    }
+
+    #[test]
+    fn closure_accepts_bsd4_clause_uc_and_python20_while_selected_stays_closed() {
+        let expression = "GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later \
+                          AND LGPL-2.1-or-later AND BSD-3-Clause AND BSD-4-Clause-UC \
+                          AND publicDomain";
+        validate_closure_license_expression(expression)
+            .expect("the builder-authorised BSD-4-Clause-UC closure atom must be accepted");
+        assert!(
+            validate_license_expression(expression).is_err(),
+            "the selected-package allowlist must not be broadened"
+        );
+        validate_closure_license_expression("Python-2.0")
+            .expect("the authorised Python-2.0 closure atom must be accepted");
+        assert!(validate_license_expression("Python-2.0").is_err());
+        assert!(validate_closure_license_expression("AGPL-3.0-only").is_err());
+        assert!(validate_closure_license_expression("LicenseRef-Not-A-Catalogue-Id").is_err());
+        assert!(validate_closure_license_expression("PSF-2.0").is_err());
+    }
+
+    #[test]
+    fn license_catalog_and_profile_are_shared_and_legacy() {
+        let catalog = crate::planning::license_policy::default_catalog();
+        let profile = crate::planning::license_policy::default_profile();
+        assert_eq!(catalog.entries.len(), 36);
+        assert_eq!(
+            catalog.alias_index.get("Public Domain"),
+            Some(&"publicDomain".to_owned())
+        );
+        assert_eq!(profile.mode, "legacy-current");
+        assert!(!profile.b_active());
+        let selected = &profile.contexts["selected"].allowed_ids;
+        let closure = &profile.contexts["closure"].allowed_ids;
+        assert_eq!(selected.len(), 16);
+        assert_eq!(closure.len(), 30);
+        for identifier in ["BSD-4-Clause-UC", "Python-2.0"] {
+            assert!(closure.iter().any(|id| id.as_str() == identifier));
+            assert!(!selected.iter().any(|id| id.as_str() == identifier));
+        }
+        assert!(closure.iter().any(|id| id.as_str() == "publicDomain"));
+        assert!(!closure.iter().any(|id| id.as_str() == "Public Domain"));
+    }
+
+    #[test]
+    fn real_33_entry_inventory_is_accepted_by_core_closure_validator() {
+        #[derive(Deserialize)]
+        struct Fixture {
+            count: usize,
+            entries: Vec<ClosureLicense>,
+        }
+        let fixture: Fixture = serde_json::from_str(include_str!(
+            "../../../deploy/environment-builder/tests/fixtures/closure-license-inventory-33.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture.count, 33);
+        assert_eq!(fixture.entries.len(), 33);
+        for entry in &fixture.entries {
+            validate_closure_license_expression(&entry.license)
+                .unwrap_or_else(|error| panic!("{} {}: {error}", entry.name, entry.version));
+        }
+    }
+
+    #[test]
+    fn plan_rejects_inventory_bound_to_another_policy_even_if_self_consistent() {
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        for field in ["catalog_sha256", "profile_sha256"] {
+            let mut plan = compile(&repository, &base, &values);
+            if field == "catalog_sha256" {
+                plan.license_inventory.catalog_sha256 = "0".repeat(64);
+            } else {
+                plan.license_inventory.profile_sha256 = "0".repeat(64);
+            }
+            plan.license_inventory.refresh_hashes(&plan.plan_id);
+            plan.license_inventory_sha256 = plan.license_inventory.inventory_sha256.clone();
+            plan.refresh_hash();
+            let error = plan.validate(now()).unwrap_err();
+            assert_eq!(
+                error.code,
+                EnvironmentBlockerCode::EnvironmentHashMismatch,
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn inventory_requires_policy_hashes_on_deserialization() {
+        let value = serde_json::json!({
+            "schemaVersion": ENVIRONMENT_SCHEMA_VERSION,
+            "policyRevision": LICENSE_POLICY_REVISION,
+            "allowUnfree": false,
+            "entries": [],
+            "overrides": [],
+            "blockers": [],
+            "inventorySha256": "0".repeat(64),
+            "sbomSha256": "0".repeat(64)
+        });
+        assert!(serde_json::from_value::<LicenseInventory>(value).is_err());
+    }
+
+    #[test]
+    fn execution_binding_rejects_stale_policy_inventory() {
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        let mut plan = compile(&repository, &base, &values);
+        let content = "{\"nodes\":{}}".to_string();
+        plan.resolution = Some(EnvironmentResolution {
+            schema_version: ENVIRONMENT_SCHEMA_VERSION,
+            plan_sha256: plan.plan_sha256.clone(),
+            files: vec![EnvironmentFile {
+                path: "flake.lock".into(),
+                sha256: sha256_hex(content.as_bytes()),
+                origin: EnvironmentFileOrigin::Generated,
+                content: Some(content),
+            }],
+            nix_version: "2.28.3".into(),
+            devenv_version: "1.11.2".into(),
+            packages: Vec::new(),
+            closure_licenses: vec![closure_license()],
+        });
+        plan.files.push(EnvironmentFile {
+            path: "flake.lock".into(),
+            sha256: sha256_hex("{\"nodes\":{}}".as_bytes()),
+            origin: EnvironmentFileOrigin::Generated,
+            content: Some("{\"nodes\":{}}".into()),
+        });
+        plan.refresh_hash();
+        plan.resolution.as_mut().expect("resolution").plan_sha256 = plan.plan_sha256.clone();
+        let review = approve(&mut plan);
+        let spec = freeze(&mut plan, &review);
+        let receipt = receipt(&spec);
+
+        let mut stale = plan;
+        stale.license_inventory.profile_sha256 = "0".repeat(64);
+        stale.license_inventory.refresh_hashes(&stale.plan_id);
+        stale.license_inventory_sha256 = stale.license_inventory.inventory_sha256.clone();
+        stale.refresh_hash();
+        stale.resolution.as_mut().expect("resolution").plan_sha256 = stale.plan_sha256.clone();
+        let binding = EnvironmentExecutionBinding {
+            plan: stale,
+            spec,
+            receipt,
+        };
+        let error = binding.validate().unwrap_err();
+        assert_eq!(error.code, EnvironmentBlockerCode::EnvironmentHashMismatch);
     }
 
     #[test]
@@ -6071,5 +7214,415 @@ mod tests {
         let blocker =
             check_runner_blocker(&check, Some(&plan), Some(&spec), Some(&failed)).unwrap();
         assert_eq!(blocker.code, EnvironmentBlockerCode::EnvironmentBuildFailed);
+    }
+
+    #[test]
+    fn long_diagnostics_keep_the_primary_trailing_error() {
+        let warnings =
+            "evaluation warning: a harmless rename repeated for diagnostics. ".repeat(80);
+        let value = format!("{warnings}error: the environment command failed for the real cause");
+        let error = EnvironmentError::new(EnvironmentBlockerCode::EnvironmentBuildFailed, value);
+        assert!(error.message.chars().count() <= 1_000);
+        assert!(error.message.starts_with("evaluation warning:"));
+        assert!(
+            error
+                .message
+                .contains("error: the environment command failed for the real cause"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("[truncated]"));
+    }
+
+    #[test]
+    fn short_environment_errors_are_unchanged() {
+        let error = EnvironmentError::new(
+            EnvironmentBlockerCode::EnvironmentPlanInvalid,
+            "error: short cause",
+        );
+        assert_eq!(error.message, "error: short cause");
+    }
+
+    #[test]
+    fn bounded_environment_message_handles_unicode_boundaries() {
+        let value = format!("{}error: unicode cause 🚀", "ñ".repeat(1_200));
+        let error = EnvironmentError::new(EnvironmentBlockerCode::EnvironmentPlanInvalid, value);
+        assert!(error.message.chars().count() <= 1_000);
+        assert!(error.message.contains("error: unicode cause 🚀"));
+    }
+
+    #[derive(Clone)]
+    struct FakeBrokerState {
+        projection: Arc<Mutex<(String, String, String)>>,
+        resolve_requests: Arc<AtomicUsize>,
+    }
+
+    impl FakeBrokerState {
+        fn projection(status: &str, image: &str, digest: &str) -> Self {
+            Self {
+                projection: Arc::new(Mutex::new((
+                    status.to_owned(),
+                    image.to_owned(),
+                    digest.to_owned(),
+                ))),
+                resolve_requests: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn set(&self, status: &str, image: &str, digest: &str) {
+            *self.projection.lock().unwrap() =
+                (status.to_owned(), image.to_owned(), digest.to_owned());
+        }
+    }
+
+    async fn fake_broker_health(
+        axum::extract::State(state): axum::extract::State<FakeBrokerState>,
+    ) -> axum::response::Response {
+        let (status, image, digest) = state.projection.lock().unwrap().clone();
+        axum::response::IntoResponse::into_response(axum::Json(serde_json::json!({
+            "healthy": true,
+            "environmentBuilder": {
+                "status": status,
+                "image": image,
+                "digest": digest,
+            },
+        })))
+    }
+
+    async fn fake_broker_resolve(
+        axum::extract::State(state): axum::extract::State<FakeBrokerState>,
+    ) -> axum::response::Response {
+        state.resolve_requests.fetch_add(1, Ordering::SeqCst);
+        // A syntactically valid response that does not bind the requested
+        // operation. The operation may have executed, so the client must not
+        // replay it automatically.
+        axum::response::IntoResponse::into_response(axum::Json(serde_json::json!({})))
+    }
+
+    async fn start_fake_broker(port: u16, state: FakeBrokerState) -> tokio::task::JoinHandle<()> {
+        use axum::routing::{get, post};
+        let router = axum::Router::new()
+            .route("/health", get(fake_broker_health))
+            .route("/v1/environments/resolve", post(fake_broker_resolve))
+            .with_state(state);
+        let mut attempts = 0;
+        let listener = loop {
+            match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+                Ok(listener) => break listener,
+                Err(error) if attempts < 200 => {
+                    attempts += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    let _ = error;
+                }
+                Err(error) => panic!("fake broker could not bind 127.0.0.1:{port}: {error}"),
+            }
+        };
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        })
+    }
+
+    fn free_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    fn runtime_broker_builder(
+        url: &str,
+        image: &str,
+        digest: &str,
+    ) -> RuntimeBrokerEnvironmentBuilder {
+        RuntimeBrokerEnvironmentBuilder {
+            broker: crate::runtime_broker::RuntimeBrokerClient::new(
+                url,
+                "t".repeat(64),
+                crate::runtime_broker::ResourceOwner::Environment,
+            )
+            .unwrap(),
+            descriptor: EnvironmentBuilderDescriptor {
+                image: image.to_owned(),
+                digest: digest.to_owned(),
+                platform: DEFAULT_PLATFORM.into(),
+                policy_revision: ENVIRONMENT_POLICY_REVISION.into(),
+                default_nixpkgs: DEFAULT_ENVIRONMENT_NIXPKGS.into(),
+                status: EnvironmentBuilderStatus::Unavailable,
+            },
+            status: std::sync::RwLock::new(EnvironmentBuilderStatus::Unavailable),
+            refresh_generation: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn generated_plan_for_broker_test() -> EnvironmentPlan {
+        let (repository, base) = repository(&[("README.md", "# Empty\n")]);
+        let mut values = requirements();
+        values.explicit_constraints.nixpkgs =
+            Some("github:NixOS/nixpkgs/2222222222222222222222222222222222222222".into());
+        compile(&repository, &base, &values)
+    }
+
+    #[tokio::test]
+    async fn runtime_builder_recovers_readiness_after_the_startup_window_without_recreating_it() {
+        let image = "localhost/software-factory-environment-builder:dev";
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let port = free_port();
+        let builder = runtime_broker_builder(&format!("http://127.0.0.1:{port}"), image, &digest);
+        builder.refresh().await;
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Unavailable,
+            "an absent broker must stay truthful"
+        );
+
+        let state = FakeBrokerState::projection("READY", image, &digest);
+        let server = start_fake_broker(port, state).await;
+        builder.refresh().await;
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Ready,
+            "the same builder must recover when the broker starts listening"
+        );
+        assert!(builder.descriptor().is_available());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn runtime_builder_recovers_after_the_broker_drops_and_returns() {
+        let image = "localhost/software-factory-environment-builder:dev";
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let port = free_port();
+        let builder = runtime_broker_builder(&format!("http://127.0.0.1:{port}"), image, &digest);
+        let state = FakeBrokerState::projection("READY", image, &digest);
+        let server = start_fake_broker(port, state).await;
+        builder.refresh().await;
+        assert_eq!(builder.descriptor().status, EnvironmentBuilderStatus::Ready);
+
+        server.abort();
+        let _ = server.await;
+        let plan = generated_plan_for_broker_test();
+        let error = builder
+            .resolve(&plan, None)
+            .await
+            .expect_err("a dropped broker must fail the operation");
+        assert_eq!(
+            error.code,
+            EnvironmentBlockerCode::EnvironmentBuilderUnavailable
+        );
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Unavailable,
+            "an unreachable operation must clear the cached readiness"
+        );
+
+        let server =
+            start_fake_broker(port, FakeBrokerState::projection("READY", image, &digest)).await;
+        builder.refresh().await;
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Ready,
+            "a returned broker must recover without rebuilding the client"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn runtime_builder_does_not_replay_an_ambiguous_resolve_operation() {
+        let image = "localhost/software-factory-environment-builder:dev";
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let port = free_port();
+        let builder = runtime_broker_builder(&format!("http://127.0.0.1:{port}"), image, &digest);
+        let state = FakeBrokerState::projection("READY", image, &digest);
+        let requests = Arc::clone(&state.resolve_requests);
+        let server = start_fake_broker(port, state).await;
+        builder.refresh().await;
+        assert_eq!(builder.descriptor().status, EnvironmentBuilderStatus::Ready);
+
+        let plan = generated_plan_for_broker_test();
+        let error = builder
+            .resolve(&plan, None)
+            .await
+            .expect_err("an unbound response is not success");
+        assert_eq!(error.code, EnvironmentBlockerCode::EnvironmentBuildFailed);
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "one operation attempt must send exactly one broker request"
+        );
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Ready,
+            "an ambiguous failure must not force an automatic recompile on resume"
+        );
+
+        let _ = builder.resolve(&plan, None).await;
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            2,
+            "only a new explicit operation may send another request"
+        );
+        server.abort();
+    }
+
+    #[derive(Clone)]
+    struct SerialHealthState {
+        calls: Arc<AtomicUsize>,
+        release_first: Arc<tokio::sync::Notify>,
+        image: String,
+        digest: String,
+    }
+
+    async fn serial_health(
+        axum::extract::State(state): axum::extract::State<SerialHealthState>,
+    ) -> axum::response::Response {
+        let call = state.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            state.release_first.notified().await;
+            axum::response::IntoResponse::into_response(axum::Json(serde_json::json!({
+                "environmentBuilder": {
+                    "status": "UNAVAILABLE",
+                    "image": "",
+                    "digest": "",
+                },
+            })))
+        } else {
+            axum::response::IntoResponse::into_response(axum::Json(serde_json::json!({
+                "environmentBuilder": {
+                    "status": "READY",
+                    "image": state.image,
+                    "digest": state.digest,
+                },
+            })))
+        }
+    }
+
+    async fn hanging_health() -> axum::response::Response {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        axum::response::IntoResponse::into_response(axum::Json(serde_json::json!({
+            "environmentBuilder": {"status": "UNAVAILABLE", "image": "", "digest": ""},
+        })))
+    }
+
+    async fn bind_test_listener(port: u16) -> tokio::net::TcpListener {
+        let mut attempts = 0;
+        loop {
+            match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+                Ok(listener) => return listener,
+                Err(error) if attempts < 200 => {
+                    attempts += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    let _ = error;
+                }
+                Err(error) => panic!("fake broker could not bind 127.0.0.1:{port}: {error}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_readiness_refreshes_keep_the_newest_result() {
+        let image = "localhost/software-factory-environment-builder:dev";
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let port = free_port();
+        let state = SerialHealthState {
+            calls: Arc::new(AtomicUsize::new(0)),
+            release_first: Arc::new(tokio::sync::Notify::new()),
+            image: image.to_owned(),
+            digest: digest.clone(),
+        };
+        let router = axum::Router::new()
+            .route("/health", axum::routing::get(serial_health))
+            .with_state(state.clone());
+        let listener = bind_test_listener(port).await;
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let builder = Arc::new(runtime_broker_builder(
+            &format!("http://127.0.0.1:{port}"),
+            image,
+            &digest,
+        ));
+
+        let older = tokio::spawn({
+            let builder = Arc::clone(&builder);
+            async move { builder.refresh_status().await }
+        });
+        while state.calls.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        let newer = tokio::spawn({
+            let builder = Arc::clone(&builder);
+            async move { builder.refresh_status().await }
+        });
+        while state.calls.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        assert_eq!(newer.await.unwrap(), EnvironmentBuilderStatus::Ready);
+        assert_eq!(builder.descriptor().status, EnvironmentBuilderStatus::Ready);
+
+        state.release_first.notify_one();
+        assert_eq!(older.await.unwrap(), EnvironmentBuilderStatus::Unavailable);
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Ready,
+            "an older probe must not overwrite the newer result"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn readiness_probe_is_bounded_below_the_compose_health_timeout() {
+        let image = "localhost/software-factory-environment-builder:dev";
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let port = free_port();
+        let router = axum::Router::new().route("/health", axum::routing::get(hanging_health));
+        let listener = bind_test_listener(port).await;
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let builder = runtime_broker_builder(&format!("http://127.0.0.1:{port}"), image, &digest);
+
+        let started = std::time::Instant::now();
+        assert_eq!(
+            builder.refresh_status().await,
+            EnvironmentBuilderStatus::Unavailable
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "a readiness probe must finish inside the Compose 3s health timeout"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn runtime_builder_readiness_rejects_non_ready_or_mismatched_projections() {
+        let image = "localhost/software-factory-environment-builder:dev";
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let port = free_port();
+        let builder = runtime_broker_builder(&format!("http://127.0.0.1:{port}"), image, &digest);
+        let state = FakeBrokerState::projection("UNAVAILABLE", "", "");
+        let server = start_fake_broker(port, state.clone()).await;
+
+        builder.refresh_status().await;
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Unavailable,
+            "a non-ready broker projection must not pass"
+        );
+        state.set("READY", "localhost/other-builder:dev", &digest);
+        builder.refresh_status().await;
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Unavailable,
+            "a different builder image must not pass"
+        );
+        state.set("READY", image, &format!("sha256:{}", "c".repeat(64)));
+        builder.refresh_status().await;
+        assert_eq!(
+            builder.descriptor().status,
+            EnvironmentBuilderStatus::Unavailable,
+            "a different builder digest must not pass"
+        );
+        state.set("READY", image, &digest);
+        builder.refresh_status().await;
+        assert_eq!(builder.descriptor().status, EnvironmentBuilderStatus::Ready);
+        server.abort();
     }
 }

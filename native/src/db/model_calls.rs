@@ -291,6 +291,80 @@ pub struct ModelCallUsage {
     pub content: String,
 }
 
+/// Database proof of the exact SETTLED Lead evidence-review reservation.
+/// Fields are crate-visible for the planning/actor constructor but not for an
+/// HTTP or model caller.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fields are consumed by the Core endpoint/actor integration.
+pub struct LicenseEvidenceReservation {
+    pub(crate) reservation_id: String,
+    pub(crate) role: String,
+    pub(crate) project_id: String,
+    pub(crate) objective_id: String,
+    pub(crate) scope_id: String,
+    pub(crate) provider: String,
+    pub(crate) model: String,
+    pub(crate) purpose: String,
+    pub(crate) request_sha256: String,
+    pub(crate) state: String,
+    pub(crate) response_text: String,
+    pub(crate) principal_id: String,
+    pub(crate) expires_at_ms: i64,
+    pub(crate) lead_state: String,
+    pub(crate) withdrawn: bool,
+    pub(crate) updated_at: String,
+}
+
+impl LicenseEvidenceReservation {
+    pub fn reservation_id(&self) -> &str {
+        &self.reservation_id
+    }
+
+    pub fn response_text(&self) -> &str {
+        &self.response_text
+    }
+
+    pub fn role(&self) -> &str {
+        &self.role
+    }
+
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    pub fn objective_id(&self) -> &str {
+        &self.objective_id
+    }
+
+    pub fn purpose(&self) -> &str {
+        &self.purpose
+    }
+
+    pub fn request_sha256(&self) -> &str {
+        &self.request_sha256
+    }
+
+    pub fn state(&self) -> &str {
+        &self.state
+    }
+
+    pub fn principal_id(&self) -> &str {
+        &self.principal_id
+    }
+
+    pub fn expires_at_ms(&self) -> i64 {
+        self.expires_at_ms
+    }
+
+    pub fn lead_state(&self) -> &str {
+        &self.lead_state
+    }
+
+    pub fn withdrawn(&self) -> bool {
+        self.withdrawn
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelCallRecord {
     pub reservation_id: String,
@@ -1325,6 +1399,121 @@ impl Database {
     /// Lead model-call provenance bound to one Lead request. This exposes the
     /// Core reservation identity, route and measured usage without returning
     /// prompts, responses or credentials.
+    /// Exact SETTLED `license_evidence_review` reservation for one Lead request.
+    /// The fields are private to the database/planning modules; an HTTP caller
+    /// cannot construct this proof from payload strings.
+    pub async fn lead_license_evidence_reservation(
+        &self,
+        lead_request_id: &str,
+    ) -> Result<LicenseEvidenceReservation, Error> {
+        let rows = sqlx::query::query(
+            "SELECT m.reservation_id,m.role,m.project_id,m.objective_id,m.scope_id,m.provider,m.model,
+                    m.purpose,m.request_sha256,m.state,COALESCE(m.response_text,'') AS response_text,
+                    m.principal_id,m.expires_at_ms,COALESCE(l.state,'') AS lead_state,
+                    EXISTS(SELECT 1 FROM lead_withdrawals w WHERE w.request_id=m.objective_id) AS withdrawn,
+                    m.updated_at
+             FROM model_call_reservations m
+             LEFT JOIN lead_requests l ON l.id=m.objective_id
+             WHERE m.role='LEAD' AND m.objective_id=?1 AND m.purpose='license_evidence_review'
+               AND m.state='SETTLED'
+             ORDER BY m.created_at DESC,m.reservation_id DESC LIMIT 2",
+        )
+        .bind(lead_request_id)
+        .fetch_all(&self.pool)
+        .await?;
+        if rows.is_empty() {
+            return Err(Error::NotFound);
+        }
+        if rows.len() > 1 {
+            return Err(Error::Conflict(
+                "multiple SETTLED license_evidence_review reservations",
+            ));
+        }
+        let row = &rows[0];
+        let expires_at_ms: i64 = row.try_get("expires_at_ms")?;
+        if expires_at_ms <= Utc::now().timestamp_millis() {
+            return Err(Error::Conflict(
+                "license_evidence_review reservation expired",
+            ));
+        }
+        Ok(LicenseEvidenceReservation {
+            reservation_id: row.try_get("reservation_id")?,
+            role: row.try_get("role")?,
+            project_id: row.try_get("project_id")?,
+            objective_id: row.try_get("objective_id")?,
+            scope_id: row.try_get("scope_id")?,
+            provider: row.try_get("provider")?,
+            model: row.try_get("model")?,
+            purpose: row.try_get("purpose")?,
+            request_sha256: row.try_get("request_sha256")?,
+            state: row.try_get("state")?,
+            response_text: row.try_get("response_text")?,
+            principal_id: row.try_get("principal_id")?,
+            expires_at_ms,
+            lead_state: row.try_get("lead_state")?,
+            withdrawn: row.try_get("withdrawn")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+
+    /// Exact SETTLED reservation selected by the gateway's request digest, not
+    /// by Lead alone. This is the selector used by the decision consumer.
+    pub async fn lead_license_evidence_reservation_for_request(
+        &self,
+        lead_request_id: &str,
+        request_sha256: &str,
+    ) -> Result<LicenseEvidenceReservation, Error> {
+        let rows = sqlx::query::query(
+            "SELECT m.reservation_id,m.role,m.project_id,m.objective_id,m.scope_id,m.provider,m.model,
+                    m.purpose,m.request_sha256,m.state,COALESCE(m.response_text,'') AS response_text,
+                    m.principal_id,m.expires_at_ms,COALESCE(l.state,'') AS lead_state,
+                    EXISTS(SELECT 1 FROM lead_withdrawals w WHERE w.request_id=m.objective_id) AS withdrawn,
+                    m.updated_at
+             FROM model_call_reservations m
+             LEFT JOIN lead_requests l ON l.id=m.objective_id
+             WHERE m.role='LEAD' AND m.objective_id=?1 AND m.purpose='license_evidence_review'
+               AND m.request_sha256=?2 AND m.state='SETTLED'
+             ORDER BY m.created_at DESC,m.reservation_id DESC LIMIT 2",
+        )
+        .bind(lead_request_id)
+        .bind(request_sha256)
+        .fetch_all(&self.pool)
+        .await?;
+        if rows.is_empty() {
+            return Err(Error::NotFound);
+        }
+        if rows.len() > 1 {
+            return Err(Error::Conflict(
+                "multiple SETTLED license_evidence_review reservations for the exact request",
+            ));
+        }
+        let row = &rows[0];
+        let expires_at_ms: i64 = row.try_get("expires_at_ms")?;
+        if expires_at_ms <= Utc::now().timestamp_millis() {
+            return Err(Error::Conflict(
+                "license_evidence_review reservation expired",
+            ));
+        }
+        Ok(LicenseEvidenceReservation {
+            reservation_id: row.try_get("reservation_id")?,
+            role: row.try_get("role")?,
+            project_id: row.try_get("project_id")?,
+            objective_id: row.try_get("objective_id")?,
+            scope_id: row.try_get("scope_id")?,
+            provider: row.try_get("provider")?,
+            model: row.try_get("model")?,
+            purpose: row.try_get("purpose")?,
+            request_sha256: row.try_get("request_sha256")?,
+            state: row.try_get("state")?,
+            response_text: row.try_get("response_text")?,
+            principal_id: row.try_get("principal_id")?,
+            expires_at_ms,
+            lead_state: row.try_get("lead_state")?,
+            withdrawn: row.try_get("withdrawn")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+
     pub async fn lead_model_calls(&self, request_id: &str) -> Result<Vec<ModelCallRecord>, Error> {
         let rows = sqlx::query::query(
             "SELECT reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,
@@ -1453,6 +1642,7 @@ impl Database {
                         | "agentic_spec_manager"
                         | "lead_environment_review"
                         | "lead_stack_selection"
+                        | "license_evidence_review"
                 );
                 if state != "ASSESSING" && !bounded_agentic_purpose {
                     return Err(Error::Forbidden(

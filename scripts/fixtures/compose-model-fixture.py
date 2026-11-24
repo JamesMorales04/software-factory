@@ -14,16 +14,126 @@ import json
 import os
 import re
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 CONTEXT_PATH = Path(os.environ.get("FACTORY_MODEL_CONTEXT", "/context/context.json"))
+CONTEXTS_DIR = CONTEXT_PATH.parent / "contexts"
 CASSETTE_ENV = os.environ.get("FACTORY_MODEL_CASSETTE", "").strip()
 CASSETTE_PATH = Path(CASSETTE_ENV) if CASSETTE_ENV else None
 CASSETTE = None
 CASSETTE_ERROR = None
 HOST = "0.0.0.0"
 PORT = 8080
+
+# Per-phase counters are test-support evidence only. They are read from the
+# fixture container by the scenario harness and never presented as product
+# inference or provider usage.
+PHASES = (
+    "assessment",
+    "lead_stack_selection",
+    "planner",
+    "environment",
+    "spec",
+    "license_evidence_review",
+    "semantic_review",
+    "other",
+)
+COUNTERS = {phase: 0 for phase in PHASES}
+COUNTERS_LOCK = threading.Lock()
+# Test-support diagnostics: the last failure seen per phase. The scenario
+# harness reads this to fail fast on a terminal ambiguity instead of waiting
+# for the full preparation timeout. It is never product telemetry.
+ERRORS = {}
+
+
+def record_phase(phase):
+    with COUNTERS_LOCK:
+        COUNTERS[phase] = COUNTERS.get(phase, 0) + 1
+        return dict(COUNTERS)
+
+
+def counters():
+    with COUNTERS_LOCK:
+        return dict(COUNTERS)
+
+
+def record_error(phase, message, identity=""):
+    key = f"{identity}|{phase}"
+    with COUNTERS_LOCK:
+        ERRORS[key] = str(message)[:300]
+        return dict(ERRORS)
+
+
+def clear_error(phase, identity=""):
+    key = f"{identity}|{phase}"
+    with COUNTERS_LOCK:
+        ERRORS.pop(key, None)
+        return dict(ERRORS)
+
+
+def prompt_identity(user):
+    match = re.search(r"Request: ([^\s.]+)", user)
+    if match:
+        return match.group(1)
+    match = re.search(r'"requestId"\s*:\s*"([^"]+)"', user)
+    return match.group(1) if match else ""
+
+
+def diagnostics():
+    with COUNTERS_LOCK:
+        return {"counters": dict(COUNTERS), "errors": dict(ERRORS)}
+
+
+def looks_like_environment_review(user):
+    """Whether a user prompt is the bounded environment-review phase.
+
+    Core sends the environment-review instruction in the *user* prompt and keeps
+    a generic system prompt ("Return strict JSON only..."), so the phase must be
+    recognised from the payload it actually carries. The markers below are the
+    phase contract, not assessment identities: an environment review legitimately
+    has no Project/Action/Request/Objective block.
+    """
+
+    return (
+        "Review exactly one frozen Candidate EnvironmentPlan" in user
+        and "EnvironmentPlan:\n" in user
+        and "\n\nJSON Schema:" in user
+    )
+
+
+def classify_prompt(system, user=""):
+    # Greenfield stack selection is its own bounded Lead phase; it must be
+    # matched before the generic assessment fallback, because its user prompt is
+    # JSON without the assessment identity block.
+    if "bounded Software Factory Stack Selector" in system:
+        return "lead_stack_selection"
+    if "bounded Software Factory Planner" in system:
+        return "planner"
+    if "bounded Software Factory Spec Manager" in system:
+        return "spec"
+    if (
+        "bounded Intelligent Lead reviewing the exact licence identity evidence"
+        in system
+        or "bounded Intelligent Lead reviewing the exact licence identity evidence"
+        in user
+    ):
+        return "license_evidence_review"
+    if "Review exactly one frozen Candidate EnvironmentPlan" in system:
+        return "environment"
+    if looks_like_environment_review(user):
+        return "environment"
+    if "independent semantic code reviewer" in system:
+        return "semantic_review"
+    if "Semantic Assessor" in system or "assessment" in system.lower():
+        return "assessment"
+    # The baseline assessment prompt is identified by its identity block rather
+    # than by a role name; count it as an assessment only when it looks like one.
+    if re.search(r"Project: \S+", user) and re.search(r"Action: \S+", user):
+        return "assessment"
+    return "other"
+
 
 
 def canonical_request_sha256(value):
@@ -58,14 +168,27 @@ def replay_cassette(request):
     return turn["response"]
 
 
-def context():
-    try:
-        with CONTEXT_PATH.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except FileNotFoundError:
-        return None
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError("model context is unreadable") from error
+def context(request_id=""):
+    """Load the request-scoped context, falling back to the shared template.
+
+    The harness writes ``contexts/<requestId>.json`` per request after the POST
+    and keeps ``context.json`` as the pre-POST template. A second request in
+    the same container therefore never overwrites the first request's identity.
+    """
+
+    paths = []
+    if request_id:
+        paths.append(CONTEXTS_DIR / f"{request_id}.json")
+    paths.append(CONTEXT_PATH)
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except FileNotFoundError:
+            continue
+        except (OSError, json.JSONDecodeError) as error:
+            raise RuntimeError("model context is unreadable") from error
+    return None
 
 
 def chat_response(content, input_tokens, output_tokens):
@@ -81,30 +204,53 @@ def chat_response(content, input_tokens, output_tokens):
     }
 
 
-def assessment(user, ctx):
-    if ctx is None:
-        raise ValueError("assessment context is not available")
+def valid_prompt_identity(value):
+    return bool(value) and len(value) <= 128 and not any(
+        character.isspace() or ord(character) < 32 for character in value
+    )
+
+
+def assessment(user, ctx=None):
     project = re.search(r"Project: ([^\s.]+)", user)
     action = re.search(r"Action: ([^\s.]+)", user)
     request = re.search(r"Request: ([^\s.]+)", user)
     objective = re.search(r"Objective: ([\s\S]*?)\. Project: ", user)
     if not all((project, action, request, objective)):
         raise ValueError("assessment prompt identities are missing")
-    if (
-        project.group(1) != ctx["projectId"]
-        or action.group(1) != ctx["actionId"]
-        or request.group(1) != ctx["requestId"]
-    ):
+    if ctx is None:
+        ctx = context(request.group(1))
+    if ctx is None:
+        raise ValueError("assessment context is not available")
+    if project.group(1) != ctx["projectId"]:
         raise ValueError("assessment prompt identities do not match the context")
     if objective.group(1) != ctx["objective"]:
         raise ValueError("assessment objective does not match the context")
+    # The requirement is written before the intake POST so the fixture can
+    # answer a dispatch that races ahead of the exact ids. In that window the
+    # dynamic ids are empty in the template; the prompt is the real source and
+    # its format is still checked. Once the harness rewrites the exact ids they
+    # become authoritative and a mismatch fails closed.
+    action_id = ctx.get("actionId") or ""
+    request_id = ctx.get("requestId") or ""
+    if action_id:
+        if action.group(1) != action_id:
+            raise ValueError("assessment prompt identities do not match the context")
+    elif not valid_prompt_identity(action.group(1)):
+        raise ValueError("assessment prompt action identity is malformed")
+    if request_id:
+        if request.group(1) != request_id:
+            raise ValueError("assessment prompt identities do not match the context")
+    elif not valid_prompt_identity(request.group(1)):
+        raise ValueError("assessment prompt request identity is malformed")
+    action_id = action_id or action.group(1)
+    request_id = request_id or request.group(1)
 
     checks = ctx["checks"]
     acceptance = [check for check in checks if check["kind"] != "negative"]
     negative = [check for check in checks if check["kind"] == "negative"]
     proposal = {
         "projectId": ctx["projectId"],
-        "actionId": ctx["actionId"],
+        "actionId": action_id,
         "baseRevision": ctx["baseRevision"],
         "projectConfigHash": ctx["projectConfigHash"],
         "objective": ctx["objective"],
@@ -139,8 +285,8 @@ def assessment(user, ctx):
         {
             "schemaRevision": 1,
             "projectId": ctx["projectId"],
-            "actionId": ctx["actionId"],
-            "requestId": ctx["requestId"],
+            "actionId": action_id,
+            "requestId": request_id,
             "evidenceRefs": ["repository-files"],
             "intent": "change",
             "complexity": "small",
@@ -162,6 +308,397 @@ def assessment(user, ctx):
         },
         500,
         500,
+    )
+
+
+# Deterministic fixture environments for the stack options Core can offer.
+# These are test data only: Core owns the real catalog, validates the selected
+# option and capability, and compiles the environment. The proposal must cover
+# the selected language and framework with an exact toolchain id, package
+# name/nix attribute segment or command executable (see
+# native/src/planning/stack.rs), so each entry carries that token explicitly.
+STACK_SELECTION_PREFERENCE = (
+    "python-service",
+    "rust-cli",
+    "rust-service",
+    "typescript-react",
+)
+
+# Exact metadata observed from the builder's pinned nixpkgs
+# (github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d, 2026-01-02)
+# with the builder's own metadata expression. Do not invent versions,
+# licences, attributes or expiry: a package the pinned nixpkgs does not
+# provide is unsupported and the fixture fails closed instead of emitting an
+# unbuildable proposal. Toolchains are not package claims; the language is
+# covered by the exact toolchain id and the framework by the real package.
+STACK_ENVIRONMENTS = {
+    "python-service": {
+        "supported": True,
+        "toolchains": [{"id": "python3", "version": "3.12"}],
+        "packages": [
+            {
+                "name": "fastapi",
+                "version": "0.115.12",
+                "license": "MIT",
+                "attr": "python312Packages.fastapi",
+                "source": "nixpkgs:python312Packages.fastapi",
+            }
+        ],
+        "commands": {
+            "build": ["python3", "-m", "compileall", "-q", "src"],
+            "test": ["python3", "-m", "pytest", "-q"],
+            "lint": ["python3", "-m", "ruff", "check", "src"],
+            "format": ["python3", "-m", "ruff", "format", "--check", "src"],
+            "typecheck": ["python3", "-m", "mypy", "src"],
+            "run": ["python3", "-m", "src"],
+        },
+    },
+    "rust-cli": {
+        # nixpkgs "clap" 1.2.6 is a different package, not the Rust crate. An
+        # attr's metadata is not crate metadata, so this option is not a
+        # builder-valid fixture environment. It is a fixture gap, not a Factory
+        # capability statement.
+        "supported": False,
+        "reason": "nixpkgs clap 1.2.6 is not the Rust crate; an attr's metadata is not crate metadata",
+        "toolchains": [
+            {"id": "rustc", "version": "1.86.0"},
+            {"id": "cargo", "version": "1.86.0"},
+        ],
+        "packages": [
+            {
+                "name": "clap",
+                "version": "1.2.6",
+                "license": "MIT",
+                "attr": "clap",
+                "source": "nixpkgs:clap",
+            }
+        ],
+        "commands": {
+            "build": ["cargo", "build"],
+            "test": ["cargo", "test"],
+            "lint": ["cargo", "clippy", "--", "-D", "warnings"],
+            "format": ["cargo", "fmt", "--check"],
+            "typecheck": ["cargo", "check"],
+            "run": ["cargo", "run"],
+        },
+    },
+    "rust-service": {
+        "supported": False,
+        "reason": "the pinned nixpkgs has no axum attribute; a version or licence cannot be attributed honestly",
+    },
+    "typescript-react": {
+        "supported": False,
+        "reason": "the pinned nixpkgs has no react attribute; a version or licence cannot be attributed honestly",
+    },
+}
+
+
+def stack_selection(user):
+    """One deterministic StackSelectionModel + concrete environment proposal.
+
+    The catalog, capability check and environment coverage are validated by
+    Core; this fixture only returns stable test data for an authorized option.
+    It never adds options, capabilities or paths, and the output is SIMULATED.
+    """
+    payload = json.loads(user)
+    options = payload.get("options") or []
+    capabilities = set(payload.get("capabilities") or [])
+    if not options:
+        raise ValueError("stack selection prompt has no deterministic options")
+    authorized = [
+        option
+        for option in options
+        if isinstance(option, dict)
+        and option.get("requiredCapability") in capabilities
+    ]
+    if not authorized:
+        raise ValueError("stack selection has no authorized deterministic option")
+    by_id = {option.get("id"): option for option in authorized}
+    chosen = next(
+        (by_id[option_id] for option_id in STACK_SELECTION_PREFERENCE if option_id in by_id),
+        authorized[0],
+    )
+    environment = STACK_ENVIRONMENTS.get(str(chosen.get("id") or ""))
+    if environment is None:
+        raise ValueError(
+            f"stack selection has no fixture environment for {chosen.get('id')!r}"
+        )
+    if not environment.get("supported", False):
+        raise ValueError(
+            f"stack selection {chosen.get('id')!r} is not builder-valid: "
+            f"{environment.get('reason', 'unsupported')}"
+        )
+    proposal = {
+        "toolchains": environment["toolchains"],
+        "packages": environment["packages"],
+        "commands": {
+            name: {"argv": list(argv)} for name, argv in environment["commands"].items()
+        },
+    }
+    rationale = (
+        f"Selects {chosen.get('id')} because the objective is a small deterministic "
+        "Compose service and the project authorizes its required capability."
+    )
+    return chat_response(
+        {
+            "optionId": chosen.get("id"),
+            "language": chosen.get("language"),
+            "framework": chosen.get("framework"),
+            "rationale": rationale,
+            "environmentProposal": proposal,
+        },
+        400,
+        300,
+    )
+
+
+def planner(user, ctx):
+    payload = json.loads(user)
+    allowed = (payload.get("projectConfig") or {}).get("allowedPaths") or ["src"]
+    scope = str(allowed[0]).rstrip("/") or "src"
+    objective = payload.get("objective") or (ctx or {}).get("objective") or "fixture objective"
+    return chat_response(
+        {
+            "units": [
+                {
+                    "id": "unit-1",
+                    "title": "Implement the requested deterministic change",
+                    "objective": objective,
+                    "dependsOn": [],
+                    "paths": [f"{scope}/provider.txt"],
+                    "acceptance": ["The frozen functional check passes."],
+                }
+            ],
+            "assumptions": ["Deterministic Compose model fixture; not live inference."],
+            "risks": ["Model output is test data."],
+        },
+        400,
+        300,
+    )
+
+
+def environment_review(user):
+    marker = "EnvironmentPlan:\n"
+    start = user.find(marker)
+    if start < 0:
+        raise ValueError("environment review prompt has no EnvironmentPlan")
+    start += len(marker)
+    end = user.find("\n\nJSON Schema:", start)
+    if end < 0:
+        raise ValueError("environment review prompt has no schema boundary")
+    plan = json.loads(user[start:end])
+    return chat_response(
+        {
+            "schemaVersion": 1,
+            "requestId": plan["requestId"],
+            "actionId": plan["actionId"],
+            "planSha256": plan["planSha256"],
+            "planRevision": plan["revision"],
+            "riskClass": plan["riskClass"],
+            "decision": "APPROVE",
+            "rationale": "The deterministic fixture plan is pinned, licensed and bounded.",
+            "constraints": [],
+        },
+        300,
+        80,
+    )
+
+
+def _review_block(user, marker, end_marker):
+    start = user.find(marker)
+    if start < 0:
+        raise ValueError(f"licence review prompt has no {marker.strip()}")
+    start += len(marker)
+    end = user.find(end_marker, start)
+    if end < 0:
+        raise ValueError(f"licence review prompt has no {end_marker.strip()}")
+    return json.loads(user[start:end])
+
+
+def _fixture_text_supports(asset_license, right):
+    if not isinstance(asset_license, str) or not isinstance(right, str):
+        return False
+    if asset_license == right:
+        return True
+    if right.endswith("-or-later"):
+        return asset_license == f"{right[:-len('-or-later')]}-only"
+    return False
+
+
+def license_evidence_review(user):
+    """Exact v4 licence review for the deterministic one-prompt lane.
+
+    The Lead selects the exact role=licensing fact per atom; Core derives the
+    unique purpose/role=license-text asset. The negative header variant returns
+    a text asset where the fact is required so Core fails closed.
+    """
+    context = _review_block(user, "Review context:\n", "\n\nEnvironmentPlan (exact):")
+    plan = _review_block(user, "EnvironmentPlan (exact):\n", "\n\nJSON Schema:")
+    asset = context.get("licenseEvidenceAsset") or {}
+    identities = asset.get("identities") or []
+    if not identities:
+        raise ValueError("licence review context has no identity evidence")
+    packages = plan.get("packages") or []
+    identity = None
+    for package in packages:
+        identity = next(
+            (
+                item
+                for item in identities
+                if item.get("name") == package.get("name")
+                and item.get("version") == package.get("version")
+            ),
+            None,
+        )
+        if identity is not None:
+            break
+    if identity is None:
+        identity = identities[0]
+    entries = identity.get("licenseEvidence") or []
+    license_expression = identity.get("license") or ""
+    atoms = [atom.strip() for atom in license_expression.split(" AND ") if atom.strip()]
+    if not atoms:
+        raise ValueError("licence review identity has no exact atom")
+    software_texts = []
+    for atom in atoms:
+        facts = [
+            entry
+            for entry in entries
+            if entry.get("role") == "licensing"
+            and entry.get("license") == atom
+            and entry.get("purpose") in ("header", "source-version")
+        ]
+        if not facts:
+            raise ValueError(f"licence review identity has no exact fact for {atom}")
+        fact = next(
+            (entry for entry in facts if entry.get("purpose") == "header"),
+            facts[0],
+        )
+        software_texts.append(
+            {
+                "path": fact["path"],
+                "license": atom,
+                "sha256": fact["sha256"],
+            }
+        )
+    runtime_context = context(context.get("requestId", "")) or {}
+    negative = (
+        runtime_context.get("fixtureVariant")
+        or os.environ.get("FACTORY_UAT_NEGATIVE", "")
+    ).strip()
+    if negative == "license-header":
+        text = next(
+            (
+                entry
+                for entry in entries
+                if entry.get("purpose") == "license-text"
+                and entry.get("role") == "license-text"
+            ),
+            None,
+        )
+        if text is None:
+            raise ValueError("negative licence review has no text asset")
+        software_texts = [
+            {
+                "path": text["path"],
+                "license": atoms[0],
+                "sha256": text["sha256"],
+            }
+        ]
+    documentation = []
+    for output in identity.get("outputFiles") or []:
+        if output.get("purpose") != "documentation":
+            continue
+        doc_license = output.get("license")
+        fact = next(
+            (
+                entry
+                for entry in entries
+                if entry.get("role") == "licensing"
+                and entry.get("license") == doc_license
+            ),
+            None,
+        )
+        if fact is not None:
+            text_path = fact["path"]
+            text_sha256 = fact["sha256"]
+        else:
+            text = next(
+                (
+                    entry
+                    for entry in entries
+                    if entry.get("role") == "license-text"
+                    and _fixture_text_supports(entry.get("license"), doc_license)
+                ),
+                None,
+            )
+            if text is None:
+                raise ValueError(f"licence review documentation has no text for {doc_license}")
+            text_path = text["path"]
+            text_sha256 = text["sha256"]
+        documentation.append(
+            {
+                "path": output["path"],
+                "license": doc_license,
+                "outputSha256": output["sha256"],
+                "licenseTextPath": text_path,
+                "licenseTextSha256": text_sha256,
+                "obligations": ["notice", "source"],
+            }
+        )
+    return chat_response(
+        {
+            "decision": "ACCEPT",
+            "pin": identity["pin"],
+            "name": identity["name"],
+            "version": identity["version"],
+            "outputDrvPath": identity["output"]["drvPath"],
+            "outputStorePath": identity["output"]["storePath"],
+            "outputNarHash": identity["output"]["narHash"],
+            "sourceDrvPath": identity["source"]["drvPath"],
+            "sourceStorePath": identity["source"]["storePath"],
+            "sourceOutputHash": identity["source"]["outputHash"],
+            "licenseExpression": license_expression,
+            "softwareTextSha256": software_texts[0]["sha256"],
+            "softwareTexts": software_texts,
+            "selectedBranch": license_expression,
+            "documentation": documentation,
+            "useContext": "commercial-development",
+            "commercialUse": True,
+            "paymentRequired": False,
+            "obligationsReviewed": True,
+            "softwareObligations": ["notice", "source"],
+            "documentationObligations": ["notice", "source"],
+        },
+        1200,
+        500,
+    )
+
+
+def spec_draft(user):
+    payload = json.loads(user)
+    units = ((payload.get("workGraph") or {}).get("units")) or []
+    ids = [unit.get("id") for unit in units if unit.get("id")]
+    if not ids:
+        raise ValueError("spec prompt has no work graph units")
+    requirements = [
+        {
+            "statement": f"Unit {unit_id} exposes the frozen observable behavior.",
+            "workUnitId": unit_id,
+            "acceptance": ["The frozen functional check passes."],
+            "negative": ["The frozen negative check fails for absent content."],
+        }
+        for unit_id in ids
+    ]
+    return chat_response(
+        {
+            "summary": "Observable formal requirements for the deterministic fixture.",
+            "requirements": requirements,
+            "assumptions": ["Deterministic Compose model fixture; not live inference."],
+            "risks": ["Model output is test data."],
+        },
+        400,
+        400,
     )
 
 
@@ -194,12 +731,14 @@ class Handler(BaseHTTPRequestHandler):
         # Never log prompt bodies, credentials or downstream URLs.
         sys.stderr.write("compose-model-fixture: " + fmt % args + "\n")
 
-    def send_json(self, status, value):
+    def send_json(self, status, value, *, phase=None):
         body = json.dumps(value).encode("utf-8")
         self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(body)))
         self.send_header("x-factory-test-fixture", "deterministic")
+        if phase:
+            self.send_header("x-factory-fixture-phase", phase)
         self.end_headers()
         self.wfile.write(body)
 
@@ -210,6 +749,16 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 mode = "cassette" if CASSETTE_PATH is not None else "deterministic"
                 self.send_json(200, {"healthy": True, "fixture": mode})
+        elif self.path in ("/counters", "/v1/counters"):
+            payload = diagnostics()
+            self.send_json(
+                200,
+                {
+                    "schema": "factory-model-fixture-counters-v1",
+                    "counters": payload["counters"],
+                    "errors": payload["errors"],
+                },
+            )
         else:
             self.send_json(404, {"error": "not found"})
 
@@ -221,6 +770,8 @@ class Handler(BaseHTTPRequestHandler):
         if length <= 0 or length > 2 * 1024 * 1024:
             self.send_json(400, {"error": "invalid request body"})
             return
+        phase = "request"
+        identity = ""
         try:
             body = json.loads(self.rfile.read(length))
             messages = body.get("messages") or []
@@ -233,13 +784,38 @@ class Handler(BaseHTTPRequestHandler):
                 "",
             )
             if CASSETTE_PATH is not None:
+                phase = "cassette"
                 response = replay_cassette(body)
-            elif "independent semantic code reviewer" in system:
-                response = semantic_review(user)
             else:
-                response = assessment(user, context())
-            self.send_json(200, response)
+                phase = classify_prompt(system, user)
+                identity = prompt_identity(user)
+                record_phase(phase)
+                if phase == "planner":
+                    response = planner(user, context())
+                elif phase == "lead_stack_selection":
+                    response = stack_selection(user)
+                elif phase == "environment":
+                    response = environment_review(user)
+                elif phase == "spec":
+                    response = spec_draft(user)
+                elif phase == "license_evidence_review":
+                    response = license_evidence_review(user)
+                elif phase == "semantic_review":
+                    response = semantic_review(user)
+                elif phase == "assessment":
+                    response = assessment(user)
+                else:
+                    # An unknown prompt must never be answered as an assessment:
+                    # that is what turned a routing mismatch into a confusing
+                    # identity error on the environment-review phase.
+                    raise ValueError(
+                        "unrecognized model prompt phase; the fixture answers only the "
+                        "persisted phase contracts"
+                    )
+                clear_error(phase, identity)
+            self.send_json(200, response, phase=phase)
         except Exception as error:  # noqa: BLE001 - fixture must fail closed
+            record_error(phase, str(error), identity)
             self.send_json(400, {"error": str(error)})
 
 

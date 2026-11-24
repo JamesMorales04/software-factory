@@ -1,0 +1,549 @@
+{
+  "schema": 1,
+  "revision": "spdx-catalog-2026-11-16",
+  "spdxLicenseListVersion": "3.27",
+  "sourceUrl": "https://spdx.org/licenses/",
+  "sha256": "edef68e16ad7c465eb8a263d5a74e23c361b8aa7a7eb9186197699265c1e9a49",
+  "entries": [
+    {
+      "id": "0BSD",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/0BSD.html",
+      "aliases": []
+    },
+    {
+      "id": "AGPL-3.0-only",
+      "family": "network-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source",
+        "network"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/AGPL-3.0-only.html",
+      "aliases": []
+    },
+    {
+      "id": "AGPL-3.0-or-later",
+      "family": "network-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source",
+        "network"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/AGPL-3.0-or-later.html",
+      "aliases": []
+    },
+    {
+      "id": "Apache-2.0",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "patent"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/Apache-2.0.html",
+      "aliases": []
+    },
+    {
+      "id": "BSD-2-Clause",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/BSD-2-Clause.html",
+      "aliases": []
+    },
+    {
+      "id": "BSD-3-Clause",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/BSD-3-Clause.html",
+      "aliases": []
+    },
+    {
+      "id": "BSD-4-Clause",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "advertising"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/BSD-4-Clause.html",
+      "aliases": []
+    },
+    {
+      "id": "BSD-4-Clause-UC",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "advertising"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/BSD-4-Clause-UC.html",
+      "aliases": []
+    },
+    {
+      "id": "BSL-1.0",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/BSL-1.0.html",
+      "aliases": []
+    },
+    {
+      "id": "BUSL-1.1",
+      "family": "source-available",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "license-change"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/BUSL-1.1.html",
+      "aliases": []
+    },
+    {
+      "id": "CC0-1.0",
+      "family": "public-domain",
+      "state": "active",
+      "spdx": true,
+      "obligations": [],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/CC0-1.0.html",
+      "aliases": []
+    },
+    {
+      "id": "Commons-Clause",
+      "family": "source-available",
+      "state": "active",
+      "spdx": false,
+      "obligations": [
+        "notice",
+        "license-change"
+      ],
+      "provenance": [
+        "Commons Clause"
+      ],
+      "sourceUrl": "https://commonsclause.com/",
+      "aliases": []
+    },
+    {
+      "id": "GFDL-1.3-or-later",
+      "family": "strong-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/GFDL-1.3-or-later.html",
+      "aliases": []
+    },
+    {
+      "id": "GPL-2.0-only",
+      "family": "strong-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/GPL-2.0-only.html",
+      "aliases": []
+    },
+    {
+      "id": "GPL-2.0-or-later",
+      "family": "strong-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/GPL-2.0-or-later.html",
+      "aliases": []
+    },
+    {
+      "id": "GPL-3.0-only",
+      "family": "strong-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/GPL-3.0-only.html",
+      "aliases": []
+    },
+    {
+      "id": "GPL-3.0-or-later",
+      "family": "strong-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/GPL-3.0-or-later.html",
+      "aliases": []
+    },
+    {
+      "id": "ISC",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/ISC.html",
+      "aliases": []
+    },
+    {
+      "id": "LGPL-2.0-only",
+      "family": "weak-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source",
+        "relink"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/LGPL-2.0-only.html",
+      "aliases": []
+    },
+    {
+      "id": "LGPL-2.0-or-later",
+      "family": "weak-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source",
+        "relink"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/LGPL-2.0-or-later.html",
+      "aliases": []
+    },
+    {
+      "id": "LGPL-2.1-only",
+      "family": "weak-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source",
+        "relink"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/LGPL-2.1-only.html",
+      "aliases": []
+    },
+    {
+      "id": "LGPL-2.1-or-later",
+      "family": "weak-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source",
+        "relink"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/LGPL-2.1-or-later.html",
+      "aliases": []
+    },
+    {
+      "id": "LGPL-3.0-only",
+      "family": "weak-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source",
+        "relink"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/LGPL-3.0-only.html",
+      "aliases": []
+    },
+    {
+      "id": "LGPL-3.0-or-later",
+      "family": "weak-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source",
+        "relink"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/LGPL-3.0-or-later.html",
+      "aliases": []
+    },
+    {
+      "id": "MIT",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/MIT.html",
+      "aliases": []
+    },
+    {
+      "id": "MIT-0",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/MIT-0.html",
+      "aliases": []
+    },
+    {
+      "id": "MPL-2.0",
+      "family": "weak-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/MPL-2.0.html",
+      "aliases": []
+    },
+    {
+      "id": "NCSA",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/NCSA.html",
+      "aliases": []
+    },
+    {
+      "id": "OpenSSL",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "advertising"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/OpenSSL.html",
+      "aliases": []
+    },
+    {
+      "id": "PostgreSQL",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/PostgreSQL.html",
+      "aliases": []
+    },
+    {
+      "id": "Python-2.0",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/Python-2.0.html",
+      "aliases": []
+    },
+    {
+      "id": "SSPL-1.0",
+      "family": "network-copyleft",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice",
+        "source",
+        "network"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/SSPL-1.0.html",
+      "aliases": []
+    },
+    {
+      "id": "Unlicense",
+      "family": "public-domain",
+      "state": "active",
+      "spdx": true,
+      "obligations": [],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/Unlicense.html",
+      "aliases": []
+    },
+    {
+      "id": "Zlib",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice"
+      ],
+      "provenance": [
+        "SPDX License List"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/Zlib.html",
+      "aliases": []
+    },
+    {
+      "id": "curl",
+      "family": "permissive",
+      "state": "active",
+      "spdx": true,
+      "obligations": [
+        "notice"
+      ],
+      "provenance": [
+        "SPDX License List",
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://spdx.org/licenses/curl.html",
+      "aliases": []
+    },
+    {
+      "id": "publicDomain",
+      "family": "public-domain",
+      "state": "active",
+      "spdx": false,
+      "obligations": [],
+      "provenance": [
+        "nixpkgs ac62194c3917d5f474c1a844b6fd6da2db95077d"
+      ],
+      "sourceUrl": "https://github.com/NixOS/nixpkgs",
+      "aliases": [
+        "Public Domain"
+      ]
+    }
+  ]
+}

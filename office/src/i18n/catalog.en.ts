@@ -84,7 +84,7 @@ export const en = {
   "shell.expandNavigation": "Expand navigation",
   "shell.collapseNavigation": "Collapse navigation",
   "shell.toggleNavigation": "Toggle navigation",
-  "shell.openCommandNavigation": "Open command navigation",
+  "shell.commandTriggerAria": "{search} {shortcut}: open command navigation",
   "shell.search": "Search",
   "shell.mainHeading": "Factory Office command center",
   "shell.unknownRoute": "Unknown route.",
@@ -374,8 +374,70 @@ export const en = {
   "request.subscription.confirm":
     "I confirm Extra Usage is OFF for this subscription.",
   "request.subscription.save": "Confirm subscription",
+  "request.subscription.persisted":
+    "Extra Usage is confirmed OFF for this OpenCode Go configuration since {date}.",
+  "request.subscription.persistedHelp":
+    "The confirmation is stored for this provider account and route. You are not asked again unless the credential, endpoint or declaration changes.",
+  "request.subscription.saveOnce": "Confirm once and save",
+  "request.subscription.savedOnce": "Extra Usage confirmation saved.",
+  "request.subscription.revoke": "Revoke Extra Usage confirmation",
+  "request.subscription.revoked": "Extra Usage confirmation revoked.",
   "request.subscription.saving": "Confirming…",
   "request.subscription.confirmed": "Subscription confirmation recorded.",
+  "settings.funding.title": "Provider funding status",
+  "settings.funding.hint":
+    "Unscoped provider connection evidence. This cannot decide a request, grant dispatch or verify provider-issued entitlement.",
+  "settings.funding.unavailable":
+    "Provider funding status is unavailable from this Core build.",
+  "request.funding.title": "Funding readiness",
+  "request.funding.hint":
+    "Core-owned, request-scoped admission evidence. This is not provider-issued entitlement and does not authorize dispatch by itself.",
+  "request.funding.loading": "Reading funding readiness…",
+  "request.funding.unavailable":
+    "This Core build does not expose the request-scoped funding readiness projection. The unscoped provider status cannot decide this request, and no admission is inferred.",
+  "request.funding.error": "Funding readiness could not be read from Core.",
+  "request.funding.unscopedWarning":
+    "UNSCOPED STATUS: this response cannot decide a request. Request-scoped admission evidence is required.",
+  "request.funding.admitted":
+    "The existing Core scope-admission guard is satisfied for this exact request. Provider-issued evidence is still not verified.",
+  "request.funding.notAdmitted":
+    "Core has not admitted this request route. Review the missing evidence and recovery text below.",
+  "request.funding.scope": "Scope",
+  "request.funding.scopeComplete":
+    "Request-scoped (intake and Lead identity present)",
+  "request.funding.scopeIncomplete": "Incomplete request scope",
+  "request.funding.intake": "Intake request",
+  "request.funding.lead": "Lead request",
+  "request.funding.route": "Route",
+  "request.funding.providerEvidence": "Provider-issued evidence",
+  "request.funding.providerEvidenceMissing": "NOT VERIFIED",
+  "request.funding.guard": "Core scope guard",
+  "request.funding.guardSatisfied": "Satisfied for this exact scope",
+  "request.funding.guardNotSatisfied": "Not satisfied",
+  "request.funding.admission": "Recorded admission",
+  "request.funding.admissionId": "Admission",
+  "request.funding.admissionState": "State",
+  "request.funding.settingsRevision": "Settings revision",
+  "request.funding.validUntil": "Valid until",
+  "request.funding.extraUsage": "Extra Usage assumption",
+  "request.funding.confirmedBy": "Confirmed by",
+  "request.funding.campaign": "Campaign",
+  "request.funding.receipt": "Receipt hash",
+  "request.funding.declarations": "Owner Extra Usage declarations",
+  "request.funding.routes": "Admitted routes",
+  "request.funding.noAdmission": "No request-scoped admission is recorded.",
+  "request.funding.missingEvidence": "Missing or blocking evidence",
+  "request.funding.noneMissing":
+    "No blocking evidence is missing for this exact admission.",
+  "request.funding.provenance": "Provenance",
+  "request.funding.recovery": "Recovery",
+  "request.funding.table.declaration": "Declaration",
+  "request.funding.table.role": "Role",
+  "request.funding.table.provider": "Provider",
+  "request.funding.table.model": "Model",
+  "request.funding.table.settingsRevision": "Settings revision",
+  "request.funding.table.transport": "Transport",
+  "request.funding.table.valid": "Valid",
   "request.next.assessing": "Assessing…",
   "request.next.assessingDescription":
     "Core reports an assessment in progress. This view does not stream progress; it refreshes from Core.",
@@ -406,8 +468,23 @@ export const en = {
   "request.approval.planningDisabled":
     "Complete the plan review in the Director before approval.",
   "request.planning.incompleteTitle": "Plan review incomplete",
+  "request.planning.preparingTitle": "Plan preparation in progress",
+  "request.planning.waitingBody":
+    "The planning materials are ready and Core is waiting for the owner decision. The exact pending review is shown below.",
+  "request.planning.rejectedTitle": "Plan review rejected",
+  "request.planning.rejectedBody":
+    "Core recorded a rejected or changes-requested review. Automatic preparation is stopped; a new exact owner decision or recompile is required.",
+  "request.planning.stoppedTitle": "Plan preparation stopped",
+  "request.planning.stoppedBody":
+    "Core reports a blocked or failed request. Automatic preparation and refresh are stopped; the missing facts below are Core's last confirmed state. This view does not change the request.",
+  "request.planning.stoppedRecovery":
+    "Use Retry now or return focus to re-read. No automatic start or preparation is claimed while Core is stopped.",
   "request.planning.incompleteBody":
     "Core requires the planning artifacts and the participant plan before this frozen plan can start.",
+  "request.planning.incompleteBodyAutopilot":
+    "Core is preparing the planning artifacts and participant plan for this autonomous request. Owner authority is requested only if Core records a pending plan review.",
+  "request.planning.participantMissingAutopilot":
+    "The participant plan is not recorded yet. Core records it while preparing this autonomous request.",
   "request.planning.missingArtifacts": "Missing artifacts: {values}.",
   "request.planning.participantMissing":
     "The participant plan is not recorded. Compile the plan and record the participant plan in the Director.",
@@ -420,6 +497,19 @@ export const en = {
     "The latest plan review is {status}; the plan cannot start until an approved review binds the current revision.",
   "request.planning.openDirector":
     "Open Director plan review (Compile plan / Record participant plan)",
+  "request.planning.environment": "Environment plan: {status}.",
+  "request.planning.autopilotFreshness":
+    "Autopilot owns these deterministic steps in Core. This request refreshes automatically; the readiness above is Core's confirmed state and the exact blocker remains visible until Core resolves it.",
+  "request.planning.autopilotWaitingOwner":
+    "Core has finished the planning materials and is waiting for the owner plan decision. Approve the exact plan revision in Director; Core resumes the same request after approval. Automatic refresh is paused; this view re-reads on focus or Refresh.",
+  "request.planning.autopilotRejected":
+    "Core recorded a rejected or changes-requested plan review. A new exact owner decision or recompile is required before this request can continue. Automatic refresh is paused; use Refresh after the decision changes.",
+  "request.planning.reviewStale":
+    "The recorded plan review does not bind the current plan revision. Core does not treat it as a current owner decision; recompile or review the current plan in Director.",
+  "request.pollingPaused":
+    "Core is not answering this request. Automatic refresh paused after repeated failures; the last confirmed projection is preserved. Press Retry now to read it again.",
+  "request.approval.environmentRequired":
+    "Core requires a frozen environment plan before approval or start (ENVIRONMENT_PLAN_REQUIRED).",
   "request.planning.unavailable":
     "Core did not report plan-review readiness. Reload this request before approving.",
   "request.execution.title": "Execution",
@@ -678,6 +768,12 @@ export const en = {
     "{sessions} sessions · {parallel} parallel · {wallClock}s wall clock · {repairCycles} repair cycles",
   "request.plan.checksValue": "{acceptance} acceptance · {negative} negative",
   "request.plan.noWorkUnits": "No work units recorded.",
+  "request.plan.workGraphUnits": "WorkGraph units",
+  "request.plan.unitStatus": "Status",
+  "request.plan.workGraphNotPlanned": "WORK_GRAPH_NOT_PLANNED",
+  "request.plan.plannerPendingTitle": "Planner pending.",
+  "request.plan.plannerPendingDescription":
+    "The Lead coordinates and no longer authors executable units. Core is waiting for a validated Planner WorkGraph, so no unit, Campaign or start exists yet.",
 
   "request.trace.title": "Workflow trace",
   "request.trace.description":
@@ -3267,6 +3363,15 @@ export const en = {
   "settings.provider.manualModel": "Advanced: manual model ID (unverified)",
   "settings.provider.manualModelHelp":
     "Core keeps this route unverified until the provider advertises the exact model. Ordinary users can select a discovered model above instead.",
+  "settings.provider.maxInputTokens": "Max input tokens",
+  "settings.provider.maxOutputTokens": "Max output tokens",
+  "settings.provider.boundsNotReported": "Not reported by Core",
+  "settings.provider.boundsHelp":
+    "Leave a field blank to keep the current value. Core stores these bounds for new provider calls and accepts a positive value even below the structured Lead requirement; the later model preflight blocks the call and reports the required value. Frozen pricing quotes and authorizations are not changed.",
+  "settings.provider.leadRequirement":
+    "Structured Lead requirement: {base} output tokens per call, with a {retry}-token ceiling on the permitted truncation retry. Core blocks a call below the requirement.",
+  "settings.provider.boundsInvalid":
+    "{field} must be a whole number of tokens greater than zero.",
   "settings.provider.connectionDetails": "Connection details",
   "settings.provider.enabledLabel": "Enabled",
   "settings.provider.defaultLabel": "Default route for Core model calls",
@@ -3565,6 +3670,8 @@ export const en = {
   "director.stack.evidence": "Evidence: {values}",
   "director.agents.title": "Compiled participants",
   "director.agents.count": "{count} assignment(s)",
+  "director.table.agents": "Participant assignments table",
+  "director.table.specs": "Specifications table",
   "director.agents.role": "Role",
   "director.agents.specialization": "Specialization",
   "director.agents.countLabel": "Count",
@@ -3719,6 +3826,52 @@ export const en = {
     "A specification binds this plan. A material change requires a new request or spec revision.",
   "director.planning.title": "Plan review",
   "director.planning.empty": "No planning artifacts are recorded yet.",
+  "director.planning.staleBadge": "Stale review",
+  "director.planning.staleReview":
+    "The recorded plan review does not bind the current plan revision. Compile or recompile the current plan and review that exact revision; the previous decision is not current evidence.",
+  "director.preparation.title": "Preparation readiness",
+  "director.preparation.autopilot":
+    "Autopilot owns these deterministic steps in Core. This view refreshes while preparation is incomplete; readiness below is the last confirmed Core projection.",
+  "director.preparation.artifacts": "Plan artifacts",
+  "director.preparation.participants": "Participants",
+  "director.preparation.review": "Plan review",
+  "director.preparation.environment": "Environment plan",
+  "director.preparation.prepared": "Prepared",
+  "director.preparation.missing": "Missing: {values}",
+  "director.preparation.notRequired": "Not required",
+  "director.preparation.incomplete": "Incomplete",
+  "director.preparation.notRecorded": "Not recorded",
+  "director.preparation.approved": "Approved",
+  "director.preparation.loading": "Waiting for Core readiness",
+  "director.preparation.unavailable": "Unavailable",
+  "director.preparation.blockers": "{count} blocker(s)",
+  "director.preparation.planningReady":
+    "Core reports the planning materials and plan review as ready.",
+  "director.preparation.planningNotReady":
+    "Core does not yet report planning readiness. The missing or blocked facts above come from Core.",
+  "director.preparation.phase.preparing":
+    "Core is preparing the deterministic planning steps. Readiness below is the last confirmed Core projection.",
+  "director.preparation.phase.waitingOwner":
+    "Core is waiting for the owner plan decision. Polling pauses while the request waits; an approval recorded in another tab or device is observed when this view regains focus or you press Refresh.",
+  "director.preparation.phase.reviewRejected":
+    "The plan review rejected or requested changes. A new exact plan decision or recompile is required; Core does not auto-approve it.",
+  "director.preparation.phase.recoverableFailure":
+    "Core reported a blocked or failed preparation. Inspect the blocker below; this view does not retry a paid or externally effectful action automatically.",
+  "director.preparation.phase.executing":
+    "Core reports execution. Planning readiness is no longer the active step.",
+  "director.preparation.phase.terminal":
+    "Core reports a terminal request state. Preparation and polling are stopped; open the Campaign or request history for the recorded outcome.",
+  "director.preparation.operationInconsistent":
+    "Core reports an executing operation without an authoritative Campaign or EXECUTING request. This view treats it as an inconsistency, not execution; refresh after Core reconciles the operation.",
+  "director.preparation.startNotObserved":
+    "Core reported a queued or starting operation but no Campaign or EXECUTING request was observed. Automatic polling stopped; press Refresh to re-check. This observation does not cancel or stop the request, and starting telemetry is not Campaign authority.",
+  "director.preparation.pollingPaused":
+    "Core is not answering the readiness reads. Automatic refresh paused after repeated failures; the last confirmed projection is preserved. Press Refresh to retry.",
+  "director.preparation.startBoundary":
+    "Planning and environment readiness are not a Campaign start. Core performs the start transaction and Campaign state separately.",
+  "director.preparation.staleReview": "Stale for the current plan revision",
+  "director.preparation.environmentBoundary":
+    "Core requires a frozen environment plan before approval or start (ENVIRONMENT_PLAN_REQUIRED).",
   "director.planning.lane": "Planning lane",
   "director.planning.workflow": "Workflow state",
   "director.planning.revision": "Plan revision",
@@ -3736,6 +3889,10 @@ export const en = {
     "The plan review is awaiting an authenticated owner decision. Approve, request changes or reject the exact plan revision.",
   "director.planning.reviewNotApproved":
     "The latest plan review is {status}. Approve a new exact revision before the plan can start.",
+  "director.planning.reviewRevisit":
+    "The current review is {status}. A new authenticated decision on this same revision is a new, effective decision; it does not recompile the plan or auto-approve, and Core revalidates the start.",
+  "director.planning.revisitRationaleHelp":
+    "Enter a new rationale; the previous decision's rationale is not reused.",
   "director.planning.rationale": "Review rationale: {value}",
   "director.planning.reviewRationale": "Review rationale",
   "director.planning.rationaleRequired":
@@ -3745,6 +3902,15 @@ export const en = {
   "director.planning.reject": "Reject plan",
   "director.planning.reviewSuccess": "The plan review was recorded.",
   "director.planning.reviewError": "The plan review could not be recorded.",
+  "director.planning.reviewRecordedEnvironmentBlocked":
+    "The owner decision was recorded. The Lead rejected the environment plan and Core marked it blocked, so preparation did not continue. Review the blockers or recompile the environment in Director; this page does not restart execution.",
+  "director.planning.reviewNotConfirmed":
+    "Core did not confirm that the decision was recorded for this plan revision. The request was refreshed; review the plan state before deciding again.",
+  "director.planning.reviewRecordedPreparationPending":
+    "The owner decision was recorded, but preparation did not finish: {detail} Refresh the request state to see what Core recorded; this page does not restart execution.",
+  "director.planning.decisionRecordedRefresh":
+    "Core recorded this decision. Refresh the request state to see the updated preparation.",
+  "director.planning.refreshState": "Refresh state",
   "director.planning.error": "Planning artifacts could not be loaded.",
   "director.planning.stack": "Stack",
   "director.planning.architecture": "Architecture",
@@ -3929,6 +4095,13 @@ export const en = {
   "director.participants.reviewers": "Independent reviewers",
   "director.participants.independentReceiptsLabel": "Independent receipts",
   "director.participants.requiredRoles": "Required reviewer roles",
+  "director.participants.workGraphNotPlannedTitle": "Planner pending.",
+  "director.participants.workGraphNotPlanned":
+    "There is no validated Planner WorkGraph, so participants, units and Campaign start stay blocked until Core plans and validates it.",
+
+  "director.participants.plannerPendingTitle": "Planner plan pending.",
+  "director.participants.plannerPending":
+    "A validated WorkGraph exists but Core could not compile the participant plan yet. The causal problem is shown below; no unit or Campaign start is invented.",
   "director.participants.unassigned": "Not assigned",
   "director.participants.noRoles":
     "No reviewer roles are recorded for this route.",
@@ -3947,6 +4120,71 @@ export const en = {
   "director.participants.unitRouting": "Unit routing",
   "evidence.gate.reviewers":
     "{count} independent reviewer receipt(s) aggregated",
+  "nav.licenses": "Licenses",
+  "licenses.title": "Licenses, identity and evidence",
+  "licenses.description":
+    "Exact Lead decisions under the Owner delegation. No licence is approved by name or package family; every allow is bound to the exact identity, evidence, use context and revision.",
+  "licenses.retry": "Retry",
+  "licenses.loading": "Loading licence decisions",
+  "licenses.error": "Licence decisions could not be loaded.",
+  "licenses.project": "Project",
+  "licenses.pin": "Pinned source",
+  "licenses.useContext": "Use context",
+  "licenses.sourceProof": "Source proof",
+  "licenses.review.error": "The exact licence review action failed.",
+  "licenses.review.emptyDescription":
+    "Create an intake request for this Project before reviewing an exact licence decision.",
+  "licenses.review.emptyTitle": "No request",
+  "licenses.review.paid": "payment required: denied",
+  "licenses.review.delegationRequired":
+    "Approve the Owner delegation below to enable the review.",
+  "licenses.review.required":
+    "An approved Owner delegation is required before a review.",
+  "licenses.review.recorded": "Exact decision recorded.",
+  "licenses.review.record": "Record exact decision",
+  "licenses.review.available": "Lead review recorded.",
+  "licenses.review.run": "Run Lead licence review (model call)",
+  "licenses.review.request": "Request",
+  "licenses.review.title": "Exact licence evidence review",
+  "licenses.stage": "Stage",
+  "licenses.expiry": "Expiry",
+  "licenses.reason": "Reason",
+  "licenses.revoke": "Revoke",
+  "licenses.identity": "Identity",
+  "licenses.license": "Licence",
+  "licenses.branch": "Selected branch",
+  "licenses.obligations": "Obligations",
+  "licenses.documentation.licensingFact": "Licensing fact (Lead-selected)",
+  "licenses.documentation.derivedText": "Derived exact text",
+  "licenses.documentation.directText": "direct text selection",
+  "licenses.documentation.modelSelection": "Raw model selection (audit only)",
+  "licenses.documentation.derivation": "Derivation",
+  "licenses.evidence.title": "Licensing evidence provenance",
+  "licenses.evidence.facts": "Licensing facts",
+  "licenses.evidence.texts": "Exact license texts",
+  "licenses.evidence.atom": "Atom",
+  "licenses.evidence.path": "Path",
+  "licenses.evidence.license": "Licence",
+  "licenses.evidence.purpose": "Purpose",
+  "licenses.evidence.role": "Role",
+  "licenses.evidence.sha256": "SHA-256",
+  "licenses.status": "Status",
+  "licenses.delegation.title": "Owner delegation",
+  "licenses.delegation.create": "Create delegation",
+  "licenses.delegation.created":
+    "Delegation recorded. Approve it below to activate it.",
+  "licenses.delegation.approve": "Approve delegation",
+  "licenses.delegation.approved": "Delegation approved.",
+  "licenses.delegation.revoked": "Delegation revoked.",
+  "licenses.delegation.error": "The delegation action failed.",
+  "licenses.delegation.emptyTitle": "No licence delegation",
+  "licenses.delegation.emptyDescription":
+    "Create one exact Owner delegation for this Project; a model or chat message cannot create it.",
+  "licenses.decisions.title": "Lead decisions",
+  "licenses.decisions.emptyTitle": "No Lead decisions",
+  "licenses.decisions.emptyDescription":
+    "A decision appears only after the exact evidence review and Core verification.",
+  "licenses.decision.revoked": "Decision revoked.",
   "nav.charter": "Owner charter",
   "charter.title": "Owner charter",
   "charter.description":

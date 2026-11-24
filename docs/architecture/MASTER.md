@@ -44,6 +44,7 @@ Normative documents describe policy; **enforced Core policy** controls actions. 
 | Projects | Registered local Projects bind canonical repository identity, base policy, profile, scope and capabilities | Agreed; ADR-0012 |
 | Capabilities | Core-governed per-Project/Project-spec capability grants matched to Worker runtime | Agreed; ADR-0012 |
 | Verification | Independent real-user verifier separate from the author | Agreed |
+| Environment licence policy | One shared closure catalogue consumed by Core and the builder, with a per-context verdict and owner-governed unknown/deny/unfree handling; model judgement never authorizes | Proposal B approved by the owner; implementation in an isolated candidate, **not integrated** |
 | Compatibility | No speculative backward compatibility for experimental internal contracts | Agreed; ADR-0006 |
 | Engineering | Clean architecture principles, pragmatic patterns, DRY and low complexity | Agreed; ADR-0007 |
 | Lint | Format/lint/static-analysis gates for every active implementation language | Agreed; ADR-0008 |

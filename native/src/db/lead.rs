@@ -733,6 +733,131 @@ impl Database {
         ))
     }
 
+    /// Test-support only: create an isolated request bound to a historical V1
+    /// delegation so the P1a seed route can prove it fails closed. Rows are
+    /// copied from a seeded request; the immutable source rows are untouched.
+    #[cfg(feature = "test-support")]
+    pub async fn seed_legacy_v1_request_for_test(
+        &self,
+        template_request_id: &str,
+    ) -> Result<String, Error> {
+        let request_id = "legacy-v1-request";
+        let lead_id = "legacy-v1-lead";
+        let action_id = "legacy-v1-action";
+        let delegation_id = "legacy-v1-delegation";
+        let now = Utc::now().to_rfc3339();
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let (project_id,): (String,) =
+            sqlx::query_as::query_as("SELECT project_id FROM intake_requests WHERE id=?1")
+                .bind(template_request_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .ok_or(Error::NotFound)?;
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO standing_delegations
+             (id,principal_id,audit_id,project_id,revision,content_hash,content_json,created_at)
+             VALUES (?1,'owner','fixture',?2,1,?3,'{}',?4)",
+        )
+        .bind(delegation_id)
+        .bind(&project_id)
+        .bind(sha256_hex(delegation_id.as_bytes()))
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO actions
+             (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+             SELECT ?1,project_id,objective,provider,model,risk,status,objective_sha256,created_at
+             FROM actions WHERE id=(SELECT action_id FROM intake_requests WHERE id=?2)",
+        )
+        .bind(action_id)
+        .bind(template_request_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO lead_requests
+             (id,project_id,action_id,delegation_id,objective,request_hash,
+              project_config_hash,state,created_at,updated_at)
+             SELECT ?1,project_id,?2,?3,objective,request_hash,project_config_hash,state,
+                    created_at,updated_at
+             FROM lead_requests WHERE id=(SELECT lead_request_id FROM intake_requests WHERE id=?4)",
+        )
+        .bind(lead_id)
+        .bind(action_id)
+        .bind(delegation_id)
+        .bind(template_request_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "INSERT OR IGNORE INTO intake_requests
+             (id,project_id,objective,mode,profile_id,profile_revision_id,profile_revision,
+              profile_hash,profile_name,action_id,delegation_id,lead_request_id,campaign_id,
+              submission_json,submission_hash,idempotency_key,created_at,updated_at)
+             SELECT ?1,project_id,objective,mode,profile_id,profile_revision_id,profile_revision,
+                    profile_hash,profile_name,?2,?3,?4,campaign_id,submission_json,submission_hash,
+                    'legacy-v1-idempotency',created_at,updated_at
+             FROM intake_requests WHERE id=?5",
+        )
+        .bind(request_id)
+        .bind(action_id)
+        .bind(delegation_id)
+        .bind(lead_id)
+        .bind(template_request_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(request_id.into())
+    }
+
+    /// Test-support only: persist a fixture assessment and its empty-units
+    /// proposal for an already seeded request without changing its real
+    /// lifecycle state. No production path calls this method.
+    #[cfg(feature = "test-support")]
+    pub async fn seed_lead_assessment_and_proposal(
+        &self,
+        request_id: &str,
+        assessment: &LeadAssessment,
+        proposal: &LeadPlanProposal,
+    ) -> Result<(), Error> {
+        let assessment_json = serde_json::to_string(assessment)
+            .map_err(|_| Error::Invalid("fixture assessment encoding"))?;
+        let proposal_json = serde_json::to_string(proposal)
+            .map_err(|_| Error::Invalid("fixture proposal encoding"))?;
+        let schema_sha256 = crate::model_output::lead_assessment_schema_sha256();
+        let now = Utc::now().to_rfc3339();
+        let assessment_id = Uuid::new_v4().to_string();
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query::query(
+            "INSERT INTO lead_assessments
+             (id,request_id,mechanism,assessment_json,schema_sha256,created_at)
+             VALUES (?1,?2,'FIXTURE',?3,?4,?5)",
+        )
+        .bind(&assessment_id)
+        .bind(request_id)
+        .bind(&assessment_json)
+        .bind(&schema_sha256)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "INSERT INTO lead_proposals
+             (id,request_id,assessment_id,proposal_json,proposal_hash,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(request_id)
+        .bind(&assessment_id)
+        .bind(&proposal_json)
+        .bind(sha256_hex(proposal_json.as_bytes()))
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
     pub async fn begin_lead_assessment(&self, id: &str) -> Result<LeadRequestRecord, Error> {
         self.transition_lead_request(id, LeadRequestState::Submitted, LeadRequestState::Assessing)
             .await
@@ -1956,9 +2081,11 @@ async fn start_lead_campaign_in_tx(
             "project configuration or base changed after the Lead request".into(),
         ));
     }
-    if proposal.work_units.is_empty() {
-        return Err(Error::Forbidden("WorkGraph is empty".into()));
-    }
+    // The validated Planner WorkGraph owns executable decomposition. A Lead
+    // proposal with an empty WorkUnits array starts only from that graph; the
+    // Lead units remain readable solely for legacy frozen plans without one.
+    let graph = load_start_work_graph(connection, &request.id).await?;
+    let units = start_work_units(proposal, graph.as_ref())?;
     if proposal.risk_class != crate::lead::RiskClass::R0 {
         return Err(Error::Forbidden(
             "explicit start is limited to a deterministically eligible R0 plan".into(),
@@ -2002,6 +2129,12 @@ async fn start_lead_campaign_in_tx(
         }
     }
     proposal.validate_v2(grant, &config.binding(), &action, Utc::now())?;
+    // The Lead proposal may carry no units; validate the resolved WorkGraph
+    // count before any per-unit ActionSpec or run/attempt is created. Legacy
+    // proposals without a graph keep their previously frozen budget path.
+    if graph.is_some() {
+        proposal.validate_resolved_units(units.len())?;
+    }
     if proposal.objective != request.objective {
         return Err(Error::Forbidden(
             "proposal objective differs from the original Lead request".into(),
@@ -2063,7 +2196,7 @@ async fn start_lead_campaign_in_tx(
             "frozen plan does not match the ActionSpec checks".into(),
         ));
     }
-    for unit in &proposal.work_units {
+    for unit in &units {
         if unit
             .allowed_paths
             .iter()
@@ -2074,8 +2207,8 @@ async fn start_lead_campaign_in_tx(
             ));
         }
     }
-    let mut specs = Vec::with_capacity(proposal.work_units.len());
-    for unit in &proposal.work_units {
+    let mut specs = Vec::with_capacity(units.len());
+    for unit in &units {
         specs.push(unit_action_spec(
             proposal,
             &config,
@@ -2326,7 +2459,7 @@ async fn start_lead_campaign_in_tx(
     }
     let mut first_run = None;
     let mut first_attempt = None;
-    for (index, (unit, spec)) in proposal.work_units.iter().zip(specs.iter()).enumerate() {
+    for (index, (unit, spec)) in units.iter().zip(specs.iter()).enumerate() {
         let spec_json =
             serde_json::to_string(spec).map_err(|_| Error::Invalid("unit ActionSpec encoding"))?;
         let spec_sha256 = sha256_hex(spec_json.as_bytes());
@@ -2989,7 +3122,7 @@ async fn ensure_action_spec_for_frozen_plan(
             let mut spec: ActionSpec = serde_json::from_str(&spec_json)
                 .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
             if !spec.environment_required {
-                crate::db::apply_test_environment_binding(&mut spec, &request.action_id);
+                crate::db::apply_test_environment_binding_if_enabled(&mut spec, &request.action_id);
                 let spec_json = serde_json::to_string(&spec)
                     .map_err(|_| Error::Invalid("ActionSpec encoding"))?;
                 let spec_sha256 = sha256_hex(spec_json.as_bytes());
@@ -3035,7 +3168,7 @@ async fn ensure_action_spec_for_frozen_plan(
     #[allow(unused_mut)]
     let mut spec = derive_root_action_spec(request, proposal, config, grant)?;
     #[cfg(any(test, feature = "test-support"))]
-    crate::db::apply_test_environment_binding(&mut spec, &request.action_id);
+    crate::db::apply_test_environment_binding_if_enabled(&mut spec, &request.action_id);
     let spec_json =
         serde_json::to_string(&spec).map_err(|_| Error::Invalid("ActionSpec encoding"))?;
     let spec_sha256 = sha256_hex(spec_json.as_bytes());
@@ -3057,22 +3190,40 @@ async fn ensure_action_spec_for_frozen_plan(
     Ok(())
 }
 
-fn derive_root_action_spec(
-    request: &LeadRequestRecord,
+/// The root ActionSpec write scope at freeze time.
+///
+/// The Lead no longer authors executable units: the Planner's validated
+/// WorkGraph is the only source of decomposition. When the Lead proposal has no
+/// units the registered project scope is the root bound that the Planner graph
+/// is validated against, so it becomes the ActionSpec scope. A proposal that
+/// does claim units remains unit-scoped, and an empty unit scope is never
+/// silently widened. Every result must stay inside the standing delegation.
+fn root_action_scope(
     proposal: &LeadPlanProposal,
     config: &ProjectConfig,
     grant: &StandingDelegationV2,
-) -> Result<ActionSpec, Error> {
+) -> Result<Vec<String>, Error> {
+    if proposal
+        .work_units
+        .iter()
+        .any(|unit| unit.allowed_paths.is_empty())
+    {
+        return Err(Error::Forbidden(
+            "a work unit with no allowed path scope cannot be frozen".into(),
+        ));
+    }
     let mut allowed_paths = std::collections::BTreeSet::new();
     for unit in &proposal.work_units {
         allowed_paths.extend(unit.allowed_paths.iter().cloned());
+    }
+    if allowed_paths.is_empty() && proposal.work_units.is_empty() {
+        allowed_paths.extend(config.allowed_paths.iter().cloned());
     }
     if allowed_paths.is_empty() {
         return Err(Error::Forbidden(
             "frozen plan has no validated work-unit path scope".into(),
         ));
     }
-    let checks = complete_plan_checks(proposal)?;
     let allowed_paths: Vec<String> = allowed_paths.into_iter().collect();
     if allowed_paths
         .iter()
@@ -3082,6 +3233,17 @@ fn derive_root_action_spec(
             "derived ActionSpec paths exceed the standing delegation".into(),
         ));
     }
+    Ok(allowed_paths)
+}
+
+fn derive_root_action_spec(
+    request: &LeadRequestRecord,
+    proposal: &LeadPlanProposal,
+    config: &ProjectConfig,
+    grant: &StandingDelegationV2,
+) -> Result<ActionSpec, Error> {
+    let checks = complete_plan_checks(proposal)?;
+    let allowed_paths = root_action_scope(proposal, config, grant)?;
     Ok(ActionSpec {
         schema_version: 1,
         project_id: config.project_id.clone(),
@@ -3338,6 +3500,56 @@ pub(super) async fn load_frozen_plan_by_id(
         delegation_hash: row.try_get("delegation_hash")?,
         created_at: row.try_get("created_at")?,
     })
+}
+
+/// Core-normalized executable units for an explicit start.
+///
+/// A validated Planner WorkGraph wins whenever it exists; otherwise a legacy
+/// frozen proposal may still supply its own units. An empty proposal without a
+/// graph is the typed `WORK_GRAPH_NOT_PLANNED` state, never a synthetic unit.
+fn start_work_units(
+    proposal: &LeadPlanProposal,
+    graph: Option<&crate::agentic::ValidatedWorkGraph>,
+) -> Result<Vec<crate::lead::LeadWorkUnit>, Error> {
+    if let Some(graph) = graph.filter(|graph| !graph.units.is_empty()) {
+        return Ok(graph
+            .units
+            .iter()
+            .map(|unit| crate::lead::LeadWorkUnit {
+                id: unit.id.clone(),
+                kind: crate::lead::WorkUnitKind::Implementation,
+                description: unit.objective.clone(),
+                depends_on: unit.depends_on.clone(),
+                allowed_paths: unit.paths.clone(),
+                capabilities: Vec::new(),
+                acceptance_criteria: Vec::new(),
+                negative_cases: Vec::new(),
+            })
+            .collect());
+    }
+    if proposal.work_units.is_empty() {
+        return Err(Error::IntakeConflict {
+            code: "WORK_GRAPH_NOT_PLANNED",
+            message:
+                "explicit start requires a validated Planner WorkGraph; the Lead no longer authors executable units"
+                    .into(),
+        });
+    }
+    Ok(proposal.work_units.clone())
+}
+
+async fn load_start_work_graph(
+    connection: &mut SqliteConnection,
+    request_id: &str,
+) -> Result<Option<crate::agentic::ValidatedWorkGraph>, Error> {
+    let row: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT graph_json FROM agentic_work_graphs WHERE request_id=?1")
+            .bind(request_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    Ok(row.and_then(|(graph_json,)| {
+        serde_json::from_str::<crate::agentic::ValidatedWorkGraph>(&graph_json).ok()
+    }))
 }
 
 fn unit_action_spec(
@@ -5223,6 +5435,127 @@ mod tests {
         project_config().config_hash
     }
 
+    fn proposal_with_units(work_units: Vec<LeadWorkUnit>) -> LeadPlanProposal {
+        let mut proposal = assessment().proposal.expect("assessment proposal");
+        proposal.work_units = work_units;
+        proposal
+    }
+
+    fn work_unit(allowed_paths: Vec<&str>) -> LeadWorkUnit {
+        LeadWorkUnit {
+            id: "api".into(),
+            kind: WorkUnitKind::Implementation,
+            description: "Implement the endpoint.".into(),
+            depends_on: Vec::new(),
+            allowed_paths: allowed_paths.into_iter().map(str::to_owned).collect(),
+            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
+            acceptance_criteria: Vec::new(),
+            negative_cases: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn empty_lead_units_use_the_registered_project_scope() {
+        let proposal = proposal_with_units(Vec::new());
+        let config = project_config();
+        let grant = grant();
+        let scope = root_action_scope(&proposal, &config, &grant).unwrap();
+        assert_eq!(scope, config.allowed_paths);
+    }
+
+    #[test]
+    fn empty_lead_units_still_reject_a_project_scope_outside_the_delegation() {
+        let proposal = proposal_with_units(Vec::new());
+        let mut config = project_config();
+        config.allowed_paths = vec!["src".into(), "docs".into()];
+        let grant = grant();
+        assert!(root_action_scope(&proposal, &config, &grant).is_err());
+    }
+
+    #[test]
+    fn empty_lead_units_refuse_an_empty_project_scope() {
+        let proposal = proposal_with_units(Vec::new());
+        let mut config = project_config();
+        config.allowed_paths.clear();
+        let grant = grant();
+        assert!(root_action_scope(&proposal, &config, &grant).is_err());
+    }
+
+    #[test]
+    fn lead_units_remain_unit_scoped_and_an_empty_unit_scope_is_refused() {
+        let config = project_config();
+        let grant = grant();
+        let scoped = proposal_with_units(vec![work_unit(vec!["src/api"])]);
+        assert_eq!(
+            root_action_scope(&scoped, &config, &grant).unwrap(),
+            vec!["src/api"]
+        );
+        let empty = proposal_with_units(vec![work_unit(Vec::new())]);
+        assert!(root_action_scope(&empty, &config, &grant).is_err());
+        let mut empty_second = work_unit(Vec::new());
+        empty_second.id = "tests".into();
+        let mixed = proposal_with_units(vec![work_unit(vec!["src/api"]), empty_second]);
+        assert!(root_action_scope(&mixed, &config, &grant).is_err());
+    }
+
+    #[test]
+    fn lead_unit_paths_outside_the_delegation_are_refused() {
+        let config = project_config();
+        let grant = grant();
+        let proposal = proposal_with_units(vec![work_unit(vec!["docs"])]);
+        assert!(root_action_scope(&proposal, &config, &grant).is_err());
+    }
+
+    #[tokio::test]
+    async fn freeze_without_lead_units_binds_the_project_scope_and_starts_nothing() {
+        let (path, db, _) = fixture().await;
+        let ready =
+            draft_lead_with_units(&db, "empty-units", "MODEL", true, Some(Vec::new())).await;
+        let config = db.project_config("project").await.unwrap();
+        let (spec_json, spec_sha): (String, String) = sqlx::query_as::query_as(
+            "SELECT spec_json,spec_sha256 FROM action_specs WHERE action_id=?1",
+        )
+        .bind(&ready.request.action_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        let spec: ActionSpec = serde_json::from_str(&spec_json).unwrap();
+        assert_eq!(spec.allowed_paths, config.allowed_paths);
+        let (acceptance, negative) = checks();
+        let mut expected: Vec<SpecCheck> = acceptance.into_iter().chain(negative).collect();
+        expected.sort_by(|left, right| left.id.cmp(&right.id));
+        assert!(checks_match_ignoring_environment(&spec.checks, &expected));
+        assert_eq!(spec_sha, sha256_hex(spec_json.as_bytes()));
+        assert_eq!(spec_sha, ready.spec_sha256);
+        let replayed = db
+            .freeze_lead_plan(&ready.request.id, "draft-freeze-empty-units")
+            .await
+            .unwrap();
+        assert_eq!(replayed, ready.plan);
+        let (spec_sha_after,): (String,) =
+            sqlx::query_as::query_as("SELECT spec_sha256 FROM action_specs WHERE action_id=?1")
+                .bind(&ready.request.action_id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(spec_sha_after, spec_sha);
+        for table in [
+            "campaigns",
+            "attempts",
+            "worker_leases",
+            "execution_check_receipts",
+        ] {
+            let (count,): (i64,) =
+                sqlx::query_as::query_as(&format!("SELECT COUNT(*) FROM {table}"))
+                    .fetch_one(&db.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(count, 0, "{table} must stay empty at freeze");
+        }
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
     fn operations() -> crate::execution_policy::OperationLimits {
         crate::execution_policy::OperationLimits {
             model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
@@ -5581,6 +5914,16 @@ mod tests {
         mechanism: &str,
         make_ready: bool,
     ) -> DraftReady {
+        draft_lead_with_units(db, label, mechanism, make_ready, None).await
+    }
+
+    async fn draft_lead_with_units(
+        db: &Database,
+        label: &str,
+        mechanism: &str,
+        make_ready: bool,
+        units: Option<Vec<LeadWorkUnit>>,
+    ) -> DraftReady {
         let grant = operator_grant(db, &format!("operator-grant-{label}")).await;
         let config = db.project_config("project").await.unwrap();
         let (request, created) = db
@@ -5628,7 +5971,7 @@ mod tests {
             project_id: "project".into(),
             status: crate::lead::ActionStatus::Pending,
         };
-        let (assessment, proposal) = crate::lead::fixture_lead_assessment(
+        let (mut assessment, mut proposal) = crate::lead::fixture_lead_assessment(
             &request.id,
             &config,
             &binding,
@@ -5638,6 +5981,10 @@ mod tests {
             Utc::now(),
         )
         .unwrap();
+        if let Some(units) = units {
+            proposal.work_units = units;
+            assessment.proposal = Some(proposal.clone());
+        }
         let input = AssessmentInput {
             project_id: "project".into(),
             action_id: request.action_id.clone(),
@@ -6519,6 +6866,88 @@ mod tests {
         ));
         db.close().await;
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn freeze_forbids_a_proposal_objective_with_an_extra_period() {
+        for (label, extra_period, frozen_expected) in
+            [("mismatch", true, false), ("exact", false, true)]
+        {
+            let (path, db, _) = fixture().await;
+            let action_id = action(&db).await;
+            let (request, _) = db
+                .create_lead_request(
+                    "project",
+                    &action_id,
+                    "grant",
+                    "Implement the feature.",
+                    &config_hash(),
+                    &format!("objective-{label}-request"),
+                )
+                .await
+                .unwrap();
+            db.begin_lead_assessment(&request.id).await.unwrap();
+            let mut value = assessment();
+            value.action_id = action_id.clone();
+            value.request_id = request.id.clone();
+            if let Some(proposal) = value.proposal.as_mut() {
+                proposal.action_id = action_id.clone();
+                proposal.objective = if extra_period {
+                    format!("{}.", request.objective)
+                } else {
+                    request.objective.clone()
+                };
+            }
+            let input = AssessmentInput {
+                project_id: "project".into(),
+                action_id: action_id.clone(),
+                request_id: request.id.clone(),
+                objective: request.objective.clone(),
+                allowed_evidence_refs: std::collections::BTreeSet::from([
+                    "repository-files".to_string()
+                ]),
+            };
+            db.record_lead_assessment(
+                &request.id,
+                "MODEL",
+                &value,
+                &input,
+                &format!("objective-{label}-assessment"),
+            )
+            .await
+            .unwrap();
+            let proposal = value.proposal.clone().unwrap();
+            db.record_lead_proposal(
+                &request.id,
+                &proposal,
+                &format!("objective-{label}-proposal"),
+            )
+            .await
+            .unwrap();
+            let result = db
+                .freeze_lead_plan_to_ready(&request.id, &format!("objective-{label}-freeze"))
+                .await;
+            if frozen_expected {
+                let (plan, ready) = result.unwrap();
+                assert!(!plan.plan_hash.is_empty());
+                assert_eq!(ready.state, LeadRequestState::Ready);
+            } else {
+                assert!(matches!(result, Err(Error::Forbidden(_))));
+                let frozen: i64 = sqlx::query_scalar::query_scalar(
+                    "SELECT COUNT(*) FROM frozen_lead_plans WHERE request_id=?1",
+                )
+                .bind(&request.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+                assert_eq!(frozen, 0);
+                let current = db.lead_request(&request.id).await.unwrap();
+                assert_eq!(current.state, LeadRequestState::Planned);
+                assert!(current.campaign_id.is_none());
+            }
+            db.close().await;
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[tokio::test]
@@ -9963,5 +10392,45 @@ mod tests {
         }
         db.close().await;
         let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn start_units_are_resolved_from_the_validated_work_graph() {
+        let mut proposal = assessment().proposal.expect("proposal");
+        proposal.work_units.clear();
+        let graph = crate::agentic::ValidatedWorkGraph {
+            units: vec![crate::agentic::PlannedWorkUnit {
+                id: "graph-unit".into(),
+                title: "Graph unit".into(),
+                objective: "Do the bounded work.".into(),
+                depends_on: Vec::new(),
+                paths: vec!["src".into()],
+                acceptance: vec!["observable".into()],
+            }],
+            assumptions: Vec::new(),
+            risks: Vec::new(),
+            topological_order: vec!["graph-unit".into()],
+            graph_sha256: "a".repeat(64),
+        };
+
+        let units = start_work_units(&proposal, Some(&graph)).expect("graph units");
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].id, "graph-unit");
+        assert_eq!(units[0].allowed_paths, vec!["src".to_string()]);
+        assert!(units[0].acceptance_criteria.is_empty());
+
+        let error = start_work_units(&proposal, None).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::IntakeConflict {
+                code: "WORK_GRAPH_NOT_PLANNED",
+                ..
+            }
+        ));
+
+        // A validated graph wins over legacy Lead units.
+        let mut legacy = proposal.clone();
+        legacy.work_units = assessment().proposal.expect("proposal").work_units;
+        let resolved = start_work_units(&legacy, Some(&graph)).expect("graph units");
+        assert_eq!(resolved[0].id, "graph-unit");
     }
 }

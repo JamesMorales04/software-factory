@@ -264,7 +264,58 @@ exact cgroup limits, fetch-policy enforcement, protected path descendants,
 rootful-Podman rejection, wrapper nonzero-exit cleanup, runtime disk-budget
 enforcement, root/system mount-source attestation, bounded noisy-output capture
 and disk-overflow artifact purging, plus exact/prefix version constraint
-matching and SBOM constraint recording (87 tests). The
+matching and SBOM constraint recording. The focused builder suite is
+`python3 -m unittest tests.test_builder` from `deploy/environment-builder`
+(88 tests, including real-Nix synthetic-attrset probes). The full directory
+discovers 113 tests. In the read-only evidence checkout the same six
+pre-existing layout-dependent tests fail on both the candidate and its parent:
+three `test_paths` errors from the `HERE.parents[3]` repository-root guess and
+three `test_disk_budget`/`test_wrapper` failures that depend on the mounted
+absolute depth. They are not caused by the diagnostic work and are not hidden
+by it. The builder suite is not yet part of
+`scripts/ci/quality-harness.sh`; adding it to an existing lane is a separate,
+concrete CI change and is not claimed here.
+
+Diagnostics keep the failure cause visible: `stderr` is retained as a bounded
+head **and** tail separated by an explicit truncation marker, and the typed
+failure names the last `error:` line with a payload (never a warning that merely
+contains the word). `stdout` remains the data channel; a truncated document is
+rejected even when its retained prefix is valid JSON. This does not copy raw
+`stdout`, secrets, prompts or source bodies into telemetry, and it adds no new
+endpoint, log artifact or durability promise.
+
+A signal is not automatically a resource limit. `SIGKILL` is
+`ENVIRONMENT_RESOURCE_LIMIT` only with a cgroup `oom_kill` increment;
+`SIGKILL` without that evidence, `SIGTERM`, `SIGSEGV`, `SIGABRT` and unknown
+signals are `ENVIRONMENT_BUILD_FAILED` with the signal and never a licence
+conclusion. The persistent cache is purged only for a storage/cache
+over-budget or a proven cache/filesystem failure, not for a memory OOM, crash
+or cancellation.
+
+The closure licence audit does not evaluate the whole nixpkgs attribute set in
+one Nix process. It evaluates the nested sets implied by the selected plan
+packages first, then traverses top-level attributes in bounded 1,000-name
+batches. The measured full traversal exhausted 4 GiB and even 8 GiB and was
+OOM-killed; the batched path resolved a real `util-linux-minimal` closure under
+the 4 GiB budget with `oom_kill=0`. The plan's `timeoutSecs` remains a
+per-operation timeout; the broker and Core do not turn it into an aggregate
+request/run deadline. An unresolved path remains a fail-closed licence blocker.
+
+Unversioned substrate identities (`stdenv-linux`, the
+`update-autotools-gnu-config-scripts-hook`) are not matched by name or suffix.
+Their factual origin comes from the reviewed data asset
+`environment_builder/source_license_origins.json`, which the builder loads and
+Core compiles in; the builder is transport/capture, Core remains the authority.
+The asset binds the exact derivation, store path, NAR hash, pinned source,
+`COPYING` bytes, per-input source pairs and reconstructed output NAR (which must
+equal the output NAR itself), and its entries are admitted only when they equal
+a signed identity-facts fact of the same environment under the same signed
+challenge pin. See
+[environment-plan §7.5](../contracts/environment-plan.md). It is evidence
+binding, never an allowlist or a licence grant; transitive components keep their
+separate inventory entries.
+
+The
 final `deploy/environment-builder/Containerfile` image was built and exercised
 under the unique WP1-B evidence tag
 `localhost/software-factory-environment-builder:wp1b-340fa54-r3`

@@ -1,0 +1,170 @@
+{
+ "actionId": "63c623c3-830d-44fd-9a74-4d444a96e4f6",
+ "baseCommit": "4fdf1b15f862b2564642443a71ef3e25a2785013",
+ "blockers": [],
+ "browsers": [],
+ "builder": {
+  "defaultNixpkgs": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+  "digest": "sha256:16b96f755e921227a5fbd6799d6bbb6061868cd4b6b2816a4f18e72047cf6779",
+  "image": "localhost/sf-uat-9a2a6678-environment-builder:dev",
+  "platform": "x86_64-linux",
+  "policyRevision": "nix-devenv-environment-v1",
+  "status": "READY"
+ },
+ "campaignId": null,
+ "commands": {},
+ "commandsRationale": "No build/test command was committed. Core will not invent a language-specific command; the Quality Profile remains responsible for required check kinds.",
+ "conventions": {
+  "baseCommit": "4fdf1b15f862b2564642443a71ef3e25a2785013",
+  "commands": [],
+  "conflicts": [],
+  "conventionsSha256": "9f2c51bfe1c2e29be88e2bab729052e6521d6d682084ab84d4c7a1c71f0f700a",
+  "existingEnvironment": "FLAKE",
+  "files": [
+   {
+    "kind": "FLAKE_LOCK",
+    "path": "flake.lock",
+    "pins": [
+     {
+      "name": "nixpkgs",
+      "source": "flake.lock",
+      "value": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+     }
+    ],
+    "precedence": "COMMITTED_ENVIRONMENT",
+    "sha256": "f08893262cbd93d7ee9b88981f99298c05c9eab250dcf9fb852acd4f9a20503b"
+   },
+   {
+    "kind": "FLAKE_NIX",
+    "path": "flake.nix",
+    "pins": [
+     {
+      "name": "nixpkgs",
+      "source": "flake.nix",
+      "value": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+     }
+    ],
+    "precedence": "COMMITTED_ENVIRONMENT",
+    "sha256": "0884fd772ed5cfbc4d74e02842b6c69b97b4df282a76e12511f319a97401188e"
+   },
+   {
+    "kind": "MANIFEST",
+    "path": "pyproject.toml",
+    "pins": [],
+    "precedence": "MANIFEST",
+    "sha256": "b68918a57a24af9f931373b6c4df988f53465e2e30bc7dea182b97d8e925834c"
+   }
+  ],
+  "projectId": "1cd73769-88d9-49c6-af60-24df2aa03a78",
+  "provenance": "git-object-store",
+  "scannedAt": "2026-11-20T19:24:23.241900020+00:00",
+  "schemaVersion": 1,
+  "skippedEntries": 0,
+  "truncated": false
+ },
+ "conventionsSha256": "9f2c51bfe1c2e29be88e2bab729052e6521d6d682084ab84d4c7a1c71f0f700a",
+ "createdAt": "2026-11-20T19:24:23.241900020+00:00",
+ "files": [
+  {
+   "origin": "PROJECT",
+   "path": "flake.lock",
+   "sha256": "f08893262cbd93d7ee9b88981f99298c05c9eab250dcf9fb852acd4f9a20503b"
+  },
+  {
+   "origin": "PROJECT",
+   "path": "flake.nix",
+   "sha256": "0884fd772ed5cfbc4d74e02842b6c69b97b4df282a76e12511f319a97401188e"
+  }
+ ],
+ "leadReview": null,
+ "licenseInventory": {
+  "allowUnfree": false,
+  "blockers": [],
+  "catalogSha256": "725ba589f774e2f1415534e2ee37157ae9fa1ecacfc956a462529d167297cd36",
+  "entries": [
+   {
+    "attribution": "Nix is invoked as a separate LGPL-2.1 tool; Factory does not link Nix libraries. Preserve the license, notices and source/relink offer when distributing a modified Nix binary.",
+    "license": "LGPL-2.1-only",
+    "name": "nix",
+    "ownerOverrideId": null,
+    "sha256": "",
+    "source": "https://github.com/NixOS/nix/blob/master/COPYING",
+    "unfree": false,
+    "version": "pinned by builder receipt"
+   },
+   {
+    "attribution": "Copyright 2003-2026 Eelco Dolstra and the Nixpkgs/NixOS contributors. Preserve the MIT copyright and permission notice. Each selected package retains its own license.",
+    "license": "MIT",
+    "name": "nixpkgs",
+    "ownerOverrideId": null,
+    "sha256": "",
+    "source": "https://github.com/NixOS/nixpkgs/blob/master/COPYING",
+    "unfree": false,
+    "version": "pinned by the environment plan"
+   },
+   {
+    "attribution": "Apache License 2.0. Retain notices and any NOTICE text, mark modified files and comply with the patent-termination terms. The repository LICENSE and Cargo.toml are authoritative.",
+    "license": "Apache-2.0",
+    "name": "devenv",
+    "ownerOverrideId": null,
+    "sha256": "",
+    "source": "https://github.com/cachix/devenv/blob/main/LICENSE",
+    "unfree": false,
+    "version": "pinned by builder receipt"
+   }
+  ],
+  "inventorySha256": "16b2df71a8a7996ee5b433655b0c6c1773d23113a350e4b5b8e6074375df2773",
+  "overrides": [],
+  "policyRevision": "nix-devenv-license-v1",
+  "profileSha256": "233c0a4498f6b0b04dac494d596b160766b80f64d3ad0ff020e8e4796ac22aac",
+  "sbomSha256": "57bfc9052d4417c2a5ce92617936e5550fc461beba3e7e741a212aef5f0fae2e",
+  "schemaVersion": 1
+ },
+ "licenseInventorySha256": "16b2df71a8a7996ee5b433655b0c6c1773d23113a350e4b5b8e6074375df2773",
+ "network": {
+  "build": "NONE",
+  "fetch": "BROKER",
+  "fetchAllowlist": [
+   "https://cache.nixos.org",
+   "https://github.com",
+   "https://codeload.github.com",
+   "https://raw.githubusercontent.com",
+   "https://api.github.com",
+   "https://cachix.org",
+   "https://devenv.cachix.org"
+  ]
+ },
+ "nix": {
+  "allowUnfree": false,
+  "inputs": [],
+  "nixpkgs": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+  "sandbox": {
+   "hostMounts": [],
+   "hostNetwork": false,
+   "hostSockets": [],
+   "impure": false,
+   "privileged": false,
+   "sandbox": true
+  }
+ },
+ "packages": [],
+ "planId": "f4ce28ed8a6649b19a6b5cdad1cc8216",
+ "planSha256": "c6cb4499d86380bd53dfe1c89a33882213b3e36af7e58250dee9f5d12acc377a",
+ "projectId": "1cd73769-88d9-49c6-af60-24df2aa03a78",
+ "requestId": "fc7e7311-c49e-4c7a-abd9-49c501cb1c09",
+ "resolution": null,
+ "resources": {
+  "cpu": 2,
+  "diskMiB": 10240,
+  "memoryMiB": 4096,
+  "pids": 512,
+  "timeoutSecs": 1800
+ },
+ "revision": 1,
+ "riskClass": "R0",
+ "schemaVersion": 1,
+ "services": [],
+ "source": "PROJECT_COMMITTED",
+ "status": "CORE_VALIDATED",
+ "toolchains": []
+}

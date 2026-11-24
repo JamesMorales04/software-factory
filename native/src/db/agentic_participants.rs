@@ -23,6 +23,27 @@ pub struct AgenticParticipantPlanRecord {
     pub updated_at: String,
 }
 
+/// The persisted `work_units` column is `CHECK (work_units >= 1)`. A plan
+/// without validated Implementer units is never persisted, and a zero count is
+/// a typed error instead of `unwrap_or(1)`.
+fn participant_work_units(plan: &crate::agentic::ParticipantPlan) -> Result<u32, Error> {
+    let work_units = plan
+        .assignments
+        .iter()
+        .filter(|assignment| assignment.role == "Implementer")
+        .map(|assignment| assignment.count)
+        .max()
+        .ok_or(Error::Invalid(
+            "participant plan requires validated work units",
+        ))?;
+    if work_units == 0 {
+        return Err(Error::Invalid(
+            "participant plan requires validated work units",
+        ));
+    }
+    Ok(work_units)
+}
+
 fn from_row(row: &sqlx_sqlite::SqliteRow) -> Result<AgenticParticipantPlanRecord, Error> {
     Ok(AgenticParticipantPlanRecord {
         request_id: row.try_get("request_id")?,
@@ -50,13 +71,7 @@ impl Database {
         let plan_json =
             serde_json::to_string(plan).map_err(|_| Error::Invalid("participant plan encoding"))?;
         let plan_sha256 = sha256_hex(plan_json.as_bytes());
-        let work_units = plan
-            .assignments
-            .iter()
-            .filter(|assignment| assignment.role == "Implementer")
-            .map(|assignment| assignment.count)
-            .max()
-            .unwrap_or(1);
+        let work_units = participant_work_units(plan)?;
         if let Some(graph_sha256) = graph_sha256
             && (graph_sha256.len() != 64
                 || !graph_sha256.bytes().all(|byte| byte.is_ascii_hexdigit()))
@@ -94,6 +109,71 @@ impl Database {
         self.agentic_participant_plan(request_id).await
     }
 
+    /// Test-support only: rewrite the stored plan route/count to prove the
+    /// projections reject a decodable but inconsistent plan.
+    #[cfg(feature = "test-support")]
+    pub async fn mutate_participant_plan_for_test(
+        &self,
+        request_id: &str,
+        route: &str,
+    ) -> Result<(), Error> {
+        let (plan_json,): (String,) = sqlx::query_as::query_as(
+            "SELECT plan_json FROM agentic_participant_plans WHERE request_id=?1",
+        )
+        .bind(request_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(Error::NotFound)?;
+        let mut plan: serde_json::Value = serde_json::from_str(&plan_json)
+            .map_err(|_| Error::Invalid("participant plan JSON"))?;
+        plan["route"] = serde_json::Value::String(route.into());
+        let mutated = serde_json::to_string(&plan)
+            .map_err(|_| Error::Invalid("participant plan encoding"))?;
+        let _write = self.write_lock.lock().await;
+        sqlx::query::query("UPDATE agentic_participant_plans SET plan_json=?1 WHERE request_id=?2")
+            .bind(mutated)
+            .bind(request_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Test-support only: make the stored participant plan undecodable so the
+    /// intake and agentic projections prove they stay PLANNED_PENDING.
+    #[cfg(feature = "test-support")]
+    pub async fn corrupt_participant_plan_json_for_test(
+        &self,
+        request_id: &str,
+    ) -> Result<(), Error> {
+        let _write = self.write_lock.lock().await;
+        sqlx::query::query(
+            "UPDATE agentic_participant_plans SET plan_json='not-json' WHERE request_id=?1",
+        )
+        .bind(request_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Test-support only: point a persisted participant plan at a different
+    /// graph digest to prove the projection rejects stale plan/graph binding.
+    #[cfg(feature = "test-support")]
+    pub async fn set_participant_plan_graph_sha_for_test(
+        &self,
+        request_id: &str,
+        graph_sha256: &str,
+    ) -> Result<(), Error> {
+        let _write = self.write_lock.lock().await;
+        sqlx::query::query(
+            "UPDATE agentic_participant_plans SET graph_sha256=?1 WHERE request_id=?2",
+        )
+        .bind(graph_sha256)
+        .bind(request_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn agentic_participant_plan(
         &self,
         request_id: &str,
@@ -108,5 +188,37 @@ impl Database {
         .await?
         .ok_or(Error::NotFound)?;
         from_row(&row)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agentic::{Assurance, ChangeRoute, StackProfile, participant_plan};
+
+    #[test]
+    fn a_plan_without_validated_units_is_rejected_and_never_persisted_as_zero() {
+        let plan = participant_plan(
+            ChangeRoute::NoAgent,
+            Assurance::None,
+            0,
+            &StackProfile::default(),
+        )
+        .expect("non-change plan");
+        let error = participant_work_units(&plan).unwrap_err();
+        assert!(matches!(error, Error::Invalid(_)));
+        assert!(error.to_string().contains("validated work units"));
+    }
+
+    #[test]
+    fn validated_units_are_recorded_without_a_fallback() {
+        let plan = participant_plan(
+            ChangeRoute::Delegated,
+            Assurance::None,
+            3,
+            &StackProfile::default(),
+        )
+        .expect("validated units");
+        assert_eq!(participant_work_units(&plan).unwrap(), 3);
     }
 }

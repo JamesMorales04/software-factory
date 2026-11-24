@@ -29,8 +29,10 @@ from common import (
     Config,
     ScenarioError,
     State,
+    capture_final_evidence,
     cleanup,
     collect_diagnostics,
+    finalize_with_capture,
     doctor,
     ensure_dir,
     ensure_run_identity,
@@ -59,9 +61,10 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _load_scenario(path: str | None) -> tuple[str, list[str]]:
+def _load_scenario(path: str | None) -> tuple[str, list[str], list[str]]:
     if not path:
-        return "compose-intake", stage_order()
+        stages = stage_order()
+        return "compose-intake", stages, list(stages)
     scenario_path = Path(path)
     try:
         payload = json.loads(scenario_path.read_text(encoding="utf-8"))
@@ -81,7 +84,15 @@ def _load_scenario(path: str | None) -> tuple[str, list[str]]:
         raise ScenarioError("scenario stages must follow the canonical order")
     if len(set(stages)) != len(stages):
         raise ScenarioError("scenario stages must not repeat")
-    return str(payload.get("name", scenario_path.stem)), stages
+    required = payload.get("required", stages)
+    if not isinstance(required, list) or not required:
+        raise ScenarioError("scenario.required must be a non-empty list")
+    if len(set(required)) != len(required):
+        raise ScenarioError("scenario.required must not repeat")
+    outside = [name for name in required if name not in stages]
+    if outside:
+        raise ScenarioError(f"scenario.required must be a subset of stages: {', '.join(outside)}")
+    return str(payload.get("name", scenario_path.stem)), stages, required
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -110,7 +121,24 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--browser", choices=["none", "chromium"], default=os.environ.get("FACTORY_E2E_BROWSER", "none"))
     parser.add_argument("--project", default=os.environ.get("FACTORY_E2E_PROJECT"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("FACTORY_PORT", "0")))
-    parser.add_argument("--timeout", type=int, default=int(os.environ.get("FACTORY_E2E_TIMEOUT", "600")))
+    parser.add_argument(
+        "--operation-timeout",
+        type=int,
+        default=int(os.environ.get("FACTORY_E2E_OPERATION_TIMEOUT", "120")),
+        help="short deadline for one bounded tool operation (default 120s)",
+    )
+    parser.add_argument(
+        "--readiness-timeout",
+        type=int,
+        default=None,
+        help="optional explicit deadline for readiness waits; default: no total cap",
+    )
+    parser.add_argument(
+        "--run-timeout",
+        type=int,
+        default=None,
+        help="optional explicit total cap for the whole run; default: no total cap",
+    )
     return parser.parse_args(argv)
 
 
@@ -126,7 +154,7 @@ def _make_config(args: argparse.Namespace) -> Config:
     project = project_name(args.project or f"software-factory-e2e-{run_id.rsplit('-', 2)[-2]}-{run_id.rsplit('-', 1)[-1]}")
     port = args.port if args.port else free_port()
     snapshot_dir = Path(args.snapshot_dir).expanduser() if args.snapshot_dir else run_dir / "snapshots"
-    scenario_name, stages = _load_scenario(args.scenario)
+    scenario_name, stages, required = _load_scenario(args.scenario)
 
     from_stage = args.from_stage or stages[0]
     to_stage = args.to_stage or stages[-1]
@@ -188,8 +216,11 @@ def _make_config(args: argparse.Namespace) -> Config:
         restore=args.restore,
         snapshot_dir=snapshot_dir,
         no_build=args.no_build,
-        timeout=args.timeout,
+        operation_timeout=args.operation_timeout,
+        readiness_timeout=args.readiness_timeout,
+        run_timeout=args.run_timeout,
         scenario=scenario_name,
+        required_stages=required,
     )
 
 
@@ -228,12 +259,18 @@ def apply_saved_identity(
         config.port = saved_port
     if state.get("scenario"):
         config.scenario = state.get("scenario")
+    if state.get("required_stages"):
+        config.required_stages = state.get("required_stages")
 
 
-def scenario_definition_sha256(name: str, stages: list[str]) -> str:
+def scenario_definition_sha256(name: str, stages: list[str], required: list[str] | None = None) -> str:
     import hashlib
 
-    payload = json.dumps({"name": name, "stages": stages}, sort_keys=True, separators=(",", ":"))
+    payload = json.dumps(
+        {"name": name, "stages": stages, "required": required if required is not None else stages},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -284,6 +321,7 @@ def validate_resume_binding(
 
 def completion_status(
     completed: set[str],
+    mandatory: set[str],
     summary_status: str | None,
     restart_ok: bool,
     dirty: bool,
@@ -292,7 +330,7 @@ def completion_status(
 
     if dirty:
         return "PARTIAL"
-    if not set(stage_order()).issubset(completed):
+    if not mandatory.issubset(completed):
         return "PARTIAL"
     if summary_status != "PASS" or not restart_ok:
         return "PARTIAL"
@@ -366,6 +404,32 @@ def _record_stage(state: State, name: str, started: float, status: str, error: s
     state.save()
 
 
+def reset_stage_state(state: State, name: str) -> None:
+    """Invalidate dependent evidence when a stage (re)enters the loop.
+
+    The decision is derived from the stage name suffix, not from a fixed list:
+    the autonomous scenario uses `autonomous_summary` and `autonomous_restart`,
+    and the original `name != "summary"` / `name != "restart"` checks reset the
+    persistence flag right after a passing autonomous restart, turning a real
+    PASS into PARTIAL.
+    """
+
+    is_summary = name.endswith("summary")
+    is_restart = name.endswith("restart")
+    if not is_summary:
+        state.set("summary", None)
+        if not is_restart:
+            state.set("restart_persistence", False)
+        state.save()
+
+
+def dispatch_stage(context: Context, name: str) -> None:
+    """The dispatcher the real loop uses: reset then execute the stage."""
+
+    reset_stage_state(context.state, name)
+    stage_function(name)(context)
+
+
 def main(argv: list[str]) -> int:
     try:
         args = _parse_args(argv)
@@ -422,7 +486,11 @@ def main(argv: list[str]) -> int:
             state = State.load_or_create(state_path)
             ensure_run_identity(config, state)
 
-        scenario_name, stages = _load_scenario(args.scenario)
+        scenario_name, stages, required = _load_scenario(args.scenario)
+        if args.scenario is None and state_path.exists() and state.get("scenario_stages"):
+            scenario_name = state.get("scenario") or scenario_name
+            stages = state.get("scenario_stages")
+            required = state.get("required_stages") or stages
         selected = _stage_slice(config, stages)
         if config.from_stage != stages[0] and not state_path.exists():
             raise ScenarioError(
@@ -442,7 +510,7 @@ def main(argv: list[str]) -> int:
             )
         head = _git_head(config.root)
         cassette_sha = _file_sha256(config.cassette) if config.cassette else None
-        scenario_sha = scenario_definition_sha256(scenario_name, stages)
+        scenario_sha = scenario_definition_sha256(scenario_name, stages, required)
         validate_resume_binding(
             state,
             candidate_sha=head,
@@ -455,6 +523,8 @@ def main(argv: list[str]) -> int:
         state.set("run_id", config.run_id)
         state.set("scenario", scenario_name)
         state.set("scenario_sha256", scenario_sha)
+        state.set("scenario_stages", stages)
+        state.set("required_stages", required)
         state.set("candidate_sha", head)
         state.set("cassette_sha256", cassette_sha)
         state.set("artifacts_dir", str(config.artifacts_dir))
@@ -481,23 +551,27 @@ def main(argv: list[str]) -> int:
         for name in selected:
             started = time.monotonic()
             log(f"== {name}: {stage_description(name)}")
-            if name != "summary":
-                # Rerunning an upstream stage invalidates dependent evidence.
-                state.set("summary", None)
-                if name != "restart":
-                    state.set("restart_persistence", False)
-                state.save()
             try:
-                stage_function(name)(context)
+                dispatch_stage(context, name)
             except Exception as error:  # noqa: BLE001 - one bounded failure surface
                 message = str(error)
                 _record_stage(state, name, started, "FAIL", message)
+                # Persist the primary error before any best-effort diagnostics or
+                # finalization, so an interruption cannot hide why the stage failed.
+                log(f"stage failed: {name}: {message}")
                 try:
                     collect_diagnostics(config, compose, state, api)
                 except Exception as diagnostic_error:  # noqa: BLE001
                     log(f"diagnostics collection failed: {diagnostic_error}")
                 status = "FAIL"
-                cleanup_result = cleanup(config, compose)
+                _, cleanup_result, capture_error = finalize_with_capture(
+                    lambda: capture_final_evidence(
+                        config, compose, state, api, reason=f"failure:{name}"
+                    ),
+                    lambda: cleanup(config, compose),
+                )
+                if capture_error is not None:
+                    log(f"final capture error (original failure preserved): {capture_error}")
                 manifest = write_manifest(
                     config,
                     state,
@@ -519,11 +593,12 @@ def main(argv: list[str]) -> int:
         for item in state.get("stage_results", []):
             latest[item["name"]] = item.get("status", "FAIL")
         completed = {name for name, status in latest.items() if status == "PASS"}
-        all_required = completed.issuperset(set(stage_order()))
+        mandatory = set(config.required_stages or stage_order())
         summary_passed = (state.get("summary") or {}).get("status") == "PASS"
         restart_ok = state.get("restart_persistence") is True
         status = completion_status(
             completed,
+            mandatory,
             (state.get("summary") or {}).get("status"),
             restart_ok,
             dirty,
@@ -552,7 +627,14 @@ def main(argv: list[str]) -> int:
         elif final_dirty and not dirty:
             status = "FAIL"
             snapshot_error = "worktree became dirty during the run"
-        cleanup_result = cleanup(config, compose)
+        _, cleanup_result, capture_error = finalize_with_capture(
+            lambda: capture_final_evidence(
+                config, compose, state, api, reason="completed"
+            ),
+            lambda: cleanup(config, compose),
+        )
+        if capture_error is not None:
+            log(f"final capture error (run result preserved): {capture_error}")
         if cleanup_result.get("status") == "FAIL":
             status = "FAIL"
             snapshot_error = snapshot_error or "Compose cleanup failed"
@@ -575,6 +657,19 @@ def main(argv: list[str]) -> int:
         return 2
     except KeyboardInterrupt:
         log("interrupted")
+        try:
+            if "config" in locals() and "compose" in locals() and "state" in locals():
+                api_object = locals().get("api")
+                _, _, capture_error = finalize_with_capture(
+                    lambda: capture_final_evidence(
+                        config, compose, state, api_object, reason="cancelled"
+                    ),
+                    lambda: cleanup(config, compose),
+                )
+                if capture_error is not None:
+                    log(f"final capture error after cancellation: {capture_error}")
+        finally:
+            log("interrupted: cleanup path finished")
         return 130
 
 

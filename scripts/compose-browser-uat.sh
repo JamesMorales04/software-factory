@@ -13,6 +13,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# The one-prompt lane is a separate, isolated harness. Keep the historical
+# product lane untouched and dispatch explicitly.
+if [[ "${FACTORY_UAT_LANE:-product}" == "oneprompt" ]]; then
+  exec "$ROOT/scripts/compose-oneprompt-uat.sh" "$@"
+fi
+
 PROJECT="${FACTORY_UAT_PROJECT:-software-factory-uat60}"
 PORT="${FACTORY_UAT_PORT:-8898}"
 BASE="http://127.0.0.1:${PORT}"

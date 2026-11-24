@@ -319,6 +319,121 @@ not license the packages.
   hash, license expression, attribution text and any override. The inventory is
   part of the frozen spec and delivery evidence.
 
+### 7.3 Context verdict and shared catalogue
+
+The closure licence catalogue is **one data asset**, not a per-language list.
+Core and the environment builder consume the same file; its identity is the
+canonical hash of its sorted identifiers plus the declared catalogue revision,
+and that identity is bound into the environment plan, the licence inventory and
+the build receipt.
+
+- **Per-context verdict.** A licence decision is made in a context: the
+  *selected package* set keeps the stricter package allowance, while the
+  *closure* set admits the additional closure-wide identifiers. A closure-wide
+  admission is never a selected-package grant and never changes `deny`, `unfree`
+  or sandbox policy.
+- **Unknown and denied stay owner-governed.** Unknown, missing or contradictory
+  expressions still fail closed with `ENVIRONMENT_LICENSE_UNKNOWN`; denied
+  identifiers still fail with `ENVIRONMENT_LICENSE_DENIED`; unfree packages
+  still need the exact per-package owner override described in §7.2. A catalogue
+  entry is data, not an authorization.
+- **Transition data.** Existing recorded verdicts remain readable as transition
+  data while the context evaluator is rolled out; they are not re-interpreted as
+  new-family defaults.
+- **No default for new families.** Admitting a new licence family or a new
+  substrate requires the explicit owner matrix; the contract defines no implicit
+  default, and no personal profile is active merely because the evaluator exists.
+- **Audit surface.** The environment projection exposes the policy revision and
+  the inventory hash, so an operator can verify which catalogue produced a
+  verdict. This is audit metadata; it does not authorize execution.
+
+### 7.4 Profile identity and replay refusal
+
+The licence profile is data with its own identity. The profile hash covers at
+least the evaluation `mode`, the `familiesConfigured` flag, the denied
+identifiers and the per-context allowances, so a profile that changes behaviour
+cannot keep the same identity.
+
+- **Current-policy comparison.** A frozen inventory records the catalogue hash
+  and the profile hash it was produced with. Core compares both against the
+  policy currently in force; an inventory bound to a different catalogue or
+  profile is refused instead of being replayed as if it were current.
+- **Deny precedence.** A denied identifier denies the whole expression even when
+  it appears inside a compound expression; evaluating atoms must not weaken an
+  explicit deny.
+- **Evidence copies.** Any copied or projected inventory keeps the catalogue and
+  profile hashes; a copy that drops them is not evidence of the same policy.
+- **Contexts not evaluated.** A context that is not evaluated (for example a
+  distributed runtime context) is reported as not evaluated. It does not imply a
+  default allowance and does not authorize a new family.
+
+### 7.5 Exact source origins and unversioned substrate identities
+
+Some substrate identities are unversioned derivations (`stdenv-linux`,
+`update-autotools-gnu-config-scripts-hook`). Their licence is not inferred from
+a name, a store-path suffix or a neighbouring `COPYING` file. An unversioned
+closure entry is admitted only with an **exact reviewed source origin**.
+
+`SourceLicenseOrigin` binds, for one identity:
+
+| Field | Meaning |
+| --- | --- |
+| `pin` | Exact `github:NixOS/nixpkgs/<commit>` whose source produced the scripts |
+| `deriver`, `storePath`, `narHash` | Exact identity of the realised output |
+| `sourceStorePath`, `sourceNarSha256` | Pinned nixpkgs source tree and its NAR hash |
+| `licenseFile`, `licenseFileSha256` | Exact licence file (`COPYING`) and its bytes |
+| `license` | Licence expression the reviewed bytes establish (`MIT`) |
+| `inputSources` | Per-input `(storePath, sha256, sourcePath, sourceSha256)` pairs |
+| `compositionNarSha256`, `compositionNarSize` | Deterministic reconstruction of the exact output |
+
+Rules:
+
+- **Evidence binding, not authorization.** The reviewed origins live in one data
+  asset, `source_license_origins.json`, shared by the builder and Core (Core
+  compiles it in). Membership only makes a **factual origin** admissible. It is
+  not an allowlist, grants no licence, overrides no verdict and cannot admit a
+  new licence family. The verdict still comes from the catalogue/profile context
+  evaluator and the entry's licence expression.
+- **Exact equality.** A submitted origin must equal the reviewed origin for the
+  exact `(pin, deriver, storePath)` key: every hash, size, source path, licence
+  file and input pair. Name-only, wildcard, prefix, extra-field or
+  structurally-plausible-but-unreviewed origins fail closed with
+  `ENVIRONMENT_LICENSE_UNKNOWN`. Inputs are unique and byte-identical
+  (`sha256 == sourceSha256`).
+- **Explicit version state.** `versionState` is `known` or `unversioned`; an
+  absent value is `known`. `known` requires a non-empty version and forbids a
+  source origin. `unversioned` requires an empty version **and** an exact
+  origin. No other combination is tolerated, so an empty version is never an
+  implicit exception.
+- **Identity-facts anchor.** Origins are consumed only after the authenticated
+  identity-facts receipt exists. The origin `pin` must equal the signed
+  challenge pin, and its `storePath`, `deriver` and `narHash` must equal one
+  signed manifest fact of that exact environment
+  ([identity-facts](identity-facts.md)); an origin without a matching signed
+  fact fails closed. Only the broker produces and signs those facts, so a
+  caller, builder or model cannot mint one. The acceptance test uses the real
+  `sign`/`verify` HMAC path, not a fixture constructor.
+- **Output identity.** `compositionNarSha256` must equal the identity's
+  `narHash`: the reconstructed composition is the signed output, never a
+  different NAR that merely has the right shape.
+- **Bounded scope.** These MIT records cover only the exact scripts and outputs
+  of the two reviewed identities. Transitive components (`gnu-config`,
+  `gcc-wrapper`, `bash`, and the `inputDrvs`) keep their separate frozen
+  inventory entries; the `COPYING` file is never extrapolated to them.
+- **Provenance.** The data asset carries exactly four evidence digests, each
+  with one role: `licenseEvidenceV2Sha256` (the v2 licence evidence),
+  `compositionAuditSha256Sums` (the author composition-audit `SHA256SUMS`),
+  `compositionAuditCanonicalVerifyLogSha256` (the author canonical verification
+  log) and `independentReconstructionSha256Sums` (the independent
+  reconstruction `SHA256SUMS`). The independent digest is that artifact's
+  `SHA256SUMS`, not the canonical log; extra, missing, duplicated or
+  non-hex bindings are refused by both the builder and Core. Changing any byte
+  of evidence invalidates the binding rather than silently widening it.
+- **Office impact.** None: this is internal evidence and provenance plumbing.
+  Existing environment blockers still surface through the same typed
+  `ENVIRONMENT_LICENSE_*` errors, so no user-facing control, route or label
+  changes.
+
 ## 8. Builder sandbox
 
 The generated plan/files are untrusted. Build/evaluation runs in a dedicated

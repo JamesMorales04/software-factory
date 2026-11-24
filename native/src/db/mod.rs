@@ -1154,6 +1154,10 @@ pub use github::{
 };
 mod inference_ledger;
 mod lead;
+mod license_decisions;
+pub use license_decisions::{
+    LICENSE_DELEGATION_MATTER, LICENSE_DELEGATION_OPTION, LicenseDecisionRecord,
+};
 mod model_calls;
 pub use crate::inference_ledger::{
     CampaignEnvelopeBindingInput, CampaignInferenceRequirement, InferenceEnvelopeRecord,
@@ -1187,8 +1191,8 @@ pub use issue_links::{
     NewIssueDeliveryEvent,
 };
 pub use model_calls::{
-    ModelCallDecision, ModelCallGrant, ModelCallPolicy, ModelCallRecord, ModelCallResult,
-    ModelCallRole, ModelCallUsage, NewModelCallAuthorization,
+    LicenseEvidenceReservation, ModelCallDecision, ModelCallGrant, ModelCallPolicy,
+    ModelCallRecord, ModelCallResult, ModelCallRole, ModelCallUsage, NewModelCallAuthorization,
 };
 mod delivery;
 pub use delivery::{
@@ -1206,11 +1210,17 @@ mod execution_receipts;
 mod project_configs;
 pub use execution_receipts::{ExecutionCheckInput, ExecutionCheckReceiptRecord};
 mod environment;
-pub use environment::{CampaignEnvironmentBinding, StoredEnvironmentPlan, StoredEnvironmentSpec};
+pub use environment::{
+    CampaignEnvironmentBinding, StoredEnvironmentPlan, StoredEnvironmentSpec,
+    StoredIdentityFactsReceipt,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use environment::{
-    TestEnvironmentBinding, apply_test_environment_binding, test_environment_binding,
+    TestEnvironmentBinding, apply_test_environment_binding,
+    apply_test_environment_binding_if_enabled, test_environment_binding,
+    test_environment_binding_opt_in,
 };
+mod provider_extra_usage;
 mod provider_sessions;
 mod provider_settings;
 mod subscription_admissions;
@@ -1229,8 +1239,14 @@ pub use agentic_plans::{
     AgenticSpecIssueRecord, AgenticSpecPublicationRecord, AgenticSpecRecord,
     AgenticWorkGraphRecord, NewAgenticSpecDraft, NewAgenticSpecPublication, NewAgenticWorkGraph,
 };
+pub use provider_extra_usage::{
+    DeclareProviderExtraUsage, DeclaredProviderExtraUsage, ProviderExtraUsageDeclaration,
+};
 pub use provider_settings::{ProviderSettingsAudit, ProviderSettingsRecord, ProviderSettingsWrite};
-pub use subscription_admissions::{ScopeAdmissionRecord, ScopeAdmissionWrite};
+pub use subscription_admissions::{
+    OwnerExtraUsageBinding, ScopeAdmissionRecord, ScopeAdmissionWrite,
+    subscription_request_fingerprint,
+};
 mod runtime_settings;
 pub use project_configs::NewProjectConfig;
 pub use runtime_settings::FactorySettings;

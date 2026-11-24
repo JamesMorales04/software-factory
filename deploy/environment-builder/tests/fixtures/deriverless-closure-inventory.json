@@ -1,0 +1,1214 @@
+{
+  "allowedToday": [
+    "/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh",
+    "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh"
+  ],
+  "closureCount": 73,
+  "closureManifestSha256": "294ae2fcf217095199a4e155d069f62be2f44bda2c381626d43f360b68bd1c57",
+  "deriverLess": [
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "move-docs.sh",
+      "narHash": "sha256-LFXKr+/5UKMCEYyEpyotSs23Xr0Vwhzlv6YGyO/dqzI=",
+      "narSize": 816,
+      "path": "/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "prune-libtool-files.sh",
+      "narHash": "sha256-0DC4P4/oI7F2AJ/9K6MUMNP818Ol4i+fvpJt3D2HyJs=",
+      "narSize": 1072,
+      "path": "/nix/store/cickvswrvann041nqxb0rxilc46svw1n-prune-libtool-files.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "multiple-outputs.sh",
+      "narHash": "sha256-9xd9l6/GeN1DX0xqIZtdJltbBaUBOAJAuFIlvdduqRc=",
+      "narSize": 8432,
+      "path": "/nix/store/cmzya9irvxzlkh7lfy6i82gbp0saxqj3-multiple-outputs.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "move-lib64.sh",
+      "narHash": "sha256-SDQRJiS2AfWlONR8W8dEGuNPeLET7IuPLOm5vQBh2C0=",
+      "narSize": 904,
+      "path": "/nix/store/fyaryjvghbkpfnsyw97hb3lyb37s1pd6-move-lib64.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "audit-tmpdir.sh",
+      "narHash": "sha256-tMYdNz2xetDsQK1FEy3126+UqdkB8cXN4l/Zgbv3tm0=",
+      "narSize": 1520,
+      "path": "/nix/store/h9lc1dpi14z7is86ffhl3ld569138595-audit-tmpdir.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "patch-shebangs.sh",
+      "narHash": "sha256-TRd6N2KO74qqyBQxi1ihprZTMcgR6eAw5Z+HxpwF9Tc=",
+      "narSize": 5248,
+      "path": "/nix/store/hxv896faph0rqxjq2ycxpcrbnngc95sz-patch-shebangs.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "no-broken-symlinks.sh",
+      "narHash": "sha256-/t5eWNc5nQI9BbgQQFRVf4dy5Ph0lNq7fK24H8Pmjxc=",
+      "narSize": 3104,
+      "path": "/nix/store/jjhw2phnaip4kg0qjas3x3fsaifi8y0w-no-broken-symlinks.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "move-sbin.sh",
+      "narHash": "sha256-exQDue2oXLDKVrh7CiPpj7WjA5qhZfskrLzpYkAFiy0=",
+      "narSize": 664,
+      "path": "/nix/store/kd4xwxjpjxi71jkm6ka0np72if9rm3y0-move-sbin.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "compress-man-pages.sh",
+      "narHash": "sha256-nvkpux1XBRA6JnXeEphB25xVbHKTz1bkBF3/K7HGbU0=",
+      "narSize": 1088,
+      "path": "/nix/store/m54bmrhj6fqz8nds5zcj97w9s9bckc9v-compress-man-pages.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "move-systemd-user-units.sh",
+      "narHash": "sha256-ApvZCwlSSuSA6bGuBQGi+EIncpLHju2Uhro27Mb8wMA=",
+      "narSize": 880,
+      "path": "/nix/store/pag6l61paj1dc9sv15l7bm5c17xn5kyk-move-systemd-user-units.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "strip.sh",
+      "narHash": "sha256-/kocrQCaIGEh7zh26MuHLTtmIp5yJylHriY/yVFhPk4=",
+      "narSize": 4616,
+      "path": "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "make-symlinks-relative.sh",
+      "narHash": "sha256-M5wxSjy928eIoBBePFKFPVHxbvVNJaOSHGej8zueD0A=",
+      "narSize": 1280,
+      "path": "/nix/store/wgrbkkaldkrlrni33ccvm3b6vbxzb656-make-symlinks-relative.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "reproducible-builds.sh",
+      "narHash": "sha256-9TquSNTf3+sENOwMmBFmniGPTzbIX9Sn2PFfuJ4i0UA=",
+      "narSize": 608,
+      "path": "/nix/store/xyff06pkhki3qy1ls77w10s0v79c9il0-reproducible-builds.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "set-source-date-epoch-to-latest.sh",
+      "narHash": "sha256-O6Gjn5FQzTLFmOLmXU5J4i6ei4gvLK7fo6vA+C0lmn0=",
+      "narSize": 1696,
+      "path": "/nix/store/z7k98578dfzi6l3hsvbivzm7hfqlk0zc-set-source-date-epoch-to-latest.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    }
+  ],
+  "deriverLessCount": 14,
+  "entries": [
+    {
+      "deriver": "/nix/store/3jxlqvnx17lj7s17r7dzjm4257pbznv1-libffi-3.4.8.drv",
+      "deriverLess": false,
+      "name": "libffi-3.4.8",
+      "narHash": "sha256-RBGBGK/emI+HEQ9redg9eI5VKeD+aAbs2d6VmbdVaEE=",
+      "narSize": 73600,
+      "path": "/nix/store/0aaj6jbxclpwvrphggqz4vf5hg8360fr-libffi-3.4.8",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12"
+      ]
+    },
+    {
+      "deriver": "/nix/store/p8vpplfq13sjvxxvcfswp8p2rajji7yh-xgcc-14.3.0.drv",
+      "deriverLess": false,
+      "name": "xgcc-14.3.0-libgcc",
+      "narHash": "sha256-GLpG+H+2R89CF2xnG265h0plYt7Z6MQZBp2BkFaug+Y=",
+      "narSize": 201848,
+      "path": "/nix/store/16hvpw4b3r05girazh4rnwbw0jgjkb4l-xgcc-14.3.0-libgcc",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/fm1snxs1cg8ml9fjj6kra32sc8413k8z-glibc-2.40-66-bin",
+        "/nix/store/i3ibgfskl99qd8rslafbpaa1dmxdzh1z-glibc-2.40-66"
+      ]
+    },
+    {
+      "deriver": "/nix/store/020k7dynspv4rgym51f1fn4j1jp2qhvs-util-linux-minimal-2.41.1.drv",
+      "deriverLess": false,
+      "name": "util-linux-minimal-2.41.1-lib",
+      "narHash": "sha256-cEHjO+q7SjbcGyVHtTWYF7cblpWoV87BZVBHeNJDseI=",
+      "narSize": 2048760,
+      "path": "/nix/store/18ks84vwka6v1ldjp0cnil98pyykr3a9-util-linux-minimal-2.41.1-lib",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12"
+      ]
+    },
+    {
+      "deriver": "/nix/store/z139x5g23l9d5wcxmik9vh0qbbcshaz9-glibc-2.40-66.drv",
+      "deriverLess": false,
+      "name": "glibc-2.40-66-dev",
+      "narHash": "sha256-QOv7tmnsxsTMwjFlAhC4/+0NFA7Ye7wG/NFwz6DVHA0=",
+      "narSize": 2427432,
+      "path": "/nix/store/1v9ggwkpb0xy708s11s1g9fhinn3b06r-glibc-2.40-66-dev",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/iga4lv0say4pbbbgkf1v79403n1ip7hf-binutils-wrapper-2.44",
+        "/nix/store/kks0nbx2riwry5qsx0qr87qr0lswmhzi-gcc-wrapper-14.3.0",
+        "/nix/store/y28c83zz73yr4vwz1fsl4nsrn6yz5fj0-gcc-14.3.0"
+      ]
+    },
+    {
+      "deriver": "/nix/store/frbwnxpx3i0kr3mx0bmvjdqayjpz7jf3-openssl-3.4.3.drv",
+      "deriverLess": false,
+      "name": "openssl-3.4.3",
+      "narHash": "sha256-5PhFnGh8Q14Vya2ayZ+lcNe9Y6FufTQ0z4QRBxzURzo=",
+      "narSize": 8254752,
+      "path": "/nix/store/2fxp204b9jh1s3lpggdlnws44vvzw1w9-openssl-3.4.3",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12"
+      ]
+    },
+    {
+      "deriver": "/nix/store/yjhalvwn0n0wgac9vh3iigb17ynff7y2-tzdata-2025b.drv",
+      "deriverLess": false,
+      "name": "tzdata-2025b",
+      "narHash": "sha256-Fm+rXG3x1ve5lovMiuwIfcaExC7Zo6+IHufD9oryjKw=",
+      "narSize": 2145368,
+      "path": "/nix/store/2s4hpq73hn49jd84x976m3acp3rd3k1x-tzdata-2025b",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12"
+      ]
+    },
+    {
+      "deriver": "/nix/store/frkdwgpbgh17hz57giw5rm3bs8bsflfb-ed-1.21.1.drv",
+      "deriverLess": false,
+      "name": "ed-1.21.1",
+      "narHash": "sha256-humgomxjPuMnaa5VWRl8ondk5lDth9N3px977TJOpG4=",
+      "narSize": 151016,
+      "path": "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/jangxddrzycnc2rl1wc1sqhqp26yrx4k-patch-2.7.6"
+      ]
+    },
+    {
+      "deriver": "/nix/store/sjh98bfiks61dgj7w5b9kxfjb2kch99v-binutils-2.44.drv",
+      "deriverLess": false,
+      "name": "binutils-2.44",
+      "narHash": "sha256-eUKRUKCiEwZ1V0GIv6mo3brhUD2HsI1bkzqfsN75J6w=",
+      "narSize": 32561040,
+      "path": "/nix/store/42pzy4ahwk8p41hwfmz2nldgvsdws8q1-binutils-2.44",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/iga4lv0say4pbbbgkf1v79403n1ip7hf-binutils-wrapper-2.44",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/bbrfrs4wr9gkmygb3gpkwmc4n1j83wdd-gzip-1.14.drv",
+      "deriverLess": false,
+      "name": "gzip-1.14",
+      "narHash": "sha256-5Jx9wWMeQst0u2UWKtOXthKRoBqTxCn89yPzwlbknRg=",
+      "narSize": 155880,
+      "path": "/nix/store/44c243x0jpv587hmxrzl31pripa0f0j8-gzip-1.14",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/ad4634c6h816nsrcs8ckpwkqbq5lpf59-mailcap-2.1.54.drv",
+      "deriverLess": false,
+      "name": "mailcap-2.1.54",
+      "narHash": "sha256-/2pkdgHKodEDLknYROnuSN0F17m+BZ4AymO51vBpcvU=",
+      "narSize": 119360,
+      "path": "/nix/store/4kw98q84pbv2nwq3ay12aavfa9zi4d9z-mailcap-2.1.54",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12"
+      ]
+    },
+    {
+      "deriver": "/nix/store/dilfhhmq1d0b1k8hjdac3dql6kfxzvfx-file-5.45.drv",
+      "deriverLess": false,
+      "name": "file-5.45",
+      "narHash": "sha256-aqU3d5JpvdfEl/kEDmNt6+1abPax84QNtEXzEEP7+XE=",
+      "narSize": 8745912,
+      "path": "/nix/store/4zpfjm2r6chc8b10c1xa1d6asy100sqv-file-5.45",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/s0bjwgvmw4iq13va2zh88yqhc43wpf6n-bzip2-1.0.8.drv",
+      "deriverLess": false,
+      "name": "bzip2-1.0.8-bin",
+      "narHash": "sha256-Jyu142dLCHQdSrzgK7XVt1oGGKFJagI9PMBygWPsUDY=",
+      "narSize": 68856,
+      "path": "/nix/store/59pgpbm743q1nhav513283zinqrf4rqk-bzip2-1.0.8-bin",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/sjh98bfiks61dgj7w5b9kxfjb2kch99v-binutils-2.44.drv",
+      "deriverLess": false,
+      "name": "binutils-2.44-lib",
+      "narHash": "sha256-sUNJJvOPEtWV2bFdNp9ZBH+OJ6s7CYByrPOWcOUIpyc=",
+      "narSize": 2994824,
+      "path": "/nix/store/5i17rngglby671bra0ns7nr01v1c0340-binutils-2.44-lib",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/42pzy4ahwk8p41hwfmz2nldgvsdws8q1-binutils-2.44"
+      ]
+    },
+    {
+      "deriver": "/nix/store/y27rk50h0v1s9if41vykj4lfjrxb0zvs-patchelf-0.15.0.drv",
+      "deriverLess": false,
+      "name": "patchelf-0.15.0",
+      "narHash": "sha256-0wFm5JK2AEU5/2k0kmevzNcc1ejTLwnyq7BPPlcBQeA=",
+      "narSize": 246224,
+      "path": "/nix/store/5wf9wpdkxs30811kfgkicn9i3nz9jhsh-patchelf-0.15.0",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "move-docs.sh",
+      "narHash": "sha256-LFXKr+/5UKMCEYyEpyotSs23Xr0Vwhzlv6YGyO/dqzI=",
+      "narSize": 816,
+      "path": "/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/hrdaasgw39vzcb0ri1pk5ndx9sw7vb51-mpdecimal-4.0.0.drv",
+      "deriverLess": false,
+      "name": "mpdecimal-4.0.0",
+      "narHash": "sha256-NvXsnZEACWI9iL52pmioOY2oVT5ddQcnNKuITqWtvlQ=",
+      "narSize": 226192,
+      "path": "/nix/store/68bgk51v8baq44lqb3ps74b7jpcgc30z-mpdecimal-4.0.0",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12"
+      ]
+    },
+    {
+      "deriver": "/nix/store/05rf4v1h662r4mh0hk9sbybbnvkqipxa-xz-5.8.1.drv",
+      "deriverLess": false,
+      "name": "xz-5.8.1",
+      "narHash": "sha256-rOsNX29sYf3v3prT789615HQFmctOqIbPauM5KrEHkg=",
+      "narSize": 857952,
+      "path": "/nix/store/6ab07lf8v6zjcjr8ysxcsf13kn8593vb-xz-5.8.1",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/b7g83isqdl778kmcpv6v68z76x4x5riv-xz-5.8.1-bin",
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12"
+      ]
+    },
+    {
+      "deriver": "/nix/store/nazidaxf0k55rmcvllgrlarxpf3phqjx-gmp-6.3.0.drv",
+      "deriverLess": false,
+      "name": "gmp-6.3.0",
+      "narHash": "sha256-sQpPQdKi7qw1/Jqe1bV7rok4wdosFFfr082hpdEFFtY=",
+      "narSize": 748144,
+      "path": "/nix/store/6mxnr68qgihr5pmp4avjbijjgwifdnml-gmp-6.3.0",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/bgp9znk5cnzmh0fbb2l0rwclbz2qv0w8-mpfr-4.2.2",
+        "/nix/store/fpsjnh09h1jnyqm51925wa2xck72jchb-isl-0.20",
+        "/nix/store/h8xdapcbh1hgqrbcs1xbfamxgx4wwrj3-libmpc-1.3.1",
+        "/nix/store/y28c83zz73yr4vwz1fsl4nsrn6yz5fj0-gcc-14.3.0"
+      ]
+    },
+    {
+      "deriver": "/nix/store/02gjibdnnwlivyfn33xcq7bffqxa8mmd-gnutar-1.35.drv",
+      "deriverLess": false,
+      "name": "gnutar-1.35",
+      "narHash": "sha256-27sGJWbxGHIp2sCg3u9XGWfgX/PhRFIbroiAYV+fxyA=",
+      "narSize": 2823768,
+      "path": "/nix/store/76df6j9sq1ar58id3y3v4rkijany1wxp-gnutar-1.35",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/p7nmxlwvbfqsmfb0qwp5x7i3fd23ng65-gnugrep-3.11.drv",
+      "deriverLess": false,
+      "name": "gnugrep-3.11",
+      "narHash": "sha256-A/9lIgaNgVJ0eJ7ZbkpONmHoccWMcFteegH/Eu0HEo8=",
+      "narSize": 952912,
+      "path": "/nix/store/90r466lzg0jw11v60cki60s0qfhs93vp-gnugrep-3.11",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/kks0nbx2riwry5qsx0qr87qr0lswmhzi-gcc-wrapper-14.3.0",
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/05rf4v1h662r4mh0hk9sbybbnvkqipxa-xz-5.8.1.drv",
+      "deriverLess": false,
+      "name": "xz-5.8.1-bin",
+      "narHash": "sha256-K/2lmnMR1AUZACCmoAIdHNYU72LgQ2VLoTxXErEB9Eg=",
+      "narSize": 201800,
+      "path": "/nix/store/b7g83isqdl778kmcpv6v68z76x4x5riv-xz-5.8.1-bin",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/ml1r664bij3v81f3xf4sr9p7278v4g3f-mpfr-4.2.2.drv",
+      "deriverLess": false,
+      "name": "mpfr-4.2.2",
+      "narHash": "sha256-8UYBldM7chKUdEt7wE6aQI05Am1th+H6j6Y4uB9ze9g=",
+      "narSize": 822792,
+      "path": "/nix/store/bgp9znk5cnzmh0fbb2l0rwclbz2qv0w8-mpfr-4.2.2",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/h8xdapcbh1hgqrbcs1xbfamxgx4wwrj3-libmpc-1.3.1",
+        "/nix/store/y28c83zz73yr4vwz1fsl4nsrn6yz5fj0-gcc-14.3.0"
+      ]
+    },
+    {
+      "deriver": "/nix/store/d51mr46gmjl0264ynh5j748l55jg6k33-acl-2.3.2.drv",
+      "deriverLess": false,
+      "name": "acl-2.3.2",
+      "narHash": "sha256-mLfWWRUD/kwnS3kHBs8mtMuDFgEO3mVOAFviT1Cm/g8=",
+      "narSize": 128224,
+      "path": "/nix/store/bylmxi0aa2v3jz2q7zkdpa49nmpyrkgq-acl-2.3.2",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/76df6j9sq1ar58id3y3v4rkijany1wxp-gnutar-1.35",
+        "/nix/store/zwplch93wbpj82bp7riwaixmdx2xi0ah-coreutils-9.7"
+      ]
+    },
+    {
+      "deriver": "/nix/store/3pf5j1zm8yx9zqwlhjbymb5bf3d6lvx4-findutils-4.10.0.drv",
+      "deriverLess": false,
+      "name": "findutils-4.10.0",
+      "narHash": "sha256-54IiISewEkVBYXsISELydJgndt2ivjtj6hJy/UxCrNc=",
+      "narSize": 1815584,
+      "path": "/nix/store/c9jzm47zb8j7jbpw4a7zdm35qmhdf6ws-findutils-4.10.0",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/r66403pd66m9zddlyrp3r9djwjzkbd4j-gcc-14.3.0.drv",
+      "deriverLess": false,
+      "name": "gcc-14.3.0-lib",
+      "narHash": "sha256-kh0yqx4XwAqQWEelWqpig5QuchOZpUT6FzeguURg1hk=",
+      "narSize": 9982176,
+      "path": "/nix/store/cf1a53iqg6ncnygl698c4v0l8qam5a2q-gcc-14.3.0-lib",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/42pzy4ahwk8p41hwfmz2nldgvsdws8q1-binutils-2.44",
+        "/nix/store/5wf9wpdkxs30811kfgkicn9i3nz9jhsh-patchelf-0.15.0",
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12",
+        "/nix/store/kks0nbx2riwry5qsx0qr87qr0lswmhzi-gcc-wrapper-14.3.0",
+        "/nix/store/lm0g29ps43q8bm2gsd26g5pi2zwb6i8d-gmp-with-cxx-6.3.0",
+        "/nix/store/y28c83zz73yr4vwz1fsl4nsrn6yz5fj0-gcc-14.3.0"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "prune-libtool-files.sh",
+      "narHash": "sha256-0DC4P4/oI7F2AJ/9K6MUMNP818Ol4i+fvpJt3D2HyJs=",
+      "narSize": 1072,
+      "path": "/nix/store/cickvswrvann041nqxb0rxilc46svw1n-prune-libtool-files.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "multiple-outputs.sh",
+      "narHash": "sha256-9xd9l6/GeN1DX0xqIZtdJltbBaUBOAJAuFIlvdduqRc=",
+      "narSize": 8432,
+      "path": "/nix/store/cmzya9irvxzlkh7lfy6i82gbp0saxqj3-multiple-outputs.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/cp97gpp23ww9xx6v031lqlx8kh6wl5jq-libxcrypt-4.4.38.drv",
+      "deriverLess": false,
+      "name": "libxcrypt-4.4.38",
+      "narHash": "sha256-rzt2N3yjx9pUCg04UUIgjx3FfXRiDdh9d32TMHbVllk=",
+      "narSize": 131096,
+      "path": "/nix/store/cvd68krxqrwgrsigszs0al2i8dnvlwk4-libxcrypt-4.4.38",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12"
+      ]
+    },
+    {
+      "deriver": "/nix/store/k8ng4lg4dpihi294ak8mlsykp8kyj76j-libunistring-1.3.drv",
+      "deriverLess": false,
+      "name": "libunistring-1.3",
+      "narHash": "sha256-1wXEyr5c17R2SkbJko9TCUhuoNcD/7qvmgM9wBt6WPE=",
+      "narSize": 2070232,
+      "path": "/nix/store/d5s1ab9ynjsh45js7d75ijxklzqm49r0-libunistring-1.3",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/vi5fmmv0q0z9rjf3jfis7q2i9g05l8s2-libidn2-2.3.8"
+      ]
+    },
+    {
+      "deriver": "/nix/store/r66403pd66m9zddlyrp3r9djwjzkbd4j-gcc-14.3.0.drv",
+      "deriverLess": false,
+      "name": "gcc-14.3.0-libgcc",
+      "narHash": "sha256-IZ5xxAgA5HJAN3HuqM9/Pt/37C/v9nSh6IxsF1h6Ie0=",
+      "narSize": 201848,
+      "path": "/nix/store/d84l3qjb077dxkajn24k58z2q261d4lv-gcc-14.3.0-libgcc",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/cf1a53iqg6ncnygl698c4v0l8qam5a2q-gcc-14.3.0-lib"
+      ]
+    },
+    {
+      "deriver": "/nix/store/cdxrrzkkl3q6391hcsi0i6jdcbn4swwz-linux-headers-6.12.7.drv",
+      "deriverLess": false,
+      "name": "linux-headers-6.12.7",
+      "narHash": "sha256-U03aIFq+8cmaHQId4T6HVLSRUxk/2HIOG/LbMAi9eWk=",
+      "narSize": 6964336,
+      "path": "/nix/store/dlfjyqx1c99z7szp881jpnzbakw8m97x-linux-headers-6.12.7",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/1v9ggwkpb0xy708s11s1g9fhinn3b06r-glibc-2.40-66-dev"
+      ]
+    },
+    {
+      "deriver": "/nix/store/n4jk7pj33qywkrlsgnf5611lc1c7wp08-update-autotools-gnu-config-scripts-hook.drv",
+      "deriverLess": false,
+      "name": "update-autotools-gnu-config-scripts-hook",
+      "narHash": "sha256-wIte/PovG1/aVE3yV/TmEf9bQKvXYDVlNJB+wcOZP8w=",
+      "narSize": 968,
+      "path": "/nix/store/f244pq7qm9ga22jpa4l0vca2ys4q7wh7-update-autotools-gnu-config-scripts-hook",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/2n1rkr8k2cd3xkdy9ijvbnqhdzvamzyn-zlib-1.3.1.drv",
+      "deriverLess": false,
+      "name": "zlib-1.3.1",
+      "narHash": "sha256-raQ9KndWGBquyH4royXLWVa/t31Nle4pGzL1J166qCk=",
+      "narSize": 132264,
+      "path": "/nix/store/f2q5ld1nipl8w1r2w8m6azhlm2varqgb-zlib-1.3.1",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/42pzy4ahwk8p41hwfmz2nldgvsdws8q1-binutils-2.44",
+        "/nix/store/4zpfjm2r6chc8b10c1xa1d6asy100sqv-file-5.45",
+        "/nix/store/5i17rngglby671bra0ns7nr01v1c0340-binutils-2.44-lib",
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12",
+        "/nix/store/ks3slx52c0jmfgg717n0jq9lp354mlnw-sqlite-3.48.0",
+        "/nix/store/y28c83zz73yr4vwz1fsl4nsrn6yz5fj0-gcc-14.3.0"
+      ]
+    },
+    {
+      "deriver": "/nix/store/n7hmi62dy329hg9ksd9n5lzkqi8507cj-expand-response-params.drv",
+      "deriverLess": false,
+      "name": "expand-response-params",
+      "narHash": "sha256-9/DsGURI39B186nigypKat0pyPQoYEm1huQe1k5fm6E=",
+      "narSize": 16768,
+      "path": "/nix/store/fid5v1wd8wkrz39yp73d0hhlny2ms9w5-expand-response-params",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/iga4lv0say4pbbbgkf1v79403n1ip7hf-binutils-wrapper-2.44",
+        "/nix/store/kks0nbx2riwry5qsx0qr87qr0lswmhzi-gcc-wrapper-14.3.0"
+      ]
+    },
+    {
+      "deriver": "/nix/store/z139x5g23l9d5wcxmik9vh0qbbcshaz9-glibc-2.40-66.drv",
+      "deriverLess": false,
+      "name": "glibc-2.40-66-bin",
+      "narHash": "sha256-CRIZi0ltn2A0/4Xj/yEdokjQALqdzs6Tu01V876BQGM=",
+      "narSize": 2847496,
+      "path": "/nix/store/fm1snxs1cg8ml9fjj6kra32sc8413k8z-glibc-2.40-66-bin",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/1v9ggwkpb0xy708s11s1g9fhinn3b06r-glibc-2.40-66-dev",
+        "/nix/store/iga4lv0say4pbbbgkf1v79403n1ip7hf-binutils-wrapper-2.44",
+        "/nix/store/kks0nbx2riwry5qsx0qr87qr0lswmhzi-gcc-wrapper-14.3.0",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/8130lypfxhdv8hc6bdwy6xpjb5gvq49m-isl-0.20.drv",
+      "deriverLess": false,
+      "name": "isl-0.20",
+      "narHash": "sha256-KkacWSZnwOPzsfFMBYEoGrdS7Z8dYIApTaXYQejNwog=",
+      "narSize": 2638376,
+      "path": "/nix/store/fpsjnh09h1jnyqm51925wa2xck72jchb-isl-0.20",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/y28c83zz73yr4vwz1fsl4nsrn6yz5fj0-gcc-14.3.0"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "move-lib64.sh",
+      "narHash": "sha256-SDQRJiS2AfWlONR8W8dEGuNPeLET7IuPLOm5vQBh2C0=",
+      "narSize": 904,
+      "path": "/nix/store/fyaryjvghbkpfnsyw97hb3lyb37s1pd6-move-lib64.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/30clb94bhc802pwls07w8vzry7ynqyi7-libmpc-1.3.1.drv",
+      "deriverLess": false,
+      "name": "libmpc-1.3.1",
+      "narHash": "sha256-V1uHZ6Tmiz+LUTB9bGqtWeMmYtD7CIYEuxtdmsmZ84w=",
+      "narSize": 284088,
+      "path": "/nix/store/h8xdapcbh1hgqrbcs1xbfamxgx4wwrj3-libmpc-1.3.1",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/y28c83zz73yr4vwz1fsl4nsrn6yz5fj0-gcc-14.3.0"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "audit-tmpdir.sh",
+      "narHash": "sha256-tMYdNz2xetDsQK1FEy3126+UqdkB8cXN4l/Zgbv3tm0=",
+      "narSize": 1520,
+      "path": "/nix/store/h9lc1dpi14z7is86ffhl3ld569138595-audit-tmpdir.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "patch-shebangs.sh",
+      "narHash": "sha256-TRd6N2KO74qqyBQxi1ihprZTMcgR6eAw5Z+HxpwF9Tc=",
+      "narSize": 5248,
+      "path": "/nix/store/hxv896faph0rqxjq2ycxpcrbnngc95sz-patch-shebangs.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/z139x5g23l9d5wcxmik9vh0qbbcshaz9-glibc-2.40-66.drv",
+      "deriverLess": false,
+      "name": "glibc-2.40-66",
+      "narHash": "sha256-BQ5wWlCmM+FmaeXTb5Y8pilWU+1/kU/sar7mvnYdyQw=",
+      "narSize": 30200720,
+      "path": "/nix/store/i3ibgfskl99qd8rslafbpaa1dmxdzh1z-glibc-2.40-66",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/0aaj6jbxclpwvrphggqz4vf5hg8360fr-libffi-3.4.8",
+        "/nix/store/18ks84vwka6v1ldjp0cnil98pyykr3a9-util-linux-minimal-2.41.1-lib",
+        "/nix/store/1v9ggwkpb0xy708s11s1g9fhinn3b06r-glibc-2.40-66-dev",
+        "/nix/store/2fxp204b9jh1s3lpggdlnws44vvzw1w9-openssl-3.4.3",
+        "/nix/store/36qzlljldgb41snr4l38pfpcy19w7s2j-ed-1.21.1",
+        "/nix/store/42pzy4ahwk8p41hwfmz2nldgvsdws8q1-binutils-2.44",
+        "/nix/store/44c243x0jpv587hmxrzl31pripa0f0j8-gzip-1.14",
+        "/nix/store/4zpfjm2r6chc8b10c1xa1d6asy100sqv-file-5.45",
+        "/nix/store/59pgpbm743q1nhav513283zinqrf4rqk-bzip2-1.0.8-bin",
+        "/nix/store/5i17rngglby671bra0ns7nr01v1c0340-binutils-2.44-lib",
+        "/nix/store/5wf9wpdkxs30811kfgkicn9i3nz9jhsh-patchelf-0.15.0",
+        "/nix/store/68bgk51v8baq44lqb3ps74b7jpcgc30z-mpdecimal-4.0.0",
+        "/nix/store/6ab07lf8v6zjcjr8ysxcsf13kn8593vb-xz-5.8.1",
+        "/nix/store/6mxnr68qgihr5pmp4avjbijjgwifdnml-gmp-6.3.0",
+        "/nix/store/76df6j9sq1ar58id3y3v4rkijany1wxp-gnutar-1.35",
+        "/nix/store/90r466lzg0jw11v60cki60s0qfhs93vp-gnugrep-3.11",
+        "/nix/store/b7g83isqdl778kmcpv6v68z76x4x5riv-xz-5.8.1-bin",
+        "/nix/store/bgp9znk5cnzmh0fbb2l0rwclbz2qv0w8-mpfr-4.2.2",
+        "/nix/store/bylmxi0aa2v3jz2q7zkdpa49nmpyrkgq-acl-2.3.2",
+        "/nix/store/c9jzm47zb8j7jbpw4a7zdm35qmhdf6ws-findutils-4.10.0",
+        "/nix/store/cf1a53iqg6ncnygl698c4v0l8qam5a2q-gcc-14.3.0-lib",
+        "/nix/store/cvd68krxqrwgrsigszs0al2i8dnvlwk4-libxcrypt-4.4.38",
+        "/nix/store/f2q5ld1nipl8w1r2w8m6azhlm2varqgb-zlib-1.3.1",
+        "/nix/store/fid5v1wd8wkrz39yp73d0hhlny2ms9w5-expand-response-params",
+        "/nix/store/fm1snxs1cg8ml9fjj6kra32sc8413k8z-glibc-2.40-66-bin",
+        "/nix/store/fpsjnh09h1jnyqm51925wa2xck72jchb-isl-0.20",
+        "/nix/store/h8xdapcbh1hgqrbcs1xbfamxgx4wwrj3-libmpc-1.3.1",
+        "/nix/store/iga4lv0say4pbbbgkf1v79403n1ip7hf-binutils-wrapper-2.44",
+        "/nix/store/jangxddrzycnc2rl1wc1sqhqp26yrx4k-patch-2.7.6",
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12",
+        "/nix/store/jr8kyv517lyd5xcv3pnhr6z4wirbi06r-expat-2.7.3",
+        "/nix/store/k8c60f1c543yng7878rfkc12han58hiv-readline-8.2p13",
+        "/nix/store/kks0nbx2riwry5qsx0qr87qr0lswmhzi-gcc-wrapper-14.3.0",
+        "/nix/store/ks3slx52c0jmfgg717n0jq9lp354mlnw-sqlite-3.48.0",
+        "/nix/store/l9k32vj2aczxw62134j1x0dsh569jz2l-bash-5.2p37",
+        "/nix/store/lm0g29ps43q8bm2gsd26g5pi2zwb6i8d-gmp-with-cxx-6.3.0",
+        "/nix/store/m0i5hf36sv62vgm2ppjkynv03ihdlxvv-gnused-4.9",
+        "/nix/store/n6vl6ni6zxxgh4163cqnjf8p0n7yah0d-pcre2-10.44",
+        "/nix/store/qvgw9scl3jjy1zsjipm3ngpcq472wj7w-gawk-5.3.2",
+        "/nix/store/s1rbzc4mmfhwlhafha52c8frsrfkrx37-attr-2.5.2",
+        "/nix/store/s3mkvm3f20pd1vfx109w89jcc0mdcx2a-bzip2-1.0.8",
+        "/nix/store/vj3rmg6937p9icir6bazbdcb4xdnrg9j-ncurses-6.5",
+        "/nix/store/vmw4ghy1v0lz64f1xx4cyv6g6qc1lb1k-gdbm-1.25-lib",
+        "/nix/store/xpsgmdsqym0ydx6hkvpxrp6174s4fwbl-gnumake-4.4.1",
+        "/nix/store/y28c83zz73yr4vwz1fsl4nsrn6yz5fj0-gcc-14.3.0",
+        "/nix/store/z059fc40f58cp2yflhbpfdg539x66b0g-diffutils-3.12",
+        "/nix/store/zwplch93wbpj82bp7riwaixmdx2xi0ah-coreutils-9.7"
+      ]
+    },
+    {
+      "deriver": "/nix/store/h0iw62jak3pp7987x3yw9ad8mlg516cy-binutils-wrapper-2.44.drv",
+      "deriverLess": false,
+      "name": "binutils-wrapper-2.44",
+      "narHash": "sha256-caGvYiZ0KElF6oq+fjdUuw/5sp+VRn5CzKPY/6KBeXE=",
+      "narSize": 54352,
+      "path": "/nix/store/iga4lv0say4pbbbgkf1v79403n1ip7hf-binutils-wrapper-2.44",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/kks0nbx2riwry5qsx0qr87qr0lswmhzi-gcc-wrapper-14.3.0",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/xcmcp8qg61ncgd7m5zsj37hf4f3cm6rz-patch-2.7.6.drv",
+      "deriverLess": false,
+      "name": "patch-2.7.6",
+      "narHash": "sha256-Omz47NaovVUF5sGq+PI6yKubswkATgpQsNJ7CW90IpQ=",
+      "narSize": 244360,
+      "path": "/nix/store/jangxddrzycnc2rl1wc1sqhqp26yrx4k-patch-2.7.6",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/9jkri7mhhbqcw419b508mff09z7p74fm-python3-3.12.12.drv",
+      "deriverLess": false,
+      "name": "python3-3.12.12",
+      "narHash": "sha256-gMu2VmUVvQwmAhIsOYd9Xx98PC1q+k5HKK0e2gVy1bQ=",
+      "narSize": 113794208,
+      "path": "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "no-broken-symlinks.sh",
+      "narHash": "sha256-/t5eWNc5nQI9BbgQQFRVf4dy5Ph0lNq7fK24H8Pmjxc=",
+      "narSize": 3104,
+      "path": "/nix/store/jjhw2phnaip4kg0qjas3x3fsaifi8y0w-no-broken-symlinks.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/ydy0610n8f391w4fyr9j5bm04ba9zr1g-expat-2.7.3.drv",
+      "deriverLess": false,
+      "name": "expat-2.7.3",
+      "narHash": "sha256-c6EntgSOXXZehNdOd9ymyH8ZAHLjbojJFTnc4AOgTxU=",
+      "narSize": 303288,
+      "path": "/nix/store/jr8kyv517lyd5xcv3pnhr6z4wirbi06r-expat-2.7.3",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12"
+      ]
+    },
+    {
+      "deriver": "/nix/store/qldi439i9ggwjpn4i8wnb0mnz8cag0zh-readline-8.2p13.drv",
+      "deriverLess": false,
+      "name": "readline-8.2p13",
+      "narHash": "sha256-cd0bpSHtfwbUWwS9jQlu2vjBZxjee1Kld0gFl+c00ZU=",
+      "narSize": 478568,
+      "path": "/nix/store/k8c60f1c543yng7878rfkc12han58hiv-readline-8.2p13",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "move-sbin.sh",
+      "narHash": "sha256-exQDue2oXLDKVrh7CiPpj7WjA5qhZfskrLzpYkAFiy0=",
+      "narSize": 664,
+      "path": "/nix/store/kd4xwxjpjxi71jkm6ka0np72if9rm3y0-move-sbin.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/pzj675l2ll7p1lxif1ry29f4098jjify-gcc-wrapper-14.3.0.drv",
+      "deriverLess": false,
+      "name": "gcc-wrapper-14.3.0",
+      "narHash": "sha256-r8cuCTRsi6sLGkLWnxV6Aan2D5ncH4Tot7fODbWyh3g=",
+      "narSize": 65920,
+      "path": "/nix/store/kks0nbx2riwry5qsx0qr87qr0lswmhzi-gcc-wrapper-14.3.0",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/546s5d71vkb847hf8w4bv8lxdpl48mx1-sqlite-3.48.0.drv",
+      "deriverLess": false,
+      "name": "sqlite-3.48.0",
+      "narHash": "sha256-2tqMLfIxbCnDwaHdI42rOtCUA5592yFXoaNuXl4PQdg=",
+      "narSize": 1760520,
+      "path": "/nix/store/ks3slx52c0jmfgg717n0jq9lp354mlnw-sqlite-3.48.0",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/18ks84vwka6v1ldjp0cnil98pyykr3a9-util-linux-minimal-2.41.1-lib",
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12"
+      ]
+    },
+    {
+      "deriver": "/nix/store/37wqz292qyx3z03p4s50lrs32vcgq9f4-bash-5.2p37.drv",
+      "deriverLess": false,
+      "name": "bash-5.2p37",
+      "narHash": "sha256-aHR2QRakRh6ymuyoOYgMWi0YW9GVUjqgroXNAFP1bVE=",
+      "narSize": 1654112,
+      "path": "/nix/store/l9k32vj2aczxw62134j1x0dsh569jz2l-bash-5.2p37",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/44c243x0jpv587hmxrzl31pripa0f0j8-gzip-1.14",
+        "/nix/store/iga4lv0say4pbbbgkf1v79403n1ip7hf-binutils-wrapper-2.44",
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12",
+        "/nix/store/kks0nbx2riwry5qsx0qr87qr0lswmhzi-gcc-wrapper-14.3.0",
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/nsvrknrqxdf2lxcfbqkr0p05897ww5lx-stdenv-linux.drv",
+      "deriverLess": false,
+      "name": "stdenv-linux",
+      "narHash": "sha256-7uyA5WT1X+9o1QV/Dqs7GsmWtellurWH5ipGyZK8Szk=",
+      "narSize": 60856,
+      "path": "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/wmb4mp2q329d4xkw0axi25y1sci8n3rv-gmp-with-cxx-6.3.0.drv",
+      "deriverLess": false,
+      "name": "gmp-with-cxx-6.3.0",
+      "narHash": "sha256-fwkslUO2F25LF6i9/RcOpceDQ9DiIyhSrR1BPCUkajI=",
+      "narSize": 791712,
+      "path": "/nix/store/lm0g29ps43q8bm2gsd26g5pi2zwb6i8d-gmp-with-cxx-6.3.0",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/zwplch93wbpj82bp7riwaixmdx2xi0ah-coreutils-9.7"
+      ]
+    },
+    {
+      "deriver": "/nix/store/1z9jllkncz5hj06iyf5six467lgqfz8p-gnused-4.9.drv",
+      "deriverLess": false,
+      "name": "gnused-4.9",
+      "narHash": "sha256-mnDALrQY1iEto2qtFGjsch5d3VFEG+d+BFsWnvx7+gg=",
+      "narSize": 739416,
+      "path": "/nix/store/m0i5hf36sv62vgm2ppjkynv03ihdlxvv-gnused-4.9",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "compress-man-pages.sh",
+      "narHash": "sha256-nvkpux1XBRA6JnXeEphB25xVbHKTz1bkBF3/K7HGbU0=",
+      "narSize": 1088,
+      "path": "/nix/store/m54bmrhj6fqz8nds5zcj97w9s9bckc9v-compress-man-pages.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/nas6wkrmy2s1a749v56vxvsmz35bprc5-pcre2-10.44.drv",
+      "deriverLess": false,
+      "name": "pcre2-10.44",
+      "narHash": "sha256-U/n04qdZUzUJciLb24vEloUaYexkN0w4E4RfmJJywP0=",
+      "narSize": 1938688,
+      "path": "/nix/store/n6vl6ni6zxxgh4163cqnjf8p0n7yah0d-pcre2-10.44",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/90r466lzg0jw11v60cki60s0qfhs93vp-gnugrep-3.11"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "move-systemd-user-units.sh",
+      "narHash": "sha256-ApvZCwlSSuSA6bGuBQGi+EIncpLHju2Uhro27Mb8wMA=",
+      "narSize": 880,
+      "path": "/nix/store/pag6l61paj1dc9sv15l7bm5c17xn5kyk-move-systemd-user-units.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "strip.sh",
+      "narHash": "sha256-/kocrQCaIGEh7zh26MuHLTtmIp5yJylHriY/yVFhPk4=",
+      "narSize": 4616,
+      "path": "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/chw5yni9a844h5sm37s0b7ch7hf68fir-gawk-5.3.2.drv",
+      "deriverLess": false,
+      "name": "gawk-5.3.2",
+      "narHash": "sha256-4npBQKxwFhNA71qsoWL+EmI8z6eZNJ8GQhca0LayVNs=",
+      "narSize": 3021152,
+      "path": "/nix/store/qvgw9scl3jjy1zsjipm3ngpcq472wj7w-gawk-5.3.2",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/bvwd9iga1q7lmavcwb04fp3yy2qxvhvg-gnu-config-2024-01-01.drv",
+      "deriverLess": false,
+      "name": "gnu-config-2024-01-01",
+      "narHash": "sha256-bEs+jJogn3RBkZ3KpP73/vG1x7ZFORxU4fFXC9HGg9A=",
+      "narSize": 88120,
+      "path": "/nix/store/rwyj9q50lxgg2krci51hr7afiql2p8km-gnu-config-2024-01-01",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/f244pq7qm9ga22jpa4l0vca2ys4q7wh7-update-autotools-gnu-config-scripts-hook",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/rh4ygmhvl1xmpqirbf7vbw66v3yrx0j9-attr-2.5.2.drv",
+      "deriverLess": false,
+      "name": "attr-2.5.2",
+      "narHash": "sha256-y5VZpbnTM/2s1c6P9A+M18xcA//KjQfGLc6fAkjLTmo=",
+      "narSize": 92720,
+      "path": "/nix/store/s1rbzc4mmfhwlhafha52c8frsrfkrx37-attr-2.5.2",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/bylmxi0aa2v3jz2q7zkdpa49nmpyrkgq-acl-2.3.2",
+        "/nix/store/zwplch93wbpj82bp7riwaixmdx2xi0ah-coreutils-9.7"
+      ]
+    },
+    {
+      "deriver": "/nix/store/s0bjwgvmw4iq13va2zh88yqhc43wpf6n-bzip2-1.0.8.drv",
+      "deriverLess": false,
+      "name": "bzip2-1.0.8",
+      "narHash": "sha256-0q3u40BRBQVu00oxtnDS8hn7adRbBS/15M9+92Ksk+8=",
+      "narSize": 84856,
+      "path": "/nix/store/s3mkvm3f20pd1vfx109w89jcc0mdcx2a-bzip2-1.0.8",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/59pgpbm743q1nhav513283zinqrf4rqk-bzip2-1.0.8-bin",
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12"
+      ]
+    },
+    {
+      "deriver": "/nix/store/0ip4gvrny30fx8y33dnvc8xf320w1zfp-libidn2-2.3.8.drv",
+      "deriverLess": false,
+      "name": "libidn2-2.3.8",
+      "narHash": "sha256-/qJXR14XBKDDyjIWoXRVtYPm+QpoYHN0gwkpuEQSZdA=",
+      "narSize": 368208,
+      "path": "/nix/store/vi5fmmv0q0z9rjf3jfis7q2i9g05l8s2-libidn2-2.3.8",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/i3ibgfskl99qd8rslafbpaa1dmxdzh1z-glibc-2.40-66"
+      ]
+    },
+    {
+      "deriver": "/nix/store/by344nzy5jzjvqasj14skxdhj9chd0sj-ncurses-6.5.drv",
+      "deriverLess": false,
+      "name": "ncurses-6.5",
+      "narHash": "sha256-mgNSCUOeZWwqCBA0tO3+0Zmi08GOCtBfHTPIKIK5uGY=",
+      "narSize": 3794728,
+      "path": "/nix/store/vj3rmg6937p9icir6bazbdcb4xdnrg9j-ncurses-6.5",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12",
+        "/nix/store/k8c60f1c543yng7878rfkc12han58hiv-readline-8.2p13"
+      ]
+    },
+    {
+      "deriver": "/nix/store/r5qs2wshcgh57a7vq2sn2x0y2yski0xk-gdbm-1.25.drv",
+      "deriverLess": false,
+      "name": "gdbm-1.25-lib",
+      "narHash": "sha256-mGWGvjvGDbaP0mU0EG28skuYogVXqidKdo3JtQWPskY=",
+      "narSize": 457856,
+      "path": "/nix/store/vmw4ghy1v0lz64f1xx4cyv6g6qc1lb1k-gdbm-1.25-lib",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/jd20rkmqmkfkcvk2wl2lmzz7acq4svlr-python3-3.12.12"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "make-symlinks-relative.sh",
+      "narHash": "sha256-M5wxSjy928eIoBBePFKFPVHxbvVNJaOSHGej8zueD0A=",
+      "narSize": 1280,
+      "path": "/nix/store/wgrbkkaldkrlrni33ccvm3b6vbxzb656-make-symlinks-relative.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/gkp675qsx7wg4rij541kzmi49skfzsnv-nix-shell-env.drv",
+      "deriverLess": false,
+      "name": "nix-shell-env",
+      "narHash": "sha256-lH0a8hOLzQfqRQDAP8xrNxGxwVW7EcjXyDOakbb+MCw=",
+      "narSize": 76104,
+      "path": "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env",
+      "referencedByDrv": [],
+      "referrers": []
+    },
+    {
+      "deriver": "/nix/store/h4gjrj7x14qndi4n5i2cw39sp6jd5c06-gnumake-4.4.1.drv",
+      "deriverLess": false,
+      "name": "gnumake-4.4.1",
+      "narHash": "sha256-z3Gs/aWmNE2PpcRo4kZaQn3iVcSPHNEF/usVS8KthZE=",
+      "narSize": 1590960,
+      "path": "/nix/store/xpsgmdsqym0ydx6hkvpxrp6174s4fwbl-gnumake-4.4.1",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "reproducible-builds.sh",
+      "narHash": "sha256-9TquSNTf3+sENOwMmBFmniGPTzbIX9Sn2PFfuJ4i0UA=",
+      "narSize": 608,
+      "path": "/nix/store/xyff06pkhki3qy1ls77w10s0v79c9il0-reproducible-builds.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/r66403pd66m9zddlyrp3r9djwjzkbd4j-gcc-14.3.0.drv",
+      "deriverLess": false,
+      "name": "gcc-14.3.0",
+      "narHash": "sha256-lU0idbXMdrL61IlCgVhqv8n1EwwrcPwq/FDsOX6Cm/o=",
+      "narSize": 257060568,
+      "path": "/nix/store/y28c83zz73yr4vwz1fsl4nsrn6yz5fj0-gcc-14.3.0",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/kks0nbx2riwry5qsx0qr87qr0lswmhzi-gcc-wrapper-14.3.0",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/bs3dg6qxrl1530jchhqv9fsihnpfiyb1-diffutils-3.12.drv",
+      "deriverLess": false,
+      "name": "diffutils-3.12",
+      "narHash": "sha256-zcW7eK5DIf/rbGFZBJ8wTtdl5RCCmdpU8B+2Osw2byM=",
+      "narSize": 1614376,
+      "path": "/nix/store/z059fc40f58cp2yflhbpfdg539x66b0g-diffutils-3.12",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "",
+      "deriverLess": true,
+      "name": "set-source-date-epoch-to-latest.sh",
+      "narHash": "sha256-O6Gjn5FQzTLFmOLmXU5J4i6ei4gvLK7fo6vA+C0lmn0=",
+      "narSize": 1696,
+      "path": "/nix/store/z7k98578dfzi6l3hsvbivzm7hfqlk0zc-set-source-date-epoch-to-latest.sh",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+      ]
+    },
+    {
+      "deriver": "/nix/store/4q8ya9n5yymkdj3ip645sf5abjkr2hbg-coreutils-9.7.drv",
+      "deriverLess": false,
+      "name": "coreutils-9.7",
+      "narHash": "sha256-Yn8FLjUbCRLQnxuhg7j8F8YMdY/8/NEzNNuXy4nU0jw=",
+      "narSize": 1550128,
+      "path": "/nix/store/zwplch93wbpj82bp7riwaixmdx2xi0ah-coreutils-9.7",
+      "referencedByDrv": [],
+      "referrers": [
+        "/nix/store/c9jzm47zb8j7jbpw4a7zdm35qmhdf6ws-findutils-4.10.0",
+        "/nix/store/iga4lv0say4pbbbgkf1v79403n1ip7hf-binutils-wrapper-2.44",
+        "/nix/store/kks0nbx2riwry5qsx0qr87qr0lswmhzi-gcc-wrapper-14.3.0",
+        "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux",
+        "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env",
+        "/nix/store/z059fc40f58cp2yflhbpfdg539x66b0g-diffutils-3.12"
+      ]
+    }
+  ],
+  "identity": {
+    "builderImage": "localhost/software-factory-environment-builder:dev",
+    "builderImageDigest": "sha256:8b3f36e85832b37473aa9b7cff60af23c714afc84c64d82b31d2eef5c0a41964",
+    "builderImageId": "671e7fddbfe1167091e1235ffb323ed5112b7304a5bed7e373d046f87d8c9d9d",
+    "captureCommand": "nix develop .#default --profile /out/profile --command true && nix path-info --json --recursive /out/profile",
+    "capturedAtUtc": "2026-11-18T21:28:01Z",
+    "flakeLockSha256": "f08893262cbd93d7ee9b88981f99298c05c9eab250dcf9fb852acd4f9a20503b",
+    "flakeNixSha256": "26f6522ee9a122c672c026b86873457181da056e3f99e296037691c382c4d58e",
+    "nixpkgsPin": "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d",
+    "platform": "x86_64-linux",
+    "root": "/out/profile (nix develop .#default --profile)",
+    "sourceCommit": "71006f0a63de8a8e706b66502487ce0ef75c5838"
+  },
+  "notYetAllowed": [
+    "/nix/store/cickvswrvann041nqxb0rxilc46svw1n-prune-libtool-files.sh",
+    "/nix/store/cmzya9irvxzlkh7lfy6i82gbp0saxqj3-multiple-outputs.sh",
+    "/nix/store/fyaryjvghbkpfnsyw97hb3lyb37s1pd6-move-lib64.sh",
+    "/nix/store/h9lc1dpi14z7is86ffhl3ld569138595-audit-tmpdir.sh",
+    "/nix/store/hxv896faph0rqxjq2ycxpcrbnngc95sz-patch-shebangs.sh",
+    "/nix/store/jjhw2phnaip4kg0qjas3x3fsaifi8y0w-no-broken-symlinks.sh",
+    "/nix/store/kd4xwxjpjxi71jkm6ka0np72if9rm3y0-move-sbin.sh",
+    "/nix/store/m54bmrhj6fqz8nds5zcj97w9s9bckc9v-compress-man-pages.sh",
+    "/nix/store/pag6l61paj1dc9sv15l7bm5c17xn5kyk-move-systemd-user-units.sh",
+    "/nix/store/wgrbkkaldkrlrni33ccvm3b6vbxzb656-make-symlinks-relative.sh",
+    "/nix/store/xyff06pkhki3qy1ls77w10s0v79c9il0-reproducible-builds.sh",
+    "/nix/store/z7k98578dfzi6l3hsvbivzm7hfqlk0zc-set-source-date-epoch-to-latest.sh"
+  ],
+  "schema": "factory-deriverless-closure-inventory-v1"
+}

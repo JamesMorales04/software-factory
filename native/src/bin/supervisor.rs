@@ -611,10 +611,10 @@ async fn execute<B: factory_native::execution::VolumeBackend + 'static>(
     else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), grant);
+    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), handle.generation, grant);
     let result = app
         .manager
-        .execute(&workspace_id, &input, app.max_runtime)
+        .execute(&workspace_id, handle.generation, &input, app.max_runtime)
         .await;
     fence.abort();
     match result {
@@ -646,7 +646,11 @@ async fn apply_files<B: factory_native::execution::VolumeBackend>(
     }
     let mut input = input;
     input.allowed_paths = grant.allowed_paths;
-    match app.manager.apply_files(&workspace_id, &input).await {
+    match app
+        .manager
+        .apply_files(&workspace_id, handle.generation, &input)
+        .await
+    {
         Ok(candidate) => (StatusCode::OK, Json(candidate)).into_response(),
         Err(error) => execution_error(error),
     }
@@ -675,7 +679,11 @@ async fn write_files<B: factory_native::execution::VolumeBackend>(
     }
     let mut input = input;
     input.allowed_paths = grant.allowed_paths;
-    match app.manager.write_files(&workspace_id, &input).await {
+    match app
+        .manager
+        .write_files(&workspace_id, handle.generation, &input)
+        .await
+    {
         Ok(handle) => (StatusCode::OK, Json(handle)).into_response(),
         Err(error) => execution_error(error),
     }
@@ -745,11 +753,14 @@ async fn run_tool<B: factory_native::execution::VolumeBackend + 'static>(
     else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), grant);
-    let result = app.manager.run_tool(&workspace_id, &input).await;
+    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), handle.generation, grant);
+    let result = app
+        .manager
+        .run_tool(&workspace_id, handle.generation, &input)
+        .await;
     let discarded = app
         .manager
-        .discard_outside_scope(&workspace_id, &allowed_paths)
+        .discard_outside_scope(&workspace_id, handle.generation, &allowed_paths)
         .await;
     fence.abort();
     if let Err(error) = discarded {
@@ -792,103 +803,219 @@ async fn environment_check<B: factory_native::execution::VolumeBackend + 'static
     else {
         return StatusCode::FORBIDDEN.into_response();
     };
+    if Duration::from_secs(u64::from(input.check.timeout_secs)) > app.max_runtime {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"environment check timeout exceeds the supervisor bound"})),
+        )
+            .into_response();
+    }
+    let Some(builder) = &app.environment_builder else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                "error": "the supervisor has no configured environment builder"
+            })),
+        )
+            .into_response();
+    };
+    if let Err((status, code, message)) = builder.validate(&input.image, &input.digest) {
+        return (status, Json(json!({"code": code, "error": message}))).into_response();
+    }
+    if app.environment_broker.is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                "error": "the supervisor has no runtime broker for environment checks"
+            })),
+        )
+            .into_response();
+    }
     let workspace_volume = match app.manager.workspace_volume(&workspace_id) {
         Ok(volume) => volume,
         Err(error) => return execution_error(error),
     };
     let check_token = uuid::Uuid::new_v4().to_string();
-    if let Err(error) =
-        app.manager
-            .begin_environment_check(&workspace_id, &workspace_volume, &check_token)
+    let lease = match app
+        .manager
+        .begin_environment_check(
+            &workspace_id,
+            handle.generation,
+            &workspace_volume,
+            &check_token,
+        )
+        .await
     {
+        Ok(lease) => lease,
+        Err(error) => return execution_error(error),
+    };
+    // The registration must outlive this request future: a client that
+    // disconnects mid-check can otherwise drop the only code path that removes
+    // it, leaving an orphaned registration that blocks every newer generation.
+    // The task therefore owns the lease, the broker call and the operation
+    // fence, and the request only waits for its result. Dropping the request
+    // closes the cancellation channel, which makes the task cancel the check
+    // through the backend that owns it and release the registration only after
+    // that backend confirms the check container is gone.
+    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    let request = EnvironmentCheckRequest {
+        schema_version: 1,
+        image: input.image,
+        digest: input.digest,
+        plan: input.plan,
+        spec: input.spec,
+        receipt: input.receipt,
+        check: input.check,
+        workspace_volume,
+        check_token,
+    };
+    let timeout = Duration::from_secs(u64::from(request.check.timeout_secs) + 180);
+    let mut task = tokio::spawn(run_environment_check(
+        app.clone(),
+        lease,
+        request,
+        grant_token,
+        cancel_rx,
+        timeout,
+    ));
+    let _cancel_on_drop = cancel_tx;
+    match (&mut task).await {
+        Ok(response) => response,
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "the environment check task failed"})),
+        )
+            .into_response(),
+    }
+}
+
+/// Marks the check lease orphaned if the owning task disappears without
+/// finalizing it (panic or runtime abort). A registration that still exists
+/// with the orphan flag set may be reclaimed by a newer generation only after
+/// the backend that owns the check confirms there is no live check container.
+///
+/// The only path this guard cannot cover is a spawned task discarded before its
+/// first poll. Tokio only drops a task that way while the runtime is shutting
+/// down, and the registration is in-process state that disappears with the
+/// Supervisor, so it cannot outlive that case.
+struct OrphanCheckOnDrop(factory_native::execution::EnvironmentCheckLease);
+
+impl Drop for OrphanCheckOnDrop {
+    fn drop(&mut self) {
+        self.0.mark_orphaned();
+    }
+}
+
+fn environment_check_cancelled_response() -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "code": "ENVIRONMENT_CHECK_CANCELLED",
+            "error": "the environment check was cancelled or its operation grant was revoked"
+        })),
+    )
+        .into_response()
+}
+
+/// Resolves when the requester signals cancellation or disappears.
+async fn await_check_cancellation(cancel: &mut tokio::sync::watch::Receiver<bool>) {
+    loop {
+        if *cancel.borrow() {
+            return;
+        }
+        if cancel.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Own the full lifecycle of one environment check: stage, broker call, fence
+/// and finalization. The task, not the HTTP request, decides when the
+/// registration is released.
+async fn run_environment_check<B: factory_native::execution::VolumeBackend + 'static>(
+    app: Arc<App<B>>,
+    lease: factory_native::execution::EnvironmentCheckLease,
+    request: EnvironmentCheckRequest,
+    grant_token: String,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+    timeout: Duration,
+) -> Response {
+    let workspace_id = lease.workspace_id().to_owned();
+    let generation = lease.generation();
+    let _orphan_on_drop = OrphanCheckOnDrop(lease.clone());
+    // Snapshot and replace the exact current worktree. `podman volume
+    // import` merges into an existing volume, so the manager removes and
+    // recreates it before importing; stale files cannot survive a check.
+    if let Err(error) = app
+        .manager
+        .stage_workspace_for_check(&workspace_id, generation, Some(&lease))
+        .await
+    {
+        let _ = app.manager.end_environment_check(&lease);
         return execution_error(error);
+    }
+    if lease.cancellation_requested() {
+        let _ = app.manager.end_environment_check(&lease);
+        return environment_check_cancelled_response();
     }
     // The fence revokes a builder check that outlives its operation grant.
     // `cancel_active` addresses the broker-owned check container by workspace
-    // volume; the Supervisor never guesses a container name.
-    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), grant_token);
-    let response = async {
-        if Duration::from_secs(u64::from(input.check.timeout_secs)) > app.max_runtime {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error":"environment check timeout exceeds the supervisor bound"})),
-            )
-                .into_response();
-        }
-        let Some(builder) = &app.environment_builder else {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({
-                    "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
-                    "error": "the supervisor has no configured environment builder"
-                })),
-            )
-                .into_response();
-        };
-        if let Err((status, code, message)) = builder.validate(&input.image, &input.digest) {
-            return (status, Json(json!({"code": code, "error": message}))).into_response();
-        }
-        let Some(broker) = &app.environment_broker else {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({
-                    "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
-                    "error": "the supervisor has no runtime broker for environment checks"
-                })),
-            )
-                .into_response();
-        };
-        // Snapshot and replace the exact current worktree. `podman volume
-        // import` merges into an existing volume, so the manager removes and
-        // recreates it before importing; stale files cannot survive a check.
-        if let Err(error) = app.manager.stage_workspace_for_check(&workspace_id).await {
-            return execution_error(error);
-        }
-        if app.manager.environment_check_cancelled(&workspace_id) {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "code": "ENVIRONMENT_CHECK_CANCELLED",
-                    "error": "the environment check was cancelled before the broker call"
-                })),
-            )
-                .into_response();
-        }
-        let timeout_secs = u64::from(input.check.timeout_secs);
-        let request = EnvironmentCheckRequest {
-            schema_version: 1,
-            image: input.image,
-            digest: input.digest,
-            plan: input.plan,
-            spec: input.spec,
-            receipt: input.receipt,
-            check: input.check,
-            workspace_volume,
-            check_token: check_token.clone(),
-        };
-        match broker
-            .environment_check(&request, Duration::from_secs(timeout_secs + 180))
-            .await
-        {
-            Ok(result) => (StatusCode::OK, Json(result)).into_response(),
-            Err(error) => broker_error_response(error),
-        }
-    }
-    .await;
-    fence.abort();
-    let _ = fence.await;
-    let cancelled = app.manager.end_environment_check(&workspace_id);
-    if cancelled {
+    // volume and token; the Supervisor never guesses a container name.
+    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), generation, grant_token);
+    let Some(broker) = app.environment_broker.clone() else {
+        fence.abort();
+        let _ = fence.await;
+        let _ = app.manager.end_environment_check(&lease);
         return (
-            StatusCode::CONFLICT,
+            StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({
-                "code": "ENVIRONMENT_CHECK_CANCELLED",
-                "error": "the environment check was cancelled or its operation grant was revoked"
+                "code": "ENVIRONMENT_BUILDER_UNAVAILABLE",
+                "error": "the supervisor has no runtime broker for environment checks"
             })),
         )
             .into_response();
+    };
+    // The broker future is only polled after the cancellation branch, so a
+    // requester that vanishes before the check starts leaves no broker
+    // operation to reconcile.
+    let check = broker.environment_check(&request, timeout);
+    tokio::pin!(check);
+    let outcome = tokio::select! {
+        biased;
+        _ = await_check_cancellation(&mut cancel) => None,
+        result = &mut check => Some(result),
+    };
+    fence.abort();
+    let _ = fence.await;
+    match outcome {
+        None => {
+            // The requester is gone. Only the backend that owns the check may
+            // release the registration, and only after it confirms the check
+            // container is gone. A failed confirmation leaves the registration
+            // fail-closed; the lease guard marks it orphaned so a later
+            // allocation can retry the same verification.
+            if app.manager.cancel_environment_check(&lease).await.is_ok() {
+                let _ = app.manager.end_environment_check(&lease);
+            }
+            environment_check_cancelled_response()
+        }
+        Some(Ok(result)) => {
+            if app.manager.end_environment_check(&lease) {
+                environment_check_cancelled_response()
+            } else {
+                (StatusCode::OK, Json(result)).into_response()
+            }
+        }
+        Some(Err(error)) => {
+            if app.manager.end_environment_check(&lease) {
+                environment_check_cancelled_response()
+            } else {
+                broker_error_response(error)
+            }
+        }
     }
-    response
 }
 
 fn broker_error_response(error: BrokerError) -> Response {
@@ -930,6 +1057,7 @@ async fn acquire_dependencies<B: factory_native::execution::VolumeBackend + 'sta
     let fence = spawn_operation_fence(
         app.clone(),
         workspace_id.clone(),
+        handle.generation,
         headers
             .get("x-factory-operation-grant")
             .and_then(|value| value.to_str().ok())
@@ -938,7 +1066,7 @@ async fn acquire_dependencies<B: factory_native::execution::VolumeBackend + 'sta
     );
     let result = app
         .manager
-        .acquire_dependencies(&workspace_id, &input)
+        .acquire_dependencies(&workspace_id, handle.generation, &input)
         .await;
     fence.abort();
     match result {
@@ -964,7 +1092,11 @@ async fn finalize<B: factory_native::execution::VolumeBackend>(
     if operation_grant(&headers, &app, &handle, "finalize", &digest).is_none() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    match app.manager.finalize_workspace(&workspace_id).await {
+    match app
+        .manager
+        .finalize_workspace(&workspace_id, handle.generation)
+        .await
+    {
         Ok(candidate) => (StatusCode::OK, Json(candidate)).into_response(),
         Err(error) => execution_error(error),
     }
@@ -989,10 +1121,10 @@ async fn cleanup<B: factory_native::execution::VolumeBackend>(
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
 ) -> Response {
-    if authorized_workspace(&headers, &app, &workspace_id).is_none() {
+    let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
-    match app.manager.cleanup(&workspace_id).await {
+    };
+    match app.manager.cleanup(&workspace_id, handle.generation).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => execution_error(error),
     }
@@ -1179,6 +1311,7 @@ fn operation_grant<B: factory_native::execution::VolumeBackend>(
 fn spawn_operation_fence<B: factory_native::execution::VolumeBackend + 'static>(
     app: Arc<App<B>>,
     workspace_id: String,
+    generation: i64,
     grant: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -1217,14 +1350,14 @@ fn spawn_operation_fence<B: factory_native::execution::VolumeBackend + 'static>(
                     // cancelled, then stop. The cancellation marker also makes
                     // the handler refuse to start a later check.
                     for _ in 0..20 {
-                        match app.manager.cancel_active(&workspace_id).await {
+                        match app.manager.cancel_active(&workspace_id, generation).await {
                             Ok(true) => return,
                             Ok(false) | Err(_) => {
                                 tokio::time::sleep(Duration::from_millis(100)).await;
                             }
                         }
                     }
-                    let _ = app.manager.cancel_active(&workspace_id).await;
+                    let _ = app.manager.cancel_active(&workspace_id, generation).await;
                     return;
                 }
             }
@@ -1289,7 +1422,7 @@ fn execution_error(error: ExecutionError) -> Response {
     let status = match &error {
         ExecutionError::Invalid(_) => StatusCode::BAD_REQUEST,
         ExecutionError::NotFound => StatusCode::NOT_FOUND,
-        ExecutionError::Conflict => StatusCode::CONFLICT,
+        ExecutionError::Conflict | ExecutionError::ConflictReason(_) => StatusCode::CONFLICT,
         ExecutionError::Archive(ArchiveError::Invalid(_)) => StatusCode::BAD_REQUEST,
         ExecutionError::Archive(ArchiveError::TooLarge(_)) => StatusCode::PAYLOAD_TOO_LARGE,
         ExecutionError::Workspace(WorkspaceError::Invalid(_)) => StatusCode::BAD_REQUEST,
@@ -1400,6 +1533,7 @@ mod tests {
         volumes: TestVolumes,
         cancel_calls: std::sync::Arc<Mutex<Vec<String>>>,
         cancel_tx: StartedSignal,
+        cancel_fails: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl Default for TestBackend {
@@ -1408,6 +1542,7 @@ mod tests {
                 volumes: TestVolumes::default(),
                 cancel_calls: std::sync::Arc::new(Mutex::new(Vec::new())),
                 cancel_tx: std::sync::Arc::new(Mutex::new(None)),
+                cancel_fails: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             }
         }
     }
@@ -1548,6 +1683,11 @@ mod tests {
             if let Some(tx) = self.cancel_tx.lock().unwrap().take() {
                 let _ = tx.send(());
             }
+            if self.cancel_fails.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(ExecutionError::Invalid(
+                    "environment check cancellation could not be confirmed".into(),
+                ));
+            }
             Ok(true)
         }
     }
@@ -1559,6 +1699,7 @@ mod tests {
         volumes: TestVolumes,
         cancel_calls: std::sync::Arc<Mutex<Vec<String>>>,
         cancel_tx: StartedSignal,
+        cancel_fails: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl Drop for TestFixture {
@@ -1596,6 +1737,7 @@ mod tests {
         let volumes = std::sync::Arc::clone(&backend.volumes);
         let cancel_calls = std::sync::Arc::clone(&backend.cancel_calls);
         let cancel_tx = std::sync::Arc::clone(&backend.cancel_tx);
+        let cancel_fails = std::sync::Arc::clone(&backend.cancel_fails);
         let manager = WorkspaceManager::new(
             root.join("work"),
             root.join("state"),
@@ -1623,6 +1765,7 @@ mod tests {
             volumes,
             cancel_calls,
             cancel_tx,
+            cancel_fails,
         }
     }
 
@@ -1654,12 +1797,20 @@ mod tests {
     }
 
     fn allocation_body(attempt_id: &str, repository: &Path) -> serde_json::Value {
+        allocation_body_for_generation(attempt_id, repository, 1)
+    }
+
+    fn allocation_body_for_generation(
+        attempt_id: &str,
+        repository: &Path,
+        generation: i64,
+    ) -> serde_json::Value {
         let base = base(repository);
         let spec_sha256 = "a".repeat(64);
         let claims = factory_native::attempt_grant::AttemptGrantClaims {
             attempt_id: attempt_id.into(),
             worker_id: "worker-test".into(),
-            generation: 1,
+            generation,
             repository: repository.to_string_lossy().into_owned(),
             base_commit: base.clone(),
             action_spec_sha256: spec_sha256.clone(),
@@ -1670,7 +1821,7 @@ mod tests {
             "attemptId": attempt_id,
             "repository": repository,
             "baseCommit": base,
-            "generation": 1,
+            "generation": generation,
             "actionSpecSha256": spec_sha256,
             "attemptGrant": grant
         })
@@ -2084,6 +2235,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn allocation_http_conflict_carries_typed_reason() {
+        let fixture = fixture();
+        let router = build_router(fixture.app.clone());
+        let attempt = "attempt-http-conflict";
+        let first = body_json(
+            router
+                .clone()
+                .oneshot(json_request(
+                    "/v1/workspaces",
+                    Some(TEST_TOKEN),
+                    &allocation_body_for_generation(attempt, &fixture.repository, 1),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = first["workspaceId"].as_str().unwrap();
+        let volume = fixture.app.manager.workspace_volume(workspace_id).unwrap();
+        fixture
+            .app
+            .manager
+            .begin_environment_check(workspace_id, 1, &volume, "check-token-123456")
+            .await
+            .unwrap();
+        let response = router
+            .oneshot(json_request(
+                "/v1/workspaces",
+                Some(TEST_TOKEN),
+                &allocation_body_for_generation(attempt, &fixture.repository, 2),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body_json(response).await;
+        assert_eq!(
+            body["error"],
+            "workspace allocation conflict: active_environment_check"
+        );
+        let rendered = body.to_string();
+        assert!(!rendered.contains("/state"));
+        assert!(!rendered.contains("canary"));
+    }
+
+    #[tokio::test]
+    async fn allocation_conflict_reasons_return_409_without_secrets() {
+        let response = execution_error(ExecutionError::ConflictReason("active_environment_check"));
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body_json(response).await;
+        assert_eq!(
+            body["error"],
+            "workspace allocation conflict: active_environment_check"
+        );
+    }
+
+    #[tokio::test]
     async fn health_is_public_and_does_not_claim_certification() {
         let fixture = fixture();
         let response = build_router(fixture.app.clone())
@@ -2354,6 +2560,70 @@ mod tests {
         assert_eq!(
             status(&router, status_request(first_id, "tampered")).await,
             StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn newer_generation_lease_recovers_and_invalidates_the_old_capability() {
+        let fixture = fixture();
+        let router = build_router(fixture.app.clone());
+        let attempt = "attempt-generation-recovery";
+        let first = body_json(
+            router
+                .clone()
+                .oneshot(json_request(
+                    "/v1/workspaces",
+                    Some(TEST_TOKEN),
+                    &allocation_body_for_generation(attempt, &fixture.repository, 1),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = first["workspaceId"].as_str().unwrap().to_owned();
+        let old_capability = first["capability"].as_str().unwrap().to_owned();
+
+        // A larger body generation alone is not authority: the signed grant
+        // must bind that exact generation.
+        let next = allocation_body_for_generation(attempt, &fixture.repository, 2);
+        let mut forged = next.clone();
+        forged["attemptGrant"] =
+            allocation_body_for_generation(attempt, &fixture.repository, 3)["attemptGrant"].clone();
+        assert_eq!(
+            status(
+                &router,
+                json_request("/v1/workspaces", Some(TEST_TOKEN), &forged)
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+
+        let response = router
+            .clone()
+            .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &next))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let recovered = body_json(response).await;
+        assert_eq!(recovered["workspaceId"], workspace_id);
+        assert_eq!(recovered["generation"], 2);
+        let new_capability = recovered["capability"].as_str().unwrap().to_owned();
+
+        let status_request = |id: &str, token: &str| {
+            Request::builder()
+                .uri(format!("/v1/workspaces/{id}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        assert_eq!(
+            status(&router, status_request(&workspace_id, &old_capability)).await,
+            StatusCode::UNAUTHORIZED,
+            "the old generation capability must be invalidated"
+        );
+        assert_eq!(
+            status(&router, status_request(&workspace_id, &new_capability)).await,
+            StatusCode::OK
         );
     }
 
@@ -2664,40 +2934,70 @@ mod tests {
     #[tokio::test]
     async fn concurrent_environment_check_registration_keeps_the_first_token() {
         let fixture = fixture();
-        let workspace_id = uuid::Uuid::new_v4().to_string();
-        let volume = format!("factory-ws-{}", uuid::Uuid::new_v4());
-        let first_token = uuid::Uuid::new_v4().to_string();
-        let second_token = uuid::Uuid::new_v4().to_string();
-        fixture
+        let handle = fixture
             .app
             .manager
-            .begin_environment_check(&workspace_id, &volume, &first_token)
+            .allocate(&factory_native::execution::WorkspaceAllocation {
+                attempt_id: "check-registration".into(),
+                repository: fixture.repository.to_string_lossy().into_owned(),
+                base_commit: base(&fixture.repository),
+                generation: 1,
+                action_spec_sha256: String::new(),
+                attempt_grant: String::new(),
+            })
+            .await
+            .unwrap();
+        let workspace_id = handle.workspace_id.clone();
+        let volume = fixture.app.manager.workspace_volume(&workspace_id).unwrap();
+        let first_token = uuid::Uuid::new_v4().to_string();
+        let second_token = uuid::Uuid::new_v4().to_string();
+        let first = fixture
+            .app
+            .manager
+            .begin_environment_check(&workspace_id, 1, &volume, &first_token)
+            .await
             .unwrap();
         assert!(matches!(
             fixture
                 .app
                 .manager
-                .begin_environment_check(&workspace_id, &volume, &second_token),
+                .begin_environment_check(&workspace_id, 1, &volume, &second_token)
+                .await,
             Err(ExecutionError::Conflict)
         ));
         assert!(
             fixture
                 .app
                 .manager
-                .cancel_active(&workspace_id)
+                .cancel_active(&workspace_id, 1)
                 .await
                 .unwrap(),
             "the first registration must remain cancellable"
         );
-        let calls = fixture.cancel_calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
+        {
+            let calls = fixture.cancel_calls.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert!(
+                calls[0].ends_with(&first_token),
+                "cancellation must use the first check token, got {}",
+                calls[0]
+            );
+        }
         assert!(
-            calls[0].ends_with(&first_token),
-            "cancellation must use the first check token, got {}",
-            calls[0]
+            fixture.app.manager.end_environment_check(&first),
+            "finalizing the cancelled lease reports the cancellation it observed"
         );
-        drop(calls);
-        fixture.app.manager.end_environment_check(&workspace_id);
+        assert!(
+            matches!(
+                fixture
+                    .app
+                    .manager
+                    .begin_environment_check(&workspace_id, 1, &volume, &second_token)
+                    .await,
+                Err(ExecutionError::Conflict)
+            ),
+            "a revoked generation cannot register a new check"
+        );
     }
 
     #[tokio::test]
@@ -2765,6 +3065,610 @@ mod tests {
         assert!(
             uuid::Uuid::parse_str(cancelled_token).is_ok(),
             "the per-check cancellation token must be carried to the broker"
+        );
+        server.abort();
+    }
+
+    /// Dropping the HTTP request must not orphan the check registration. The
+    /// owning task cancels through the backend that owns the check and releases
+    /// the registration only after that backend confirms termination.
+    #[tokio::test]
+    async fn environment_check_requester_drop_releases_the_registration() {
+        let mut fixture = fixture();
+        let digest_file = fixture.root.join("environment-builder.digest");
+        fs::write(&digest_file, format!("{TEST_ENV_BUILDER_DIGEST}\n")).unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (broker_cancel_tx, broker_cancel_rx) = tokio::sync::oneshot::channel();
+        *fixture.cancel_tx.lock().unwrap() = Some(broker_cancel_tx);
+        let (broker_url, captured, server) =
+            fake_environment_broker_until_cancelled(started_tx, broker_cancel_rx).await;
+        {
+            let app = Arc::get_mut(&mut fixture.app).unwrap();
+            app.environment_broker = Some(
+                RuntimeBrokerClient::new(
+                    &broker_url,
+                    TEST_TOKEN.to_owned(),
+                    ResourceOwner::Supervisor,
+                )
+                .unwrap(),
+            );
+            app.environment_builder = Some(EnvironmentBuilderAllowlist {
+                image: TEST_ENV_BUILDER_IMAGE.into(),
+                digest_file,
+            });
+        }
+        let router = build_router(fixture.app.clone());
+        let allocate = allocation_body("environment-check-drop", &fixture.repository);
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let body = environment_check_body();
+        let grant = operation_grant(&handle, "run", &body);
+        let request = operation_request(
+            &format!("/v1/workspaces/{workspace_id}/environment-check"),
+            &capability,
+            &grant,
+            &body,
+        );
+        let pending_router = router.clone();
+        let pending = tokio::spawn(async move { pending_router.oneshot(request).await.unwrap() });
+        tokio::time::timeout(Duration::from_secs(10), started_rx)
+            .await
+            .expect("the broker must receive the active check")
+            .unwrap();
+        // The requester disappears while the check is in flight.
+        pending.abort();
+        let _ = pending.await;
+        let recovery =
+            allocation_body_for_generation("environment-check-drop", &fixture.repository, 2);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let response = router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &recovery))
+                .await
+                .unwrap();
+            if response.status().is_success() {
+                break;
+            }
+            assert_eq!(
+                response.status(),
+                StatusCode::CONFLICT,
+                "allocation must stay a typed conflict until the check is confirmed gone"
+            );
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "a dropped requester must not orphan the environment check registration"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            captured.lock().unwrap().len(),
+            1,
+            "the broker must receive exactly one check"
+        );
+        assert!(
+            !fixture.cancel_calls.lock().unwrap().is_empty(),
+            "cancellation must go through the backend that owns the check"
+        );
+        server.abort();
+    }
+
+    /// While the backend cannot confirm termination the registration stays, so
+    /// a newer generation keeps receiving the typed conflict. Once the backend
+    /// confirms, the orphaned registration is reclaimed through that authority.
+    #[tokio::test]
+    async fn environment_check_stays_fail_closed_until_cancellation_is_confirmed() {
+        let mut fixture = fixture();
+        let digest_file = fixture.root.join("environment-builder.digest");
+        fs::write(&digest_file, format!("{TEST_ENV_BUILDER_DIGEST}\n")).unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (broker_cancel_tx, broker_cancel_rx) = tokio::sync::oneshot::channel();
+        *fixture.cancel_tx.lock().unwrap() = Some(broker_cancel_tx);
+        let (broker_url, _captured, server) =
+            fake_environment_broker_until_cancelled(started_tx, broker_cancel_rx).await;
+        {
+            let app = Arc::get_mut(&mut fixture.app).unwrap();
+            app.environment_broker = Some(
+                RuntimeBrokerClient::new(
+                    &broker_url,
+                    TEST_TOKEN.to_owned(),
+                    ResourceOwner::Supervisor,
+                )
+                .unwrap(),
+            );
+            app.environment_builder = Some(EnvironmentBuilderAllowlist {
+                image: TEST_ENV_BUILDER_IMAGE.into(),
+                digest_file,
+            });
+        }
+        fixture
+            .cancel_fails
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let router = build_router(fixture.app.clone());
+        let allocate = allocation_body("environment-check-unconfirmed", &fixture.repository);
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let body = environment_check_body();
+        let grant = operation_grant(&handle, "run", &body);
+        let request = operation_request(
+            &format!("/v1/workspaces/{workspace_id}/environment-check"),
+            &capability,
+            &grant,
+            &body,
+        );
+        let pending_router = router.clone();
+        let pending = tokio::spawn(async move { pending_router.oneshot(request).await.unwrap() });
+        tokio::time::timeout(Duration::from_secs(10), started_rx)
+            .await
+            .expect("the broker must receive the active check")
+            .unwrap();
+        pending.abort();
+        let _ = pending.await;
+        let recovery =
+            allocation_body_for_generation("environment-check-unconfirmed", &fixture.repository, 2);
+        for _ in 0..8 {
+            let response = router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &recovery))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::CONFLICT,
+                "an unconfirmed cancellation must stay fail-closed"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        fixture
+            .cancel_fails
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let response = router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &recovery))
+                .await
+                .unwrap();
+            if response.status().is_success() {
+                break;
+            }
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "a confirmed cancellation must let the newer generation recover"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        server.abort();
+    }
+
+    /// A fence cancellation that the owning backend cannot confirm must not
+    /// release the registration when the broker later completes. The workspace
+    /// stays fail-closed until a backend confirmation actually exists.
+    #[tokio::test]
+    async fn unconfirmed_fence_cancellation_keeps_the_registration_until_confirmed() {
+        let mut fixture = fixture();
+        let digest_file = fixture.root.join("environment-builder.digest");
+        fs::write(&digest_file, format!("{TEST_ENV_BUILDER_DIGEST}\n")).unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (broker_cancel_tx, broker_cancel_rx) = tokio::sync::oneshot::channel();
+        *fixture.cancel_tx.lock().unwrap() = Some(broker_cancel_tx);
+        let (broker_url, _captured, server) =
+            fake_environment_broker_until_cancelled(started_tx, broker_cancel_rx).await;
+        {
+            let app = Arc::get_mut(&mut fixture.app).unwrap();
+            app.environment_broker = Some(
+                RuntimeBrokerClient::new(
+                    &broker_url,
+                    TEST_TOKEN.to_owned(),
+                    ResourceOwner::Supervisor,
+                )
+                .unwrap(),
+            );
+            app.environment_builder = Some(EnvironmentBuilderAllowlist {
+                image: TEST_ENV_BUILDER_IMAGE.into(),
+                digest_file,
+            });
+        }
+        fixture
+            .cancel_fails
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let router = build_router(fixture.app.clone());
+        let allocate = allocation_body("environment-check-fence-failure", &fixture.repository);
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
+        let body = environment_check_body();
+        let grant = operation_grant(&handle, "run", &body);
+        let request = operation_request(
+            &format!("/v1/workspaces/{workspace_id}/environment-check"),
+            &capability,
+            &grant,
+            &body,
+        );
+        let pending_router = router.clone();
+        let pending = tokio::spawn(async move { pending_router.oneshot(request).await.unwrap() });
+        tokio::time::timeout(Duration::from_secs(10), started_rx)
+            .await
+            .expect("the broker must receive the active check")
+            .unwrap();
+        // The operation fence revokes the grant, cannot confirm the
+        // cancellation, and the broker then reports the check as failed.
+        let response = tokio::time::timeout(Duration::from_secs(15), pending)
+            .await
+            .expect("the fence must attempt the cancellation")
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(
+            !fixture.cancel_calls.lock().unwrap().is_empty(),
+            "the fence must go through the backend that owns the check"
+        );
+        let recovery = allocation_body_for_generation(
+            "environment-check-fence-failure",
+            &fixture.repository,
+            2,
+        );
+        let blocked = router
+            .clone()
+            .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &recovery))
+            .await
+            .unwrap();
+        assert_eq!(
+            blocked.status(),
+            StatusCode::CONFLICT,
+            "a broker completion must not release an unconfirmed cancellation"
+        );
+        fixture
+            .cancel_fails
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let response = router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &recovery))
+                .await
+                .unwrap();
+            if response.status().is_success() {
+                break;
+            }
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "a confirmed cancellation must let the newer generation recover"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        server.abort();
+    }
+
+    /// An orphaned registration in the same generation must not block the next
+    /// registration forever: it is reclaimed through backend confirmation only.
+    #[tokio::test]
+    async fn same_generation_orphan_is_reclaimed_by_the_next_registration() {
+        let fixture = fixture();
+        let allocate = allocation_body("environment-check-same-generation", &fixture.repository);
+        let handle = body_json(
+            build_router(fixture.app.clone())
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let volume = fixture.app.manager.workspace_volume(&workspace_id).unwrap();
+        let abandoned_token = uuid::Uuid::new_v4().to_string();
+        let abandoned = fixture
+            .app
+            .manager
+            .begin_environment_check(&workspace_id, 1, &volume, &abandoned_token)
+            .await
+            .unwrap();
+        abandoned.mark_orphaned();
+        fixture
+            .cancel_fails
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            matches!(
+                fixture
+                    .app
+                    .manager
+                    .begin_environment_check(
+                        &workspace_id,
+                        1,
+                        &volume,
+                        &uuid::Uuid::new_v4().to_string()
+                    )
+                    .await,
+                Err(ExecutionError::Conflict)
+            ),
+            "an unconfirmed orphan must keep the workspace fail-closed"
+        );
+        fixture
+            .cancel_fails
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let reclaimed_token = uuid::Uuid::new_v4().to_string();
+        let reclaimed = fixture
+            .app
+            .manager
+            .begin_environment_check(&workspace_id, 1, &volume, &reclaimed_token)
+            .await
+            .expect("a confirmed orphan must be reclaimed");
+        assert!(
+            fixture
+                .cancel_calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|call| call.ends_with(&abandoned_token)),
+            "reclamation must cancel the abandoned check through the backend"
+        );
+        assert!(
+            fixture.app.manager.end_environment_check(&abandoned),
+            "the stale lease only reports its own confirmed cancellation"
+        );
+        assert!(
+            matches!(
+                fixture
+                    .app
+                    .manager
+                    .begin_environment_check(
+                        &workspace_id,
+                        1,
+                        &volume,
+                        &uuid::Uuid::new_v4().to_string()
+                    )
+                    .await,
+                Err(ExecutionError::Conflict)
+            ),
+            "the reclaimed registration must stay in place"
+        );
+        assert!(!fixture.app.manager.end_environment_check(&reclaimed));
+    }
+
+    /// A task aborted after a confirmed cancellation must not leave a token
+    /// behind that blocks a newer check. Cancellation state lives in the lease,
+    /// so only the abandoned lease observes it.
+    #[tokio::test]
+    async fn confirmed_cancellation_leaves_no_residue_after_an_aborted_task() {
+        let fixture = fixture();
+        let handle = fixture
+            .app
+            .manager
+            .allocate(&factory_native::execution::WorkspaceAllocation {
+                attempt_id: "environment-check-aborted-task".into(),
+                repository: fixture.repository.to_string_lossy().into_owned(),
+                base_commit: base(&fixture.repository),
+                generation: 1,
+                action_spec_sha256: String::new(),
+                attempt_grant: String::new(),
+            })
+            .await
+            .unwrap();
+        let workspace_id = handle.workspace_id.clone();
+        let volume = fixture.app.manager.workspace_volume(&workspace_id).unwrap();
+        let abandoned = fixture
+            .app
+            .manager
+            .begin_environment_check(&workspace_id, 1, &volume, &uuid::Uuid::new_v4().to_string())
+            .await
+            .unwrap();
+        assert!(
+            fixture
+                .app
+                .manager
+                .cancel_active(&workspace_id, 1)
+                .await
+                .unwrap(),
+            "the fence must cancel the registered check"
+        );
+        assert!(abandoned.cancellation_requested());
+        assert!(abandoned.cancellation_confirmed());
+        // The owning task is aborted here: no finalization follows.
+        let next = factory_native::execution::WorkspaceAllocation {
+            attempt_id: "environment-check-aborted-task".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base(&fixture.repository),
+            generation: 2,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+        };
+        fixture
+            .app
+            .manager
+            .allocate(&next)
+            .await
+            .expect("a confirmed cancellation must not block the newer generation");
+        let fresh = fixture
+            .app
+            .manager
+            .begin_environment_check(&workspace_id, 2, &volume, &uuid::Uuid::new_v4().to_string())
+            .await
+            .expect("no token from the aborted task may block a fresh registration");
+        fixture
+            .app
+            .manager
+            .stage_workspace_for_check(&workspace_id, 2, Some(&fresh))
+            .await
+            .expect("the fresh check must stage");
+        assert!(
+            fixture
+                .app
+                .manager
+                .stage_workspace_for_check(&workspace_id, 2, Some(&abandoned))
+                .await
+                .is_err(),
+            "the abandoned lease keeps only its own cancellation state"
+        );
+        assert!(!fixture.app.manager.end_environment_check(&fresh));
+    }
+
+    /// Teardown must not delete a workspace volume under an unconfirmed check.
+    #[tokio::test]
+    async fn cleanup_refuses_an_unconfirmed_check_and_clears_after_confirmation() {
+        let fixture = fixture();
+        let handle = fixture
+            .app
+            .manager
+            .allocate(&factory_native::execution::WorkspaceAllocation {
+                attempt_id: "environment-check-cleanup".into(),
+                repository: fixture.repository.to_string_lossy().into_owned(),
+                base_commit: base(&fixture.repository),
+                generation: 1,
+                action_spec_sha256: String::new(),
+                attempt_grant: String::new(),
+            })
+            .await
+            .unwrap();
+        let workspace_id = handle.workspace_id.clone();
+        let volume = fixture.app.manager.workspace_volume(&workspace_id).unwrap();
+        let token = uuid::Uuid::new_v4().to_string();
+        let lease = fixture
+            .app
+            .manager
+            .begin_environment_check(&workspace_id, 1, &volume, &token)
+            .await
+            .unwrap();
+        fixture
+            .cancel_fails
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            matches!(
+                fixture.app.manager.cleanup(&workspace_id, 1).await,
+                Err(ExecutionError::Conflict)
+            ),
+            "an unconfirmed check must refuse teardown"
+        );
+        assert!(
+            matches!(
+                fixture
+                    .app
+                    .manager
+                    .begin_environment_check(
+                        &workspace_id,
+                        1,
+                        &volume,
+                        &uuid::Uuid::new_v4().to_string()
+                    )
+                    .await,
+                Err(ExecutionError::Conflict)
+            ),
+            "the registration must survive the refused teardown"
+        );
+        fixture
+            .cancel_fails
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        fixture
+            .app
+            .manager
+            .cleanup(&workspace_id, 1)
+            .await
+            .expect("a confirmed cancellation must allow teardown");
+        assert!(
+            fixture.app.manager.end_environment_check(&lease),
+            "teardown reports the confirmed cancellation it performed"
+        );
+    }
+
+    /// A late revocation of an older generation must not poison the newer
+    /// generation's check.
+    #[tokio::test]
+    async fn revocation_of_an_older_generation_does_not_block_the_newer_check() {
+        let mut fixture = fixture();
+        let digest_file = fixture.root.join("environment-builder.digest");
+        fs::write(&digest_file, format!("{TEST_ENV_BUILDER_DIGEST}\n")).unwrap();
+        let (broker_url, _captured, server) = fake_environment_broker().await;
+        {
+            let app = Arc::get_mut(&mut fixture.app).unwrap();
+            app.environment_broker = Some(
+                RuntimeBrokerClient::new(
+                    &broker_url,
+                    TEST_TOKEN.to_owned(),
+                    ResourceOwner::Supervisor,
+                )
+                .unwrap(),
+            );
+            app.environment_builder = Some(EnvironmentBuilderAllowlist {
+                image: TEST_ENV_BUILDER_IMAGE.into(),
+                digest_file,
+            });
+        }
+        let router = build_router(fixture.app.clone());
+        let attempt = "environment-check-stale-revocation";
+        let first = body_json(
+            router
+                .clone()
+                .oneshot(json_request(
+                    "/v1/workspaces",
+                    Some(TEST_TOKEN),
+                    &allocation_body_for_generation(attempt, &fixture.repository, 1),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = first["workspaceId"].as_str().unwrap().to_owned();
+        // The revocation of generation 1 lands before any check registers.
+        assert!(
+            !fixture
+                .app
+                .manager
+                .cancel_active(&workspace_id, 1)
+                .await
+                .unwrap(),
+            "no check or execution was registered yet"
+        );
+        let second = body_json(
+            router
+                .clone()
+                .oneshot(json_request(
+                    "/v1/workspaces",
+                    Some(TEST_TOKEN),
+                    &allocation_body_for_generation(attempt, &fixture.repository, 2),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(second["generation"], 2);
+        let capability = second["capability"].as_str().unwrap().to_owned();
+        let body = environment_check_body();
+        let grant = operation_grant(&second, "run", &body);
+        let response = router
+            .oneshot(operation_request(
+                &format!("/v1/workspaces/{workspace_id}/environment-check"),
+                &capability,
+                &grant,
+                &body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a revocation recorded for generation 1 must not block generation 2"
         );
         server.abort();
     }

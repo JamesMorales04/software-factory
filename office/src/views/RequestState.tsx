@@ -1,5 +1,9 @@
 import { Badge, type BadgeTone } from "../components/ui/Badge";
-import type { IntakeMode, IntakeState } from "../coreApi";
+import type {
+  IntakeMode,
+  IntakeState,
+  PlanningReadinessView,
+} from "../coreApi";
 import { useI18n } from "../i18n";
 
 const STATE_KEYS = {
@@ -60,6 +64,25 @@ export function IntakeModeBadge({ mode }: { mode: IntakeMode | string }) {
 
 export function isTerminalIntakeState(state: IntakeState | string): boolean {
   return state === "COMPLETED" || state === "CANCELLED" || state === "ASSESSED";
+}
+
+/**
+ * Core publishes `reviewCurrent` so Office never treats a review from an older
+ * PLAN revision as the current owner decision. `reviewStatus` is meaningful
+ * only when `reviewCurrent` is true.
+ */
+export function currentPlanningReview(
+  planning:
+    | Pick<PlanningReadinessView, "reviewCurrent" | "reviewStatus">
+    | null
+    | undefined,
+): { current: boolean; status: string | null } {
+  if (!planning) return { current: false, status: null };
+  const current = planning.reviewCurrent === true;
+  return {
+    current,
+    status: current ? planning.reviewStatus : null,
+  };
 }
 
 /**

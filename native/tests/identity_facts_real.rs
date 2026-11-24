@@ -1,0 +1,513 @@
+//! Opt-in real identity-facts self-test.
+//!
+//! This test is ignored by the deterministic suite. When explicitly run with
+//! `FACTORY_IDENTITY_FACTS_REAL_TEST=1` it uses ordinary rootless Podman and an
+//! existing pinned environment-builder image to:
+//!
+//! 1. seed a disposable store volume with a real closure from that image,
+//! 2. run the **same** broker producer (`observe_identity_facts_with`) with its
+//!    fixed `nix path-info`/`nix derivation show` argv,
+//! 3. sign the envelope with the environment bearer,
+//! 4. verify it through the actual Core client (`verify_identity_facts`), and
+//! 5. consume it through the actual SQLite store, refusing a replay.
+//!
+//! It never starts a paid model, the product stack or a host Nix install.
+
+use std::future::Future;
+use std::pin::Pin;
+use std::process::Command;
+
+use factory_native::db::Database;
+use factory_native::planning::environment::{SourceLicenseInput, SourceLicenseOrigin};
+use factory_native::planning::identity_facts::{
+    BoundIdentityFacts, IDENTITY_FACTS_CONTEXT, IDENTITY_FACTS_SCHEMA_VERSION,
+    IdentityFactsChallenge, IdentityFactsEnvelope, IdentityFactsMode, IdentityFactsReceipt,
+    IdentityFactsStage, OperationRoot, closure_manifest_sha256, sign,
+};
+use factory_native::runtime_broker::{
+    IdentityFactsCommandRunner, ResourceOwner, RuntimeBrokerClient, observe_identity_facts_with,
+};
+
+struct HostPodman {
+    podman: String,
+}
+
+impl HostPodman {
+    fn output(&self, args: &[&str]) -> Result<Vec<u8>, String> {
+        let output = Command::new(&self.podman)
+            .args(args)
+            .output()
+            .map_err(|error| format!("podman {:?}: {error}", args.first()))?;
+        if !output.status.success() {
+            return Err(format!(
+                "podman {:?} failed: {}",
+                args.first(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok(output.stdout)
+    }
+}
+
+impl IdentityFactsCommandRunner for HostPodman {
+    fn run_identity_command<'a>(
+        &'a self,
+        args: Vec<String>,
+        operation: &'a str,
+        limit: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let output = Command::new(&self.podman)
+                .args(&args)
+                .output()
+                .map_err(|error| format!("{operation} could not start: {error}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "{operation} failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            if output.stdout.len() > limit {
+                return Err(format!("{operation} exceeded its output bound"));
+            }
+            Ok(output.stdout)
+        })
+    }
+}
+
+struct DisposableVolumes {
+    podman: String,
+    volumes: Vec<String>,
+}
+
+impl Drop for DisposableVolumes {
+    fn drop(&mut self) {
+        for volume in &self.volumes {
+            let _ = Command::new(&self.podman)
+                .args(["volume", "rm", "--force", volume])
+                .output();
+        }
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+#[derive(Debug)]
+struct OracleFact {
+    deriver: Option<String>,
+    nar_hash: String,
+    outputs: Vec<String>,
+}
+
+fn independent_closure(
+    runner: &HostPodman,
+    image: &str,
+    cache_volume: &str,
+    store_volume: &str,
+    root: &str,
+) -> std::collections::BTreeMap<String, OracleFact> {
+    let script = r#"set -eu
+root=$1
+nix-store -q --requisites "$root" | while IFS= read -r p; do
+  d=$(nix-store -q --deriver "$p" 2>/dev/null || true)
+  [ "$d" = "unknown-deriver" ] && d=""
+  h=$(nix-store -q --hash "$p")
+  sri=$(nix hash convert --to sri --hash-algo sha256 "$h")
+  printf 'F	%s	%s	%s
+' "$p" "$d" "$sri"
+  if [ -n "$d" ]; then
+    nix-store -q --outputs "$d" | while IFS= read -r o; do printf 'O	%s	%s
+' "$p" "$o"; done
+  else
+    printf 'O	%s	%s
+' "$p" "$p"
+  fi
+done
+"#;
+    let output = runner
+        .output(&[
+            "run",
+            "--rm",
+            "--network=none",
+            "--read-only",
+            "--user=10001:10001",
+            "--cap-drop=all",
+            "--security-opt=no-new-privileges",
+            "--tmpfs=/tmp:rw,noexec,nosuid,size=16m",
+            &format!("--volume={cache_volume}:/cache:ro"),
+            &format!("--volume={store_volume}:/nix:rw"),
+            "--entrypoint=/bin/sh",
+            image,
+            "-c",
+            script,
+            "_",
+            root,
+        ])
+        .expect("independent Nix oracle runs");
+    let text = String::from_utf8_lossy(&output);
+    let mut facts: std::collections::BTreeMap<String, OracleFact> =
+        std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        match fields.as_slice() {
+            ["F", path, deriver, hash] => {
+                facts.insert(
+                    (*path).to_owned(),
+                    OracleFact {
+                        deriver: (!deriver.is_empty()).then(|| (*deriver).to_owned()),
+                        nar_hash: (*hash).to_owned(),
+                        outputs: Vec::new(),
+                    },
+                );
+            }
+            ["O", path, output] => {
+                if let Some(fact) = facts.get_mut(*path) {
+                    fact.outputs.push((*output).to_owned());
+                }
+            }
+            _ => panic!("unexpected oracle line: {line}"),
+        }
+    }
+    for fact in facts.values_mut() {
+        fact.outputs.sort();
+        fact.outputs.dedup();
+    }
+    facts
+}
+
+#[tokio::test]
+#[ignore = "requires real rootless Podman and the pinned environment-builder image"]
+async fn real_identity_facts_producer_core_verifier_and_sqlite_replay() {
+    if std::env::var("FACTORY_IDENTITY_FACTS_REAL_TEST")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        eprintln!("FACTORY_IDENTITY_FACTS_REAL_TEST is not 1; skipping the real self-test");
+        return;
+    }
+    let podman = std::env::var("FACTORY_PODMAN_BIN").unwrap_or_else(|_| "podman".into());
+    let image = std::env::var("FACTORY_IDENTITY_FACTS_REAL_IMAGE")
+        .expect("FACTORY_IDENTITY_FACTS_REAL_IMAGE must name an existing builder image");
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let store_volume = format!("factory-idf-selftest-store-{}", &id[..24]);
+    let cache_volume = format!("factory-idf-selftest-cache-{}", &id[..24]);
+    let _volumes = DisposableVolumes {
+        podman: podman.clone(),
+        volumes: vec![store_volume.clone(), cache_volume.clone()],
+    };
+    let runner = HostPodman {
+        podman: podman.clone(),
+    };
+    runner
+        .output(&["volume", "create", &store_volume])
+        .expect("create the disposable store volume");
+    runner
+        .output(&["volume", "create", &cache_volume])
+        .expect("create the disposable cache volume");
+
+    // Use a real store path from the pinned image and copy only its closure and
+    // derivations into the disposable store volume.
+    let root = String::from_utf8_lossy(
+        &runner
+            .output(&[
+                "run",
+                "--rm",
+                "--network=none",
+                "--read-only",
+                "--entrypoint=/bin/sh",
+                &image,
+                "-c",
+                "p=$(readlink -f /bin/sh); printf '%s' \"${p%/bin/*}\"",
+            ])
+            .expect("resolve a real store path from the pinned image"),
+    )
+    .trim()
+    .to_owned();
+    assert!(
+        factory_native::runtime_broker::is_store_output_path(&root),
+        "the fixture root must be a real store path: {root}"
+    );
+    let seed_script = format!(
+        r#"set -eu
+root={root}
+nixpath=$(readlink -f "$(command -v nix)")
+nixroot=${{nixpath%/bin/*}}
+readlinkpath=$(readlink -f "$(command -v readlink)")
+readlinkroot=${{readlinkpath%/bin/*}}
+paths=$(nix path-info --json --recursive --offline "$root" "$nixroot" "$readlinkroot" | jq -r 'keys[]')
+drvs=$(for p in $paths; do d=$(nix-store -q --deriver "$p" 2>/dev/null || true); if [ -n "$d" ] && [ "$d" != unknown-deriver ]; then printf '%s\n' "$d"; fi; done | sort -u)
+tar -C /nix -cf - $(for p in $paths $drvs; do printf '%s\n' "${{p#/nix/}}"; done) var/nix/db | tar -C /target -xf -
+mkdir -p /target/var/nix/profiles/default/bin
+ln -sfn "$nixroot/bin/nix" /target/var/nix/profiles/default/bin/nix
+ln -sfn "$nixroot/bin/nix-store" /target/var/nix/profiles/default/bin/nix-store
+ln -sfn "$readlinkroot/bin/readlink" /target/var/nix/profiles/default/bin/readlink
+chown -R 10001:10001 /target
+"#
+    );
+    runner
+        .output(&[
+            "run",
+            "--rm",
+            "--network=none",
+            "--user=0:0",
+            "--entrypoint=/bin/sh",
+            &format!("--volume={store_volume}:/target:rw"),
+            &image,
+            "-c",
+            &seed_script,
+        ])
+        .expect("seed the disposable store volume from the pinned image");
+    runner
+        .output(&[
+            "run",
+            "--rm",
+            "--network=none",
+            "--user=0:0",
+            "--entrypoint=/bin/sh",
+            &format!("--volume={cache_volume}:/cache:rw"),
+            &image,
+            "-c",
+            &format!("ln -sfn {root} /cache/profile"),
+        ])
+        .expect("write the realised profile into the disposable cache volume");
+
+    let plan_sha256 = sha256_hex(
+        serde_json::json!({
+            "source": "PROJECT_COMMITTED",
+            "packages": [],
+            "lock": "devenv.lock",
+        })
+        .to_string()
+        .as_bytes(),
+    );
+    let token = format!("identity-facts-selftest-token-{}", &id[..24]);
+    let challenge = IdentityFactsChallenge {
+        operation_id: format!("selftest-operation-{}", &id[..24]),
+        runtime_id: format!("sha256:{}", sha256_hex(image.as_bytes())),
+        nonce: format!("selftest-nonce-{}", &id[..24]),
+        pin: "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d".into(),
+        plan_sha256,
+        spec_sha256: sha256_hex(b"selftest-spec"),
+        mode: IdentityFactsMode::Enumerate,
+        root: OperationRoot::Operation,
+        questions: Vec::new(),
+        stage: IdentityFactsStage::Spec,
+        resolution_key: String::new(),
+    };
+    let manifest =
+        observe_identity_facts_with(&runner, &image, &cache_volume, &store_volume, &challenge)
+            .await
+            .expect("the broker producer observes the real closure");
+    assert_eq!(manifest.observed_root, root);
+    assert!(!manifest.facts.is_empty());
+    assert!(!manifest.truncated);
+    assert_eq!(manifest.fact_count, manifest.facts.len());
+    assert_eq!(
+        manifest.closure_manifest_sha256,
+        closure_manifest_sha256(&manifest.facts)
+    );
+    // Independent oracle: `nix-store`/`nix hash` commands, not the producer's
+    // `nix path-info --json` + `nix derivation show` parsing.
+    let oracle = independent_closure(
+        &runner,
+        &image,
+        &cache_volume,
+        &store_volume,
+        &manifest.observed_root,
+    );
+    assert_eq!(manifest.observed_root, root);
+    assert_eq!(manifest.fact_count, oracle.len());
+    for (path, expected) in &oracle {
+        let fact = manifest
+            .facts
+            .iter()
+            .find(|fact| &fact.store_path == path)
+            .unwrap_or_else(|| panic!("producer omitted oracle path {path}"));
+        assert_eq!(&fact.deriver, &expected.deriver, "deriver for {path}");
+        assert_eq!(&fact.nar_hash, &expected.nar_hash, "nar hash for {path}");
+        let mut outputs = fact.outputs.clone();
+        outputs.sort();
+        outputs.dedup();
+        assert_eq!(outputs, expected.outputs, "outputs for {path}");
+    }
+    for fact in &manifest.facts {
+        assert!(
+            oracle.contains_key(&fact.store_path),
+            "producer returned a path outside the oracle closure: {}",
+            fact.store_path
+        );
+        if fact.deriver.is_none() {
+            assert_eq!(fact.outputs, vec![fact.store_path.clone()]);
+        } else {
+            assert!(fact.outputs.contains(&fact.store_path));
+        }
+    }
+    let envelope = IdentityFactsEnvelope {
+        schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
+        context: IDENTITY_FACTS_CONTEXT.into(),
+        challenge: challenge.clone(),
+        manifest: manifest.clone(),
+    };
+    // This is a real HMAC over a real broker-observed manifest; the Core
+    // verifier below is the actual client method, not a fixture constructor.
+    let receipt = IdentityFactsReceipt {
+        signature: sign(&envelope, token.as_bytes()).expect("the broker signs the envelope"),
+        envelope,
+    };
+
+    // Actual Core client verification, including the context-derived MAC.
+    let client = RuntimeBrokerClient::new(
+        "http://127.0.0.1:9",
+        token.clone(),
+        ResourceOwner::Environment,
+    )
+    .expect("construct the Core broker client");
+    let verified = client
+        .verify_identity_facts(&receipt, &challenge)
+        .expect("the Core verifier accepts the real broker receipt");
+
+    // Licence-origin binding against the real signed manifest. The disposable
+    // seeded store registers no derivations, so this fixture can only prove the
+    // fail-closed path: an origin naming a derivation that is not in the signed
+    // manifest is refused. It never claims a positive licence admission; the
+    // authenticated acceptance path is the real sign/verify test in
+    // `planning::environment`.
+    let derived = manifest.facts.iter().find(|fact| fact.deriver.is_some());
+    let licensed = derived.unwrap_or_else(|| {
+        manifest
+            .facts
+            .first()
+            .expect("the real closure is not empty")
+    });
+    let origin = SourceLicenseOrigin {
+        pin: challenge.pin.clone(),
+        deriver: format!("/nix/store/{}-unregistered.drv", "f".repeat(32)),
+        store_path: licensed.store_path.clone(),
+        nar_hash: licensed.nar_hash.clone(),
+        source_store_path: "/nix/store/3p306srz83h9z9v0ma9xcxb8y8cdxkxj-source".into(),
+        source_nar_sha256: "sha256-16KkgfdYqjaeRGBaYsNrhPRRENs0qzkQVUooNHtoy2w=".into(),
+        license_file: "COPYING".into(),
+        license_file_sha256: "b1269cab8c739a49b41c7f89a679805b200f268246fe9ee077c91da78b602f9e"
+            .into(),
+        license: "MIT".into(),
+        input_sources: vec![SourceLicenseInput {
+            store_path: "/nix/store/q855jh4ms79mqdmz0jjsimp9d16isfkk-setup.sh".into(),
+            sha256: "0".repeat(64),
+            source_path: "pkgs/stdenv/generic/setup.sh".into(),
+            source_sha256: "0".repeat(64),
+        }],
+        composition_nar_sha256: licensed.nar_hash.clone(),
+        composition_nar_size: 1,
+    };
+    assert!(
+        origin.bind_identity_facts(&verified).is_err(),
+        "a derivation that is not in the signed manifest must be refused"
+    );
+    let mut tampered = origin.clone();
+    tampered.nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into();
+    assert!(
+        tampered.bind_identity_facts(&verified).is_err(),
+        "a changed NAR hash must be refused"
+    );
+    let mut tampered = origin.clone();
+    tampered.deriver = format!("/nix/store/{}-other.drv", "f".repeat(32));
+    assert!(
+        tampered.bind_identity_facts(&verified).is_err(),
+        "a changed derivation must be refused"
+    );
+    let mut tampered = origin.clone();
+    tampered.store_path = format!("/nix/store/{}-other", "f".repeat(32));
+    assert!(
+        tampered.bind_identity_facts(&verified).is_err(),
+        "a changed store path must be refused"
+    );
+
+    // Actual SQLite consume and replay refusal.
+    let db_path = std::env::temp_dir().join(format!("factory-idf-selftest-{}.sqlite", &id[..24]));
+    let db = Database::open(&db_path)
+        .await
+        .expect("open the test database");
+    db.issue_identity_facts_challenge(&challenge, Some("selftest"), "selftest-plan", 900)
+        .await
+        .expect("persist the PENDING challenge");
+    let bound = BoundIdentityFacts::spec_cache_observation(verified.clone());
+    let stored = db
+        .consume_identity_facts(&challenge, &bound)
+        .await
+        .expect("consume the real receipt");
+    assert_eq!(stored.observed_root, root);
+    assert_eq!(stored.fact_count, manifest.fact_count as u32);
+    assert!(
+        db.consume_identity_facts(&challenge, &bound).await.is_err(),
+        "a replayed nonce must be refused"
+    );
+    let db = std::sync::Arc::new(db);
+    let mut raced = challenge.clone();
+    raced.nonce = format!("selftest-nonce-race-{}", &id[..24]);
+    raced.operation_id = format!("selftest-operation-race-{}", &id[..24]);
+    db.issue_identity_facts_challenge(&raced, Some("selftest"), "selftest-plan", 900)
+        .await
+        .expect("persist the concurrent challenge");
+    let raced_envelope = IdentityFactsEnvelope {
+        schema_version: IDENTITY_FACTS_SCHEMA_VERSION,
+        context: IDENTITY_FACTS_CONTEXT.into(),
+        challenge: raced.clone(),
+        manifest: manifest.clone(),
+    };
+    let raced_receipt = IdentityFactsReceipt {
+        signature: sign(&raced_envelope, token.as_bytes())
+            .expect("the broker signs the raced envelope"),
+        envelope: raced_envelope,
+    };
+    let raced_verified = client
+        .verify_identity_facts(&raced_receipt, &raced)
+        .expect("the raced receipt verifies");
+    let raced_bound = BoundIdentityFacts::spec_cache_observation(raced_verified);
+    let first = {
+        let db = std::sync::Arc::clone(&db);
+        let raced = raced.clone();
+        let raced_bound = raced_bound.clone();
+        tokio::spawn(async move { db.consume_identity_facts(&raced, &raced_bound).await })
+    };
+    let second = {
+        let db = std::sync::Arc::clone(&db);
+        let raced = raced.clone();
+        let raced_bound = raced_bound.clone();
+        tokio::spawn(async move { db.consume_identity_facts(&raced, &raced_bound).await })
+    };
+    let results = [first.await.unwrap(), second.await.unwrap()];
+    assert_eq!(
+        results.iter().filter(|result| result.is_ok()).count(),
+        1,
+        "exactly one concurrent consume must win"
+    );
+    assert_eq!(
+        results.iter().filter(|result| result.is_err()).count(),
+        1,
+        "the concurrent loser must be refused"
+    );
+    db.close().await;
+    let _ = std::fs::remove_file(&db_path);
+
+    println!(
+        "{}",
+        serde_json::json!({
+            "status": "PASS",
+            "image": image,
+            "observedRoot": root,
+            "factCount": manifest.fact_count,
+            "closureManifestSha256": manifest.closure_manifest_sha256,
+            "signature": verified.receipt().signature,
+            "planSource": "PROJECT_COMMITTED",
+            "packages": [],
+            "replay": "REFUSED",
+            "coreVerifier": "ACCEPTED",
+            "derivedFactAvailable": derived.is_some(),
+            "licenceOriginBinding": "REFUSED_UNREGISTERED_DERIVATION",
+        })
+    );
+}

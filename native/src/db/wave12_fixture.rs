@@ -22,6 +22,7 @@ use crate::planning::{FindingDisposition, FindingRoute, FindingStatus, OpenSpecP
 const PROJECT_ID: &str = "project-wp10-browser";
 const REPOSITORY: &str = "/tmp/factory-wp10-browser-repository";
 const PROFILE_ID: &str = "profile-wp10-browser-r2";
+const V2_DELEGATION_ID: &str = "delegation-wp10-browser-v2";
 
 pub const READY_REQUEST: &str = "11111111-1111-4111-8111-111111111111";
 pub const MISSING_REQUEST: &str = "22222222-2222-4222-8222-222222222222";
@@ -35,6 +36,9 @@ pub const TRACE_REJECTED_REQUEST: &str = "99999999-9999-4999-8999-999999999999";
 pub const TRACE_DUPLICATE_REQUEST: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 pub const TRACE_RETRY_REQUEST: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 pub const TRACE_GAP_REQUEST: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+/// Explicit SUBMITTED requests for the Owner Extra Usage once-only journey.
+pub const EXTRA_USAGE_REQUEST_1: &str = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+pub const EXTRA_USAGE_REQUEST_2: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
 fn sha256_hex(value: &str) -> String {
     let digest = Sha256::digest(value.as_bytes());
@@ -66,6 +70,7 @@ impl Database {
         }
         let now = Utc::now().to_rfc3339();
         self.ensure_wave12_project(&now).await?;
+        self.ensure_wave12_v2_grant(&now).await?;
         self.ensure_wave12_profile_v2(&now).await?;
         self.ensure_wave12_profile_invalid(&now).await?;
 
@@ -110,6 +115,25 @@ impl Database {
         )
         .await?;
 
+        // A plain SUBMITTED request pair with no plan: the browser exercises the
+        // Owner Extra Usage confirmation panel and its cross-request reuse.
+        for request_id in [EXTRA_USAGE_REQUEST_1, EXTRA_USAGE_REQUEST_2] {
+            self.insert_request_base(
+                request_id,
+                "Confirm OpenCode Go Extra Usage once for this provider configuration",
+                PROFILE_ID,
+                &format!("{PROFILE_ID}-r1"),
+                &sha256_hex(PROFILE_ID),
+                &now,
+            )
+            .await?;
+            // A plain new request: the Lead has not assessed or frozen a plan.
+            sqlx::query::query("UPDATE lead_requests SET state='SUBMITTED' WHERE id=?1")
+                .bind(format!("lead-{request_id}"))
+                .execute(&self.pool)
+                .await?;
+        }
+
         self.seed_wave12_traces(&now).await?;
         self.seed_wave12_skills(&now).await?;
 
@@ -123,6 +147,7 @@ impl Database {
                 "planReject": REJECT_REQUEST,
                 "planStale": STALE_REQUEST,
                 "reviewMismatch": MISMATCH_REQUEST,
+                "extraUsageSubmitted": [EXTRA_USAGE_REQUEST_1, EXTRA_USAGE_REQUEST_2],
                 "tracePopulated": TRACE_POPULATED_REQUEST,
                 "traceEmpty": TRACE_EMPTY_REQUEST,
                 "traceLong": TRACE_LONG_REQUEST,
@@ -151,7 +176,22 @@ impl Database {
 
     async fn ensure_wave12_project(&self, now: &str) -> Result<(), Error> {
         let base_commit = "a".repeat(40);
-        let config_hash = sha256_hex("wave12 project config");
+        // The fixture config must be internally consistent so test-support
+        // proposal seeding and projections can load it through the real Core
+        // path; a synthetic hash was rejected by `project_config`.
+        let config_hash = crate::lead::ProjectConfig {
+            project_id: PROJECT_ID.into(),
+            revision: 1,
+            config_hash: String::new(),
+            repository: REPOSITORY.into(),
+            base_commit: base_commit.clone(),
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![crate::lead::Capability::RepositoryEdit],
+            quality_profile: crate::lead::QualityProfile::Generic,
+            active: true,
+            updated_at: now.into(),
+        }
+        .compute_hash();
         sqlx::query::query(
             "INSERT OR IGNORE INTO projects
              (id,repository,base_commit,created_at,identity,name,source_kind,source_url,
@@ -169,7 +209,7 @@ impl Database {
             "INSERT OR IGNORE INTO project_configs
              (project_id,revision,config_hash,repository,base_commit,allowed_paths_json,
               capabilities_json,quality_profile,active,updated_at)
-             VALUES (?1,1,?2,?3,?4,'[]','[\"repository-edit\"]','generic',1,?5)",
+             VALUES (?1,1,?2,?3,?4,'[\"src\"]','[\"repository-edit\"]','generic',1,?5)",
         )
         .bind(PROJECT_ID)
         .bind(&config_hash)
@@ -361,6 +401,57 @@ impl Database {
         Ok(())
     }
 
+    async fn ensure_wave12_v2_grant(&self, now: &str) -> Result<(), Error> {
+        use crate::execution_policy::{OperationLimits, ProgressPolicy};
+        use std::num::NonZeroU32;
+        let mut grant = crate::lead::StandingDelegationV2 {
+            id: V2_DELEGATION_ID.into(),
+            principal_id: "owner".into(),
+            audit_id: "fixture".into(),
+            project_id: PROJECT_ID.into(),
+            revision: 1,
+            content_hash: String::new(),
+            objective_classes: vec![crate::lead::ObjectiveClass::Feature],
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![crate::lead::Capability::RepositoryEdit],
+            risk_classes: vec![crate::lead::RiskClass::R0, crate::lead::RiskClass::R1],
+            autonomous_start: false,
+            autonomous_risk_classes: Vec::new(),
+            route: crate::lead::ProviderRoute {
+                provider: "opencode-go".into(),
+                model: "deepseek-v4.1-flash".into(),
+                mode: "build".into(),
+            },
+            max_timeout_secs: 300,
+            max_parallel: 1,
+            operations: OperationLimits {
+                model_request_timeout_secs: NonZeroU32::new(300).unwrap(),
+                tool_call_timeout_secs: NonZeroU32::new(120).unwrap(),
+                max_request_bytes: NonZeroU32::new(1_000_000).unwrap(),
+                max_response_bytes: NonZeroU32::new(1_000_000).unwrap(),
+                max_generation_tokens: NonZeroU32::new(8_192).unwrap(),
+                max_in_flight_operations: NonZeroU32::new(2).unwrap(),
+            },
+            progress: ProgressPolicy {
+                diagnose_after_stagnant_checkpoints: NonZeroU32::new(3).unwrap(),
+                escalate_after_unsuccessful_replans: NonZeroU32::new(1).unwrap(),
+                observation_timeout_secs: NonZeroU32::new(300).unwrap(),
+                autonomy: Default::default(),
+            },
+            expires_at: Utc::now() + Duration::days(1),
+            revoked_at: None,
+        };
+        grant.content_hash = grant.compute_content_hash();
+        grant
+            .validate(Utc::now())
+            .map_err(|error| Error::Validation(format!("wave12 V2 grant: {error}")))?;
+        let _ = self
+            .create_standing_delegation_v2(&grant, "wave12-v2-grant")
+            .await?;
+        let _ = now;
+        Ok(())
+    }
+
     async fn insert_request_base(
         &self,
         request_id: &str,
@@ -371,7 +462,7 @@ impl Database {
         now: &str,
     ) -> Result<(), Error> {
         let action_id = format!("action-{request_id}");
-        let delegation_id = format!("delegation-{request_id}");
+        let delegation_id = V2_DELEGATION_ID.to_string();
         let lead_id = format!("lead-{request_id}");
         let submission = json!({"mode": "REVIEW_PLAN", "fixture": "wp10-browser"}).to_string();
         let submission_hash = sha256_hex(&submission);
@@ -387,17 +478,15 @@ impl Database {
         .bind(now)
         .execute(&self.pool)
         .await?;
-        sqlx::query::query(
-            "INSERT OR IGNORE INTO standing_delegations
-             (id,principal_id,audit_id,project_id,revision,content_hash,content_json,created_at)
-             VALUES (?1,'owner','fixture',?2,1,?3,'{}',?4)",
-        )
-        .bind(&delegation_id)
-        .bind(PROJECT_ID)
-        .bind(sha256_hex(&delegation_id))
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
+        let spec = wave12_action_spec(objective);
+        let spec_json = serde_json::to_string(&spec)
+            .map_err(|_| Error::Validation("wave12 ActionSpec encoding".into()))?;
+        sqlx::query::query("INSERT OR IGNORE INTO action_specs VALUES (?1,?2,?3)")
+            .bind(&action_id)
+            .bind(&spec_json)
+            .bind(sha256_hex(&spec_json))
+            .execute(&self.pool)
+            .await?;
         sqlx::query::query(
             "INSERT OR IGNORE INTO lead_requests
              (id,project_id,action_id,delegation_id,objective,request_hash,
@@ -410,7 +499,7 @@ impl Database {
         .bind(&delegation_id)
         .bind(objective)
         .bind(sha256_hex(&format!("{request_id}-request")))
-        .bind(sha256_hex(&format!("{request_id}-config")))
+        .bind(wave12_project_config(now).compute_hash())
         .bind(now)
         .execute(&self.pool)
         .await?;
@@ -1152,6 +1241,107 @@ impl Database {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+}
+
+fn wave12_project_config(now: &str) -> crate::lead::ProjectConfig {
+    crate::lead::ProjectConfig {
+        project_id: PROJECT_ID.into(),
+        revision: 1,
+        config_hash: String::new(),
+        repository: REPOSITORY.into(),
+        base_commit: "a".repeat(40),
+        allowed_paths: vec!["src".into()],
+        capabilities: vec![crate::lead::Capability::RepositoryEdit],
+        quality_profile: crate::lead::QualityProfile::Generic,
+        active: true,
+        updated_at: now.into(),
+    }
+}
+
+fn wave12_action_spec(objective: &str) -> crate::db::ActionSpec {
+    use crate::lead::{CheckKind, SpecCheck};
+    crate::db::ActionSpec {
+        schema_version: 1,
+        project_id: PROJECT_ID.into(),
+        repository: REPOSITORY.into(),
+        base_commit: "a".repeat(40),
+        objective: objective.into(),
+        objective_sha256: sha256_hex(objective),
+        provider: "opencode-go".into(),
+        model: "deepseek-v4.1-flash".into(),
+        allowed_paths: vec!["src".into()],
+        checks: vec![
+            SpecCheck {
+                id: "wave12-format".into(),
+                kind: CheckKind::Format,
+                description: "Wave12 fixture format".into(),
+                command: vec!["true".into()],
+                expect_exit: 0,
+                timeout_secs: 30,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
+            },
+            SpecCheck {
+                id: "wave12-lint".into(),
+                kind: CheckKind::Lint,
+                description: "Wave12 fixture lint".into(),
+                command: vec!["true".into()],
+                expect_exit: 0,
+                timeout_secs: 30,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
+            },
+            SpecCheck {
+                id: "wave12-build".into(),
+                kind: CheckKind::Build,
+                description: "Wave12 fixture build".into(),
+                command: vec!["true".into()],
+                expect_exit: 0,
+                timeout_secs: 30,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
+            },
+            SpecCheck {
+                id: "wave12-functional".into(),
+                kind: CheckKind::Functional,
+                description: "Wave12 fixture functional".into(),
+                command: vec!["true".into()],
+                expect_exit: 0,
+                timeout_secs: 30,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
+            },
+            SpecCheck {
+                id: "wave12-test".into(),
+                kind: CheckKind::Test,
+                description: "Wave12 fixture test".into(),
+                command: vec!["true".into()],
+                expect_exit: 0,
+                timeout_secs: 30,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
+            },
+            SpecCheck {
+                id: "wave12-negative".into(),
+                kind: CheckKind::Negative,
+                description: "Wave12 fixture negative".into(),
+                command: vec!["false".into()],
+                expect_exit: 1,
+                timeout_secs: 30,
+                environment_plan_id: None,
+                environment_spec_sha256: None,
+            },
+        ],
+        dependency_plan: None,
+        dependencies_required: false,
+        environment_plan_id: None,
+        environment_plan_sha256: None,
+        environment_spec_id: None,
+        environment_spec_sha256: None,
+        environment_builder_image: None,
+        environment_builder_image_digest: None,
+        environment_required: false,
     }
 }
 

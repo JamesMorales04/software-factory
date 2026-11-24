@@ -127,6 +127,11 @@ topology. It may bind the repository and use a development image. The product
   [dependency-selection policy](dependency-selection.md).
 - New frontend dependencies must build inside the container and must not add a
   host-only executable or a second component system.
+- Image bundle producers must be byte-deterministic for the same source image:
+  sort members, fix non-functional metadata, and exclude runtime-generated
+  mounts. Preserve ownership, modes and symlinks. The bundle digest is an image
+  identity; changing it requires a new plan revision and review, never a digest
+  rewrite or plan rebind.
 - The provider image may contain provider runtimes and Node; it must not contain
   Core authority, provider credentials, a host toolchain or a runtime socket.
 

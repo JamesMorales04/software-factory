@@ -137,6 +137,7 @@ const projection: IntakeRequestProjection = {
   assessment: null,
   proposal: null,
   plan: null,
+  specifications: [],
   campaign: null,
   messages: [],
 };

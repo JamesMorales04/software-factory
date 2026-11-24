@@ -25,6 +25,7 @@ from .policy import EnvironmentFile, environment_without_secrets
 from .util import (
     canonical_json,
     last_lines,
+    last_nonempty_line,
     redact,
     sha256_bytes,
     sha256_text,
@@ -36,6 +37,29 @@ MAX_TAIL_BYTES = 64 * 1024
 MAX_TOOL_OUTPUT_BYTES = 64 * 1024
 MAX_CLOSURE_OUTPUT_BYTES = 16 * 1024 * 1024
 STREAM_CHUNK_BYTES = 64 * 1024
+#: Marks a diagnostic stream whose retained head and tail are separated by a
+#: bounded gap. It makes the truncation visible without dumping the whole stream.
+STDERR_TRUNCATION_MARKER = b"\n...[stderr truncated; head and tail retained]...\n"
+#: Prefixes Nix uses for non-fatal diagnostics. A warning is never the primary
+#: failure cause, even when its body contains the word ``error:``.
+DIAGNOSTIC_WARNING_PREFIXES = ("evaluation warning:", "warning:", "trace:")
+#: cgroup v2 OOM counter. A negative return code alone is not resource
+#: evidence; only an increment here supports ENVIRONMENT_RESOURCE_LIMIT.
+CGROUP_MEMORY_EVENTS = Path("/sys/fs/cgroup/memory.events")
+
+
+def _read_cgroup_oom_kills() -> int | None:
+    """Return the cgroup ``oom_kill`` counter, or ``None`` when unavailable."""
+    try:
+        with CGROUP_MEMORY_EVENTS.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                key, _, value = line.partition(" ")
+                if key == "oom_kill":
+                    return int(value.strip())
+    except (OSError, ValueError):
+        return None
+    return None
+
 NIX_VERSION = re.compile(r"nix \(Nix\) ([0-9]+\.[0-9]+\.[0-9]+)")
 DEVENV_VERSION = re.compile(r"devenv ([0-9]+\.[0-9]+\.[0-9]+)")
 OFFLINE_MARKERS = (
@@ -54,10 +78,48 @@ SANDBOX_MARKERS = (
 )
 
 
-def _read_capped(stream: Any, limit: int) -> tuple[bytes, bool]:
-    """Drain a binary stream while retaining at most ``limit`` bytes."""
-    captured = bytearray()
-    truncated = False
+def _read_capped(
+    stream: Any, limit: int, *, retain_tail: bool = False
+) -> tuple[bytes, bool]:
+    """Drain a binary stream while retaining at most ``limit`` bytes.
+
+    Data channels use the default head retention: a truncated document is
+    rejected, so its tail cannot be mistaken for a complete value. Diagnostic
+    channels (``stderr``) use ``retain_tail`` to keep a bounded head **and**
+    tail, because the primary ``error:`` line is usually emitted last after a
+    long warning stream.
+    """
+    if not retain_tail:
+        captured = bytearray()
+        truncated = False
+        while True:
+            try:
+                chunk = stream.read(STREAM_CHUNK_BYTES)
+            except (OSError, ValueError):
+                break
+            if not chunk:
+                break
+            remaining = limit - len(captured)
+            if remaining > 0:
+                take = chunk[:remaining]
+                captured.extend(take)
+                if len(chunk) > len(take):
+                    truncated = True
+            else:
+                truncated = True
+        return bytes(captured), truncated
+
+    marker = STDERR_TRUNCATION_MARKER
+    marker_length = len(marker)
+    if limit <= marker_length:
+        head_budget = max(1, limit)
+        tail_budget = 0
+    else:
+        tail_budget = (limit - marker_length) // 2
+        head_budget = limit - marker_length - tail_budget
+    head = bytearray()
+    tail = bytearray()
+    total = 0
     while True:
         try:
             chunk = stream.read(STREAM_CHUNK_BYTES)
@@ -65,15 +127,18 @@ def _read_capped(stream: Any, limit: int) -> tuple[bytes, bool]:
             break
         if not chunk:
             break
-        remaining = limit - len(captured)
-        if remaining > 0:
-            take = chunk[:remaining]
-            captured.extend(take)
-            if len(chunk) > len(take):
-                truncated = True
-        else:
-            truncated = True
-    return bytes(captured), truncated
+        total += len(chunk)
+        if len(head) < limit:
+            head.extend(chunk[: limit - len(head)])
+        if tail_budget:
+            tail.extend(chunk)
+            if len(tail) > tail_budget:
+                del tail[: len(tail) - tail_budget]
+    if total <= limit:
+        return bytes(head), False
+    if tail_budget == 0:
+        return bytes(head[:head_budget]), True
+    return bytes(head[:head_budget]) + marker + bytes(tail), True
 
 
 def _drain_to_log(stream: Any, log: "BuildLog") -> None:
@@ -147,14 +212,20 @@ def _run_bounded_capture(
     assert process.stderr is not None
     results: dict[str, tuple[bytes, bool]] = {}
 
-    def reader(name: str, stream: Any, limit: int) -> None:
-        results[name] = _read_capped(stream, limit)
+    def reader(name: str, stream: Any, limit: int, *, retain_tail: bool) -> None:
+        results[name] = _read_capped(stream, limit, retain_tail=retain_tail)
 
     stdout_thread = threading.Thread(
-        target=reader, args=("stdout", process.stdout, stdout_limit), daemon=True
+        target=reader,
+        args=("stdout", process.stdout, stdout_limit),
+        kwargs={"retain_tail": False},
+        daemon=True,
     )
     stderr_thread = threading.Thread(
-        target=reader, args=("stderr", process.stderr, stderr_limit), daemon=True
+        target=reader,
+        args=("stderr", process.stderr, stderr_limit),
+        kwargs={"retain_tail": True},
+        daemon=True,
     )
     stdout_thread.start()
     stderr_thread.start()
@@ -198,6 +269,80 @@ def _tool_version(argv: list[str], pattern: re.Pattern[str], label: str) -> str:
     return match.group(1)
 
 
+def _primary_failure_reason(diagnostics: str, rendered_stdout: str = "") -> str:
+    """Choose the most useful bounded cause from a failed command's streams.
+
+    Nix writes the primary ``error:`` header at column 0 and indents warning
+    bodies. An indented ``error:`` inside a warning is therefore not a cause.
+    Start at the last top-level error header and keep the indented content of
+    that block, where Nix 2.28 usually places the real cause. If no top-level
+    header survived (for example because a retained tail starts mid-block), use
+    the whole stream but discard warning bodies. The result is a single
+    diagnostic line; ``BuilderError`` owns the public length bound.
+    """
+    lines = diagnostics.splitlines()
+    block_start: int | None = None
+    for index, raw in enumerate(lines):
+        if raw.startswith("error:"):
+            block_start = index
+    if block_start is not None:
+        scoped = list(enumerate(lines))[block_start:]
+    else:
+        scoped = []
+        in_warning = False
+        for index, raw in enumerate(lines):
+            stripped = raw.strip()
+            if not stripped or "stderr truncated" in stripped:
+                continue
+            indented = raw[:1].isspace()
+            lowered = stripped.lower()
+            if any(lowered.startswith(prefix) for prefix in DIAGNOSTIC_WARNING_PREFIXES):
+                in_warning = True
+                continue
+            if in_warning and indented:
+                continue
+            in_warning = False
+            scoped.append((index, raw))
+
+    error_lines: list[tuple[int, str]] = []
+    other_lines: list[tuple[int, str]] = []
+    for index, raw in scoped:
+        stripped = raw.strip()
+        if not stripped or "stderr truncated" in stripped:
+            continue
+        lowered = stripped.lower()
+        if any(lowered.startswith(prefix) for prefix in DIAGNOSTIC_WARNING_PREFIXES):
+            continue
+        if lowered.startswith("error:"):
+            error_lines.append((index, stripped))
+        else:
+            other_lines.append((index, stripped))
+    with_payload = [
+        (index, line)
+        for index, line in error_lines
+        if line[len("error:"):].strip()
+    ]
+    if with_payload:
+        return with_payload[-1][1]
+    if error_lines:
+        # A payload-less top-level ``error:`` (for example ``throw ""``) is
+        # still the real block. Report its following detail line, not an
+        # earlier warning that merely contained the word ``error:``.
+        first_error_index = error_lines[0][0]
+        after_error = [
+            line for index, line in other_lines if index > first_error_index
+        ]
+        if after_error:
+            return after_error[0]
+        return error_lines[-1][1]
+    if other_lines:
+        return other_lines[-1][1]
+    stdout_line = last_nonempty_line(rendered_stdout, 2_000)
+    if stdout_line:
+        return stdout_line
+    return "no diagnostic was emitted"
+
+
 def nix_eval_json(
     expression: str,
     *,
@@ -208,7 +353,8 @@ def nix_eval_json(
 ) -> Any:
     """Evaluate one bounded pure Nix expression and return decoded JSON."""
     argv = ["nix", "eval", "--json", "--expr", expression]
-    returncode, stdout, stderr, stdout_truncated, stderr_truncated = _run_bounded_capture(
+    oom_kills_before = _read_cgroup_oom_kills()
+    returncode, stdout, stderr, stdout_truncated, _stderr_truncated = _run_bounded_capture(
         argv,
         timeout=timeout,
         env=env,
@@ -216,15 +362,51 @@ def nix_eval_json(
         stdout_limit=MAX_CLOSURE_OUTPUT_BYTES,
         stderr_limit=MAX_TOOL_OUTPUT_BYTES,
     )
+    oom_kills_after = _read_cgroup_oom_kills()
     rendered = stdout.decode("utf-8", errors="replace")
     diagnostics = stderr.decode("utf-8", errors="replace")
-    log.write(f"$ nix eval --json --expr <package metadata>\n{rendered}{diagnostics}")
-    if stdout_truncated or stderr_truncated:
+    log.write(
+        f"$ nix eval --json --expr <package metadata>\n[stdout]\n{rendered}\n[stderr]\n{diagnostics}"
+    )
+    # stdout is the data channel and must be bounded. stderr is diagnostic:
+    # Nix emits evaluation warnings there on successful calls, so a noisy
+    # warning channel is not a data failure by itself.
+    if stdout_truncated:
         fail(failure_code, "package metadata evaluation output exceeds its bound")
+    if returncode < 0:
+        signal_number = -returncode
+        try:
+            signal_name = signal.Signals(signal_number).name
+        except ValueError:
+            signal_name = f"signal {signal_number}"
+        reason = _primary_failure_reason(diagnostics, rendered)
+        detail = (
+            ""
+            if reason == "no diagnostic was emitted"
+            else f"; diagnostic: {reason}"
+        )
+        oom_confirmed = (
+            signal_number == signal.SIGKILL
+            and oom_kills_before is not None
+            and oom_kills_after is not None
+            and oom_kills_after > oom_kills_before
+        )
+        if oom_confirmed:
+            fail(
+                "ENVIRONMENT_RESOURCE_LIMIT",
+                f"package metadata evaluation was terminated by {signal_name} "
+                f"(exit {returncode}) after cgroup oom_kill{detail}",
+            )
+        fail(
+            "ENVIRONMENT_BUILD_FAILED",
+            f"package metadata evaluation was terminated by {signal_name} "
+            f"(exit {returncode}) without OOM evidence{detail}",
+        )
     if returncode != 0:
+        reason = _primary_failure_reason(diagnostics, rendered)
         fail(
             failure_code,
-            f"package metadata evaluation failed: {tail(diagnostics) or tail(rendered)}",
+            f"package metadata evaluation exited {returncode}: {reason}",
         )
     try:
         return json.loads(rendered)
@@ -516,6 +698,10 @@ def closure_manifest(root: str | list[str]) -> list[dict[str, Any]]:
                 "narHash": str(info.get("narHash", "")),
                 "narSize": int(info.get("narSize", 0) or 0),
                 "deriver": str(info.get("deriver") or ""),
+                # Referrers are derived from this closure graph. They are the
+                # positive provenance fact behind a deriver-less helper: a
+                # generated stdenv script is referenced by the stdenv output.
+                "references": sorted(str(reference) for reference in info.get("references") or []),
             }
         )
     return manifest
@@ -714,14 +900,22 @@ def run_check(
     assert process.stderr is not None
     results: dict[str, tuple[bytes, bool]] = {}
 
-    def reader(name: str, stream: Any) -> None:
-        results[name] = _read_capped(stream, MAX_CHECK_STREAM_BYTES)
+    def reader(name: str, stream: Any, *, retain_tail: bool) -> None:
+        results[name] = _read_capped(
+            stream, MAX_CHECK_STREAM_BYTES, retain_tail=retain_tail
+        )
 
     stdout_thread = threading.Thread(
-        target=reader, args=("stdout", process.stdout), daemon=True
+        target=reader,
+        args=("stdout", process.stdout),
+        kwargs={"retain_tail": False},
+        daemon=True,
     )
     stderr_thread = threading.Thread(
-        target=reader, args=("stderr", process.stderr), daemon=True
+        target=reader,
+        args=("stderr", process.stderr),
+        kwargs={"retain_tail": True},
+        daemon=True,
     )
     stdout_thread.start()
     stderr_thread.start()

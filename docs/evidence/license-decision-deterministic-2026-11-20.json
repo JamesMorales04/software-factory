@@ -1,0 +1,71 @@
+{
+  "implementationSha": "f7fe16e8",
+  "scope": "Exact licence/identity/evidence decisions, Owner delegation, separate source proof and Office /licenses",
+  "environment": {
+    "kind": "deterministic local verification and container-native code checks",
+    "paidInference": false,
+    "runtime": "not started",
+    "browser": "NOT_TESTED"
+  },
+  "checks": [
+    {
+      "name": "factory-core binary check",
+      "command": "cargo check -p factory-native --bin factory-core --locked --offline",
+      "pass": true
+    },
+    {
+      "name": "factory-core binary clippy",
+      "command": "cargo clippy -p factory-native --bin factory-core --locked --offline -- -D warnings",
+      "pass": true
+    },
+    {
+      "name": "container-native factory-core check",
+      "command": "podman run rust:1.90.0-bookworm cargo check --locked --offline -p factory-native --bin factory-core",
+      "pass": true,
+      "detail": "bounded source copy without .git/target/office/docs/evidence and without rust-toolchain.toml; host CARGO_HOME read-only; exit 0"
+    },
+    {
+      "name": "backend library suite",
+      "command": "cargo test --lib --locked --offline (Core98 repair 642e3320)",
+      "pass": true,
+      "detail": "1153 passed; 0 failed; 4 ignored"
+    },
+    {
+      "name": "builder licence decision",
+      "command": "PYTHONPATH=. python3 tests/test_license_decision.py",
+      "pass": true,
+      "detail": "10 passed; 0 failed (host and canonical container)"
+    },
+    {
+      "name": "builder licence policy and closure",
+      "command": "tests/test_license_policy.py and tests/test_builder.py -k 'license or closure'",
+      "pass": true,
+      "detail": "13 passed; 8 passed; 13 passed"
+    },
+    {
+      "name": "Office licence component",
+      "command": "npx vitest run src/views/LicenseDecisions.test.tsx",
+      "pass": true,
+      "detail": "6 passed; 0 failed in the canonical Node container"
+    },
+    {
+      "name": "exact source proof",
+      "pass": true,
+      "detail": "wa88 source store path, j151 source drv, flat d6d0c719..., NAR 1hbr.../70136, cache signature/CA/fingerprint, output frkd/36qz, inputDrvs membership and signature validity; derived from cache/pathinfo and the retained store, not fabricated; builder recomputes the exact proof hash from the signed asset and rejects a missing/tampered digest as ENVIRONMENT_SOURCE_EVIDENCE_STALE"
+    },
+    {
+      "name": "plan STALE refusal",
+      "pass": true,
+      "detail": "retained plan c6cb4499 carries catalogue 725ba589 while current policy is edef68e1; the repaired stage binding rejects it with PolicyMismatch and no old-plan/static-asset acceptance is possible"
+    }
+  ],
+  "notVerified": [
+    "real exact ed/GFDL decision",
+    "new plan revision and new Lead environment review",
+    "serial Core/builder/Office image build",
+    "own stack activation at 18893",
+    "browser matrix at desktop, tablet and 320 px in EN and ES",
+    "real Campaign E2E"
+  ],
+  "notes": "This is deterministic code/test evidence only. It does not claim runtime, browser, Compose, independent acceptance or a paid model call. The retained receipt supplies the exact output fact; the source is a separate exact proof."
+}

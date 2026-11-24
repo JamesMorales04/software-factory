@@ -11,6 +11,7 @@ interface and of the scenario manifest.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -25,6 +26,7 @@ from common import (
     Compose,
     Config,
     ScenarioError,
+    TerminalScenarioError,
     State,
     assert_equal,
     assert_in,
@@ -35,6 +37,8 @@ from common import (
     restore_volumes,
     tail,
     wait_core,
+    wait_oneshot,
+    wait_service,
     wait_until,
     wait_url,
     write_json,
@@ -49,7 +53,11 @@ class Context:
     api: Api
 
     def admit_scope(self, scope: str) -> None:
-        self.api.post("/test-support/subscription-dispatch-admissions", {"scope": scope})
+        # Test-support admission returns 204 with no body; use the raw request
+        # path so an empty payload is not treated as a non-JSON failure.
+        self.api.request(
+            "POST", "/test-support/subscription-dispatch-admissions", {"scope": scope}
+        )
 
     def require_api(self) -> Api:
         return self.api
@@ -64,6 +72,18 @@ def stage(name: str, description: str):
         return function
 
     return register
+
+
+def _optional_deadline(config) -> float | None:
+    """Total run deadline only when the operator set one explicitly."""
+
+    if getattr(config, "run_timeout", None) is None:
+        return None
+    return time.monotonic() + int(config.run_timeout)
+
+
+def _deadline_expired(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() >= deadline
 
 
 def _git(cwd: Path, arguments: list[str]) -> str:
@@ -120,6 +140,25 @@ def prepare(context: Context) -> None:
     context.state.set("run_dir", str(config.run_dir))
 
 
+def record_builder_readiness(context: Context) -> None:
+    """Record the builder status Core reports after the readiness boundary.
+
+    This is a factual observation for diagnostics: it does not restart, refresh
+    or retry anything. Core owns builder recovery (CR-19) and this record exists
+    so a run shows what Core reported, not what the harness assumed.
+    """
+
+    from common import now_utc
+
+    diagnostics = ensure_dir(context.config.artifacts_dir / "diagnostics")
+    health = context.api.get("/health") or {}
+    builder = health.get("environmentBuilder") or {}
+    write_json(
+        diagnostics / "builder-readiness.json",
+        {"at": now_utc(), "status": builder.get("status"), "digest": builder.get("digest")},
+    )
+
+
 @stage("start", "start the canonical Compose stack and wait for every readiness boundary")
 def start(context: Context) -> None:
     config = context.config
@@ -128,17 +167,30 @@ def start(context: Context) -> None:
         restore_volumes(config, context.compose)
     else:
         context.compose.down(volumes=True)
+    # One canonical bring-up: init and the bundle services must run before the
+    # runtime can import the builder, and the runtime has no depends_on.
     context.compose.up(build=not config.no_build)
+    # The runtime can only import the builder after init and the bundle
+    # services have finished; a missing or failed one-shot is a hard state error,
+    # not something to wait out.
+    for service in (
+        "init",
+        "provider-bundle",
+        "dependency-bundle",
+        "environment-builder-bundle",
+    ):
+        wait_oneshot(context.compose, service, config.readiness_timeout)
     core = context.compose.core_container()
     require(bool(core), "Core container was not created")
     context.state.set("core_container", core)
 
-    wait_url(f"{config.base}/health", 300)
-    wait_url(f"{config.base}/core-api/health", 60)
-    wait_core(context.compose, "http://supervisor:8766/health", 180)
-    wait_core(context.compose, "http://runtime:8770/health", config.timeout)
-    wait_core(context.compose, "http://git-fixture:8080/repo.git/HEAD", 60)
-    wait_core(context.compose, "http://model-fixture:8080/health", 120)
+    wait_url(f"{config.base}/health", config.readiness_timeout)
+    wait_url(f"{config.base}/core-api/health", config.readiness_timeout)
+    wait_core(context.compose, "http://supervisor:8766/health", config.readiness_timeout)
+    wait_core(context.compose, "http://runtime:8770/health", config.readiness_timeout)
+    record_builder_readiness(context)
+    wait_core(context.compose, "http://git-fixture:8080/repo.git/HEAD", config.readiness_timeout)
+    wait_core(context.compose, "http://model-fixture:8080/health", config.readiness_timeout)
 
 
 @stage("enroll", "perform first-run owner enrollment and wait for the Worker")
@@ -158,7 +210,7 @@ def enroll(context: Context) -> None:
         workers = context.api.get("/workers")
         return any("compose-worker" in json.dumps(worker) for worker in workers)
 
-    wait_until(worker_ready, 60, "the Compose Worker registration")
+    wait_until(worker_ready, config.readiness_timeout, "the Compose Worker registration")
     context.state.set("enrolled_at", now_utc())
 
 
@@ -269,42 +321,7 @@ def delegate(context: Context) -> None:
 @stage("settings", "configure the deterministic model gateway, execution profile and project policy")
 def settings(context: Context) -> None:
     context.state.require("project_id", "project_config_hash")
-    context.api.put(
-        "/settings/providers/opencode",
-        {
-            "model": "deepseek-v4.1-flash",
-            "baseUrl": "https://opencode.ai/inference/go/openai/v1",
-            "credential": "compose-fixture-credential-0123456789",
-            "enabled": True,
-            "isDefault": False,
-            "maxTurns": 4,
-            "maxInputTokens": 20000,
-            "maxOutputTokens": 8000,
-            "maxCostMicros": 500000,
-            "inputMicrosPerMillion": 1000,
-            "outputMicrosPerMillion": 2000,
-        },
-    )
-    context.api.put(
-        "/settings/providers/opencode-go",
-        {
-            "model": "deepseek-v4.1-flash",
-            "baseUrl": "http://model-fixture:8080/v1",
-            "credential": "compose-fixture-credential-0123456789",
-            "enabled": True,
-            "isDefault": True,
-            "maxTurns": 4,
-            "maxInputTokens": 100000,
-            "maxOutputTokens": 12000,
-            "maxCostMicros": 500000,
-            "inputMicrosPerMillion": 1000,
-            "outputMicrosPerMillion": 2000,
-        },
-    )
-    context.api.put(
-        "/settings/runtime",
-        {"semanticReviewEnabled": True, "semanticReviewMaxOutputTokens": 8192},
-    )
+    _configure_fixture_providers(context)
     role = {
         "provider": "opencode-go",
         "model": "deepseek-v4.1-flash",
@@ -326,7 +343,7 @@ def settings(context: Context) -> None:
                 "toolCallTimeoutSecs": 600,
                 "maxRequestBytes": 2097152,
                 "maxResponseBytes": 2097152,
-                "maxGenerationTokens": 8192,
+                "maxGenerationTokens": 32768,
                 "maxInFlightOperations": 2,
             },
             "progress": {
@@ -493,8 +510,9 @@ def gate(context: Context) -> None:
     attempt_id = context.state.get("attempt_id")
     candidate_id = ""
     gate_payload: dict[str, Any] = {}
-    deadline = time.monotonic() + context.config.timeout
-    while time.monotonic() < deadline:
+    deadline = _optional_deadline(context.config)
+    last_heartbeat = time.monotonic()
+    while not _deadline_expired(deadline):
         try:
             candidates = context.api.get("/candidates")
         except ScenarioError:
@@ -577,15 +595,15 @@ def restart(context: Context) -> None:
     context.compose.up(build=False)
     core = context.compose.core_container()
     require(bool(core), "Core container was not recreated")
-    wait_url(f"{config.base}/health", 300)
-    wait_core(context.compose, "http://runtime:8770/health", 900)
-    wait_core(context.compose, "http://supervisor:8766/health", 180)
+    wait_url(f"{config.base}/health", config.readiness_timeout)
+    wait_core(context.compose, "http://runtime:8770/health", config.readiness_timeout)
+    wait_core(context.compose, "http://supervisor:8766/health", config.readiness_timeout)
 
     def worker_ready() -> bool:
         workers = context.api.get("/workers")
         return any("compose-worker" in json.dumps(worker) for worker in workers)
 
-    wait_until(worker_ready, 60, "the Compose Worker re-registration")
+    wait_until(worker_ready, config.readiness_timeout, "the Compose Worker re-registration")
     projects = context.api.get("/projects")
     require(
         any(project.get("id") == context.state.get("project_id") for project in projects),
@@ -659,6 +677,1031 @@ def summary(context: Context) -> None:
         "restart_persistence": context.state.get("restart_persistence", False),
         "browser": context.state.get("browser_office", "NOT_RUN"),
         "paid_inference": False,
+    }
+    write_json(context.config.artifacts_dir / "summary.json", result)
+    context.state.set("summary", result)
+
+
+def _configure_fixture_providers(context: Context) -> None:
+    """Configure the deterministic model fixture routes used by every stage."""
+
+    # Core's provider settings schema accepts exactly these fields; sending
+    # extra per-turn limits is rejected with HTTP 422 and is not part of the
+    # scenario contract.
+    context.api.put(
+        "/settings/providers/opencode",
+        {
+            "model": "deepseek-v4.1-flash",
+            "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+            "credential": "compose-fixture-credential-0123456789",
+            "enabled": True,
+            "isDefault": False,
+        },
+    )
+    context.api.put(
+        "/settings/providers/opencode-go",
+        {
+            "model": "deepseek-v4.1-flash",
+            "baseUrl": "http://model-fixture:8080/v1",
+            "credential": "compose-fixture-credential-0123456789",
+            "enabled": True,
+            "isDefault": True,
+        },
+    )
+    context.api.put(
+        "/settings/runtime",
+        {"semanticReviewEnabled": True},
+    )
+
+
+def _fixture_diagnostics(context: Context) -> dict[str, Any] | None:
+    """Read test-support counters and last phase errors from the fixture.
+
+    The fixture is not published on the host and this is not product telemetry;
+    the harness reads it over the private Compose network through `exec`. The
+    errors let the harness fail fast on a terminal ambiguous assessment instead
+    of waiting out the full preparation timeout.
+    """
+
+    script = (
+        "import urllib.request;"
+        "print(urllib.request.urlopen('http://127.0.0.1:8080/counters', timeout=5)"
+        ".read().decode())"
+    )
+    result = context.compose.run(
+        ["exec", "model-fixture", "python3", "-c", script], check=False
+    )
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        counters = payload.get("counters")
+        if not isinstance(counters, dict):
+            continue
+        errors = payload.get("errors")
+        return {
+            "counters": {str(key): int(value) for key, value in counters.items()},
+            "errors": errors if isinstance(errors, dict) else {},
+        }
+    return None
+
+
+def _fixture_counters(context: Context) -> dict[str, int] | None:
+    diagnostics = _fixture_diagnostics(context)
+    return diagnostics["counters"] if diagnostics else None
+
+
+def _owner_wait_is_real(projection: dict[str, Any]) -> bool:
+    """True only for a genuine explicit owner-approval wait.
+
+    The AUTONOMOUS intake projection inherits the Lead owner state, so
+    ``AWAITING_APPROVAL`` alone is not terminal: the autopilot keeps preparing
+    while the agentic review is ``AUTO_APPROVED``. A real owner wait requires
+    materials ready, a current review and an owner-decision status.
+    """
+
+    if projection.get("state") != "AWAITING_APPROVAL":
+        return False
+    planning = projection.get("planning") or {}
+    review_status = str(planning.get("reviewStatus") or "").upper()
+    return bool(
+        planning.get("materialsReady")
+        and planning.get("reviewCurrent")
+        and review_status in {"PENDING", "CHANGES_REQUESTED", "REJECTED"}
+    )
+
+
+def _fixture_relevant_errors(
+    baseline: set[str], diagnostics: dict[str, Any] | None, lead_id: str
+) -> dict[str, str]:
+    """New fixture errors that belong to this request, never another one."""
+
+    errors = (diagnostics or {}).get("errors") or {}
+    relevant: dict[str, str] = {}
+    for key, message in errors.items():
+        if key in baseline:
+            continue
+        identity, _, phase = str(key).partition("|")
+        if identity == lead_id or (not identity and phase == "assessment"):
+            relevant[str(key)] = str(message)
+    return relevant
+
+
+def _scenario_failure(
+    projection: dict[str, Any], *, label: str, fixture_errors: dict[str, str] | None = None
+) -> ScenarioError:
+    planning = projection.get("planning") or {}
+    environment = projection.get("environment") or {}
+    return ScenarioError(
+        f"{label}: state={projection.get('state')!r} "
+        f"detail={projection.get('stateDetail')!r} campaignId={projection.get('campaignId')!r} "
+        f"reviewStatus={planning.get('reviewStatus')!r} "
+        f"materialsReady={planning.get('materialsReady')!r} "
+        f"ready={planning.get('ready')!r} "
+        f"missingArtifacts={planning.get('missingArtifacts')!r} "
+        f"environment={environment.get('status')!r} "
+        f"environmentBlockers={environment.get('blockers')!r} "
+        f"fixtureErrors={fixture_errors or {}}"
+    )
+
+
+@stage(
+    "autonomous_setup",
+    "configure the deterministic providers, autonomous R0 profile and subscription-confirmed policy",
+)
+def autonomous_setup(context: Context) -> None:
+    context.state.require("project_id", "project_config_hash")
+    _configure_fixture_providers(context)
+    # Structured model output needs 16384 tokens and a bounded retry fits in
+    # 32768. The profile must not depend on provider-default quotas that are
+    # lower than the protocol requirement.
+    structured_tokens = 16384
+    generation_tokens = 32768
+    require(
+        generation_tokens >= structured_tokens * 2,
+        "the generation budget does not cover one structured call plus one retry",
+    )
+    role = {
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "reasoning": "medium",
+    }
+    profile = context.api.post(
+        "/execution-profiles",
+        {
+            "name": "Compose Autonomous R0",
+            "description": "Deterministic autonomous R0 Compose profile",
+            "category": "BALANCED",
+            "roles": {
+                "lead": role,
+                "implementer": role,
+                "semanticReviewer": role,
+            },
+            "operations": {
+                "modelRequestTimeoutSecs": 300,
+                "toolCallTimeoutSecs": 600,
+                "maxRequestBytes": 2097152,
+                "maxResponseBytes": 2097152,
+                "maxGenerationTokens": 32768,
+                "maxInFlightOperations": 2,
+            },
+            "progress": {
+                "diagnoseAfterStagnantCheckpoints": 2,
+                "escalateAfterUnsuccessfulReplans": 1,
+                "observationTimeoutSecs": 300,
+            },
+            "auto_start": {"enabled": True, "risk_classes": ["R0"]},
+        },
+    )
+    assert_equal(profile.get("executable"), True, "autonomous execution profile is not executable")
+    context.state.set(
+        "autonomous_generation_budget",
+        {
+            "structuredOutputTokens": structured_tokens,
+            "maxGenerationTokens": generation_tokens,
+        },
+    )
+    context.api.post(f"/execution-profiles/{profile['id']}/default", {"scope": "global"})
+    granted = context.api.post(
+        f"/projects/{context.state.get('project_id')}/execution-policy",
+        {
+            "execution_profile_id": profile["id"],
+            "expected_revision": profile["revision"],
+            "expected_revision_hash": profile["contentHash"],
+            "project_config_hash": context.state.get("project_config_hash"),
+            "acknowledge": True,
+            "autonomous": True,
+            "subscription_confirmed": True,
+            "idempotency_key": "et1-autonomous-policy",
+        },
+    )
+    delegation = granted.get("delegation") or {}
+    context.state.set("profile_id", profile["id"])
+    context.state.set("profile_revision", profile["revision"])
+    context.state.set("profile_revision_id", profile["revisionId"])
+    context.state.set("profile_hash", profile["contentHash"])
+    context.state.set("delegation_id", delegation.get("id"))
+
+
+def _autonomous_model_context(
+    context: Context,
+    *,
+    intake_id: str,
+    action_id: str,
+    request_id: str,
+    objective: str,
+) -> dict[str, Any]:
+    """Build the deterministic fixture context.
+
+    The static part is written before the intake POST so an assessment that is
+    dispatched immediately can be answered. The dynamic ids stay empty in that
+    template: the fixture resolves them from the real prompt and validates their
+    format, then this harness rewrites the exact ids once the POST has returned.
+    """
+
+    return {
+        "schema": "factory-compose-model-fixture-v1",
+        "projectId": context.state.get("project_id"),
+        "intakeRequestId": intake_id,
+        "requestId": request_id,
+        "actionId": action_id,
+        "objective": objective,
+        "baseRevision": context.state.get("project_base_commit"),
+        "projectConfigHash": context.state.get("project_config_hash"),
+        "qualityProfile": "generic",
+        "allowedPaths": ["src"],
+        "capabilities": ["repository-edit", "generic-toolchain"],
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "checks": [
+            {
+                "id": "build",
+                "kind": "build",
+                "description": "deterministic build",
+                "command": ["true"],
+                "expectExit": 0,
+                "timeoutSecs": 30,
+            },
+            {
+                "id": "test",
+                "kind": "test",
+                "description": "deterministic test",
+                "command": ["true"],
+                "expectExit": 0,
+                "timeoutSecs": 30,
+            },
+            {
+                "id": "functional",
+                "kind": "functional",
+                "description": "provider candidate content exists",
+                "command": ["grep", "-q", "provider candidate", "src/provider.txt"],
+                "expectExit": 0,
+                "timeoutSecs": 30,
+            },
+            {
+                "id": "negative",
+                "kind": "negative",
+                "description": "absent content is rejected",
+                "command": ["grep", "-q", "absent", "src/provider.txt"],
+                "expectExit": 1,
+                "timeoutSecs": 30,
+            },
+        ],
+    }
+
+
+@stage(
+    "autonomous_request",
+    "submit one clean AUTONOMOUS intake request without manual planning calls",
+)
+def autonomous_request(context: Context) -> None:
+    context.state.require(
+        "project_id",
+        "profile_id",
+        "project_base_commit",
+        "project_config_hash",
+        "model_dir",
+    )
+    objective = "Add the deterministic Compose fixture endpoint and cover it with the frozen checks."
+    context_path = Path(context.state.get("model_dir")) / "context.json"
+    # Write the static template BEFORE the POST: Core may dispatch the Lead
+    # assessment within milliseconds, and a missing context would be reported as
+    # an ambiguous upstream outcome (no retry by policy). The dynamic ids are
+    # empty here and are resolved from the real prompt by the fixture.
+    write_json(
+        context_path,
+        _autonomous_model_context(
+            context, intake_id="", action_id="", request_id="", objective=objective
+        ),
+    )
+    os.chmod(context_path, 0o644)
+    created = context.api.post(
+        "/intake/requests",
+        {
+            "project_id": context.state.get("project_id"),
+            "objective": objective,
+            "execution_profile_id": context.state.get("profile_id"),
+            "mode": "AUTONOMOUS",
+            "idempotency_key": f"et1-autonomous-{context.config.run_id}",
+            "authorized_micros": 5000000,
+        },
+    )
+    intake_id = created["id"]
+    action_id = created["actionId"]
+    lead_request_id = created["leadRequestId"]
+    assert_equal(created.get("mode"), "AUTONOMOUS", "intake request mode")
+    # Test-support subscription admissions only; the request itself is the sole
+    # mutating product call and no planning endpoint is invoked by this harness.
+    context.admit_scope(intake_id)
+    context.admit_scope(lead_request_id)
+    context.admit_scope("*")
+    context.state.set("manual_planning_calls", 0)
+    context.state.set("intake_id", intake_id)
+    context.state.set("intake_action_id", action_id)
+    context.state.set("intake_lead_request_id", lead_request_id)
+    context.state.set("intake_objective", objective)
+    # Rewrite the authoritative context with the exact ids now that they exist.
+    exact = _autonomous_model_context(
+        context,
+        intake_id=intake_id,
+        action_id=action_id,
+        request_id=lead_request_id,
+        objective=objective,
+    )
+    write_json(context_path, exact)
+    os.chmod(context_path, 0o644)
+    # Per-request file: a second request in the same container can never
+    # overwrite the first request's identity (assessment reads it by prompt id).
+    request_context = context_path.parent / "contexts" / f"{lead_request_id}.json"
+    write_json(request_context, exact)
+    os.chmod(request_context, 0o644)
+    context.state.set("model_context", str(context_path))
+    context.state.set("model_request_context", str(request_context))
+
+
+def projected_graph_units(projection: dict) -> list:
+    """Work units from the documented projection contract.
+
+    Core projects `/agentic/requests/{id}/plan` as
+    `{"graph": {..., "graphJson": "<string>"}}`; the nested string is the
+    contract. A malformed string, a missing graph or an empty unit list is a hard
+    failure: returning an empty list would silently accept a broken projection.
+    """
+
+    graph = projection.get("graph")
+    if not isinstance(graph, dict):
+        raise ScenarioError("plan projection has no graph object")
+    raw = graph.get("graphJson")
+    if not isinstance(raw, str) or not raw.strip():
+        raise ScenarioError("plan projection graph has no graphJson string")
+    try:
+        nested = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ScenarioError(f"plan projection graphJson is not valid JSON: {error}") from error
+    units = nested.get("units")
+    if not isinstance(units, list) or not units:
+        raise ScenarioError("plan projection graphJson has no work units")
+    return units
+
+
+def projected_graph_provenance(projection: dict) -> tuple[str, str, str]:
+    """Digest and planner identity come from the real nested graph object.
+
+    Core projects `/agentic/requests/{id}/plan` as `{"graph": {"graphJson": ...,
+    "graphSha256": ..., "plannerProvider": ..., "plannerModel": ...}}`. There is
+    no flat provider/model field and no fallback digest; a missing field is a hard
+    failure so the provenance cannot be silently assumed.
+    """
+
+    graph = projection.get("graph")
+    if not isinstance(graph, dict):
+        raise ScenarioError("plan projection has no graph object")
+    digest = graph.get("graphSha256")
+    provider = graph.get("plannerProvider")
+    model = graph.get("plannerModel")
+    if not isinstance(digest, str) or not digest:
+        raise ScenarioError("plan projection graph has no graphSha256")
+    if not isinstance(provider, str) or not provider:
+        raise ScenarioError("plan projection graph has no plannerProvider")
+    if not isinstance(model, str) or not model:
+        raise ScenarioError("plan projection graph has no plannerModel")
+    return digest, provider, model
+
+
+TERMINAL_CAMPAIGN_STATES = {
+    "BLOCKED",
+    "BLOCKED_AUTHORIZATION",
+    "FAILED",
+    "REJECTED",
+    "CANCELLED",
+}
+
+
+def campaign_terminal_failure(projection: dict) -> str:
+    """Return the terminal state from the real nested Campaign projection.
+
+    `/campaigns/{id}` (and the intake projection) nest the Campaign under
+    `campaign` with `status` and `effective_status`; there is no top-level
+    `state`. Both fields are checked because the effective status can be terminal
+    while the stored status is not.
+    """
+
+    campaign = projection.get("campaign")
+    if not isinstance(campaign, dict):
+        campaign = {}
+    for field in ("effective_status", "status"):
+        value = str(campaign.get(field) or "").upper()
+        if value in TERMINAL_CAMPAIGN_STATES:
+            detail = str(projection.get("stateDetail") or campaign.get("blockers") or "")
+            return (
+                f"Campaign reached {value}: {detail}" if detail else f"Campaign reached {value}"
+            )
+    return ""
+
+
+def await_attempt_chain(api, campaign_id: str, timeout: int | None) -> dict:
+    """Wait for the asynchronous Worker lease chain, then return the campaign.
+
+    The campaign projection can exist before the Worker claims its attempt, so the
+    consumer polls the existing surface instead of reading once and aborting.
+    """
+
+    state = {"problem": ""}
+
+    def ready() -> bool:
+        projection = api.get(f"/campaigns/{campaign_id}")
+        terminal = campaign_terminal_failure(projection)
+        if terminal:
+            raise TerminalScenarioError(terminal)
+        ok, problem = attempt_chain_is_observable(projection, campaign_id)
+        state["problem"] = problem
+        return ok
+
+    from common import wait_until
+
+    wait_until(ready, timeout, "the Worker attempt lease")
+    projection = api.get(f"/campaigns/{campaign_id}")
+    ok, problem = attempt_chain_is_observable(projection, campaign_id)
+    if not ok:
+        raise ScenarioError(problem or state["problem"])
+    return projection
+
+
+def worker_assignment_from_sessions(
+    sessions: list, attempt_id: str, known_workers: set[str]
+) -> tuple[str, int, str]:
+    """A real assignment is a provider session bound to the attempt and a Worker.
+
+    `GET /provider/sessions` returns ProviderSessionRecord entries with
+    `attempt_id`, `worker_id` and `generation` (snake_case). A session whose
+    attempt matches, whose Worker is registered and whose generation is positive is
+    assignment evidence. A registered Worker alone, or an attempt status alone, is
+    not.
+    """
+
+    if not attempt_id:
+        return "", 0, "no attempt_id to correlate"
+    if not known_workers:
+        return "", 0, "no registered Worker is projected"
+    for session in sessions or []:
+        if str(session.get("attempt_id") or "") != attempt_id:
+            continue
+        worker_id = str(session.get("worker_id") or "")
+        generation = session.get("generation")
+        if not worker_id:
+            continue
+        if not isinstance(generation, int) or generation <= 0:
+            continue
+        if worker_id not in known_workers:
+            continue
+        return worker_id, generation, ""
+    return "", 0, "no provider session proves a Worker assignment for this attempt"
+
+
+def await_worker_assignment(
+    api, campaign_id: str, attempt_id: str, timeout: int | None
+) -> tuple[str, int]:
+    """Wait for the provider-session assignment, cancelling on terminal failure."""
+
+    from common import wait_until
+
+    state: dict[str, str | int] = {"worker": "", "generation": 0}
+
+    def assigned() -> bool:
+        projection = api.get(f"/campaigns/{campaign_id}")
+        terminal = campaign_terminal_failure(projection)
+        if terminal:
+            raise TerminalScenarioError(terminal)
+        workers = {str(item.get("worker_id") or "") for item in api.get("/workers")}
+        worker_id, generation, _ = worker_assignment_from_sessions(
+            api.get("/provider/sessions") or [], attempt_id, workers
+        )
+        if not worker_id:
+            return False
+        state["worker"] = worker_id
+        state["generation"] = generation
+        return True
+
+    wait_until(assigned, timeout, "the Worker provider session")
+    return str(state["worker"]), int(state["generation"])
+
+
+def receipt_binds_frozen_spec(environment: dict) -> tuple[bool, str]:
+    """The projected builder receipt must bind the frozen spec and have succeeded."""
+
+    builder = environment.get("builder") or {}
+    receipt = builder.get("receipt")
+    if not isinstance(receipt, dict):
+        return False, "no environment builder receipt is projected"
+    if receipt.get("specSha256") != environment.get("specSha256"):
+        return False, "receipt does not bind the frozen spec"
+    if str(receipt.get("status") or "").upper() != "SUCCEEDED":
+        return False, "the environment build receipt is not SUCCEEDED"
+    return True, ""
+
+
+def attempt_chain_is_observable(campaign: dict, campaign_id: str) -> tuple[bool, str]:
+    """Check campaign -> task.attempt_id -> attempt.id -> attempt.run_id -> run.
+
+    This is the strict relation the public projection supports. Worker identity,
+    lease generation and lease expiry are NOT exposed by any existing surface, so
+    they are not asserted here; a registered Worker alone is not evidence of an
+    assignment either.
+    """
+
+    tasks = campaign.get("tasks") or []
+    attempts = campaign.get("attempts") or []
+    runs = campaign.get("runs") or []
+    if not tasks:
+        return False, "the Campaign has no tasks"
+    campaign_runs = {
+        str(run.get("id"))
+        for run in runs
+        if str(run.get("campaign_id") or run.get("campaignId") or "") == campaign_id
+    }
+    if not campaign_runs:
+        return False, "the Campaign has no run"
+    by_id = {str(attempt.get("id")): attempt for attempt in attempts}
+    observed = []
+    for task in tasks:
+        attempt_id = str(task.get("attempt_id") or task.get("attemptId") or "")
+        if not attempt_id:
+            return False, "a task has no attempt_id"
+        attempt = by_id.get(attempt_id)
+        if attempt is None:
+            return False, "the task attempt is not projected for this Campaign"
+        run_id = str(attempt.get("run_id") or attempt.get("runId") or "")
+        if run_id not in campaign_runs:
+            return False, "the attempt run does not belong to this Campaign"
+        observed.append(str(attempt.get("status") or "").upper())
+    if not any(status in {"LEASED", "RUNNING", "COMPLETED"} for status in observed):
+        return False, "no attempt is leased, running or completed"
+    return True, ""
+
+
+def review_status_accepted(planning: dict) -> bool:
+    """The plan review status is a closed set of explicit approvals."""
+
+    return str(planning.get("reviewStatus")) in {"AUTO_APPROVED", "OWNER_APPROVED"}
+
+
+def projected_plan_hash(projection: dict) -> str:
+    """The plan hash comes from the projected plan, never from a stray local.
+
+    The intake detail renders `FrozenLeadPlanRecord`, whose field is snake_case
+    (`plan_hash`); `/agentic/requests/{id}` renders the same record camelCase.
+    Both are accepted, and the caller must still require a 64-hex digest: an
+    empty value on both sides of a comparison is not persistence evidence.
+    """
+
+    plan = projection.get("plan") or {}
+    return plan.get("planHash") or plan.get("plan_hash") or ""
+
+
+def is_sha256_digest(value: object) -> bool:
+    """A frozen identity digest is exactly 64 lowercase hex characters."""
+
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    return all(character in "0123456789abcdef" for character in value)
+
+
+COUNTER_ACTIVITY_KEYS = ("assessment", "lead_stack_selection", "planner", "environment", "spec")
+COUNTER_SNAPSHOT_STAGE = "autonomous_campaign"
+
+
+def snapshot_binding_ok(snapshot: object, state) -> bool:
+    """The counters snapshot must be strictly bound to this run and phase.
+
+    Recorded and current `run_id`/`candidate_sha` must both be non-empty and
+    equal, the stage must be exactly the campaign, and `captured_at` must be a
+    valid UTC timestamp with an offset. This is provenance, not a clock gate.
+    """
+
+    if not isinstance(snapshot, dict) or not snapshot:
+        return False
+    if snapshot.get("stage") != COUNTER_SNAPSHOT_STAGE:
+        return False
+    for key in ("run_id", "candidate_sha"):
+        recorded = snapshot.get(key)
+        current = state.get(key)
+        if not isinstance(recorded, str) or not recorded:
+            return False
+        if not isinstance(current, str) or not current:
+            return False
+        if recorded != current:
+            return False
+    captured = snapshot.get("captured_at")
+    if not isinstance(captured, str) or not captured:
+        return False
+    try:
+        parsed = datetime.fromisoformat(captured.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def counters_have_activity(counters: object) -> bool:
+    """A counters dict is only usable if it recorded at least one real call."""
+
+    if not isinstance(counters, dict):
+        return False
+    for key in COUNTER_ACTIVITY_KEYS:
+        try:
+            if int(counters.get(key) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def participant_plan_digest_matches(participant_plan: dict) -> tuple[bool, str]:
+    """The claimed digest must equal SHA-256 of the exact planJson bytes.
+
+    The durable record stores `plan_json` exactly as written; the digest is over
+    `planJson.encode("utf-8")` with no re-canonicalisation. Hashing a redacted or
+    reserialised copy is a mismatch, not a pass.
+    """
+
+    plan_json = participant_plan.get("planJson")
+    claimed = participant_plan.get("planSha256")
+    if not isinstance(plan_json, str) or not plan_json:
+        return False, "participant plan has no planJson string"
+    if not is_sha256_digest(claimed):
+        return False, "participant plan has no 64-hex planSha256"
+    computed = hashlib.sha256(plan_json.encode("utf-8")).hexdigest()
+    if computed != claimed:
+        return False, (
+            "participant plan digest mismatch: "
+            f"claimed {claimed[:12]}… computed {computed[:12]}…"
+        )
+    return True, ""
+
+
+@stage(
+    "autonomous_campaign",
+    "observe autopilot preparation: plan, graph, participants, environment and Campaign",
+)
+def autonomous_campaign(context: Context) -> None:
+    context.state.require("intake_id")
+    config = context.config
+    intake_id = context.state.get("intake_id")
+    lead_id = str(context.state.get("intake_lead_request_id") or "")
+    deadline = _optional_deadline(context.config)
+    projection: dict[str, Any] = {}
+    baseline_errors: set[str] | None = None
+    last_diagnostics = 0.0
+    last_heartbeat = time.monotonic()
+    while not _deadline_expired(deadline):
+        projection = context.api.get(f"/intake/requests/{intake_id}")
+        planning = projection.get("planning") or {}
+        environment = projection.get("environment") or {}
+        if projection.get("campaignId"):
+            break
+        if environment.get("status") == "BLOCKED" and environment.get("blockers"):
+            break
+        if projection.get("state") in {"BLOCKED", "FAILED", "REJECTED", "CANCELLED"}:
+            break
+        if _owner_wait_is_real(projection):
+            break
+        # Fail fast with the fixture's real diagnosis instead of waiting out the
+        # full preparation timeout. Product policy and limits are untouched.
+        now = time.monotonic()
+        if now - last_diagnostics >= 5.0:
+            last_diagnostics = now
+            diagnostics = _fixture_diagnostics(context)
+            if diagnostics is not None and baseline_errors is None:
+                baseline_errors = set((diagnostics.get("errors") or {}).keys())
+            relevant = _fixture_relevant_errors(
+                baseline_errors or set(), diagnostics, lead_id
+            )
+            detail = str(projection.get("stateDetail") or "")
+            if relevant or "ambiguous" in detail.lower():
+                raise _scenario_failure(
+                    projection, label="deterministic fixture terminal failure", fixture_errors=relevant
+                )
+        now_heartbeat = time.monotonic()
+        if now_heartbeat - last_heartbeat >= 30:
+            log(
+                "autonomous_campaign heartbeat: "
+                f"state={projection.get('state')!r} "
+                f"environment={(projection.get('environment') or {}).get('status')!r} "
+                "activity=undetermined (no total deadline; explicit cancellation allowed)"
+            )
+            last_heartbeat = now_heartbeat
+        time.sleep(2)
+    state_name = projection.get("state")
+    campaign_id = projection.get("campaignId")
+    planning = projection.get("planning") or {}
+    environment = projection.get("environment") or {}
+    if not campaign_id:
+        label = (
+            "autonomous intake awaits explicit owner approval"
+            if _owner_wait_is_real(projection)
+            else "autonomous intake produced no Campaign"
+        )
+        raise _scenario_failure(projection, label=label)
+    # F14/F15: authorization availability and planning.ready are not start-ready.
+    assert_equal(planning.get("ready"), True, "planning readiness")
+    assert_equal(planning.get("missingArtifacts"), [], "planning missing artifacts")
+    participant_plan = planning.get("participantPlan") or {}
+    assert_equal(participant_plan.get("ready"), True, "participant plan readiness")
+    # Membership over a closed set, not a substring check: `assert_in` takes a
+    # single expected string, so a tuple here raised a TypeError and lost the
+    # whole preparation window.
+    require(review_status_accepted(planning), "plan review status")
+    assert_equal(planning.get("reviewApproved"), True, "plan review approval")
+    # Core publishes these only after the stage-1 fix. They are optional here so
+    # the baseline can still be observed failing without inventing fields.
+    if "reviewCurrent" in planning:
+        assert_equal(planning.get("reviewCurrent"), True, "plan review freshness")
+    if "startReady" in planning:
+        assert_equal(planning.get("startReady"), True, "Core start-ready flag")
+    assert_equal(environment.get("status"), "FROZEN", "environment freeze")
+    require(bool(environment.get("specSha256")), "environment spec digest is missing")
+    # The Campaign may exist with a frozen plan/spec and no build receipt, and no
+    # public projection exposes the receipt. This journey therefore proves the
+    # Campaign start, not an executable environment: never label it as execution.
+    require(environment.get("required") is True, "environment is not marked required")
+    receipt_ok, receipt_problem = receipt_binds_frozen_spec(environment)
+    require(receipt_ok, receipt_problem)
+    campaign_projection = await_attempt_chain(
+        context.api, campaign_id, config.readiness_timeout
+    )
+    attempt_id = str(
+        ((campaign_projection.get("tasks") or [{}])[0].get("attempt_id")) or ""
+    )
+    worker_id, generation = await_worker_assignment(
+        context.api, campaign_id, attempt_id, config.readiness_timeout
+    )
+    require(bool(worker_id), "the Worker assignment is not observable")
+    context.state.set("acceptance_scope", "CAMPAIGN_START_WITH_RECEIPT_AND_WORKER_ASSIGNMENT")
+    context.state.set("receipt_surface", "environment.builder.receipt")
+    context.state.set("worker_assignment", "PROVEN")
+    context.state.set("worker_id", worker_id)
+    context.state.set("worker_generation", generation)
+    plan_hash = projected_plan_hash(projection)
+    require(is_sha256_digest(plan_hash), "autopilot produced no 64-hex plan hash")
+    if context.state.get("plan_hash"):
+        assert_equal(plan_hash, context.state.get("plan_hash"), "plan hash stability")
+
+    graph = context.api.get(f"/agentic/requests/{intake_id}/plan")
+    units = projected_graph_units(graph)
+    require(bool(units), "autopilot Plan projection has no work units")
+    graph_sha, planner_provider, planner_model = projected_graph_provenance(graph)
+    assert_equal(planner_provider, "opencode-go", "WorkGraph provider provenance")
+    assert_equal(planner_model, "deepseek-v4.1-flash", "WorkGraph model provenance")
+
+    participants = context.api.get(f"/agentic/requests/{intake_id}/participants")
+    # The real surface projects the durable record under "plan"
+    # (AgenticParticipantPlanRecord, camelCase): requestId, graphSha256, route,
+    # assurance, workUnits, reviewerCount, planJson, planSha256, createdAt,
+    # updatedAt. There is no "compiled" object and no "ready" flag, so binding
+    # the graph digest and requiring real work units is the observable contract.
+    participant_plan = participants.get("plan") or {}
+    assert_equal(
+        participant_plan.get("graphSha256"),
+        graph_sha,
+        "participant plan graph binding",
+    )
+    require(
+        int(participant_plan.get("workUnits") or 0) > 0,
+        "participant plan has no work units",
+    )
+    digest_ok, digest_problem = participant_plan_digest_matches(participant_plan)
+    require(digest_ok, digest_problem)
+
+    campaign = context.api.get(f"/campaigns/{campaign_id}")
+    tasks = campaign.get("tasks") or []
+    require(bool(tasks), "autonomous Campaign has no tasks")
+    attempt_id = tasks[0].get("attempt_id") or tasks[0].get("attemptId")
+    require(bool(attempt_id), "autonomous Campaign has no Attempt identity")
+    counters = _fixture_counters(context) or {}
+    require(counters.get("planner", 0) >= 1, "fixture never served a Planner call")
+    require(counters.get("assessment", 0) >= 1, "fixture never served an assessment call")
+    require(
+        counters.get("environment", 0) >= 1,
+        "fixture never served an environment review call",
+    )
+
+    context.state.set("plan_hash", plan_hash)
+    context.state.set("graph_sha256", graph_sha)
+    context.state.set("environment_spec_sha256", environment.get("specSha256"))
+    context.state.set("campaign_id", campaign_id)
+    context.state.set("attempt_id", attempt_id)
+    context.state.set("autonomous_counters", counters)
+    context.state.set(
+        "autonomous_counters_snapshot",
+        {
+            "counters": counters,
+            "candidate_sha": context.state.get("candidate_sha"),
+            "run_id": context.state.get("run_id"),
+            "stage": "autonomous_campaign",
+            "captured_at": now_utc(),
+        },
+    )
+    context.state.set("autonomous_state", state_name)
+    context.state.set("autonomous_projection", {
+        "planning": planning,
+        "environment": environment,
+        "authorization": projection.get("authorization"),
+    })
+
+
+@stage(
+    "autonomous_negative",
+    "a profile without an autonomous policy must fail closed with no Campaign",
+)
+def autonomous_negative(context: Context) -> None:
+    context.state.require("project_id")
+    role = {
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "reasoning": "medium",
+    }
+    profile = context.api.post(
+        "/execution-profiles",
+        {
+            "name": "Compose Non-Autonomous Negative",
+            "description": "Deterministic negative profile without autonomous start",
+            "category": "BALANCED",
+            "roles": {"lead": role, "implementer": role, "semanticReviewer": role},
+            "operations": {
+                "modelRequestTimeoutSecs": 300,
+                "toolCallTimeoutSecs": 600,
+                "maxRequestBytes": 2097152,
+                "maxResponseBytes": 2097152,
+                "maxGenerationTokens": 32768,
+                "maxInFlightOperations": 2,
+            },
+            "progress": {
+                "diagnoseAfterStagnantCheckpoints": 2,
+                "escalateAfterUnsuccessfulReplans": 1,
+                "observationTimeoutSecs": 300,
+            },
+            "auto_start": {"enabled": False, "risk_classes": []},
+        },
+    )
+    try:
+        created = context.api.post(
+            "/intake/requests",
+            {
+                "project_id": context.state.get("project_id"),
+                "objective": "Negative autonomous intake without an autonomous policy.",
+                "execution_profile_id": profile["id"],
+                "mode": "AUTONOMOUS",
+                "idempotency_key": f"et1-autonomous-negative-{context.config.run_id}",
+                "authorized_micros": 5000000,
+            },
+        )
+    except ScenarioError as error:
+        message = str(error)
+        require(
+            "AUTONOMOUS_POLICY_REQUIRED" in message
+            or "EXECUTION_POLICY_REQUIRED" in message,
+            f"negative autonomous intake returned an unexpected error: {message}",
+        )
+        context.state.set(
+            "autonomous_negative",
+            {"outcome": "REJECTED", "code": message.split("HTTP", 1)[-1][:200]},
+        )
+        return
+    raise ScenarioError(
+        "autonomous intake without an autonomous policy unexpectedly created a request: "
+        f"{created.get('id')!r}"
+    )
+
+
+@stage(
+    "autonomous_restart",
+    "restart Core without volumes and verify the autonomous plan/Campaign identity persists",
+)
+def autonomous_restart(context: Context) -> None:
+    config = context.config
+    context.state.require(
+        "intake_id",
+        "campaign_id",
+        "plan_hash",
+        "graph_sha256",
+        "environment_spec_sha256",
+    )
+    before = context.api.get(f"/intake/requests/{context.state.get('intake_id')}")
+    context.compose.down(volumes=False)
+    context.compose.up(build=False)
+    wait_url(f"{config.base}/health", config.readiness_timeout)
+    wait_core(context.compose, "http://runtime:8770/health", config.readiness_timeout)
+    wait_core(context.compose, "http://supervisor:8766/health", config.readiness_timeout)
+    wait_core(context.compose, "http://model-fixture:8080/health", config.readiness_timeout)
+
+    def worker_ready() -> bool:
+        workers = context.api.get("/workers")
+        return any("compose-worker" in json.dumps(worker) for worker in workers)
+
+    wait_until(worker_ready, config.readiness_timeout, "the Compose Worker re-registration")
+    after = context.api.get(f"/intake/requests/{context.state.get('intake_id')}")
+    before_plan = projected_plan_hash(before)
+    after_plan = projected_plan_hash(after)
+    # An empty digest on both sides proves nothing: require the real 64-hex
+    # value before and after, then compare it with the frozen context baseline.
+    require(is_sha256_digest(before_plan), "the pre-restart plan hash is not observable")
+    require(is_sha256_digest(after_plan), "the post-restart plan hash is not observable")
+    assert_equal(after_plan, before_plan, "plan hash persistence")
+    assert_equal(
+        after_plan,
+        context.state.get("plan_hash"),
+        "plan hash matches the frozen context",
+    )
+    assert_equal(after.get("campaignId"), context.state.get("campaign_id"), "Campaign persistence")
+    after_environment = after.get("environment") or {}
+    assert_equal(
+        after_environment.get("specSha256"),
+        context.state.get("environment_spec_sha256"),
+        "environment spec persistence",
+    )
+    campaigns = context.api.get("/campaigns")
+    action_id = context.state.get("intake_action_id")
+    matching = [
+        campaign
+        for campaign in campaigns
+        if (campaign.get("action_id") or campaign.get("actionId")) == action_id
+    ]
+    assert_equal(len(matching), 1, "exactly one Campaign per autonomous action")
+    campaign = context.api.get(f"/campaigns/{context.state.get('campaign_id')}")
+    tasks = campaign.get("tasks") or []
+    require(bool(tasks), "restarted Campaign has no tasks")
+    assert_equal(
+        tasks[0].get("attempt_id") or tasks[0].get("attemptId"),
+        context.state.get("attempt_id"),
+        "Attempt persistence",
+    )
+    context.state.set("restart_persistence", True)
+
+
+@stage("autonomous_summary", "write the mock-bound autonomous scenario summary")
+def autonomous_summary(context: Context) -> None:
+    context.state.require(
+        "intake_id",
+        "campaign_id",
+        "plan_hash",
+        "graph_sha256",
+        "environment_spec_sha256",
+    )
+    clean = context.state.get("dirty") is not True
+    snapshot = context.state.get("autonomous_counters_snapshot") or {}
+    stored = snapshot.get("counters") or context.state.get("autonomous_counters") or {}
+    live = _fixture_counters(context)
+    binding_ok = snapshot_binding_ok(snapshot, context.state)
+    restart_ran = any(
+        str(item.get("name") or "").endswith("restart")
+        for item in (context.state.get("stage_results") or [])
+    )
+    # The campaign-phase activity uses that phase's own snapshot. A live fixture
+    # reset after the restart shows all zeros and must not eclipse the pre-restart
+    # evidence; there is no silent OR, no max and no fabricated counters.
+    if binding_ok and counters_have_activity(stored):
+        counters, counters_source = stored, "pre_restart"
+    elif not restart_ran and counters_have_activity(live):
+        counters, counters_source = live, "live"
+    else:
+        counters, counters_source = {}, "missing"
+    passed = (
+        clean
+        and context.state.get("restart_persistence") is True
+        and counters_source != "missing"
+        and counters.get("planner", 0) >= 1
+        and context.state.get("manual_planning_calls", 0) == 0
+    )
+    result = {
+        "acceptance_scope": context.state.get("acceptance_scope", "CAMPAIGN_START_WITH_RECEIPT"),
+        "receipt_surface": context.state.get("receipt_surface", "environment.builder.receipt"),
+        "worker_assignment": context.state.get("worker_assignment", "NOT_OBSERVABLE"),
+        "worker_generation": context.state.get("worker_generation"),
+        "status": "PASS" if passed else "PARTIAL",
+        "diagnosticOnly": not clean,
+        "mode": "AUTONOMOUS",
+        "intake_request_id": context.state.get("intake_id"),
+        "campaign_id": context.state.get("campaign_id"),
+        "attempt_id": context.state.get("attempt_id"),
+        "plan_hash": context.state.get("plan_hash"),
+        "graph_sha256": context.state.get("graph_sha256"),
+        "environment_spec_sha256": context.state.get("environment_spec_sha256"),
+        "manual_planning_calls": context.state.get("manual_planning_calls", 0),
+        "fixture_counters": counters,
+        "counters_source": counters_source,
+        "counters_by_phase": {"pre_restart": stored or None, "post_restart_live": live or None},
+        "model_evidence": "SIMULATED",
+        "provider_provenance": "opencode-go/deepseek-v4.1-flash (fixture route)",
+        "paid_inference": False,
+        "live_inference": "NOT_TESTED",
+        "restart_persistence": context.state.get("restart_persistence", False),
+        "negative": context.state.get("autonomous_negative"),
+        "browser": context.state.get("browser_office", "NOT_RUN"),
     }
     write_json(context.config.artifacts_dir / "summary.json", result)
     context.state.set("summary", result)

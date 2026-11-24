@@ -326,6 +326,7 @@ milestones:
   - CAP-064
   - CAP-065
   - CAP-066
+  - CAP-068
   exclusions:
   - a second orchestrator outside Core
   - model-granted authority or model-selected tools
@@ -920,6 +921,7 @@ capabilities:
     isolation: []
   limitations:
   - Office recovery and cleanup projections remain incomplete.
+  - The global command trigger includes its visible localized label and shortcut in the accessible name. The r2 label included the words but not the contiguous visible sequence, and the r3 name used `Search K` while the visible DOM `textContent` stayed `SearchK` (no space node), so real Chromium axe `label-content-name-mismatch` still failed at `4c13de0b` (F-VER-4C13-02). R4.2 adds the literal space text node between the label and the shortcut so `textContent`/`innerText` and the accessible name carry the same contiguous `Search K` / `Buscar K` sequence. Component tests assert `textContent` in EN and ES plus the computed name and keyboard. Independent Chromium verification at `2c27b686` recorded **0 axe violations (0 serious/critical)** with a real spaced `textContent` in EN/ES, keyboard open/escape and 320/390/834/1440 responsive checks (`evidencia/2c27b686/verify-runtime-r4-20261115/browser/artifacts/axe-positive.json`). That closure is bound to `2c27b686` only and is not claimed for any later candidate; a Campaign surface remains NOT_TESTED in that run.
   - Campaign and Lead labels can remain AUTHORIZED/RUNNING after an ACCEPTED Run; the gate and Run states are authoritative.
   - The 2026-11-10 vlog run exercised the read-only Issues board in real Chromium at 1440/768/390, including five target issues under Needs Attention with automatic intake off and the `No issue synchronization recorded` state; it is recorded in docs/evidence/live-vlog-acceptance-2026-11-10.md as implementer/orchestrator evidence, not independent certification. Issue-to-Campaign execution, completed sync and issue write/comment paths remain NOT_TESTED. WP2 now implements frozen issue links, Core-derived delivery state, idempotent issue comment/close receipts and an operator retry. The delivery hooks are available in `native/src/issues/` for WP3, but WP2 does not call them from PR-open or merge handlers; no real authorized GitHub write journey, WP3 auto-merge integration or independent acceptance has been run.
   - Agent Office is read-only; it does not expose stop, model switching, budget changes or tool invocation.
@@ -2463,6 +2465,7 @@ capabilities:
   - The Inbox exposes model-call resolution and navigation only; unresolved provider sessions are awareness-only because no operator termination API exists.
   - Removed pages redirect to the closest current workspace; unknown routes return Home.
   - Follow-up creation is limited to one child per COMPLETED or CANCELLED request and keeps the parent exact profile revision and owner-confirmed policy scope. A base-only Core config advance may re-bind that exact policy to the new config; it never widens paths, capabilities, risk, route, autonomy or subscription confirmation. A merged-base advance fences older unstarted requests with PROJECT_CONFIG_CHANGED; it never silently rebases them. Real Chromium/Compose follow-up acceptance remains NOT_TESTED.
+  - Core R6 (`77ca1371`) limits the manual Inbox plan-approval item and `ApproveIntakePlan` to `mode=REVIEW_PLAN` — an AUTONOMOUS request keeps its owner decision in Director via the existing plan-review endpoint, and Office needs no adapter. A pre-PLAN blocked AUTONOMOUS operation is shown as `BLOCKED` with an honest detail, not as `PLAN_READY`/compiling. Core R6 plus Office R5 are present in candidate `77ca1371`; its self-test stopped at harness start (FAIL). Browser/axe of the Inbox change is NOT_TESTED.
   blockers:
   - Independent browser acceptance and Product Owner review remain pending.
 
@@ -2645,6 +2648,7 @@ capabilities:
     volume; Office does not yet expose Codex auth status, and no live OAuth or Codex inference is claimed.
   - The UI does not expose arbitrary provider payloads or credential values.
   - Base URL, manual model IDs, pricing metadata and connection details remain in explicit advanced configuration; fixed token, model-time, retry and subscription-cost caps are no longer active controls under ADR-0034. Technical liveness, byte/connection, argv, memory and lease guards remain Core safety bounds, not productivity budgets.
+  - Provider `maxInputTokens`/`maxOutputTokens` are the technical capability bounds Core already enforces in its Lead structured-output preflight, not ADR-0034 productivity caps. Office exposes both in advanced provider configuration, validates a positive integer without calling Core on invalid input, and omits a blank field so Core preserves the stored value; it never writes pricing quotes, authorizations or envelopes. Core `4c13de0b` projects the stored bounds when a settings row exists and the exact `leadOutputTokens`/`leadRetryOutputTokens` requirement; Office shows the requirement as read-only context, states that saving accepts a positive value even below the requirement and only the later preflight blocks the call, and submits only the bound that changed so an unchanged concurrent value is not overwritten. A provider without a settings row still reports no bound and is shown as `Not reported by Core`. Component tests only; real Compose/browser acceptance remains NOT_TESTED.
   - Fixture Chromium screenshots cover Home and Execution Profiles at 1440/390; real Core/Compose browser acceptance of the simplified path remains NOT_TESTED.
   blockers:
   - Real live inference and Product Owner review remain pending.
@@ -2845,12 +2849,14 @@ capabilities:
     - native/src/lead_model.rs
     - office/src/views/Home.tsx
     - office/src/views/RequestWorkspace.tsx
+    - office/src/views/Director.tsx
     - office/src/coreApi.ts
     test:
     - native/src/db/intake.rs
     - native/src/bin/core.rs
     - office/src/views/Home.test.tsx
     - office/src/views/RequestWorkspace.test.tsx
+    - office/src/views/Director.test.tsx
     - .agents/skills/ui-change-acceptance/SKILL.md
   acceptance:
     deterministic: An autonomous policy grant persists autonomy only for an exact V2 profile revision whose auto_start policy includes R0; autonomous intake refuses a non-autonomous grant or missing subscription confirmation; Core derives the request-scoped subscription admission from the durable owner confirmation; the background runner is idempotent, resumes unfinished autonomous requests after restart and blocks truthfully on failure; R1+ and protected decisions remain operator-only.
@@ -2868,6 +2874,8 @@ capabilities:
   - Autonomous Gate repair remains disabled. A blocked, failed or repair-required result needs an operator action or a new authorized request against a Project that contains the rejected candidate; a request from the base commit is not an in-place repair.
   - The Issues auto-start is browser-side; this capability covers Core-owned unified-intake autopilot only.
   - The policy is limited to R0, one frozen profile revision, fixed paths/capabilities/route/operations/progress and the configured expiry. The current product supports autonomous execution only when the Lead and implementer both use the OpenCode Go subscription route; other profiles stay on manual review.
+  - Office preparation readiness, the bounded refresh, the owner-wait stop and the focus/visibility resume are component-tested only; real Compose browser acceptance and independent verification of this slice remain NOT_TESTED.
+  - A BLOCKED or FAILED request with missing artifacts renders a stopped-preparation state with a read-only Retry/focus path; it never claims automatic preparation or refresh. This is component-tested only and browser acceptance remains NOT_TESTED.
   - TRUSTED_LOCAL is broad local access; no isolation or security certification is claimed.
   blockers:
   - Independent live acceptance, autonomous repair and the independent security review remain open.
@@ -2989,6 +2997,7 @@ capabilities:
   - Two-operation concurrency and per-operation worktree isolation still need a real browser acceptance run.
   blockers:
   - Worktree isolation evidence and the two-operation real acceptance remain pending.
+  - "P1a makes the Lead a coordinator for decomposition: a change Lead proposal may carry an empty `workUnits` array and the Director/Office surfaces the typed `WORK_GRAPH_NOT_PLANNED` state until Core validates a Planner WorkGraph. The Lead still authors `environmentProposal`/stack, so Lead coordination remains INCOMPLETE until P1b moves that decision to the existing ArchitecturePlan/StackDecision and environment compiler."
 
 - id: CAP-060
   name: Planner and Spec Manager
@@ -3028,11 +3037,13 @@ capabilities:
     isolation: []
   limitations:
   - The Planner and Spec Manager are bounded Lead-route model calls with distinct purpose and typed schemas; they do not have separate provider roles yet.
+  - "P1a separates decomposition authorship: the Lead may return `workUnits: []` and the validated Planner WorkGraph is the only source of executable units and participant assignments. Without a validated WorkGraph Core reports `WORK_GRAPH_NOT_PLANNED`, persists no participant-plan row (`CHECK work_units >= 1` is unchanged) and creates no Campaign, start or synthetic unit; Office renders the Planner-pending state. Sizing signals come from the semantic assessment (`expected_work_units`, `cross_module`) and a deterministic objective-length threshold, never from Lead units. FormalSpec hardcoded triggers and Repair (P3) remain deferred/NOT_TESTED."
   - Plan review and finding disposition are implemented in Core and Office. The WP10 implementer Chromium harness exercised the plan-review, reviewer-receipt, finding and trace surfaces against an isolated real Core and passed 39/39; independent acceptance and Product Owner visual approval remain NOT_TESTED.
   - Skill-pack source availability and content review are separate; only content-reviewed packs count as fresh. The Core refresh scheduler uses durable idempotent events and a rotating project cursor. The WP10 implementer Chromium harness exercised the Skills refresh surface; real Compose scheduler/restart evidence and independent acceptance remain NOT_TESTED. See docs/implementation/wp3-skill-refresh-evidence.md.
   - The OpenSpec projection uses canonical ADDED Requirements/Requirement/Scenario headings and numeric task IDs; the pinned CLI 1.16.1 validator runs as a profile-gated Compose job against a Core-rendered fixture; Core exposes an idempotent archive transition for the latest validated revision with stored-artifact digest and projection drift checks; a real Core-backed run against a projection produced by the model planning pipeline remains NOT_TESTED. See docs/implementation/wp7-openspec-compose-evidence.md.
   - Dependency acquisition is wired through the runtime broker with an internal deny-by-default network, an allowlisted CONNECT proxy, image-ID pinning, operation grants, a per-workspace lock and a Core authorization guard. Dependency setup is optional at broker startup; a bundle, image, network or proxy failure logs one bounded warning, disables only the acquisition endpoint, reports `dependencyAcquisition` in `/health`, and fails disabled requests with a typed 503; the broker still serves health, volumes, checks and provider sessions. The broker binds the configured gateway when present and otherwise uses a dependency-subnet-scoped wildcard listener so rootless bridge creation on first attachment cannot crash startup. FIXTURE execution with a dependency plan is rejected by Core authorization and again by the Worker before allocation/candidate submission. Deterministic HTTP and opt-in real-Podman/live-registry tests pass, but a real Compose acquisition and independent acceptance remain NOT_TESTED. Advisory evidence is a package inventory with status NOT_CHECKED; a pinned advisory database, cargo audit/cargo deny verdicts and license-policy enforcement are NOT_IMPLEMENTED. See docs/implementation/wp4-dependency-broker-evidence.md and docs/operations/compose-deployment.md.
   - A real-model browser self-test planned and froze revisions 1 and 2, and the full E2E campaign consumed the frozen plan, but independent live certification is pending.
+  - Director reload coherence, failure retention and the derived preparation states are component-tested only; real Compose browser acceptance remains NOT_TESTED for this slice.
   - Wave 12 integration evidence and exact command results are recorded in docs/implementation/wave12-integration-evidence.md; it is implementer evidence, not acceptance.
   - WP12 records a reproducible deterministic chaos/cross-workstream matrix and repeat-run acceptance script in docs/implementation/wp12-chaos-matrix.md and scripts/quality-wave12-acceptance.sh. The final integrated run passed 20/20. It is implementer evidence only; live provider, real-Podman dependency, real Compose Campaign/browser and independent acceptance paths remain NOT_TESTED.
   - The 2026-11-10 vlog evidence in docs/evidence/live-vlog-acceptance-2026-11-10.md is implementer/orchestrator evidence; independent acceptance remains pending.
@@ -3043,6 +3054,10 @@ capabilities:
   - WP1-C wires the WP1-B builder image through the runtime broker with a distinct environment-owner token, exact bundle digest and dedicated builder-image allowlist, bounded staging, broker fetch egress and `network=none` builds. Isolated Compose runs reached broker/Core `READY` with the exact bundle digest, then produced real plan-bound `resolve` and `build` results with exact spec, SBOM and output hashes, complete sandbox attestation, cleanup confirmation and a warm repeat with the same output/SBOM hashes. The observation predates the current rebase and was not rerun at the rebased candidate; full Core intake -> freeze -> builder and independent acceptance remain NOT_TESTED. See docs/implementation/environment-runtime-broker.md and docs/evidence/environment-runtime-broker-2026-11-11/.
   - WP1-D adds the typed `/v1/environments/check` broker route and wires Supervisor, Worker and Verifier environment-bound checks to `builder check`. The broker validates owner, workspace volume, exact builder image/digest, plan/spec/receipt binding and check bounds; the Worker and verifier fail closed without a frozen binding and never fall back to the generic image. The builder enforces the frozen `diskMiB` with complete `du -skc` sampling over `/cache`, `/nix` and the workspace at a bounded interval, requiring the aggregate total and every expected path row; any `du` error, missing path, timeout, truncated stdout or malformed/incomplete result fails closed, while stderr is drained through a bounded buffer. Pre/post checks retry incomplete scans up to three times, while runtime monitors kill after three consecutive incomplete/over-budget samples; over-budget build/resolve/check children are killed with `ENVIRONMENT_RESOURCE_LIMIT`. The broker purges the per-spec cache or records a durable bounded quarantine ledger/in-memory block when removal is unconfirmed; ledger failure denies all cache reuse until restart, and a startup cache-epoch sweep evicts previous-epoch caches so a failed write cannot permit reuse after restart. `disk.exact=false` is recorded and no exact quota is claimed. Mount attestation validates explicit source/target pairs at every accepted target including `/` and system mounts, including a normalized `overlay-containers/<container-id>/userdata/<hosts|hostname|resolv.conf>` structure with no traversal, and fails closed on missing/incomplete mountinfo. Check output is streamed into bounded 256 KiB buffers with explicit pipe closure. Deterministic tests cover success, failure exit mapping, timeout, cleanup, refusal, over-budget build/check, `du` error/invalid output, unreadable scans, mount-source negatives, quarantine-ledger failure/restart, ledger bounds, marker-volume non-accumulation, noisy output and pipe cleanup. A real Compose environment-check with a real frozen spec/receipt and Node/Rust workspace remains NOT_TESTED and is not claimed. See docs/implementation/environment-runtime-broker.md.
   - A real authenticated Owner unfree-licence override API is deferred. The compiler rejects `allowUnfree`, unknown/denied licences and unfree packages without an exact owner override record; there is no unauthenticated database or HTTP path that can create an override. The reserved owner action must be added before any unfree package can be admitted.
+  - Office plan-approval acknowledgement (F-OFC-R2-1) consumes Core's real `reviewRecorded` and `environmentBlocked` response fields. A 2xx acknowledgement requires the literal `reviewRecorded` flag set to true and bound to the submitted PLAN revision; a 2xx that omits it or reports it false is shown as unconfirmed after a refresh, never as recorded. A decision recorded before a later environment failure stays visible and its controls are not offered again until the projection confirms it; a Lead-rejected environment is reported as blocked instead of active preparation. The acknowledgement and controls are tied to the request identity with one in-flight guard, so a stale response or a double click cannot cross requests or post twice. No recovery endpoint or `recoveryAvailable`/`recoveryState` field exists or is claimed, and the refresh control only re-reads the projection. Component and MSW tests only; real Compose browser acceptance remains NOT_TESTED.
+  - Office R5 (R4-OFC-01/R4-W2-R) — a late error acknowledgement for one request no longer clears another selected request's rationale draft, and the in-flight busy state is scoped to its request so a pending decision does not disable a valid review elsewhere. The plan-decision form is hidden while the request is executing or a Campaign is bound, even if a stale projection still reports a current rejected review; the valid pre-Campaign owner review remains available. Component tests only; browser remains NOT_TESTED.
+  - F-VER-2C27-05 (Core R5+R6 integrated in candidate 77ca1371, runtime NOT_TESTED) — for `mode=AUTONOMOUS`, Core projects `state`/`stateDetail` from agentic facts with no new field, using `AWAITING_APPROVAL` only for a current PENDING/REJECTED/CHANGES review with ready materials and a non-blocked environment. Office keeps the owner-wait surface tied to `reviewCurrent`/`reviewStatus`/`materialsReady` and the environment, never to `AWAITING_APPROVAL` alone. No start authority or `reviewRecorded` semantics change. Provenance — docs updated 2026-11-15 after Core R5+R6 integration in 77ca1371; runtime acceptance remains NOT_TESTED (self-test stopped at harness start, FAIL). H05/H06 need no Office adapter.
+  - Plan-review re-decision (authorized parity extension) — a current `REJECTED` or `CHANGES_REQUESTED` review stays revisitable. Office sends a new authenticated decision with the current `planRevision`/`planSha256` and a new rationale, never reuses the previous rationale, never auto-submits, never recompiles and adds no endpoint or authority. Core records a new effective row and an APPROVE performs the audited `REPLANNING → PLAN_REVIEW → FROZEN` reversal; the start still revalidates readiness, policy and funding. A historical/stale review, a terminal or withdrawn request, an unconfirmed decision or a double click never records twice. The codes `PLAN_REVIEW_STALE`, `PLAN_NOT_READY` and `INTAKE_WITHDRAWN` refresh the projection and show the typed error without retrying the rejected values. Component tests only; real Compose browser acceptance against the integrated Core R4 candidate remains NOT_TESTED.
   blockers:
   - Per-WorkUnit execution state for multi-unit plans remains pending; the 2026-11-10 single-unit live run completed the planned-specified-frozen-approved-executed journey.
 
@@ -3343,3 +3358,53 @@ capabilities:
   - The panel does not offer an automatic revert or a branch-protection bypass.
   blockers:
   - A running Core with an authorized GitHub connection is required for real browser acceptance.
+
+- id: CAP-068
+  name: Exact licence, identity and evidence decisions
+  category: Governance
+  purpose: Record one exact Owner delegation and exact Lead licence/identity/evidence decisions in Office with audit, revocation and no name/version approval
+  product_objective: Governed delivery
+  decision_status: proposed
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-026
+  target_milestone: F1-S10
+  refs:
+    adr: []
+    contract:
+    - docs/implementation/license-decision-interface.md
+    - docs/implementation/license-decision-stage-binding.md
+    - docs/implementation/license-source-proof.md
+    source:
+    - office/src/views/LicenseDecisions.tsx
+    - native/src/bin/core.rs
+    - native/src/planning/license_decision.rs
+    - deploy/environment-builder/environment_builder/license_decision.py
+    test:
+    - office/src/views/LicenseDecisions.test.tsx
+    - deploy/environment-builder/tests/test_license_decision.py
+  acceptance:
+    deterministic: Office reads Core delegations and decisions, creates one exact delegation, approves/revokes it with a reason and revokes a decision; every allow shows the exact identity, branch, obligations, use context and stage; NEEDS_EVIDENCE, DENY, REVOKED and error/retry states are explicit; no name, version, family or static-asset approval exists.
+    real: A browser journey at desktop, tablet and 320 px in EN and ES creates and approves the delegated Owner decision, records an exact ed/GFDL decision, shows STALE/denied/unknown/revoked states and revokes with audit.
+  evidence:
+    deterministic:
+    - docs/evidence/license-decision-deterministic-2026-11-20.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - The retained plan carries an older catalogue hash and is STALE; a new plan revision and a new Lead environment review are required before an exact decision can be accepted.
+  - The separate source proof is exact cache/store evidence, not a fabricated manifest fact.
+  - Real Compose/browser acceptance and the real exact decision remain NOT_TESTED.
+  blockers:
+  - Final backend G2-G5 review and integration are pending.
+  - A new plan revision with the current catalogue/profile is required.

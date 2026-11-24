@@ -1,15 +1,19 @@
 """Deterministic unit tests for the containerized environment builder.
 
-These tests exercise policy, receipt and SBOM logic without Nix, Podman or
-network. Real container evidence is recorded separately and is not implied by
-a green unit test.
+Most tests exercise policy, receipt and SBOM logic without Nix, Podman or
+network. The closure-expression tests evaluate real Nix semantics against
+synthetic attrsets and are skipped when ``nix`` is not installed; they never
+fetch nixpkgs. Real container evidence is recorded separately and is not
+implied by a green unit test.
 """
 
 from __future__ import annotations
 
 import io
 import json
+import hashlib
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,6 +27,10 @@ sys.path.insert(0, str(HERE.parent))
 
 from environment_builder import BUILDER_POLICY_REVISION, LICENSE_POLICY_REVISION  # noqa: E402
 import environment_builder.cli as cli  # noqa: E402
+import environment_builder.license_policy as license_policy_data  # noqa: E402
+_LICENSE_CATALOG, _LICENSE_PROFILE = license_policy_data.load_default()
+_CATALOG_SHA = license_policy_data.catalog_content_sha256(_LICENSE_CATALOG)
+_PROFILE_SHA = license_policy_data.profile_content_sha256(_LICENSE_PROFILE)
 from environment_builder.cli import _resolution_file  # noqa: E402
 from environment_builder.errors import BuilderError  # noqa: E402
 from environment_builder.policy import (  # noqa: E402
@@ -45,8 +53,10 @@ from environment_builder.nix import (  # noqa: E402
     BuildLog,
     child_environment,
     closure_manifest_sha256,
+    nix_eval_json,
     run_check,
 )
+import environment_builder.nix as nix_module  # noqa: E402
 from environment_builder.util import last_nonempty_line  # noqa: E402
 from environment_builder.receipt import (  # noqa: E402
     _mount_attestation,
@@ -142,6 +152,8 @@ def license_inventory(packages: list[dict], overrides: list[dict] | None = None)
         "schemaVersion": 1,
         "policyRevision": LICENSE_POLICY_REVISION,
         "allowUnfree": False,
+        "catalogSha256": _CATALOG_SHA,
+        "profileSha256": _PROFILE_SHA,
         "entries": entries,
         "overrides": overrides or [],
         "blockers": [],
@@ -360,6 +372,159 @@ class PolicyTests(unittest.TestCase):
         finally:
             log.close()
 
+    # Exact deriver-less identities observed in the Run8 closure inventory
+    # (sha256 6a355fcc…97c50): 14 paths, of which move-docs.sh and strip.sh are
+    # the two legacy reviewed helpers and the other twelve are unauthorized.
+    REAL_DERIVERLESS_HELPERS = [
+        ("/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh", "sha256-LFXKr+/5UKMCEYyEpyotSs23Xr0Vwhzlv6YGyO/dqzI=", 816),
+        ("/nix/store/cickvswrvann041nqxb0rxilc46svw1n-prune-libtool-files.sh", "sha256-0DC4P4/oI7F2AJ/9K6MUMNP818Ol4i+fvpJt3D2HyJs=", 1072),
+        ("/nix/store/cmzya9irvxzlkh7lfy6i82gbp0saxqj3-multiple-outputs.sh", "sha256-9xd9l6/GeN1DX0xqIZtdJltbBaUBOAJAuFIlvdduqRc=", 8432),
+        ("/nix/store/fyaryjvghbkpfnsyw97hb3lyb37s1pd6-move-lib64.sh", "sha256-SDQRJiS2AfWlONR8W8dEGuNPeLET7IuPLOm5vQBh2C0=", 904),
+        ("/nix/store/h9lc1dpi14z7is86ffhl3ld569138595-audit-tmpdir.sh", "sha256-tMYdNz2xetDsQK1FEy3126+UqdkB8cXN4l/Zgbv3tm0=", 1520),
+        ("/nix/store/hxv896faph0rqxjq2ycxpcrbnngc95sz-patch-shebangs.sh", "sha256-TRd6N2KO74qqyBQxi1ihprZTMcgR6eAw5Z+HxpwF9Tc=", 5248),
+        ("/nix/store/jjhw2phnaip4kg0qjas3x3fsaifi8y0w-no-broken-symlinks.sh", "sha256-/t5eWNc5nQI9BbgQQFRVf4dy5Ph0lNq7fK24H8Pmjxc=", 3104),
+        ("/nix/store/kd4xwxjpjxi71jkm6ka0np72if9rm3y0-move-sbin.sh", "sha256-exQDue2oXLDKVrh7CiPpj7WjA5qhZfskrLzpYkAFiy0=", 664),
+        ("/nix/store/m54bmrhj6fqz8nds5zcj97w9s9bckc9v-compress-man-pages.sh", "sha256-nvkpux1XBRA6JnXeEphB25xVbHKTz1bkBF3/K7HGbU0=", 1088),
+        ("/nix/store/pag6l61paj1dc9sv15l7bm5c17xn5kyk-move-systemd-user-units.sh", "sha256-ApvZCwlSSuSA6bGuBQGi+EIncpLHju2Uhro27Mb8wMA=", 880),
+        ("/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh", "sha256-/kocrQCaIGEh7zh26MuHLTtmIp5yJylHriY/yVFhPk4=", 4616),
+        ("/nix/store/wgrbkkaldkrlrni33ccvm3b6vbxzb656-make-symlinks-relative.sh", "sha256-M5wxSjy928eIoBBePFKFPVHxbvVNJaOSHGej8zueD0A=", 1280),
+        ("/nix/store/xyff06pkhki3qy1ls77w10s0v79c9il0-reproducible-builds.sh", "sha256-9TquSNTf3+sENOwMmBFmniGPTzbIX9Sn2PFfuJ4i0UA=", 608),
+        ("/nix/store/z7k98578dfzi6l3hsvbivzm7hfqlk0zc-set-source-date-epoch-to-latest.sh", "sha256-O6Gjn5FQzTLFmOLmXU5J4i6ei4gvLK7fo6vA+C0lmn0=", 1696),
+    ]
+    LEGACY_DERIVERLESS_HELPERS = {
+        "/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh",
+        "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
+    }
+
+    # Real referrers observed for all fourteen helpers in the same inventory.
+    STDENV = "/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux"
+    NIX_SHELL_ENV = "/nix/store/xp720k4l3krsg7fjdjhpv45300ghgr6s-nix-shell-env"
+
+    def _real_deriverless_manifest(self) -> list[dict]:
+        helpers = [path for path, _, _ in self.REAL_DERIVERLESS_HELPERS]
+        return [
+            {
+                "path": self.STDENV,
+                "deriver": "/nix/store/nsvrknrqxdf2lxcfbqkr0p05897ww5lx-stdenv-linux.drv",
+                "narHash": "sha256-7uyA5WT1X+9o1QV/Dqs7GsmWtellurWH5ipGyZK8Szk=",
+                "narSize": 1,
+                "references": helpers,
+            },
+            {
+                "path": self.NIX_SHELL_ENV,
+                "deriver": "/nix/store/gkp675qsx7wg4rij541kzmi49skfzsnv-nix-shell-env.drv",
+                "narHash": "sha256-lH0a8hOLzQfqRQDAP8xrNxGxwVW7EcjXyDOakbb+MCw=",
+                "narSize": 1,
+                "references": helpers,
+            },
+            *[
+                {
+                    "path": path,
+                    "deriver": "",
+                    "narHash": nar_hash,
+                    "narSize": nar_size,
+                    "references": [],
+                }
+                for path, nar_hash, nar_size in self.REAL_DERIVERLESS_HELPERS
+            ],
+        ]
+
+    def test_real_inventory_reports_the_twelve_unauthorized_helpers(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        manifest = self._real_deriverless_manifest()
+        expected = {
+            path for path, _, _ in self.REAL_DERIVERLESS_HELPERS
+        } - self.LEGACY_DERIVERLESS_HELPERS
+        self.assertEqual(len(self.REAL_DERIVERLESS_HELPERS), 14)
+        self.assertEqual(len(expected), 12)
+
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "closure.log")
+        try:
+            with mock.patch("environment_builder.cli.nix_eval_json", return_value=[]):
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(
+                        {"nix": {"nixpkgs": pin}}, manifest, {}, 30, log
+                    )
+            message = raised.exception.message
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+            self.assertIn("total=12", message)
+            self.assertIn("captured=closure-license-inventory.json", message)
+            self.assertIn("truncated=true", message)
+            self.assertLessEqual(len(message), 1_000)
+
+            captured = json.loads(
+                (workspace / "closure-license-inventory.json").read_text()
+            )
+            self.assertEqual(captured["source"], "builder-deriver-less-helpers")
+            self.assertEqual(captured["total"], 12)
+            self.assertTrue(captured["captureComplete"])
+            self.assertEqual(captured["captureReason"], "")
+            reported = {candidate["storePath"] for candidate in captured["candidates"]}
+            self.assertEqual(reported, expected)
+            self.assertFalse(reported & self.LEGACY_DERIVERLESS_HELPERS)
+            self.assertEqual(
+                captured["sha256"],
+                cli.sha256_text(cli.canonical_json(captured["candidates"])),
+            )
+            expected_referrers_sha256 = cli.sha256_text(
+                cli.canonical_json(sorted([self.STDENV, self.NIX_SHELL_ENV]))
+            )
+            for candidate in captured["candidates"]:
+                self.assertTrue(candidate["storePath"].startswith("/nix/store/"))
+                self.assertTrue(candidate["narHash"].startswith("sha256-"))
+                self.assertEqual(
+                    candidate["referrerSetSha256"], expected_referrers_sha256
+                )
+                self.assertIn("regularFile", candidate)
+        finally:
+            log.close()
+
+    def test_plan_supplied_exception_fields_never_authorize(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        path, nar_hash, nar_size = next(
+            row
+            for row in self.REAL_DERIVERLESS_HELPERS
+            if row[0] not in self.LEGACY_DERIVERLESS_HELPERS
+        )
+        entry = {
+            "path": path,
+            "deriver": "",
+            "narHash": nar_hash,
+            "narSize": nar_size,
+            "references": [],
+        }
+        manifest = [entry]
+        crafted_plan = {
+            "nix": {"nixpkgs": pin},
+            "planSha256": "a" * 64,
+            "licenseInventory": {
+                "helperExceptions": [
+                    {
+                        "storePath": entry["path"],
+                        "narHash": entry["narHash"],
+                        "name": "helper-0.sh",
+                        "referrerSetSha256": cli.sha256_text(cli.canonical_json([])),
+                        "regularFile": True,
+                        "ruleSha256": "b" * 64,
+                        "planSha256": "a" * 64,
+                    }
+                ],
+                "sbomSha256": "c" * 64,
+            },
+        }
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "closure.log")
+        try:
+            with mock.patch("environment_builder.cli.nix_eval_json", return_value=[]):
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(crafted_plan, manifest, {}, 30, log)
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+            self.assertIn("total=1", raised.exception.message)
+            self.assertIn(entry["path"], raised.exception.message)
+        finally:
+            log.close()
+
     def test_committed_environment_uses_the_devenv_package_profile(self) -> None:
         workspace = Path(tempfile.mkdtemp())
         (workspace / ".devenv").mkdir()
@@ -458,7 +623,10 @@ class PolicyTests(unittest.TestCase):
                         log,
                     )
             self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
-            evaluate.assert_called_once()
+            self.assertTrue(evaluate.called)
+            expressions = [call.args[0] for call in evaluate.call_args_list]
+            self.assertIn('safePackageSet "python312Packages"', expressions[0])
+            self.assertTrue(expressions[-1].endswith("in builtins.attrNames pkgs"))
         finally:
             log.close()
 
@@ -475,6 +643,31 @@ class PolicyTests(unittest.TestCase):
                     [
                         {
                             "path": "/nix/store/pilsssjjdxvdphlg2h19p0bfx5q0jzkn-strip.sh",
+                            "deriver": None,
+                        }
+                    ],
+                    {},
+                    30,
+                    log,
+                )
+            self.assertEqual(entries, [])
+            evaluate.assert_not_called()
+        finally:
+            log.close()
+
+    def test_move_docs_helper_without_deriver_is_not_a_package(self) -> None:
+        pin = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d"
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            with mock.patch(
+                "environment_builder.cli.nix_eval_json", return_value=[]
+            ) as evaluate:
+                entries = cli._closure_license_entries(
+                    {"nix": {"nixpkgs": pin}},
+                    [
+                        {
+                            "path": "/nix/store/5yzw0vhkyszf2d179m0qfkgxmp5wjjx4-move-docs.sh",
                             "deriver": None,
                         }
                     ],
@@ -542,8 +735,14 @@ class PolicyTests(unittest.TestCase):
 
             # An arbitrary unknown package output is not silently excluded.
             manifest.append({"path": unknown, "deriver": "/nix/store/mystery.drv"})
+
+            def evaluate(expression, *_args, **_kwargs):
+                if expression.endswith("in builtins.attrNames pkgs"):
+                    return ["bash"]
+                return [observed]
+
             with mock.patch(
-                "environment_builder.cli.nix_eval_json", return_value=[observed]
+                "environment_builder.cli.nix_eval_json", side_effect=evaluate
             ):
                 with self.assertRaises(BuilderError) as raised:
                     cli._closure_license_entries(
@@ -710,6 +909,168 @@ class PolicyTests(unittest.TestCase):
                 validate_closure_licenses([entry])
             self.assertEqual(raised.exception.code, code, change)
 
+    def test_exact_source_license_origin_accepts_unversioned_identities(self) -> None:
+        pin = next(iter(cli.SOURCE_LICENSE_ORIGINS))
+        for (deriver, path), origin in cli.SOURCE_LICENSE_ORIGINS[pin].items():
+            entry = {"path": path, "version": "", **origin}
+            validated = validate_closure_licenses([entry])[0]
+            self.assertEqual(validated["name"], origin["name"])
+            self.assertEqual(validated["version"], "")
+            self.assertEqual(validated["versionState"], "unversioned")
+            self.assertEqual(validated["license"], "MIT")
+            self.assertEqual(
+                validated["sourceOrigin"]["deriver"], deriver
+            )
+            self.assertEqual(
+                validated["sourceOrigin"]["storePath"], path
+            )
+            self.assertEqual(
+                len(validated["sourceOrigin"]["inputSources"]),
+                16 if origin["name"] == "stdenv-linux" else 3,
+            )
+
+        base = {"path": path, "version": "", **origin}
+        mutations = [
+            ("pin", "github:NixOS/nixpkgs/" + "b" * 40),
+            ("deriver", "/nix/store/" + "b" * 32 + "-other.drv"),
+            ("storePath", "/nix/store/" + "b" * 32 + "-other"),
+            ("narHash", "sha256-" + "A" * 43 + "="),
+            ("sourceStorePath", "/nix/store/" + "b" * 32 + "-source"),
+            ("sourceNarSha256", "sha256-" + "A" * 43 + "="),
+            ("licenseFile", "LICENSE"),
+            ("licenseFileSha256", "b" * 64),
+            ("compositionNarSha256", "sha256-" + "A" * 43 + "="),
+            ("compositionNarSize", 0),
+        ]
+        for field, value in mutations:
+            entry = json.loads(json.dumps(base))
+            entry["sourceOrigin"][field] = value
+            with self.assertRaises(BuilderError) as raised:
+                validate_closure_licenses([entry])
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN", field)
+
+        # The output composition NAR must be the exact output NAR itself.
+        entry = json.loads(json.dumps(base))
+        entry["sourceOrigin"]["compositionNarSha256"] = "sha256-" + "A" * 43 + "="
+        with self.assertRaises(BuilderError) as raised:
+            validate_closure_licenses([entry])
+        self.assertIn("inconsistent", raised.exception.message)
+        # The explicit version state is refused when it disagrees with the
+        # exact origin: no empty-version or origin-carrying "known" exception.
+        entry = json.loads(json.dumps(base))
+        entry["versionState"] = "known"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        entry["version"] = "1.0"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        entry["sourceOrigin"]["extra"] = "value"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        entry["sourceOrigin"]["inputSources"][0]["extra"] = "value"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+
+        entry = json.loads(json.dumps(base))
+        entry["sourceOrigin"]["inputSources"][0]["sha256"] = "b" * 64
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        entry["version"] = "1.0"
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        entry = json.loads(json.dumps(base))
+        del entry["sourceOrigin"]
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([entry])
+        # A name-only or wildcard origin is not enough; the exact key is
+        # required and ordinary transitive entries keep their separate policy.
+        ordinary = {
+            "path": "/nix/store/" + "c" * 32 + "-gnu-config",
+            "name": "gnu-config",
+            "version": "2024-01-01",
+            "license": "GPL-3.0-or-later",
+            "unfree": False,
+        }
+        validated_ordinary = validate_closure_licenses([ordinary])[0]
+        self.assertEqual(validated_ordinary["name"], "gnu-config")
+        self.assertEqual(validated_ordinary["versionState"], "known")
+        # A known identity with no version, or a known identity carrying a
+        # source origin, is not an unversioned exception.
+        empty_version = {**ordinary, "version": ""}
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([empty_version])
+        known_with_origin = {**base, "versionState": "known"}
+        with self.assertRaises(BuilderError):
+            validate_closure_licenses([known_with_origin])
+        # The reviewed substrate lookup returns the exact origin only for the
+        # exact (pin, deriver, store path) key.
+        for (deriver, path), table_entry in cli.SOURCE_LICENSE_ORIGINS[pin].items():
+            reviewed = cli._reviewed_substrate_identity(pin, path, deriver)
+            self.assertIsNotNone(reviewed)
+            self.assertEqual(reviewed["path"], path)
+            self.assertEqual(reviewed["sourceOrigin"], table_entry["sourceOrigin"])
+            self.assertEqual(reviewed["versionState"], "unversioned")
+            self.assertIsNone(cli._reviewed_substrate_identity(pin + "0", path, deriver))
+            self.assertIsNone(cli._reviewed_substrate_identity(pin, path + "-other", deriver))
+            self.assertIsNone(cli._reviewed_substrate_identity(pin, path, deriver + "x"))
+
+    def test_reviewed_source_license_origins_require_exact_evidence(self) -> None:
+        import tempfile
+
+        from environment_builder import policy
+
+        document = json.loads(Path(policy.SOURCE_LICENSE_ORIGINS_FILE).read_text())
+        self.assertEqual(
+            set(document["evidence"]),
+            {
+                "compositionAuditCanonicalVerifyLogSha256",
+                "compositionAuditSha256Sums",
+                "independentReconstructionSha256Sums",
+                "licenseEvidenceV2Sha256",
+            },
+        )
+        self.assertTrue(
+            all(len(value) == 64 for value in document["evidence"].values())
+        )
+        mutations = [
+            lambda changed: changed["evidence"].__setitem__("extraKey", "a" * 64),
+            lambda changed: changed["evidence"].pop(
+                "independentReconstructionSha256Sums"
+            ),
+            lambda changed: changed["evidence"].__setitem__(
+                "licenseEvidenceV2Sha256", "not-a-hash"
+            ),
+            lambda changed: changed["identities"].append(
+                json.loads(json.dumps(changed["identities"][0]))
+            ),
+        ]
+        original = policy.SOURCE_LICENSE_ORIGINS_FILE
+        try:
+            for mutate in mutations:
+                changed = json.loads(json.dumps(document))
+                mutate(changed)
+                with tempfile.NamedTemporaryFile(
+                    "w", suffix=".json", delete=False
+                ) as handle:
+                    json.dump(changed, handle)
+                    path = Path(handle.name)
+                try:
+                    policy.SOURCE_LICENSE_ORIGINS_FILE = path
+                    with self.assertRaises(BuilderError) as raised:
+                        policy._load_source_license_origins()
+                    self.assertEqual(
+                        raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN"
+                    )
+                finally:
+                    path.unlink()
+        finally:
+            policy.SOURCE_LICENSE_ORIGINS_FILE = original
+        self.assertEqual(len(policy._load_source_license_origins()), 1)
+
     def test_missing_command_executable_is_rejected(self) -> None:
         plan = {"commands": {"test": {"argv": ["cargo", "test"]}}}
         with mock.patch(
@@ -767,6 +1128,297 @@ class PolicyTests(unittest.TestCase):
             ]
         )
 
+    def test_known_bsd4uc_is_accepted_with_other_known_closure_licenses(self) -> None:
+        entry = {
+            "path": "/nix/store/" + "a" * 32 + "-util-linux-minimal-2.41.1-lib",
+            "name": "util-linux-minimal",
+            "version": "2.41.1",
+            "license": (
+                "GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later "
+                "AND LGPL-2.1-or-later AND BSD-3-Clause "
+                "AND BSD-4-Clause-UC AND publicDomain"
+            ),
+            "unfree": False,
+        }
+        validated = validate_closure_licenses([entry])
+        self.assertEqual(validated[0]["name"], "util-linux-minimal")
+
+    def test_known_python20_is_accepted_in_the_closure_catalogue(self) -> None:
+        entries = [
+            {
+                "path": "/nix/store/" + "a" * 32 + "-python3-3.12.12",
+                "name": "python3",
+                "version": "3.12.12",
+                "license": "Python-2.0",
+                "unfree": False,
+            },
+            {
+                "path": "/nix/store/" + "b" * 32 + "-python3.12-typing-extensions-4.13.2",
+                "name": "typing-extensions",
+                "version": "4.13.2",
+                "license": "Python-2.0",
+                "unfree": False,
+            },
+        ]
+        validated = validate_closure_licenses(entries)
+        self.assertEqual(
+            [entry["name"] for entry in validated],
+            ["python3", "typing-extensions"],
+        )
+        # Core selects packages from the selected context, not the closure profile.
+        with self.assertRaises(BuilderError) as raised:
+            validate_license_expression("Python-2.0")
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+
+    def test_license_catalog_and_profile_are_shared_and_legacy(self) -> None:
+        import environment_builder.license_policy as policy_data
+
+        catalog, profile = policy_data.load_default()
+        self.assertEqual(catalog.revision, "spdx-catalog-2026-11-16")
+        self.assertEqual(len(catalog.entries), 36)
+        self.assertEqual(profile.mode, "legacy-current")
+        self.assertFalse(policy_data.b_active(profile))
+        selected = set(profile.contexts["selected"]["allowedIds"])
+        closure = set(profile.contexts["closure"]["allowedIds"])
+        self.assertEqual(len(selected), 16)
+        self.assertEqual(len(closure), 30)
+        for identifier in ("BSD-4-Clause-UC", "Python-2.0"):
+            self.assertIn(identifier, closure)
+            self.assertNotIn(identifier, selected)
+        self.assertIn("publicDomain", closure)
+        self.assertNotIn("Public Domain", closure)
+        self.assertEqual(catalog.alias_index["Public Domain"], "publicDomain")
+
+    def test_real_33_entry_inventory_is_accepted_by_the_shared_closure_catalog(
+        self,
+    ) -> None:
+        fixture = json.loads(
+            (HERE / "fixtures" / "closure-license-inventory-33.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        entries = fixture["entries"]
+        self.assertEqual(fixture["count"], 33)
+        self.assertEqual(len(entries), 33)
+        validated = validate_closure_licenses(entries)
+        self.assertEqual(len(validated), 33)
+        self.assertEqual(
+            {entry["name"] for entry in validated},
+            {entry["name"] for entry in entries},
+        )
+        self.assertIn(
+            "util-linux-minimal", {entry["name"] for entry in validated}
+        )
+        self.assertIn("python3", {entry["name"] for entry in validated})
+        self.assertIn("typing-extensions", {entry["name"] for entry in validated})
+
+    def test_all_closure_license_violations_are_retained_in_one_pass(self) -> None:
+        entries = [
+            {
+                "path": "/nix/store/" + "a" * 32 + "-python3-3.12.12",
+                "name": "python3",
+                "version": "3.12.12",
+                "license": "LicenseRef-Not-A-Catalogue-Id",
+                "unfree": False,
+            },
+            {
+                "path": "/nix/store/" + "b" * 32 + "-demo-1.0",
+                "name": "demo",
+                "version": "1.0",
+                "license": "LicenseRef-Demo",
+                "unfree": False,
+            },
+            {
+                "path": "/nix/store/" + "c" * 32 + "-bash-5.2",
+                "name": "bash",
+                "version": "5.2",
+                "license": "GPL-3.0-or-later",
+                "unfree": False,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with BuildLog(Path(directory) / "resolve.log") as log:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._validate_closure_licenses_reporting_all(entries, log)
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_UNKNOWN")
+            self.assertTrue(
+                raised.exception.message.startswith(
+                    "2 closure license violations; ids=demo@1.0,python3@3.12.12"
+                ),
+                raised.exception.message,
+            )
+            self.assertIn(
+                "licenses=LicenseRef-Demo,LicenseRef-Not-A-Catalogue-Id",
+                raised.exception.message,
+            )
+            self.assertIn("expected=3 observed=3", raised.exception.message)
+            self.assertIn("capture=complete", raised.exception.message)
+            path = Path(directory) / "closure-license-inventory.json"
+            payload = json.loads(path.read_text())
+            self.assertEqual(payload["expected"], 3)
+            self.assertEqual(payload["observed"], 3)
+            self.assertEqual(payload["violationCount"], 2)
+            self.assertEqual(
+                [entry["name"] for entry in payload["entries"]],
+                ["python3", "demo", "bash"],
+            )
+            self.assertEqual(
+                [item["name"] for item in payload["violations"]], ["python3", "demo"]
+            )
+            self.assertTrue(payload["captureComplete"])
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            log_text = (Path(directory) / "resolve.log").read_text()
+            self.assertIn("closure-license-inventory:", log_text)
+            self.assertIn("closure-license-inventory-entries:", log_text)
+            self.assertIn("python3", log_text)
+
+    def test_denied_unknown_and_unfree_are_all_reported_without_hiding_denied(self) -> None:
+        entries = [
+            {
+                "path": "/nix/store/" + "a" * 32 + "-bash-5.2",
+                "name": "bash",
+                "version": "5.2",
+                "license": "GPL-3.0-or-later",
+                "unfree": False,
+            },
+            {
+                "path": "/nix/store/" + "b" * 32 + "-denied-1.0",
+                "name": "denied",
+                "version": "1.0",
+                "license": "AGPL-3.0-only",
+                "unfree": False,
+            },
+            {
+                "path": "/nix/store/" + "c" * 32 + "-unknown-1.0",
+                "name": "unknown",
+                "version": "1.0",
+                "license": "LicenseRef-Not-A-Catalogue-Id",
+                "unfree": False,
+            },
+            {
+                "path": "/nix/store/" + "d" * 32 + "-unfree-1.0",
+                "name": "unfree",
+                "version": "1.0",
+                "license": "MIT",
+                "unfree": True,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with BuildLog(Path(directory) / "resolve.log") as log:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._validate_closure_licenses_reporting_all(entries, log)
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_DENIED")
+            self.assertIn("ids=denied@1.0,unfree@1.0,unknown@1.0", raised.exception.message)
+            self.assertIn("AGPL-3.0-only", raised.exception.message)
+            self.assertIn("LicenseRef-Not-A-Catalogue-Id", raised.exception.message)
+            self.assertIn("MIT", raised.exception.message)
+            payload = json.loads(
+                (Path(directory) / "closure-license-inventory.json").read_text()
+            )
+            self.assertEqual(payload["expected"], 4)
+            self.assertEqual(payload["observed"], 4)
+            self.assertEqual(payload["violationCount"], 3)
+            self.assertEqual(payload["errorCode"], "ENVIRONMENT_LICENSE_DENIED")
+
+    def test_single_closure_violation_still_writes_the_inventory(self) -> None:
+        entries = [
+            {
+                "path": "/nix/store/" + "a" * 32 + "-python3-3.12.12",
+                "name": "python3",
+                "version": "3.12.12",
+                "license": "LicenseRef-Not-A-Catalogue-Id",
+                "unfree": False,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with BuildLog(Path(directory) / "resolve.log") as log:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._validate_closure_licenses_reporting_all(entries, log)
+            self.assertTrue(
+                raised.exception.message.startswith(
+                    "1 closure license violations; ids=python3@3.12.12"
+                ),
+                raised.exception.message,
+            )
+            payload = json.loads(
+                (Path(directory) / "closure-license-inventory.json").read_text()
+            )
+            self.assertEqual(payload["violationCount"], 1)
+            self.assertEqual(payload["expected"], 1)
+
+    def test_non_object_closure_entry_is_inventoried_as_partial_structure(self) -> None:
+        entries = [
+            {
+                "path": "/nix/store/" + "a" * 32 + "-bash-5.2",
+                "name": "bash",
+                "version": "5.2",
+                "license": "GPL-3.0-or-later",
+                "unfree": False,
+            },
+            "not-an-object",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with BuildLog(Path(directory) / "resolve.log") as log:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._validate_closure_licenses_reporting_all(entries, log)
+            self.assertEqual(raised.exception.code, "ENVIRONMENT_SPEC_INVALID")
+            payload = json.loads(
+                (Path(directory) / "closure-license-inventory.json").read_text()
+            )
+            self.assertEqual(payload["expected"], 2)
+            self.assertEqual(payload["observed"], 2)
+            self.assertEqual(payload["violationCount"], 1)
+            self.assertEqual(payload["violations"][0]["entryType"], "non-object")
+            self.assertIn("ids=index:1", raised.exception.message)
+
+    def test_inventory_redacts_secret_shaped_values_and_is_private(self) -> None:
+        entries = [
+            {
+                "path": "/nix/store/" + "a" * 32 + "-secret-1.0",
+                "name": "token=abcdefghijklmnop",
+                "version": "1.0",
+                "license": "LicenseRef-Secret",
+                "unfree": False,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with BuildLog(Path(directory) / "resolve.log") as log:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._validate_closure_licenses_reporting_all(entries, log)
+            path = Path(directory) / "closure-license-inventory.json"
+            log_text = (Path(directory) / "resolve.log").read_text()
+            self.assertNotIn("abcdefghijklmnop", raised.exception.message)
+            self.assertNotIn("abcdefghijklmnop", path.read_text())
+            self.assertNotIn("abcdefghijklmnop", log_text)
+            self.assertIn("[REDACTED]", path.read_text())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_large_inventory_is_marked_as_a_partial_broker_capture(self) -> None:
+        entries = [
+            {
+                "path": "/nix/store/" + f"{index:032x}" + f"-package-{index}-1.0",
+                "name": f"package-{index}",
+                "version": "1.0",
+                "license": f"LicenseRef-Many-{index}",
+                "unfree": False,
+            }
+            for index in range(1_000)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with BuildLog(Path(directory) / "resolve.log") as log:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._validate_closure_licenses_reporting_all(entries, log)
+            payload = json.loads(
+                (Path(directory) / "closure-license-inventory.json").read_text()
+            )
+            self.assertEqual(payload["expected"], 1_000)
+            self.assertEqual(payload["observed"], 1_000)
+            self.assertEqual(payload["violationCount"], 1_000)
+            self.assertFalse(payload["captureComplete"])
+            self.assertIn("expected=1000 observed=1000", raised.exception.message)
+            self.assertIn("capture=partial", raised.exception.message)
+            self.assertIn("idsTruncated=true", raised.exception.message)
+
     def test_unknown_license_is_rejected(self) -> None:
         with self.assertRaises(BuilderError) as raised:
             validate_license_expression("NOASSERTION")
@@ -776,6 +1428,27 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(BuilderError) as raised:
             validate_license_expression("AGPL-3.0-only")
         self.assertEqual(raised.exception.code, "ENVIRONMENT_LICENSE_DENIED")
+
+    def test_selected_nested_sets_follow_plan_packages_and_toolchains(self) -> None:
+        self.assertEqual(
+            cli._selected_package_set_names(
+                {"packages": [{"attr": "python312Packages.fastapi"}]}
+            ),
+            ["python312Packages"],
+        )
+        self.assertEqual(
+            cli._selected_package_set_names(
+                {"toolchains": [{"id": "python3", "version": "3.11.9"}]}
+            ),
+            ["python311Packages"],
+        )
+        self.assertEqual(
+            cli._selected_package_set_names(
+                {"toolchains": [{"id": "node", "version": "22.14.0"}]}
+            ),
+            ["nodePackages"],
+        )
+        self.assertEqual(cli._selected_package_set_names({}), [])
 
     def test_unfree_without_override_is_rejected(self) -> None:
         package = {
@@ -974,6 +1647,509 @@ class PolicyTests(unittest.TestCase):
             )
 
 
+class NixEvaluationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        self.log = BuildLog(self.root / "resolve.log")
+
+    def tearDown(self) -> None:
+        self.log.close()
+
+    def test_successful_evaluation_with_warnings_and_truncated_stderr_is_data(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(
+                0,
+                b'[{"name":"bash"}]',
+                b"evaluation warning: renamed package\n",
+                False,
+                True,
+            ),
+        ):
+            self.assertEqual(
+                nix_eval_json("expr", env={}, timeout=30, log=self.log),
+                [{"name": "bash"}],
+            )
+
+    def test_failed_evaluation_reports_exit_and_error_not_the_warnings(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(
+                1,
+                b"",
+                b"evaluation warning: androidndk renamed\n"
+                b"evaluation warning: CUDA is old\n"
+                b"error: infinite recursion encountered\n",
+                False,
+                False,
+            ),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_PIN_MISSING")
+        self.assertIn("exited 1", raised.exception.message)
+        self.assertIn("error: infinite recursion encountered", raised.exception.message)
+        self.assertNotIn("androidndk", raised.exception.message)
+
+    def test_failed_evaluation_without_an_error_line_does_not_blame_warnings(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(
+                1,
+                b"",
+                b"evaluation warning: only a warning\n",
+                False,
+                False,
+            ),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertIn("exited 1", raised.exception.message)
+        self.assertIn("no diagnostic", raised.exception.message)
+        self.assertNotIn("only a warning", raised.exception.message)
+
+    def test_invalid_json_is_still_rejected_after_warnings(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(0, b"not json", b"evaluation warning: renamed\n", False, False),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertIn("invalid JSON", raised.exception.message)
+
+    def test_warning_body_with_a_fake_error_does_not_replace_the_real_cause(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(
+                1,
+                b"",
+                b"evaluation warning: deprecated alias\n"
+                b"  error: FAKE-CAUSE\n"
+                b"error: REAL-CAUSE\n",
+                False,
+                False,
+            ),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertIn("REAL-CAUSE", raised.exception.message)
+        self.assertNotIn("FAKE-CAUSE", raised.exception.message)
+
+    def test_payload_less_error_uses_the_detail_line_after_it(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(1, b"", b"error:\n  real detail line\n", False, False),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertIn("real detail line", raised.exception.message)
+        self.assertTrue(raised.exception.message.endswith("real detail line"))
+
+    def test_indented_error_inside_a_warning_never_becomes_the_cause(self) -> None:
+        diagnostics = (
+            b"warning: you don't have Internet access; disabling some network-dependent features\n"
+            b"evaluation warning: renamed package\n"
+            b"                      error: FAKE-WARNING-CAUSE\n"
+            b"                    rest\n"
+            b"error:\n"
+            b"       ... while calling the 'warn' builtin\n"
+            b"       ... while calling the 'throw' builtin\n"
+            b"       error:\n"
+        )
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(1, b"", diagnostics, False, False),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_PIN_MISSING")
+        self.assertNotIn("FAKE-WARNING-CAUSE", raised.exception.message)
+        self.assertIn("while calling the 'warn' builtin", raised.exception.message)
+
+    def test_real_payload_inside_the_error_block_still_wins(self) -> None:
+        diagnostics = (
+            b"evaluation warning: renamed\n"
+            b"                      error: FAKE-WARNING-CAUSE\n"
+            b"error:\n"
+            b"       context\n"
+            b"       error: REAL-INDENTED-CAUSE\n"
+        )
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(1, b"", diagnostics, False, False),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertIn("REAL-INDENTED-CAUSE", raised.exception.message)
+        self.assertNotIn("FAKE-WARNING-CAUSE", raised.exception.message)
+
+    def test_direct_block_separation_matches_the_reviewer_edge_case(self) -> None:
+        self.assertEqual(
+            nix_module._primary_failure_reason(
+                "evaluation warning: renamed\n"
+                "  error: FAKE-WARNING-CAUSE\n"
+                "rest\n"
+                "error:\n"
+            ),
+            "error:",
+        )
+        self.assertEqual(
+            nix_module._primary_failure_reason(
+                "evaluation warning: renamed\n"
+                "  error: FAKE-WARNING-CAUSE\n"
+                "rest\n"
+                "error: REAL-CAUSE\n"
+            ),
+            "error: REAL-CAUSE",
+        )
+
+    def test_generic_warning_prefix_is_not_the_primary_cause(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(
+                1,
+                b"",
+                b"warning: you don't have Internet access\n"
+                b"error: the real cause\n",
+                False,
+                False,
+            ),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertIn("error: the real cause", raised.exception.message)
+        self.assertNotIn("Internet access", raised.exception.message)
+
+    def test_signal_termination_is_a_resource_failure_only_with_cgroup_oom_evidence(self) -> None:
+        with (
+            mock.patch(
+                "environment_builder.nix._read_cgroup_oom_kills",
+                side_effect=[0, 1],
+            ),
+            mock.patch(
+                "environment_builder.nix._run_bounded_capture",
+                return_value=(-9, b"", b"", False, False),
+            ),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json(
+                    "expr",
+                    env={},
+                    timeout=30,
+                    log=self.log,
+                    failure_code="ENVIRONMENT_LICENSE_UNKNOWN",
+                )
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_RESOURCE_LIMIT")
+        self.assertIn("SIGKILL", raised.exception.message)
+        self.assertIn("cgroup oom_kill", raised.exception.message)
+        self.assertNotIn("unknown license", raised.exception.message)
+
+    def test_signal_termination_with_partial_diagnostic_keeps_signal_primary(self) -> None:
+        with (
+            mock.patch(
+                "environment_builder.nix._read_cgroup_oom_kills",
+                side_effect=[0, 1],
+            ),
+            mock.patch(
+                "environment_builder.nix._run_bounded_capture",
+                return_value=(-9, b"", b"error: partial cause\n", False, False),
+            ),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json(
+                    "expr",
+                    env={},
+                    timeout=30,
+                    log=self.log,
+                    failure_code="ENVIRONMENT_LICENSE_UNKNOWN",
+                )
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_RESOURCE_LIMIT")
+        self.assertIn("SIGKILL", raised.exception.message)
+        self.assertIn("partial cause", raised.exception.message)
+
+    def test_sigkill_without_cgroup_oom_is_build_failure(self) -> None:
+        with (
+            mock.patch(
+                "environment_builder.nix._read_cgroup_oom_kills",
+                side_effect=[3, 3],
+            ),
+            mock.patch(
+                "environment_builder.nix._run_bounded_capture",
+                return_value=(-9, b"", b"", False, False),
+            ),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json(
+                    "expr",
+                    env={},
+                    timeout=30,
+                    log=self.log,
+                    failure_code="ENVIRONMENT_LICENSE_UNKNOWN",
+                )
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_BUILD_FAILED")
+        self.assertIn("SIGKILL", raised.exception.message)
+        self.assertIn("without OOM evidence", raised.exception.message)
+        self.assertNotIn("RESOURCE_LIMIT", raised.exception.message)
+
+    def test_sigterm_sigsegv_sigabrt_and_unknown_signal_are_not_resource_limits(self) -> None:
+        for signal_number, signal_name in (
+            (15, "SIGTERM"),
+            (11, "SIGSEGV"),
+            (6, "SIGABRT"),
+            (44, "signal 44"),
+        ):
+            with self.subTest(signal_number=signal_number):
+                with (
+                    mock.patch(
+                        "environment_builder.nix._read_cgroup_oom_kills",
+                        side_effect=[0, 0],
+                    ),
+                    mock.patch(
+                        "environment_builder.nix._run_bounded_capture",
+                        return_value=(-signal_number, b"", b"", False, False),
+                    ),
+                ):
+                    with self.assertRaises(BuilderError) as raised:
+                        nix_eval_json(
+                            "expr",
+                            env={},
+                            timeout=30,
+                            log=self.log,
+                            failure_code="ENVIRONMENT_LICENSE_UNKNOWN",
+                        )
+                self.assertEqual(
+                    raised.exception.code, "ENVIRONMENT_BUILD_FAILED"
+                )
+                self.assertIn(signal_name, raised.exception.message)
+                self.assertNotIn("cgroup oom_kill", raised.exception.message)
+
+    def test_truncated_stdout_rejects_a_valid_json_prefix(self) -> None:
+        with mock.patch(
+            "environment_builder.nix._run_bounded_capture",
+            return_value=(0, b'[{"name":"bash"}]', b"", True, False),
+        ):
+            with self.assertRaises(BuilderError) as raised:
+                nix_eval_json("expr", env={}, timeout=30, log=self.log)
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_PIN_MISSING")
+        self.assertIn("exceeds its bound", raised.exception.message)
+
+    def test_bounded_reader_keeps_head_only_for_data_and_flags_truncation(self) -> None:
+        returncode, stdout, stderr, stdout_truncated, stderr_truncated = (
+            nix_module._run_bounded_capture(
+                ["sh", "-c", "printf '[]'; head -c 64 /dev/zero"],
+                timeout=30,
+                env=dict(os.environ),
+                failure_code="ENVIRONMENT_BUILD_FAILED",
+                stdout_limit=2,
+                stderr_limit=64,
+            )
+        )
+        self.assertEqual(returncode, 0)
+        self.assertEqual(stdout, b"[]")
+        self.assertTrue(stdout_truncated)
+        self.assertEqual(stderr, b"")
+        self.assertFalse(stderr_truncated)
+
+    def test_bounded_reader_keeps_stderr_head_and_tail_with_a_marker(self) -> None:
+        returncode, _stdout, stderr, _stdout_truncated, stderr_truncated = (
+            nix_module._run_bounded_capture(
+                [
+                    "sh",
+                    "-c",
+                    "head -c 512 /dev/zero | tr '\\0' 'w' >&2; "
+                    "printf '\\nerror: REAL-CAUSE\\n' >&2",
+                ],
+                timeout=30,
+                env=dict(os.environ),
+                failure_code="ENVIRONMENT_BUILD_FAILED",
+                stdout_limit=16,
+                stderr_limit=256,
+            )
+        )
+        self.assertEqual(returncode, 0)
+        self.assertTrue(stderr_truncated)
+        self.assertIn(b"error: REAL-CAUSE", stderr)
+        self.assertIn(b"stderr truncated", stderr)
+
+    @unittest.skipUnless(shutil.which("nix"), "nix is not installed")
+    def test_real_noisy_stderr_keeps_the_trailing_error_in_message_and_log(self) -> None:
+        expression = """
+let
+  total = 4000;
+  warn = i:
+    builtins.warn
+      ("renamed package number " + toString i + " for the diagnostics probe")
+      i;
+in builtins.deepSeq (builtins.genList warn total) (throw "REAL-CAUSE-R1")
+"""
+        with self.assertRaises(BuilderError) as raised:
+            nix_eval_json(expression, env=dict(os.environ), timeout=120, log=self.log)
+        self.assertEqual(raised.exception.code, "ENVIRONMENT_PIN_MISSING")
+        self.assertIn("exited 1", raised.exception.message)
+        self.assertIn("REAL-CAUSE-R1", raised.exception.message)
+        self.assertNotIn("evaluation warning", raised.exception.message)
+        self.assertLessEqual(len(raised.exception.message), 1_000)
+        self.assertIn("REAL-CAUSE-R1", self.log.diagnostic)
+        self.log.close()
+        log_text = self.log.path.read_text(encoding="utf-8")
+        self.assertIn("REAL-CAUSE-R1", log_text)
+        self.assertIn("stderr truncated", log_text)
+
+    def test_closure_expression_includes_nested_python_package_sets(self) -> None:
+        expression = cli._closure_metadata_expression(
+            "github:NixOS/nixpkgs/" + "a" * 40,
+            ["/nix/store/" + "b" * 32 + "-python3.12-typing-inspection-0.4.0"],
+        )
+        self.assertIn("python312Packages", expression)
+        self.assertIn("builtins.attrNames set", expression)
+        self.assertIn("python3.12-typing-inspection-0.4.0", expression)
+
+
+@unittest.skipUnless(shutil.which("nix"), "nix is not installed")
+class ClosureExpressionNixTests(unittest.TestCase):
+    """Evaluate the real matching body against synthetic attrsets.
+
+    The synthetic set includes a throwing ``python311Packages`` value: the
+    builder must skip an unevaluable optional set instead of aborting metadata
+    for every environment. It also covers nested-only resolution, same-name
+    rejection, non-default outputs and compound licences.
+    """
+
+    def setUp(self) -> None:
+        self.home = tempfile.mkdtemp()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    @staticmethod
+    def _store_paths() -> dict[str, str]:
+        return {
+            "nested": "/nix/store/" + "a" * 32 + "-nested-only-2.0",
+            "dup_nested": "/nix/store/" + "b" * 32 + "-dup-nested-1.0",
+            "dup_top": "/nix/store/" + "c" * 32 + "-dup-top-1.0",
+            "multi_lib": "/nix/store/" + "d" * 32 + "-multi-3.0-lib",
+            "multi_out": "/nix/store/" + "e" * 32 + "-multi-3.0",
+            "top": "/nix/store/" + "f" * 32 + "-top-1.0",
+        }
+
+    @staticmethod
+    def _synthetic_pkgs(paths: dict[str, str]) -> str:
+        return f"""
+{{
+  top = {{
+    outPath = "{paths['top']}";
+    pname = "top";
+    version = "1.0";
+    meta.license = [ {{ spdxId = "MIT"; free = true; }} ];
+  }};
+  dup = {{
+    outPath = "{paths['dup_top']}";
+    pname = "dup";
+    version = "1.0";
+    meta.license = {{ spdxId = "MIT"; free = true; }};
+  }};
+  multi = {{
+    outPath = "{paths['multi_out']}";
+    pname = "multi";
+    version = "3.0";
+    outputs = [ "out" "lib" ];
+    out = {{ outPath = "{paths['multi_out']}"; }};
+    lib = {{ outPath = "{paths['multi_lib']}"; }};
+    meta.license = [
+      {{ spdxId = "MIT"; free = true; }}
+      {{ spdxId = "Apache-2.0"; free = true; }}
+    ];
+  }};
+  python312Packages = {{
+    nestedOnly = {{
+      outPath = "{paths['nested']}";
+      pname = "nested-only";
+      version = "2.0";
+      meta.license = {{ spdxId = "BSD-3-Clause"; free = true; }};
+    }};
+    dup = {{
+      outPath = "{paths['dup_nested']}";
+      pname = "dup";
+      version = "1.0";
+      meta.license = {{ spdxId = "MIT"; free = true; }};
+    }};
+  }};
+  python311Packages = throw "python311 is end of life";
+  nodePackages = {{ }};
+}}
+"""
+
+    def _evaluate(
+        self,
+        closure_paths: list[str],
+        *,
+        names: list[str] | None = None,
+        package_sets: list[str] | None = None,
+    ) -> list[dict[str, object]]:
+        paths = self._store_paths()
+        expression = (
+            "let\n  pkgs = "
+            + self._synthetic_pkgs(paths)
+            + ";\n"
+            + cli._closure_metadata_body(
+                closure_paths, names=names, package_sets=package_sets
+            )
+        )
+        result = subprocess.run(
+            [
+                "nix",
+                "eval",
+                "--json",
+                "--extra-experimental-features",
+                "nix-command flakes",
+                "--expr",
+                expression,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"PATH": os.environ.get("PATH", ""), "HOME": self.home},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr[-4_000:])
+        return json.loads(result.stdout)
+
+    def test_nested_only_package_resolves_and_throwing_set_is_skipped(self) -> None:
+        paths = self._store_paths()
+        entries = self._evaluate([paths["nested"]])
+        self.assertEqual([entry["path"] for entry in entries], [paths["nested"]])
+        self.assertEqual(entries[0]["name"], "nested-only")
+        self.assertEqual(entries[0]["license"], "BSD-3-Clause")
+
+    def test_same_name_top_level_attribute_does_not_alias_the_nested_path(self) -> None:
+        paths = self._store_paths()
+        entries = self._evaluate([paths["dup_nested"]])
+        self.assertEqual([entry["path"] for entry in entries], [paths["dup_nested"]])
+        self.assertNotIn(paths["dup_top"], [entry["path"] for entry in entries])
+
+    def test_non_default_output_resolves_against_the_parent_package(self) -> None:
+        paths = self._store_paths()
+        entries = self._evaluate([paths["multi_lib"]])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["path"], paths["multi_out"])
+        self.assertIn(paths["multi_lib"], entries[0]["outputPaths"])
+        self.assertEqual(entries[0]["license"], "MIT AND Apache-2.0")
+        self.assertFalse(entries[0]["unfree"])
+
+    def test_scoped_top_level_batch_resolves_only_that_batch(self) -> None:
+        paths = self._store_paths()
+        entries = self._evaluate(
+            [paths["top"], paths["nested"]], names=["top"], package_sets=[]
+        )
+        self.assertEqual([entry["path"] for entry in entries], [paths["top"]])
+
+    def test_scoped_package_set_resolves_the_nested_path(self) -> None:
+        paths = self._store_paths()
+        entries = self._evaluate(
+            [paths["nested"]], names=[], package_sets=["python312Packages"]
+        )
+        self.assertEqual([entry["path"] for entry in entries], [paths["nested"]])
+
+
 class ReceiptTests(unittest.TestCase):
     def test_receipt_binds_the_exact_spec_and_sandbox(self) -> None:
         receipt = build_receipt(
@@ -1159,6 +2335,8 @@ class SbomTests(unittest.TestCase):
             {
                 "schemaVersion",
                 "policyRevision",
+                "catalogSha256",
+                "profileSha256",
                 "allowUnfree",
                 "entries",
                 "overrides",
@@ -1167,6 +2345,16 @@ class SbomTests(unittest.TestCase):
                 "sbomSha256",
             },
         )
+
+    def test_inventory_copy_preserves_the_policy_hashes(self) -> None:
+        plan = {"licenseInventory": license_inventory([])}
+        copied = license_inventory_copy(plan)
+        self.assertEqual(copied["catalogSha256"], _CATALOG_SHA)
+        self.assertEqual(copied["profileSha256"], _PROFILE_SHA)
+        broken = {"licenseInventory": dict(plan["licenseInventory"])}
+        broken["licenseInventory"].pop("profileSha256")
+        with self.assertRaises(ValueError):
+            license_inventory_copy(broken)
 
 
 class AttestationTests(unittest.TestCase):
@@ -1801,6 +2989,176 @@ class CheckExecutionTests(unittest.TestCase):
                 result["description"], "the check sees the candidate workspace"
             )
             self.assertEqual(result["stderrTail"], "")
+
+
+class ApprovedHelperIdentityTests(unittest.TestCase):
+    """Offline proof for the exact approved deriver-less helper catalog."""
+
+    FIXTURE = HERE / "fixtures" / "deriverless-closure-inventory.json"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.inventory = json.loads(cls.FIXTURE.read_text(encoding="utf-8"))
+        cls.pin = cls.inventory["identity"]["nixpkgsPin"]
+        cls.deriverless = [
+            entry for entry in cls.inventory["entries"] if entry.get("deriverLess")
+        ]
+        cls.all_paths = {entry["path"] for entry in cls.deriverless}
+        cls.legacy = set(cls.inventory["allowedToday"])
+        cls.new_paths = cls.all_paths - cls.legacy
+
+    def _manifest(self) -> list[dict]:
+        entries = self.inventory["entries"]
+        references: dict[str, list[str]] = {entry["path"]: [] for entry in entries}
+        for entry in entries:
+            for referrer in entry.get("referrers") or []:
+                if referrer in references:
+                    references[referrer].append(entry["path"])
+        return [
+            {
+                "path": entry["path"],
+                "narHash": entry["narHash"],
+                "narSize": entry["narSize"],
+                "deriver": entry["deriver"],
+                "references": references[entry["path"]],
+            }
+            for entry in entries
+        ]
+
+    @staticmethod
+    def _regular(_path: str) -> bool:
+        return True
+
+    def test_catalog_is_exact_and_pin_scoped(self) -> None:
+        identities = cli.APPROVED_HELPER_IDENTITIES[self.pin]
+        self.assertEqual(len(identities), 14)
+        self.assertEqual(len(self.new_paths), 12)
+        self.assertEqual(set(identities), self.all_paths)
+        for path, identity in identities.items():
+            self.assertTrue(path.startswith("/nix/store/"))
+            self.assertTrue(path.endswith(".sh"))
+            self.assertTrue(identity["narHash"].startswith("sha256-"))
+            self.assertEqual(len(identity["referrerSetSha256"]), 64)
+            self.assertIsInstance(identity["legacy"], bool)
+
+    def test_entire_exact_closure_is_approved_offline(self) -> None:
+        manifest = self._manifest()
+        self.assertEqual(len(manifest), 73)
+        approved, rejected = cli._classify_deriverless_helpers(
+            self.pin, manifest, is_regular_file=self._regular
+        )
+        self.assertEqual(rejected, [])
+        self.assertEqual(set(approved), self.all_paths)
+        self.assertEqual(len(approved), 14)
+        self.assertEqual(len(set(approved) & self.new_paths), 12)
+
+    def test_unknown_deriverless_helper_is_rejected(self) -> None:
+        manifest = self._manifest()
+        manifest.append(
+            {
+                "path": "/nix/store/" + "a" * 32 + "-evil.sh",
+                "narHash": "sha256-" + "A" * 43 + "=",
+                "narSize": 10,
+                "deriver": "",
+                "references": ["/nix/store/lfwfj17y9fpjb73nsj2m35rmkh587a0x-stdenv-linux"],
+            }
+        )
+        approved, rejected = cli._classify_deriverless_helpers(
+            self.pin, manifest, is_regular_file=self._regular
+        )
+        self.assertEqual(len(approved), 14)
+        self.assertEqual([row["storePath"] for row in rejected], ["/nix/store/" + "a" * 32 + "-evil.sh"])
+
+    def test_nar_hash_mismatch_is_rejected(self) -> None:
+        manifest = self._manifest()
+        target = next(entry for entry in manifest if entry["path"] in self.new_paths)
+        target["narHash"] = "sha256-" + "B" * 43 + "="
+        approved, rejected = cli._classify_deriverless_helpers(
+            self.pin, manifest, is_regular_file=self._regular
+        )
+        self.assertEqual(len(approved), 13)
+        self.assertEqual([row["storePath"] for row in rejected], [target["path"]])
+
+    def test_referrer_set_mismatch_is_rejected(self) -> None:
+        manifest = self._manifest()
+        target = next(entry for entry in manifest if entry["path"] in self.new_paths)
+        for entry in manifest:
+            entry["references"] = [
+                reference for reference in entry.get("references", []) if reference != target["path"]
+            ]
+        approved, rejected = cli._classify_deriverless_helpers(
+            self.pin, manifest, is_regular_file=self._regular
+        )
+        self.assertEqual(len(approved), 13)
+        self.assertEqual([row["storePath"] for row in rejected], [target["path"]])
+
+    def test_non_regular_store_entry_is_rejected(self) -> None:
+        manifest = self._manifest()
+        approved, rejected = cli._classify_deriverless_helpers(
+            self.pin, manifest, is_regular_file=lambda _path: False
+        )
+        self.assertEqual(set(approved), self.legacy)
+        self.assertEqual(len(rejected), 12)
+        self.assertEqual({row["storePath"] for row in rejected}, self.new_paths)
+
+    def test_symlink_store_entry_is_rejected(self) -> None:
+        manifest = self._manifest()
+        with mock.patch("environment_builder.cli.os.path.islink", return_value=True):
+            approved, rejected = cli._classify_deriverless_helpers(
+                self.pin, manifest, is_regular_file=self._regular
+            )
+        self.assertEqual(set(approved), self.legacy)
+        self.assertEqual(len(rejected), 12)
+
+    def test_pin_change_keeps_only_legacy_paths(self) -> None:
+        manifest = self._manifest()
+        approved, rejected = cli._classify_deriverless_helpers(
+            "github:NixOS/nixpkgs/" + "0" * 40,
+            manifest,
+            is_regular_file=self._regular,
+        )
+        self.assertEqual(set(approved), self.legacy)
+        self.assertEqual(len(rejected), 12)
+
+    def test_approved_identity_with_deriver_fails_before_package_evaluation(self) -> None:
+        manifest = self._manifest()
+        target = next(entry for entry in manifest if entry["path"] in self.new_paths)
+        target["deriver"] = "/nix/store/" + "c" * 32 + "-fake.drv"
+        workspace = Path(tempfile.mkdtemp())
+        log = BuildLog(workspace / "resolve.log")
+        try:
+            with mock.patch("environment_builder.cli.nix_eval_json") as evaluate:
+                with self.assertRaises(BuilderError) as raised:
+                    cli._closure_license_entries(
+                        {"nix": {"nixpkgs": self.pin}},
+                        manifest,
+                        {},
+                        30,
+                        log,
+                    )
+            self.assertEqual(
+                raised.exception.code,
+                "ENVIRONMENT_LICENSE_UNKNOWN",
+            )
+            self.assertIn("non-empty deriver", raised.exception.message)
+            evaluate.assert_not_called()
+        finally:
+            log.close()
+
+    def test_suffix_or_pattern_is_never_accepted(self) -> None:
+        manifest = self._manifest()
+        target = next(entry for entry in manifest if entry["path"] in self.new_paths)
+        manifest.append(
+            {
+                **target,
+                "path": target["path"] + ".bak",
+            }
+        )
+        approved, rejected = cli._classify_deriverless_helpers(
+            self.pin, manifest, is_regular_file=self._regular
+        )
+        self.assertEqual(len(approved), 14)
+        self.assertEqual([row["storePath"] for row in rejected], [target["path"] + ".bak"])
 
 
 if __name__ == "__main__":

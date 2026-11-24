@@ -86,7 +86,8 @@ export const es: Catalog = {
   "shell.expandNavigation": "Expandir la navegación",
   "shell.collapseNavigation": "Contraer la navegación",
   "shell.toggleNavigation": "Mostrar u ocultar la navegación",
-  "shell.openCommandNavigation": "Abrir la navegación por comandos",
+  "shell.commandTriggerAria":
+    "{search} {shortcut}: abrir la navegación por comandos",
   "shell.search": "Buscar",
   "shell.mainHeading": "Centro de mando de Factory Office",
   "shell.unknownRoute": "Ruta desconocida.",
@@ -385,8 +386,72 @@ export const es: Catalog = {
   "request.subscription.confirm":
     "Confirmo que Extra Usage está DESACTIVADO para esta suscripción.",
   "request.subscription.save": "Confirmar suscripción",
+  "request.subscription.persisted":
+    "Extra Usage está confirmado como DESACTIVADO para esta configuración de OpenCode Go desde {date}.",
+  "request.subscription.persistedHelp":
+    "La confirmación se guarda para esta cuenta y ruta del proveedor. No se vuelve a pedir salvo que cambien la credencial, el endpoint o la declaración.",
+  "request.subscription.saveOnce": "Confirmar una vez y guardar",
+  "request.subscription.savedOnce": "Confirmación de Extra Usage guardada.",
+  "request.subscription.revoke": "Revocar confirmación de Extra Usage",
+  "request.subscription.revoked": "Confirmación de Extra Usage revocada.",
   "request.subscription.saving": "Confirmando…",
   "request.subscription.confirmed": "Confirmación de suscripción registrada.",
+  "settings.funding.title": "Estado de financiación del proveedor",
+  "settings.funding.hint":
+    "Evidencia de conexión del proveedor no acotada. No puede decidir una solicitud, conceder despacho ni verificar un derecho emitido por el proveedor.",
+  "settings.funding.unavailable":
+    "El estado de financiación del proveedor no está disponible en esta compilación de Core.",
+  "request.funding.title": "Disponibilidad de financiación",
+  "request.funding.hint":
+    "Evidencia de admisión propiedad de Core y acotada a la solicitud. No es derecho emitido por el proveedor ni autoriza el despacho por sí misma.",
+  "request.funding.loading": "Leyendo la disponibilidad de financiación…",
+  "request.funding.unavailable":
+    "Esta compilación de Core no expone la proyección de disponibilidad de financiación acotada a la solicitud. El estado no acotado del proveedor no puede decidir esta solicitud y no se infiere ninguna admisión.",
+  "request.funding.error":
+    "No se pudo leer la disponibilidad de financiación desde Core.",
+  "request.funding.unscopedWarning":
+    "ESTADO NO ACOTADO: esta respuesta no puede decidir una solicitud. Se requiere evidencia de admisión acotada a la solicitud.",
+  "request.funding.admitted":
+    "La guarda de admisión de alcance existente de Core se cumple para esta solicitud exacta. La evidencia emitida por el proveedor sigue sin verificarse.",
+  "request.funding.notAdmitted":
+    "Core no ha admitido esta ruta de solicitud. Revisa la evidencia faltante y el texto de recuperación.",
+  "request.funding.scope": "Alcance",
+  "request.funding.scopeComplete":
+    "Acotado a la solicitud (identidad de intake y Lead presentes)",
+  "request.funding.scopeIncomplete": "Alcance de solicitud incompleto",
+  "request.funding.intake": "Solicitud de intake",
+  "request.funding.lead": "Solicitud de Lead",
+  "request.funding.route": "Ruta",
+  "request.funding.providerEvidence": "Evidencia emitida por el proveedor",
+  "request.funding.providerEvidenceMissing": "NO VERIFICADA",
+  "request.funding.guard": "Guarda de alcance de Core",
+  "request.funding.guardSatisfied": "Cumplida para este alcance exacto",
+  "request.funding.guardNotSatisfied": "No cumplida",
+  "request.funding.admission": "Admisión registrada",
+  "request.funding.admissionId": "Admisión",
+  "request.funding.admissionState": "Estado",
+  "request.funding.settingsRevision": "Revisión de configuración",
+  "request.funding.validUntil": "Válida hasta",
+  "request.funding.extraUsage": "Suposición de Extra Usage",
+  "request.funding.confirmedBy": "Confirmada por",
+  "request.funding.campaign": "Campaña",
+  "request.funding.receipt": "Hash del recibo",
+  "request.funding.declarations":
+    "Declaraciones de Extra Usage del propietario",
+  "request.funding.routes": "Rutas admitidas",
+  "request.funding.noAdmission": "No hay una admisión acotada a la solicitud.",
+  "request.funding.missingEvidence": "Evidencia faltante o bloqueante",
+  "request.funding.noneMissing":
+    "No falta evidencia bloqueante para esta admisión exacta.",
+  "request.funding.provenance": "Procedencia",
+  "request.funding.recovery": "Recuperación",
+  "request.funding.table.declaration": "Declaración",
+  "request.funding.table.role": "Rol",
+  "request.funding.table.provider": "Proveedor",
+  "request.funding.table.model": "Modelo",
+  "request.funding.table.settingsRevision": "Revisión de configuración",
+  "request.funding.table.transport": "Transporte",
+  "request.funding.table.valid": "Válida",
   "request.next.assessing": "Evaluando…",
   "request.next.assessingDescription":
     "Core informa de que hay una evaluación en curso. Esta vista no transmite el progreso; se actualiza desde Core.",
@@ -417,8 +482,23 @@ export const es: Catalog = {
   "request.approval.planningDisabled":
     "Completa la revisión del plan en el Director antes de aprobar.",
   "request.planning.incompleteTitle": "Revisión del plan incompleta",
+  "request.planning.preparingTitle": "Preparación del plan en curso",
+  "request.planning.waitingBody":
+    "Los materiales del plan están listos y Core espera la decisión del owner. La revisión pendiente exacta se muestra abajo.",
+  "request.planning.rejectedTitle": "Revisión del plan rechazada",
+  "request.planning.rejectedBody":
+    "Core registró una revisión rechazada o con cambios solicitados. La preparación automática está detenida; se requiere una nueva decisión exacta del owner o una recompilación.",
+  "request.planning.stoppedTitle": "Preparación del plan detenida",
+  "request.planning.stoppedBody":
+    "Core informa de una solicitud bloqueada o fallida. La preparación y el refresco automáticos están detenidos; los hechos faltantes de abajo son el último estado confirmado por Core. Esta vista no cambia la solicitud.",
+  "request.planning.stoppedRecovery":
+    "Pulsa Reintentar ahora o recupera el foco para releer. No se afirma inicio ni preparación automática mientras Core está detenido.",
   "request.planning.incompleteBody":
     "Core requiere los artefactos de planificación y el plan de participantes antes de iniciar este plan congelado.",
+  "request.planning.incompleteBodyAutopilot":
+    "Core está preparando los artefactos de planificación y el plan de participantes para esta solicitud autónoma. La autoridad del owner solo se solicita si Core registra una revisión de plan pendiente.",
+  "request.planning.participantMissingAutopilot":
+    "El plan de participantes aún no está registrado. Core lo registra mientras prepara esta solicitud autónoma.",
   "request.planning.missingArtifacts": "Faltan artefactos: {values}.",
   "request.planning.participantMissing":
     "El plan de participantes no está registrado. Compila el plan y registra el plan de participantes en el Director.",
@@ -431,6 +511,19 @@ export const es: Catalog = {
     "La última revisión del plan es {status}; el plan no puede iniciar hasta que una revisión aprobada vincule la revisión actual.",
   "request.planning.openDirector":
     "Abrir la revisión del plan en el Director (Compilar plan / Registrar plan de participantes)",
+  "request.planning.environment": "Plan de entorno: {status}.",
+  "request.planning.autopilotFreshness":
+    "El autopilot posee estos pasos deterministas en Core. Esta solicitud se refresca automáticamente; la preparación de arriba es el estado confirmado por Core y el bloqueo exacto seguirá visible hasta que Core lo resuelva.",
+  "request.planning.autopilotWaitingOwner":
+    "Core terminó los materiales del plan y espera la decisión del owner. Aprueba la revisión exacta del plan en el Director; Core reanuda la misma solicitud tras la aprobación. El refresco automático está pausado; esta vista relee al recuperar el foco o al pulsar Actualizar.",
+  "request.planning.autopilotRejected":
+    "Core registró una revisión del plan rechazada o con cambios solicitados. Se requiere una nueva decisión exacta del owner o una recompilación antes de continuar. El refresco automático está pausado; usa Actualizar cuando cambie la decisión.",
+  "request.planning.reviewStale":
+    "La revisión registrada del plan no vincula la revisión actual. Core no la trata como una decisión vigente del owner; recompila o revisa el plan actual en el Director.",
+  "request.pollingPaused":
+    "Core no responde a esta solicitud. El refresco automático se pausó tras fallos repetidos; se conserva la última proyección confirmada. Pulsa Reintentar ahora para releerla.",
+  "request.approval.environmentRequired":
+    "Core requiere un plan de entorno congelado antes de aprobar o iniciar (ENVIRONMENT_PLAN_REQUIRED).",
   "request.planning.unavailable":
     "Core no informó de la preparación de la revisión del plan. Recarga esta solicitud antes de aprobar.",
   "request.execution.title": "Ejecución",
@@ -693,6 +786,12 @@ export const es: Catalog = {
   "request.plan.checksValue":
     "{acceptance} de aceptación · {negative} negativas",
   "request.plan.noWorkUnits": "No hay unidades de trabajo registradas.",
+  "request.plan.workGraphUnits": "Unidades del WorkGraph",
+  "request.plan.unitStatus": "Estado",
+  "request.plan.workGraphNotPlanned": "WORK_GRAPH_NOT_PLANNED",
+  "request.plan.plannerPendingTitle": "Planner pendiente.",
+  "request.plan.plannerPendingDescription":
+    "El Lead coordina y ya no redacta unidades ejecutables. Core espera un WorkGraph validado del Planner, así que todavía no existe unidad, Campaign ni start.",
 
   "request.trace.title": "Traza del flujo de trabajo",
   "request.trace.description":
@@ -3381,6 +3480,15 @@ export const es: Catalog = {
     "Avanzado: ID de modelo manual (sin verificar)",
   "settings.provider.manualModelHelp":
     "Core mantiene esta ruta sin verificar hasta que el proveedor anuncie el modelo exacto. Los usuarios normales pueden seleccionar arriba un modelo descubierto.",
+  "settings.provider.maxInputTokens": "Máximo de tokens de entrada",
+  "settings.provider.maxOutputTokens": "Máximo de tokens de salida",
+  "settings.provider.boundsNotReported": "Core no lo informa",
+  "settings.provider.boundsHelp":
+    "Deja un campo vacío para conservar el valor actual. Core guarda estos límites para las nuevas llamadas al proveedor y acepta un valor positivo incluso por debajo del requisito estructurado del Lead; el preflight posterior del modelo bloquea la llamada e informa el valor requerido. Las cotizaciones de precio congeladas y las autorizaciones no cambian.",
+  "settings.provider.leadRequirement":
+    "Requisito estructurado del Lead: {base} tokens de salida por llamada, con un techo de {retry} tokens en el reintento de truncamiento permitido. Core bloquea una llamada por debajo del requisito.",
+  "settings.provider.boundsInvalid":
+    "{field} debe ser un número entero de tokens mayor que cero.",
   "settings.provider.connectionDetails": "Detalles de conexión",
   "settings.provider.enabledLabel": "Habilitado",
   "settings.provider.defaultLabel":
@@ -3701,6 +3809,8 @@ export const es: Catalog = {
   "director.stack.evidence": "Evidencia: {values}",
   "director.agents.title": "Participantes compilados",
   "director.agents.count": "{count} asignación(es)",
+  "director.table.agents": "Tabla de asignaciones de participantes",
+  "director.table.specs": "Tabla de especificaciones",
   "director.agents.role": "Rol",
   "director.agents.specialization": "Especialización",
   "director.agents.countLabel": "Cantidad",
@@ -3859,6 +3969,53 @@ export const es: Catalog = {
   "director.planning.title": "Revisión del plan",
   "director.planning.empty":
     "Todavía no hay artefactos de planificación registrados.",
+  "director.planning.staleBadge": "Revisión obsoleta",
+  "director.planning.staleReview":
+    "La revisión registrada del plan no vincula la revisión actual. Compila o recompila el plan actual y revisa esa revisión exacta; la decisión anterior no es evidencia vigente.",
+  "director.preparation.title": "Preparación del plan",
+  "director.preparation.autopilot":
+    "El autopilot posee estos pasos deterministas en Core. Esta vista se refresca mientras la preparación está incompleta; la preparación mostrada es la última proyección confirmada por Core.",
+  "director.preparation.artifacts": "Artefactos del plan",
+  "director.preparation.participants": "Participantes",
+  "director.preparation.review": "Revisión del plan",
+  "director.preparation.environment": "Plan de entorno",
+  "director.preparation.prepared": "Preparado",
+  "director.preparation.missing": "Falta: {values}",
+  "director.preparation.notRequired": "No requerido",
+  "director.preparation.incomplete": "Incompleto",
+  "director.preparation.notRecorded": "No registrado",
+  "director.preparation.approved": "Aprobada",
+  "director.preparation.loading": "Esperando la preparación de Core",
+  "director.preparation.unavailable": "No disponible",
+  "director.preparation.blockers": "{count} bloqueo(s)",
+  "director.preparation.planningReady":
+    "Core informa de que los materiales del plan y la revisión están listos.",
+  "director.preparation.planningNotReady":
+    "Core aún no informa de preparación del plan. Los hechos faltantes o bloqueados de arriba provienen de Core.",
+  "director.preparation.phase.preparing":
+    "Core está preparando los pasos deterministas de planificación. La preparación de abajo es la última proyección confirmada por Core.",
+  "director.preparation.phase.waitingOwner":
+    "Core espera la decisión del owner sobre el plan. El polling se pausa mientras la solicitud espera; una aprobación registrada en otra pestaña o dispositivo se observa al recuperar el foco o al pulsar Actualizar.",
+  "director.preparation.phase.reviewRejected":
+    "La revisión del plan fue rechazada o solicitó cambios. Se requiere una nueva decisión exacta del owner o una recompilación; Core no la autoaprueba.",
+  "director.preparation.phase.recoverableFailure":
+    "Core informó de una preparación bloqueada o fallida. Inspecciona el bloqueo de abajo; esta vista no reintenta automáticamente una acción de pago o con efectos externos.",
+  "director.preparation.phase.executing":
+    "Core informa de ejecución. La preparación del plan ya no es el paso activo.",
+  "director.preparation.phase.terminal":
+    "Core informa de un estado terminal. La preparación y el polling se detienen; abre la Campaña o el historial de la solicitud para consultar el resultado registrado.",
+  "director.preparation.operationInconsistent":
+    "Core informa de una operación en ejecución sin una Campaña autoritativa ni una solicitud en EXECUTING. Esta vista lo trata como inconsistencia, no como ejecución; actualiza cuando Core reconcilie la operación.",
+  "director.preparation.startNotObserved":
+    "Core informó de una operación en cola o iniciando, pero no se observó Campaña ni solicitud en EXECUTING. El polling automático se detuvo; pulsa Actualizar para releer. Esta observación no cancela ni detiene la solicitud, y la telemetría de inicio no es autoridad de Campaña.",
+  "director.preparation.pollingPaused":
+    "Core no responde a las lecturas de preparación. El refresco automático se pausó tras fallos repetidos; se conserva la última proyección confirmada. Pulsa Actualizar para reintentar.",
+  "director.preparation.startBoundary":
+    "La preparación del plan y del entorno no es el inicio de una Campaña. Core realiza la transacción de inicio y el estado de Campaña por separado.",
+  "director.preparation.staleReview":
+    "Obsoleta para la revisión actual del plan",
+  "director.preparation.environmentBoundary":
+    "Core requiere un plan de entorno congelado antes de aprobar o iniciar (ENVIRONMENT_PLAN_REQUIRED).",
   "director.planning.lane": "Carril de planificación",
   "director.planning.workflow": "Estado del flujo",
   "director.planning.revision": "Revisión del plan",
@@ -3878,6 +4035,10 @@ export const es: Catalog = {
     "La revisión del plan espera una decisión autenticada del owner. Aprueba, solicita cambios o rechaza la revisión exacta del plan.",
   "director.planning.reviewNotApproved":
     "La última revisión del plan es {status}. Aprueba una nueva revisión exacta antes de que el plan pueda iniciar.",
+  "director.planning.reviewRevisit":
+    "La revisión vigente es {status}. Una nueva decisión autenticada sobre esta misma revisión es una decisión nueva y efectiva; no recompila el plan ni autoaprueba, y Core revalida el inicio.",
+  "director.planning.revisitRationaleHelp":
+    "Introduce una justificación nueva; no se reutiliza la de la decisión anterior.",
   "director.planning.rationale": "Justificación de la revisión: {value}",
   "director.planning.reviewRationale": "Justificación de la revisión",
   "director.planning.rationaleRequired":
@@ -3887,6 +4048,15 @@ export const es: Catalog = {
   "director.planning.reject": "Rechazar plan",
   "director.planning.reviewSuccess": "La revisión del plan fue registrada.",
   "director.planning.reviewError": "No se pudo registrar la revisión del plan.",
+  "director.planning.reviewRecordedEnvironmentBlocked":
+    "La decisión del owner quedó registrada. El Lead rechazó el plan de entorno y Core lo marcó como bloqueado, así que la preparación no continuó. Revisa los bloqueos o recompila el entorno en Director; esta página no reinicia la ejecución.",
+  "director.planning.reviewNotConfirmed":
+    "Core no confirmó que la decisión quedara registrada para esta revisión del plan. La solicitud se actualizó; revisa el estado del plan antes de decidir de nuevo.",
+  "director.planning.reviewRecordedPreparationPending":
+    "La decisión del owner quedó registrada, pero la preparación no terminó: {detail} Actualiza el estado de la solicitud para ver lo que Core registró; esta página no reinicia la ejecución.",
+  "director.planning.decisionRecordedRefresh":
+    "Core registró esta decisión. Actualiza el estado de la solicitud para ver la preparación actualizada.",
+  "director.planning.refreshState": "Actualizar estado",
   "director.planning.error":
     "No se pudieron cargar los artefactos de planificación.",
   "director.planning.stack": "Stack",
@@ -4075,6 +4245,13 @@ export const es: Catalog = {
   "director.participants.reviewers": "Revisores independientes",
   "director.participants.independentReceiptsLabel": "Recibos independientes",
   "director.participants.requiredRoles": "Roles de revisión requeridos",
+  "director.participants.workGraphNotPlannedTitle": "Planner pendiente.",
+  "director.participants.workGraphNotPlanned":
+    "No hay un WorkGraph validado del Planner, así que participantes, unidades y start de Campaign quedan bloqueados hasta que Core lo planifique y valide.",
+
+  "director.participants.plannerPendingTitle": "Plan del Planner pendiente.",
+  "director.participants.plannerPending":
+    "Existe un WorkGraph validado pero Core aún no pudo compilar el participant plan. Abajo se muestra el problema causal; no se inventa unidad ni start de Campaign.",
   "director.participants.unassigned": "Sin asignar",
   "director.participants.noRoles":
     "No hay roles de revisión registrados para esta ruta.",
@@ -4093,6 +4270,73 @@ export const es: Catalog = {
   "director.participants.unitRouting": "Enrutamiento por unidad",
   "evidence.gate.reviewers":
     "{count} recibo(s) de revisores independientes agregados",
+  "nav.licenses": "Licencias",
+  "licenses.title": "Licencias, identidad y evidencia",
+  "licenses.description":
+    "Decisiones exactas del Lead bajo la delegación del Owner. Ninguna licencia se aprueba por nombre o familia; cada permiso queda atado a la identidad, evidencia, contexto de uso y revisión exactos.",
+  "licenses.retry": "Reintentar",
+  "licenses.loading": "Cargando decisiones de licencia",
+  "licenses.error": "No se pudieron cargar las decisiones de licencia.",
+  "licenses.project": "Proyecto",
+  "licenses.pin": "Fuente fijada",
+  "licenses.useContext": "Contexto de uso",
+  "licenses.sourceProof": "Prueba de origen",
+  "licenses.review.error": "La acción de revisión exacta falló.",
+  "licenses.review.emptyDescription":
+    "Crea una solicitud de intake para este proyecto antes de revisar una decisión exacta de licencia.",
+  "licenses.review.emptyTitle": "Sin solicitud",
+  "licenses.review.paid": "pago requerido: denegado",
+  "licenses.review.delegationRequired":
+    "Aprueba la delegación del Owner para habilitar la revisión.",
+  "licenses.review.required":
+    "Se requiere una delegación del Owner aprobada antes de la revisión.",
+  "licenses.review.recorded": "Decisión exacta registrada.",
+  "licenses.review.record": "Registrar decisión exacta",
+  "licenses.review.available": "Revisión del Lead registrada.",
+  "licenses.review.run": "Ejecutar revisión del Lead (llamada al modelo)",
+  "licenses.review.request": "Solicitud",
+  "licenses.review.title": "Revisión exacta de licencia y evidencia",
+  "licenses.stage": "Etapa",
+  "licenses.expiry": "Caducidad",
+  "licenses.reason": "Motivo",
+  "licenses.revoke": "Revocar",
+  "licenses.identity": "Identidad",
+  "licenses.license": "Licencia",
+  "licenses.branch": "Rama elegida",
+  "licenses.obligations": "Obligaciones",
+  "licenses.documentation.licensingFact":
+    "Hecho de licencia (seleccionado por el Lead)",
+  "licenses.documentation.derivedText": "Texto exacto derivado",
+  "licenses.documentation.directText": "selección directa de texto",
+  "licenses.documentation.modelSelection":
+    "Selección cruda del modelo (sólo auditoría)",
+  "licenses.documentation.derivation": "Derivación",
+  "licenses.evidence.title": "Procedencia de la evidencia de licencia",
+  "licenses.evidence.facts": "Hechos de licencia",
+  "licenses.evidence.texts": "Textos exactos de licencia",
+  "licenses.evidence.atom": "Átomo",
+  "licenses.evidence.path": "Ruta",
+  "licenses.evidence.license": "Licencia",
+  "licenses.evidence.purpose": "Propósito",
+  "licenses.evidence.role": "Rol",
+  "licenses.evidence.sha256": "SHA-256",
+  "licenses.status": "Estado",
+  "licenses.delegation.title": "Delegación del Owner",
+  "licenses.delegation.create": "Crear delegación",
+  "licenses.delegation.created":
+    "Delegación registrada. Apruébala abajo para activarla.",
+  "licenses.delegation.approve": "Aprobar delegación",
+  "licenses.delegation.approved": "Delegación aprobada.",
+  "licenses.delegation.revoked": "Delegación revocada.",
+  "licenses.delegation.error": "La acción de delegación falló.",
+  "licenses.delegation.emptyTitle": "Sin delegación de licencias",
+  "licenses.delegation.emptyDescription":
+    "Crea una delegación exacta del Owner para este Proyecto; un modelo o un chat no pueden crearla.",
+  "licenses.decisions.title": "Decisiones del Lead",
+  "licenses.decisions.emptyTitle": "Sin decisiones del Lead",
+  "licenses.decisions.emptyDescription":
+    "Una decisión aparece solo tras la revisión exacta de evidencia y la verificación de Core.",
+  "licenses.decision.revoked": "Decisión revocada.",
   "nav.charter": "Charter del owner",
   "charter.title": "Charter del owner",
   "charter.description":

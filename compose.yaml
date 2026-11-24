@@ -197,11 +197,17 @@ services:
       - -ec
       - |
         mkdir -p /bundle
+        # /cache is a VOLUME mountpoint, not image content. Normalize its mode
+        # so the bundle digest cannot depend on the volume backend or umask.
+        mkdir -p /cache
+        chmod 0755 /cache
         export PATH=/home/factory/.nix-profile/bin:$$PATH
         rm -f /bundle/environment-builder-rootfs.tar /bundle/environment-builder-rootfs.tar.tmp /bundle/environment-builder.digest /bundle/environment-builder-rootfs.tar.ready
         tar --one-file-system \
+          --sort=name --mtime=@0 --format=gnu \
           --exclude=./proc --exclude=./sys --exclude=./dev \
           --exclude=./bundle --exclude=./run --exclude=./tmp \
+          --exclude=./etc/hosts --exclude=./etc/hostname --exclude=./etc/resolv.conf \
           -C / -cf /bundle/environment-builder-rootfs.tar.tmp .
         sync /bundle/environment-builder-rootfs.tar.tmp || true
         mv /bundle/environment-builder-rootfs.tar.tmp /bundle/environment-builder-rootfs.tar
