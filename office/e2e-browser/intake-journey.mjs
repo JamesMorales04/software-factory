@@ -371,6 +371,52 @@ if (!live) {
       const system =
         body.messages?.find((message) => message.role === "system")?.content ??
         "";
+      if (system.includes("Semantic Assessor")) {
+        const request = JSON.parse(user);
+        assert.ok(request.objective, "semantic assessment prompt objective");
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: JSON.stringify({
+                    requestKind: "CHANGE",
+                    route: "DELEGATED",
+                    assurance: "STANDARD",
+                    stack: {
+                      languages: ["rust"],
+                      packageManagers: ["cargo"],
+                      buildTools: ["cargo"],
+                      evidenceRefs: ["Cargo.toml"],
+                      confidence: "high",
+                    },
+                    files: ["src/main.rs"],
+                    domains: [],
+                    risk: "low",
+                    expectedWorkUnits: 1,
+                    ambiguous: false,
+                    architectureUncertainty: false,
+                    crossModule: false,
+                    publicContract: false,
+                    dataOrSchema: false,
+                    securityBoundary: false,
+                    skillNeeds: [],
+                    unknowns: [],
+                  }),
+                },
+              },
+            ],
+            usage: {
+              prompt_tokens: 500,
+              completion_tokens: 200,
+              total_tokens: 700,
+            },
+          }),
+        );
+        return;
+      }
       if (system.includes("bounded Software Factory Planner")) {
         const request = JSON.parse(user);
         const allowedPaths = request.projectConfig?.allowedPaths ?? [];
@@ -497,7 +543,8 @@ if (!live) {
       const projectId = user.match(/Project: ([^\s.]+)/)?.[1];
       const actionId = user.match(/Action: ([^\s.]+)/)?.[1];
       const requestId = user.match(/Request: ([^\s.]+)/)?.[1];
-      const objective = user.match(/Objective: ([\s\S]*?)\. Project: /)?.[1];
+      // The Lead prompt uses `Objective: ...\nProject: ...`.
+      const objective = user.match(/Objective: ([\s\S]*?)\nProject: /)?.[1];
       assert.ok(
         projectId && actionId && requestId && objective,
         "model prompt identities",
@@ -976,11 +1023,24 @@ try {
   assert.equal(planHash.state, "AWAITING_APPROVAL");
   assert.ok(planHash.plan?.plan_hash, "frozen plan hash");
 
-  // Assessment freezes the Lead plan. The planning lane still has to compile
-  // its artifacts and participant plan, and Core must freeze the exact
-  // environment before approval. The browser exercises the operator approval;
-  // the deterministic Director APIs below are the same operations the Director
-  // uses and are not a second authority.
+  // Assessment freezes the Lead plan. Semantic triage is the Director
+  // operation that supplies the bounded expected-unit signal; without it Core
+  // truthfully routes a small existing-project request DIRECT. Run it so the
+  // DELEGATED planning lane below is backed by a typed Core response.
+  const triage = await coreApi(
+    `/agentic/requests/${encodeURIComponent(requestId)}/assess`,
+    { method: "POST" },
+  );
+  assert.equal(triage.decision?.route, "DELEGATED", "semantic triage route");
+  assert.equal(
+    triage.assessment?.expectedWorkUnits,
+    1,
+    "semantic triage expected work units",
+  );
+  // The planning lane still has to compile its artifacts and participant plan,
+  // and Core must freeze the exact environment before approval. The browser
+  // exercises the operator approval; the deterministic Director APIs below are
+  // the same operations the Director uses and are not a second authority.
   //
   // test-support installs a placeholder ActionSpec environment at Action
   // creation. Remove it before the real environment plan/spec binds the exact
